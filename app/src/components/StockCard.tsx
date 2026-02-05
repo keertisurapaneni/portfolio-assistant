@@ -97,8 +97,8 @@ export function StockCard({ stock, onClick }: StockCardProps) {
             </span>
           </div>
 
-          {/* Middle Row: Posture Badge + Score + Delta */}
-          <div className="flex items-center gap-4 mb-3">
+          {/* Middle Row: Posture Badge + Buy Priority + Score + Delta */}
+          <div className="flex items-center gap-3 mb-3 flex-wrap">
             {stock.isLoading ? (
               /* Loading skeleton */
               <>
@@ -137,6 +137,31 @@ export function StockCard({ stock, onClick }: StockCardProps) {
                     ({conviction.confidence})
                   </span>
                 </span>
+
+                {/* Trade Signal Badge - Only show BUY or SELL */}
+                {stock.buyPriority && (
+                  <span
+                    className={cn(
+                      'inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-bold border',
+                      stock.buyPriority === 'BUY' &&
+                        'bg-green-100 text-green-800 border-green-300 shadow-sm',
+                      stock.buyPriority === 'SELL' && 'bg-red-100 text-red-700 border-red-300',
+                      // Add subtle dashed border if missing position data
+                      !stock.shares && 'border-dashed opacity-75'
+                    )}
+                    title={
+                      !stock.shares
+                        ? 'Limited data - add position info for accurate signals'
+                        : stock.buyPriority === 'BUY'
+                          ? 'Strong opportunity - deploy capital'
+                          : 'Trim position - reduce risk'
+                    }
+                  >
+                    {stock.buyPriority === 'BUY' && '🎯 BUY'}
+                    {stock.buyPriority === 'SELL' && '🔻 SELL'}
+                    {!stock.shares && <span className="text-[0.6rem]">*</span>}
+                  </span>
+                )}
 
                 {/* Score */}
                 <div className="flex items-baseline gap-1">
@@ -190,11 +215,30 @@ export function StockCard({ stock, onClick }: StockCardProps) {
                   {conviction.rationale[0] || 'Click refresh to fetch market data'}
                 </p>
 
-                {/* Current price if available */}
+                {/* Current price with change */}
                 {stock.currentPrice && (
-                  <p className="text-xs text-[hsl(var(--muted-foreground))] opacity-75">
-                    Price: ${stock.currentPrice.toFixed(2)}
-                  </p>
+                  <div className="flex items-center gap-2 text-xs">
+                    <span className="text-[hsl(var(--muted-foreground))] opacity-75">
+                      ${stock.currentPrice.toFixed(2)}
+                    </span>
+                    {stock.priceChange !== undefined &&
+                      stock.priceChangePercent !== undefined &&
+                      stock.priceChange !== null &&
+                      stock.priceChangePercent !== null && (
+                        <span
+                          className={cn(
+                            'font-medium',
+                            stock.priceChange > 0 && 'text-green-600',
+                            stock.priceChange < 0 && 'text-red-600',
+                            stock.priceChange === 0 && 'text-gray-500'
+                          )}
+                        >
+                          {stock.priceChange > 0 ? '+' : ''}
+                          {stock.priceChange.toFixed(2)} ({stock.priceChange > 0 ? '+' : ''}
+                          {stock.priceChangePercent.toFixed(2)}%)
+                        </span>
+                      )}
+                  </div>
                 )}
               </>
             )}

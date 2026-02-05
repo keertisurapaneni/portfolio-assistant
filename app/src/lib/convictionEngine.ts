@@ -158,8 +158,13 @@ export function getConfidence(inputs: ScoreInputs, finalScore: number): Confiden
  *
  * @param inputs - Score inputs including metadata about data availability
  * @param hasMetricsData - Whether Finnhub returned fundamental metrics (optional)
+ * @param portfolioWeight - Optional percentage of portfolio (0-100)
  */
-export function generateRationale(inputs: ScoreInputs, hasMetricsData = true): string[] {
+export function generateRationale(
+  inputs: ScoreInputs,
+  hasMetricsData = true,
+  portfolioWeight?: number
+): string[] {
   const bullets: string[] = [];
 
   // Check for improving/declining trend (earnings score tells us recent trend)
@@ -226,7 +231,35 @@ export function generateRationale(inputs: ScoreInputs, hasMetricsData = true): s
     bullets.unshift('📈 Improving trajectory: Strong earnings growth but not yet profitable');
   }
 
-  return bullets.slice(0, 3);
+  // Limit to top 3 fundamental bullets first
+  const fundamentalBullets = bullets.slice(0, 3);
+
+  // Portfolio position context - ALWAYS show if available (most actionable info)
+  console.log(`[Rationale] portfolioWeight=${portfolioWeight}, type=${typeof portfolioWeight}`);
+
+  if (portfolioWeight !== undefined && portfolioWeight !== null) {
+    if (portfolioWeight === 0) {
+      fundamentalBullets.push('💰 No current position - opportunity to initiate');
+    } else if (portfolioWeight < 5) {
+      fundamentalBullets.push(`💰 Small position (${portfolioWeight.toFixed(1)}%) - room to add`);
+    } else if (portfolioWeight < 15) {
+      fundamentalBullets.push(
+        `💼 Meaningful position (${portfolioWeight.toFixed(1)}%) - well diversified`
+      );
+    } else if (portfolioWeight < 25) {
+      fundamentalBullets.push(
+        `⚠️ Large position (${portfolioWeight.toFixed(1)}%) - consider focusing new capital on other opportunities`
+      );
+    } else {
+      fundamentalBullets.push(
+        `🛑 Very large position (${portfolioWeight.toFixed(1)}%) - high concentration risk, diversify new investments`
+      );
+    }
+  } else {
+    console.log(`[Rationale] No portfolio weight available - position data may be missing`);
+  }
+
+  return fundamentalBullets; // Return 3 fundamental + 1 position = 4 total
 }
 
 /**
@@ -234,13 +267,18 @@ export function generateRationale(inputs: ScoreInputs, hasMetricsData = true): s
  *
  * @param inputs - Score inputs for the stock
  * @param hasMetricsData - Whether fundamental metrics data is available from Finnhub
+ * @param portfolioWeight - Optional percentage of portfolio (0-100)
  */
-export function getConvictionResult(inputs: ScoreInputs, hasMetricsData = true): ConvictionResult {
+export function getConvictionResult(
+  inputs: ScoreInputs,
+  hasMetricsData = true,
+  portfolioWeight?: number
+): ConvictionResult {
   const score = calculateConviction(inputs);
   return {
     score,
     posture: getPosture(score),
     confidence: getConfidence(inputs, score),
-    rationale: generateRationale(inputs, hasMetricsData),
+    rationale: generateRationale(inputs, hasMetricsData, portfolioWeight),
   };
 }

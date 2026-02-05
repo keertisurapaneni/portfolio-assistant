@@ -9,6 +9,8 @@ export interface Stock {
   avgCost?: number;
   // Price data (from Yahoo Finance)
   currentPrice?: number;
+  priceChange?: number; // Dollar change from previous close
+  priceChangePercent?: number; // Percentage change
   // Cached scores (refreshed from Yahoo Finance)
   qualityScore?: number;
   momentumScore?: number;
@@ -78,6 +80,7 @@ export type ActiveTab = 'portfolio' | 'suggested';
 
 export interface StockWithConviction extends Stock {
   conviction: ConvictionResult;
+  buyPriority?: 'BUY' | 'SELL' | null; // AI/rule-based trade signal (null = no action)
   previousScore?: number;
   positionValue?: number;
   portfolioWeight?: number;

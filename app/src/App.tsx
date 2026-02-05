@@ -5,6 +5,7 @@ import { getUserData, addStock, addTickers, updateStock, clearAllData } from './
 import { getConvictionResult } from './lib/convictionEngine';
 import { calculatePortfolioWeights } from './lib/portfolioCalc';
 import { getStockData, fetchMultipleStocks } from './lib/stockApiEdge';
+import { generateRuleBased } from './lib/aiInsights';
 import { cn } from './lib/utils';
 
 // Components
@@ -43,7 +44,9 @@ function App() {
       };
 
       // Determine if fundamental metrics data is available
-      const hasMetricsData = (stock.peRatio !== null && stock.peRatio !== undefined) || (stock.eps !== null && stock.eps !== undefined);
+      const hasMetricsData =
+        (stock.peRatio !== null && stock.peRatio !== undefined) ||
+        (stock.eps !== null && stock.eps !== undefined);
 
       return {
         ...stock,
@@ -54,7 +57,38 @@ function App() {
 
     // Add portfolio weights
     const withWeights = calculatePortfolioWeights(stocksWithConviction);
-    setStocks(withWeights);
+
+    // Recalculate conviction and buy priority with portfolio weight context
+    const withPortfolioContext = withWeights.map(stock => {
+      const inputs = {
+        qualityScore: stock.qualityScore ?? 50,
+        momentumScore: stock.momentumScore ?? 50,
+        earningsScore: stock.earningsScore ?? 50,
+        analystScore: stock.analystScore ?? 50,
+      };
+      const hasMetricsData =
+        (stock.peRatio !== null && stock.peRatio !== undefined) ||
+        (stock.eps !== null && stock.eps !== undefined);
+
+      // Calculate rule-based buy priority (instant, no API)
+      const { buyPriority } = generateRuleBased(
+        inputs.qualityScore,
+        inputs.earningsScore,
+        inputs.momentumScore,
+        stock.portfolioWeight,
+        stock.shares,
+        stock.avgCost,
+        stock.priceChangePercent
+      );
+
+      return {
+        ...stock,
+        conviction: getConvictionResult(inputs, hasMetricsData, stock.portfolioWeight),
+        buyPriority: buyPriority ?? undefined,
+      };
+    });
+
+    setStocks(withPortfolioContext);
   }, []);
 
   // Initial load
@@ -108,12 +142,19 @@ function App() {
           updateStock(ticker, {
             name: data.name,
             currentPrice: data.currentPrice,
+            priceChange: data.change,
+            priceChangePercent: data.changePercent,
             qualityScore: data.qualityScore,
             momentumScore: data.momentumScore,
             earningsScore: data.earningsScore,
             analystScore: data.analystScore,
             analystRating: data.analystRating || undefined,
             quarterlyEPS: data.quarterlyEPS,
+            eps: data.eps,
+            peRatio: data.peRatio,
+            roe: data.roe,
+            profitMargin: data.profitMargin,
+            operatingMargin: data.operatingMargin,
           });
         });
 
@@ -143,6 +184,8 @@ function App() {
         updateStock(ticker, {
           name: data.name,
           currentPrice: data.currentPrice,
+          priceChange: data.change,
+          priceChangePercent: data.changePercent,
           qualityScore: data.qualityScore,
           momentumScore: data.momentumScore,
           earningsScore: data.earningsScore,

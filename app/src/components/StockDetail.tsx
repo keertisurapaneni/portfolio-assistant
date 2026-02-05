@@ -1,10 +1,11 @@
-import { useState } from 'react';
-import { X, Trash2, ExternalLink, AlertTriangle, Info } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { X, Trash2, ExternalLink, AlertTriangle, Info, Sparkles } from 'lucide-react';
 import type { StockWithConviction, ScoreInputs } from '../types';
 import { removeStock } from '../lib/storage';
 import { getConvictionResult } from '../lib/convictionEngine';
 import { formatPositionValue, formatShares, formatAvgCost } from '../lib/portfolioCalc';
 import { getWarnings } from '../lib/warnings';
+import { generateAIInsights, type AIInsight } from '../lib/aiInsights';
 import { cn } from '../lib/utils';
 
 // URL helpers
@@ -18,6 +19,8 @@ interface StockDetailProps {
 
 export function StockDetail({ stock, onClose, onUpdate }: StockDetailProps) {
   const [isDeleting, setIsDeleting] = useState(false);
+  const [aiInsight, setAIInsight] = useState<AIInsight | null>(null);
+  const [isLoadingInsight, setIsLoadingInsight] = useState(false);
 
   // Calculate conviction - fully automated, no manual input
   const inputs: ScoreInputs = {
@@ -33,10 +36,10 @@ export function StockDetail({ stock, onClose, onUpdate }: StockDetailProps) {
 
   // Debug logging
   console.log(
-    `[StockDetail] ${stock.ticker}: eps=${stock.eps}, peRatio=${stock.peRatio}, roe=${stock.roe}, profitMargin=${stock.profitMargin}, operatingMargin=${stock.operatingMargin}, hasMetricsData=${hasMetricsData}`
+    `[StockDetail] ${stock.ticker}: eps=${stock.eps}, peRatio=${stock.peRatio}, roe=${stock.roe}, profitMargin=${stock.profitMargin}, operatingMargin=${stock.operatingMargin}, hasMetricsData=${hasMetricsData}, portfolioWeight=${stock.portfolioWeight}`
   );
 
-  const conviction = getConvictionResult(inputs, hasMetricsData);
+  const conviction = getConvictionResult(inputs, hasMetricsData, stock.portfolioWeight);
 
   // Posture styling
   const postureConfig = {
@@ -66,6 +69,29 @@ export function StockDetail({ stock, onClose, onUpdate }: StockDetailProps) {
     avgCost: stock.avgCost,
     currentPrice: stock.currentPrice,
   });
+
+  // Fetch AI insights (only if Gemini API key is configured)
+  useEffect(() => {
+    const fetchInsights = async () => {
+      setIsLoadingInsight(true);
+      const insight = await generateAIInsights(
+        stock,
+        stock.qualityScore ?? 50,
+        stock.earningsScore ?? 50,
+        stock.analystScore ?? 50,
+        stock.momentumScore ?? 50,
+        stock.portfolioWeight,
+        stock.shares,
+        stock.avgCost,
+        stock.priceChangePercent,
+        stock.analystRating
+      );
+      setAIInsight(insight);
+      setIsLoadingInsight(false);
+    };
+
+    fetchInsights();
+  }, [stock.ticker]); // Re-fetch if ticker changes
 
   return (
     <>
@@ -175,6 +201,73 @@ export function StockDetail({ stock, onClose, onUpdate }: StockDetailProps) {
                   )}
                 </div>
               ))}
+            </div>
+          )}
+
+          {/* AI Buy Priority Recommendation */}
+          {aiInsight && aiInsight.buyPriority && (
+            <div className="p-4 bg-gradient-to-r from-purple-50 to-blue-50 border border-purple-200 rounded-lg">
+              <div className="flex items-start gap-2 mb-3">
+                <Sparkles className="w-4 h-4 text-purple-600 mt-0.5 flex-shrink-0" />
+                <div className="flex-1">
+                  <div className="flex items-center gap-2 mb-1">
+                    <h3 className="text-sm font-medium text-purple-900">AI Trade Signal</h3>
+                    {aiInsight.cached && (
+                      <span className="text-xs text-purple-600 bg-purple-100 px-2 py-0.5 rounded">
+                        Cached
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2 mt-2">
+                    <span
+                      className={cn(
+                        'px-3 py-1 rounded-full text-sm font-semibold border',
+                        aiInsight.buyPriority === 'BUY' &&
+                          'bg-green-100 text-green-800 border-green-300',
+                        aiInsight.buyPriority === 'SELL' &&
+                          'bg-red-100 text-red-700 border-red-300',
+                        !aiInsight.buyPriority && 'bg-gray-100 text-gray-700 border-gray-300'
+                      )}
+                    >
+                      {aiInsight.buyPriority === 'BUY' && '🎯 BUY'}
+                      {aiInsight.buyPriority === 'SELL' && '🔻 SELL'}
+                      {!aiInsight.buyPriority && '— No Action'}
+                    </span>
+                  </div>
+                </div>
+              </div>
+              <p className="text-sm text-gray-700 leading-relaxed mb-2">{aiInsight.reasoning}</p>
+
+              {/* Data completeness indicator */}
+              {aiInsight.dataCompleteness !== 'FULL' && aiInsight.missingData && (
+                <div className="mt-3 p-2 bg-amber-50 border border-amber-200 rounded-md">
+                  <p className="text-xs text-amber-800 font-medium mb-1">
+                    ⚠️ Limited data - recommendation may be less accurate
+                  </p>
+                  <p className="text-xs text-amber-700">
+                    Missing: {aiInsight.missingData.join(', ')}
+                  </p>
+                  <p className="text-xs text-amber-600 mt-1">
+                    💡 Import portfolio data (File → Import) for position-aware recommendations
+                  </p>
+                </div>
+              )}
+
+              {aiInsight.summary && (
+                <p className="text-xs text-gray-600 italic pt-2 border-t border-purple-100">
+                  {aiInsight.summary}
+                </p>
+              )}
+            </div>
+          )}
+
+          {/* Loading AI insights */}
+          {isLoadingInsight && !aiInsight && (
+            <div className="p-4 bg-gray-50 border border-gray-200 rounded-lg">
+              <div className="flex items-center gap-2">
+                <Sparkles className="w-4 h-4 text-gray-400 animate-pulse" />
+                <p className="text-sm text-gray-600">Generating AI insights...</p>
+              </div>
             </div>
           )}
 

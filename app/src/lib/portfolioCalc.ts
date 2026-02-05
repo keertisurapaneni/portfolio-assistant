@@ -2,11 +2,34 @@ import type { Stock, StockWithConviction } from '../types';
 
 /**
  * Calculate position value for a stock.
+ * Uses avgCost if available, otherwise falls back to currentPrice.
+ * For portfolio weight calculations, current market value is what matters.
  */
 export function calculatePositionValue(stock: Stock): number | undefined {
-  if (stock.shares && stock.avgCost) {
-    return stock.shares * stock.avgCost;
+  console.log(
+    `[PositionCalc] ${stock.ticker}: shares=${stock.shares}, avgCost=${stock.avgCost}, currentPrice=${stock.currentPrice}`
+  );
+
+  if (!stock.shares) {
+    console.log(`[PositionCalc] ${stock.ticker}: No shares data`);
+    return undefined;
   }
+
+  // Prefer avgCost for original investment value
+  if (stock.avgCost) {
+    const value = stock.shares * stock.avgCost;
+    console.log(`[PositionCalc] ${stock.ticker}: Using avgCost → $${value.toLocaleString()}`);
+    return value;
+  }
+
+  // Fallback to current market value if avgCost not available
+  if (stock.currentPrice) {
+    const value = stock.shares * stock.currentPrice;
+    console.log(`[PositionCalc] ${stock.ticker}: Using currentPrice → $${value.toLocaleString()}`);
+    return value;
+  }
+
+  console.log(`[PositionCalc] ${stock.ticker}: No price data available`);
   return undefined;
 }
 
@@ -20,20 +43,31 @@ export function calculatePortfolioWeights(stocks: StockWithConviction[]): StockW
     ...stock,
     positionValue: calculatePositionValue(stock),
   }));
-  
+
   // Calculate total portfolio value
-  const totalValue = stocksWithValues.reduce(
-    (sum, stock) => sum + (stock.positionValue ?? 0),
-    0
-  );
-  
+  const totalValue = stocksWithValues.reduce((sum, stock) => sum + (stock.positionValue ?? 0), 0);
+  console.log(`[PortfolioCalc] Total portfolio value: $${totalValue.toLocaleString()}`);
+
   // Calculate weights
-  return stocksWithValues.map(stock => ({
-    ...stock,
-    portfolioWeight: totalValue > 0 && stock.positionValue
-      ? Math.round((stock.positionValue / totalValue) * 100)
-      : undefined,
-  }));
+  const result = stocksWithValues.map(stock => {
+    const weight =
+      totalValue > 0 && stock.positionValue
+        ? Math.round((stock.positionValue / totalValue) * 100)
+        : undefined;
+
+    if (weight !== undefined) {
+      console.log(
+        `[PortfolioCalc] ${stock.ticker}: ${weight}% of portfolio ($${stock.positionValue?.toLocaleString()})`
+      );
+    }
+
+    return {
+      ...stock,
+      portfolioWeight: weight,
+    };
+  });
+
+  return result;
 }
 
 /**
@@ -63,7 +97,7 @@ export function getSignificantPositions(
  */
 export function formatPositionValue(value: number | undefined): string {
   if (value === undefined) return '—';
-  
+
   if (value >= 1000000) {
     return `$${(value / 1000000).toFixed(1)}M`;
   } else if (value >= 1000) {
