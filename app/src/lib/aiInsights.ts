@@ -206,20 +206,26 @@ METRICS (0-100):
 ${analystContext}
 
 TRADING RULES TO APPLY:
-1. **SELL Rules**:
-   - Cut losses if stock down 7-8% from purchase price (protect capital)
-   - Take profits when up 20-25% from breakout (lock in gains)
-   - Exit immediately if fundamentals deteriorate or thesis breaks
+
+1. **SELL Rules** (Risk Management & Profit-Taking):
+   - 7-8% Stop-Loss: Cut losses immediately to protect capital
+   - 20-25% Profit Target: Lock in gains at pre-set targets
+   - Broken Fundamentals: Exit if financials weaken or competitive edge lost
+   - Rebalance: Consider trimming if position exceeds 25% of portfolio
+   - Tax Loss Harvesting: Use underperformers to offset capital gains
    
-2. **BUY Rules**:
-   - Buy quality stocks on market dips (temporary weakness = opportunity)
-   - Prefer companies with P/E < 20-25 (reasonable valuations)
-   - Focus on strong management, consistent earnings, solid fundamentals
+2. **BUY Rules** (Systematic Entry Points):
+   - Market Dips: Buy strong companies during temporary downturns
+   - Oversold Conditions: Look for RSI < 30 or technical oversold signals
+   - Catalysts: Buy on analyst upgrades, product launches, strong earnings
+   - Valuation: Prefer P/E < 20 for value, but accept higher for growth
+   - Timing: Best opportunities in first 15-60 mins of trading day
    
-3. **HOLD Rules**:
+3. **HOLD Rules** (Long-Term Compounding):
    - Never sell quality just because it hit new highs (let winners run)
-   - Hold when investment thesis intact and fundamentals strong
-   - Ignore short-term noise for long-term compounding
+   - Hold 1+ year for long-term capital gains tax benefits
+   - Ignore short-term noise when fundamentals remain strong
+   - Base decisions on strategy, not emotion
 
 INVESTMENT PHILOSOPHY (Learn from these examples):
 
@@ -247,12 +253,26 @@ Example 6: Weak Tech Stock - Quality 28, Earnings 35, Momentum 25, Position 6%, 
 → Decision: "SELL"
 → Why: Broken company. Don't catch falling knives. Price drop confirms weakness.
 
+Example 7: Overconcentrated Mediocre Stock - Quality 52, Earnings 48, Momentum 42, Position 28%
+→ Decision: "SELL"
+→ Why: Mediocre fundamentals + overconcentrated (28% of portfolio). Rebalancing needed.
+
+Example 8: Stock Down 8% from Purchase - Quality 55, Earnings 50, P&L: -8.2%
+→ Decision: "SELL"
+→ Why: Stop-loss triggered at -8%. Protect capital. Cut losses before they grow.
+
+Example 9: Stock Up 23% from Purchase - Quality 60, Earnings 65, P&L: +23.1%
+→ Decision: "SELL"
+→ Why: Hit 20-25% profit target. Lock in gains. Can reassess entry later if needed.
+
 KEY PRINCIPLES:
-1. Quality First: Never sell great companies (70+), trim mediocre ones (<50)
-2. Buy Dips: Strong stocks down 3-5%+ = opportunity (if position <15%)
-3. Position Sizing: Can own 20%+ of winners, but focus NEW capital on small positions
-4. Momentum Matters: Weak momentum (<40) + weak quality (<50) = avoid/exit
-5. Be Selective: Most stocks → null. Only show BUY for top opportunities, SELL for real problems
+1. Risk Management First: 7-8% stop-loss and 20-25% profit-taking override other factors
+2. Quality First: Never sell great companies (70+), trim mediocre ones (<50)
+3. Buy Dips: Strong stocks down 3-5%+ = opportunity (if position <15%)
+4. Position Sizing: Can own 20%+ of exceptional winners, but rebalance if >25% + not quality
+5. Momentum Matters: Weak momentum (<40) + weak quality (<50) = avoid/exit
+6. Be Selective: Most stocks → null. Only show BUY for top opportunities, SELL for real problems
+7. Think Long-Term: Prefer holding 1+ year for tax benefits, but rules override emotions
 
 YOUR TASK:
 Analyze ${stock.ticker} using these principles. Think like the examples above.
@@ -481,6 +501,20 @@ export function generateRuleBased(
         };
       }
     }
+  }
+
+  // Rebalancing Rule: Position too large (>25% of portfolio)
+  // Only suggest trimming if it's not exceptional quality OR if it's becoming risky
+  if (position > 25) {
+    if (!isQuality || momentumScore < 45) {
+      return {
+        buyPriority: 'SELL',
+        reasoning: `Overconcentrated position: ${position.toFixed(1)}% of portfolio. ${!isQuality ? 'Not exceptional quality - rebalance recommended' : 'Momentum weakening - consider trimming'}`,
+        dataCompleteness,
+        missingData,
+      };
+    }
+    // For exceptional quality (65+) with strong momentum, just note it but don't force sell
   }
 
   // Principle 1: Buy quality on dips (best opportunities)
