@@ -212,7 +212,7 @@ export function StockCard({ stock, onClick }: StockCardProps) {
             ) : (
               <>
                 <p className="text-sm text-[hsl(var(--muted-foreground))] leading-relaxed">
-                  {conviction.rationale[0] || 'Click refresh to fetch market data'}
+                  {stock.buyPriorityReasoning || conviction.rationale[0] || 'Click refresh to fetch market data'}
                 </p>
 
                 {/* Current price with change */}

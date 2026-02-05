@@ -99,6 +99,7 @@ export type ActiveTab = 'portfolio' | 'suggested';
 export interface StockWithConviction extends Stock {
   conviction: ConvictionResult;
   buyPriority?: 'BUY' | 'SELL' | null; // AI/rule-based trade signal (null = no action)
+  buyPriorityReasoning?: string; // AI-generated context-aware reasoning
   previousScore?: number;
   positionValue?: number;
   portfolioWeight?: number;

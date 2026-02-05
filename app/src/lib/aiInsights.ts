@@ -522,7 +522,8 @@ export function generateRuleBased(
   avgCost?: number,
   priceChangePercent?: number,
   currentPrice?: number,
-  riskProfile: RiskProfile = 'moderate'
+  riskProfile: RiskProfile = 'moderate',
+  recentNews?: Array<{ headline: string; datetime: number }>
 ): {
   buyPriority: AIInsight['buyPriority'];
   reasoning: string;
@@ -560,6 +561,15 @@ export function generateRuleBased(
 
   const thresholds = riskThresholds[riskProfile];
 
+  // Format news context for reasoning (if available)
+  const getNewsContext = (): string => {
+    if (!recentNews || recentNews.length === 0) return '';
+    const latestHeadline = recentNews[0].headline;
+    const newsAge = Math.round((Date.now() - recentNews[0].datetime * 1000) / (1000 * 60 * 60)); // hours ago
+    const ageText = newsAge < 24 ? `${newsAge}h ago` : `${Math.round(newsAge / 24)}d ago`;
+    return ` 📰 "${latestHeadline}" (${ageText}).`;
+  };
+
   // Determine data completeness
   let dataCompleteness: AIInsight['dataCompleteness'] = 'FULL';
   const missingData: string[] = [];
@@ -576,12 +586,13 @@ export function generateRuleBased(
   // If we don't have position data, apply simple quality-based logic
   if (!hasPositionData) {
     const avgScore = (qualityScore + earningsScore + momentumScore) / 3;
+    const newsCtx = getNewsContext();
 
     // BUY: Exceptional quality (like Buffett finding great companies)
     if (avgScore >= 65 && momentumScore > 50) {
       return {
         buyPriority: 'BUY',
-        reasoning: `Exceptional quality (avg ${avgScore.toFixed(0)}/100) - Quality ${qualityScore}, Earnings ${earningsScore}. Add position data for sizing.`,
+        reasoning: `Exceptional quality (avg ${avgScore.toFixed(0)}/100) - Quality ${qualityScore}, Earnings ${earningsScore}.${newsCtx} Add position data for sizing.`,
         dataCompleteness,
         missingData,
       };
@@ -591,7 +602,7 @@ export function generateRuleBased(
     if (avgScore < 45) {
       return {
         buyPriority: 'SELL',
-        reasoning: `Weak fundamentals (avg ${avgScore.toFixed(0)}/100) - Quality ${qualityScore}, Earnings ${earningsScore}, Momentum ${momentumScore}.`,
+        reasoning: `Weak fundamentals (avg ${avgScore.toFixed(0)}/100) - Quality ${qualityScore}, Earnings ${earningsScore}, Momentum ${momentumScore}.${newsCtx}`,
         dataCompleteness,
         missingData,
       };
@@ -600,7 +611,7 @@ export function generateRuleBased(
     // Default: No badge (need position context)
     return {
       buyPriority: null,
-      reasoning: `Avg ${avgScore.toFixed(0)}/100 - add position data for personalized decisions.`,
+      reasoning: `Avg ${avgScore.toFixed(0)}/100${newsCtx ? ` -${newsCtx}` : ''} - add position data for personalized decisions.`,
       dataCompleteness,
       missingData,
     };
@@ -617,6 +628,8 @@ export function generateRuleBased(
 
   const isDown3Plus = priceChangePercent !== undefined && priceChangePercent <= -3;
   const isDown5Plus = priceChangePercent !== undefined && priceChangePercent <= -5;
+  
+  const newsCtx = getNewsContext();
 
   // CRITICAL TRADING RULES: Apply stop-loss and profit-taking
   // These override other logic (risk management first!)
@@ -632,7 +645,7 @@ export function generateRuleBased(
       if (!isQuality || momentumScore < 35) {
         return {
           buyPriority: 'SELL',
-          reasoning: `Tightened stop-loss (${riskProfile}, volatile): Down ${Math.abs(gainLossPct).toFixed(1)}% from purchase ($${avgCost.toFixed(2)}) - Momentum ${momentumScore}`,
+          reasoning: `Tightened stop-loss (${riskProfile}, volatile): Down ${Math.abs(gainLossPct).toFixed(1)}% from purchase ($${avgCost.toFixed(2)}) - Momentum ${momentumScore}.${newsCtx}`,
           dataCompleteness,
           missingData,
         };
@@ -646,7 +659,7 @@ export function generateRuleBased(
       if (!(isQuality && momentumScore >= 40)) {
         return {
           buyPriority: 'SELL',
-          reasoning: `Stop-loss (${riskProfile}): Down ${Math.abs(gainLossPct).toFixed(1)}% from purchase ($${avgCost.toFixed(2)}) - ${Math.abs(thresholds.stopLoss)}% threshold`,
+          reasoning: `Stop-loss (${riskProfile}): Down ${Math.abs(gainLossPct).toFixed(1)}% from purchase ($${avgCost.toFixed(2)}) - ${Math.abs(thresholds.stopLoss)}% threshold.${newsCtx}`,
           dataCompleteness,
           missingData,
         };
@@ -658,7 +671,7 @@ export function generateRuleBased(
     if (gainLossPct >= 10 && momentumScore >= 80) {
       return {
         buyPriority: 'SELL',
-        reasoning: `Sell into strength: Up ${gainLossPct.toFixed(1)}% with extreme momentum (${momentumScore}) - Maximum greed, take profits fast`,
+        reasoning: `Sell into strength: Up ${gainLossPct.toFixed(1)}% with extreme momentum (${momentumScore}) - Maximum greed, take profits fast.${newsCtx}`,
         dataCompleteness,
         missingData,
       };
@@ -671,7 +684,7 @@ export function generateRuleBased(
       if (!(isQuality && momentumScore >= 55)) {
         return {
           buyPriority: 'SELL',
-          reasoning: `Profit-taking (${riskProfile}): Up ${gainLossPct.toFixed(1)}% from purchase ($${avgCost.toFixed(2)}) - ${thresholds.profitTarget}% target hit`,
+          reasoning: `Profit-taking (${riskProfile}): Up ${gainLossPct.toFixed(1)}% from purchase ($${avgCost.toFixed(2)}) - ${thresholds.profitTarget}% target hit.${newsCtx}`,
           dataCompleteness,
           missingData,
         };
@@ -685,7 +698,7 @@ export function generateRuleBased(
     if (!isQuality || momentumScore < 45) {
       return {
         buyPriority: 'SELL',
-        reasoning: `Overconcentrated (${riskProfile}): ${position.toFixed(1)}% of portfolio (>${thresholds.rebalanceAt}%). ${!isQuality ? 'Not exceptional quality - rebalance' : 'Momentum weakening - trim'}`,
+        reasoning: `Overconcentrated (${riskProfile}): ${position.toFixed(1)}% of portfolio (>${thresholds.rebalanceAt}%). ${!isQuality ? 'Not exceptional quality - rebalance' : 'Momentum weakening - trim'}.${newsCtx}`,
         dataCompleteness,
         missingData,
       };
@@ -703,7 +716,7 @@ export function generateRuleBased(
   if (isDown8Plus && isQuality && position < buyPositionLimit) {
     return {
       buyPriority: 'BUY',
-      reasoning: `MAXIMUM FEAR (${riskProfile})! Quality stock down ${Math.abs(priceChangePercent!).toFixed(1)}% - Panic = opportunity. Avg ${avgScore.toFixed(0)}/100, position ${position.toFixed(1)}%`,
+      reasoning: `MAXIMUM FEAR (${riskProfile})! Quality stock down ${Math.abs(priceChangePercent!).toFixed(1)}% - Panic = opportunity. Avg ${avgScore.toFixed(0)}/100, position ${position.toFixed(1)}%.${newsCtx}`,
       dataCompleteness,
       missingData,
     };
@@ -714,7 +727,7 @@ export function generateRuleBased(
   if (isDown5Plus && isStrong && position < dipBuyLimit) {
     return {
       buyPriority: 'BUY',
-      reasoning: `Quality on sale (${riskProfile})! Down ${Math.abs(priceChangePercent!).toFixed(1)}%, avg ${avgScore.toFixed(0)}/100, position ${position.toFixed(1)}% - Quality ${qualityScore}, Earnings ${earningsScore}`,
+      reasoning: `Quality on sale (${riskProfile})! Down ${Math.abs(priceChangePercent!).toFixed(1)}%, avg ${avgScore.toFixed(0)}/100, position ${position.toFixed(1)}% - Quality ${qualityScore}, Earnings ${earningsScore}.${newsCtx}`,
       dataCompleteness,
       missingData,
     };
@@ -725,7 +738,7 @@ export function generateRuleBased(
   if (isDown3Plus && isQuality && position < qualityDipLimit) {
     return {
       buyPriority: 'BUY',
-      reasoning: `Exceptional quality dip (${riskProfile})! Down ${Math.abs(priceChangePercent!).toFixed(1)}%, avg ${avgScore.toFixed(0)}/100, position ${position.toFixed(1)}%`,
+      reasoning: `Exceptional quality dip (${riskProfile})! Down ${Math.abs(priceChangePercent!).toFixed(1)}%, avg ${avgScore.toFixed(0)}/100, position ${position.toFixed(1)}%.${newsCtx}`,
       dataCompleteness,
       missingData,
     };
@@ -735,7 +748,7 @@ export function generateRuleBased(
   if (isWeak) {
     return {
       buyPriority: 'SELL',
-      reasoning: `Weak fundamentals (avg ${avgScore.toFixed(0)}/100) - Quality ${qualityScore}, Earnings ${earningsScore}, Momentum ${momentumScore}`,
+      reasoning: `Weak fundamentals (avg ${avgScore.toFixed(0)}/100) - Quality ${qualityScore}, Earnings ${earningsScore}, Momentum ${momentumScore}.${newsCtx}`,
       dataCompleteness,
       missingData,
     };
@@ -744,7 +757,7 @@ export function generateRuleBased(
   if (momentumScore < 35 && isMediocre) {
     return {
       buyPriority: 'SELL',
-      reasoning: `Deteriorating mediocre stock - Momentum ${momentumScore}, avg ${avgScore.toFixed(0)}/100`,
+      reasoning: `Deteriorating mediocre stock - Momentum ${momentumScore}, avg ${avgScore.toFixed(0)}/100.${newsCtx}`,
       dataCompleteness,
       missingData,
     };

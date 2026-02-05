@@ -76,7 +76,7 @@ function App() {
         (stock.eps !== null && stock.eps !== undefined);
 
       // Calculate rule-based buy priority (instant, no API)
-      const { buyPriority } = generateRuleBased(
+      const { buyPriority, reasoning } = generateRuleBased(
         inputs.qualityScore,
         inputs.earningsScore,
         inputs.momentumScore,
@@ -85,13 +85,15 @@ function App() {
         stock.avgCost,
         stock.priceChangePercent,
         stock.currentPrice,
-        riskProfile
+        riskProfile,
+        stock.recentNews
       );
 
       return {
         ...stock,
         conviction: getConvictionResult(inputs, hasMetricsData, stock.portfolioWeight),
         buyPriority: buyPriority ?? undefined,
+        buyPriorityReasoning: reasoning,
       };
     });
 
