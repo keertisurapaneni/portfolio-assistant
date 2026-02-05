@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <!-- Background circle -->
+  <circle cx="32" cy="32" r="32" fill="#10B981"/>
+  
+  <!-- Chart icon -->
+  <path d="M18 42V35C18 34.4477 18.4477 34 19 34H24C24.5523 34 25 34.4477 25 35V42" 
+        stroke="white" stroke-width="3" stroke-linecap="round"/>
+  <path d="M28.5 42V28C28.5 27.4477 28.9477 27 29.5 27H34.5C35.0523 27 35.5 27.4477 35.5 28V42" 
+        stroke="white" stroke-width="3" stroke-linecap="round"/>
+  <path d="M39 42V22C39 21.4477 39.4477 21 40 21H45C45.5523 21 46 21.4477 46 22V42" 
+        stroke="white" stroke-width="3" stroke-linecap="round"/>
+  
+  <!-- Base line -->
+  <line x1="16" y1="45" x2="48" y2="45" stroke="white" stroke-width="2.5" stroke-linecap="round"/>
+</svg>
