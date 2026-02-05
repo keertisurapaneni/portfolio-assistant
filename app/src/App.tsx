@@ -157,6 +157,7 @@ function App() {
         });
 
         // Update stocks with fetched data
+        const timestamp = new Date().toISOString();
         stockData.forEach((data, ticker) => {
           updateStock(ticker, {
             name: data.name,
@@ -176,6 +177,8 @@ function App() {
             roe: data.roe,
             profitMargin: data.profitMargin,
             operatingMargin: data.operatingMargin,
+            lastDataFetch: timestamp,
+            // No previousScore for brand new stocks
           });
         });
 
@@ -220,6 +223,8 @@ function App() {
           roe: data.roe,
           profitMargin: data.profitMargin,
           operatingMargin: data.operatingMargin,
+          lastDataFetch: new Date().toISOString(),
+          // No previousScore for brand new stocks
         });
         loadStocks();
       }
@@ -243,7 +248,29 @@ function App() {
       });
 
       let updated = 0;
-      stockData.forEach((data, ticker) => {
+      let failed = 0;
+      const timestamp = new Date().toISOString();
+      
+      tickers.forEach(ticker => {
+        const data = stockData.get(ticker);
+        
+        if (!data) {
+          // Stock failed to fetch
+          failed++;
+          return;
+        }
+
+        // Capture current score as previousScore before updating
+        const currentStock = stocks.find(s => s.ticker === ticker);
+        const currentScore = currentStock 
+          ? getConvictionResult({
+              qualityScore: currentStock.qualityScore ?? 50,
+              momentumScore: currentStock.momentumScore ?? 50,
+              earningsScore: currentStock.earningsScore ?? 50,
+              analystScore: currentStock.analystScore ?? 50,
+            }, true).score
+          : undefined;
+
         updateStock(ticker, {
           name: data.name,
           currentPrice: data.currentPrice,
@@ -262,13 +289,21 @@ function App() {
           roe: data.roe,
           profitMargin: data.profitMargin,
           operatingMargin: data.operatingMargin,
+          lastDataFetch: timestamp,
+          previousScore: currentScore,
         });
         updated++;
       });
 
       loadStocks();
-      setRefreshProgress(`✓ Updated ${updated} stocks!`);
-      setTimeout(() => setRefreshProgress(null), 2000);
+      
+      if (failed > 0) {
+        setRefreshProgress(`✓ Updated ${updated} stocks. ${failed} failed - using cached data.`);
+      } else {
+        setRefreshProgress(`✓ Updated ${updated} stocks!`);
+      }
+      
+      setTimeout(() => setRefreshProgress(null), 3000);
     } catch (error) {
       console.error('Failed to refresh:', error);
       setRefreshProgress(`❌ Error: ${error instanceof Error ? error.message : 'Unknown error'}`);

@@ -178,6 +178,17 @@ export function StockCard({ stock, onClick }: StockCardProps) {
                     {delta > 0 ? `+${delta}` : delta}
                   </span>
                 )}
+
+                {/* Data Age (if > 5 minutes) */}
+                {stock.lastDataFetch && (() => {
+                  const ageMs = Date.now() - new Date(stock.lastDataFetch).getTime();
+                  const ageMinutes = Math.round(ageMs / (1000 * 60));
+                  return ageMinutes >= 5 ? (
+                    <span className="text-xs text-[hsl(var(--muted-foreground))] opacity-60">
+                      {ageMinutes < 60 ? `${ageMinutes}m` : `${Math.round(ageMinutes / 60)}h`}
+                    </span>
+                  ) : null;
+                })()}
               </>
             )}
 
@@ -237,6 +248,26 @@ export function StockCard({ stock, onClick }: StockCardProps) {
                           {stock.priceChangePercent.toFixed(2)}%)
                         </span>
                       )}
+                  </div>
+                )}
+
+                {/* News/Events Section */}
+                {stock.recentNews && stock.recentNews.length > 0 && (
+                  <div className="mt-2 pt-2 border-t border-gray-200">
+                    <div className="flex items-start gap-1.5 text-xs">
+                      <span className="text-blue-600 mt-0.5">📰</span>
+                      <div className="flex-1">
+                        <p className="text-[hsl(var(--muted-foreground))] line-clamp-2">
+                          {stock.recentNews[0].headline}
+                        </p>
+                        <span className="text-[hsl(var(--muted-foreground))] opacity-60 text-[10px]">
+                          {(() => {
+                            const hoursAgo = Math.round((Date.now() - stock.recentNews[0].datetime * 1000) / (1000 * 60 * 60));
+                            return hoursAgo < 24 ? `${hoursAgo}h ago` : `${Math.round(hoursAgo / 24)}d ago`;
+                          })()}
+                        </span>
+                      </div>
+                    </div>
                   </div>
                 )}
               </>

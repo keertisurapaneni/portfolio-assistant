@@ -4,6 +4,7 @@ export interface Stock {
   ticker: string;
   name: string;
   dateAdded: string;
+  lastDataFetch?: string; // ISO timestamp of last successful data refresh
   // Position data (optional - from CSV import)
   shares?: number;
   avgCost?: number;
@@ -17,6 +18,7 @@ export interface Stock {
   momentumScore?: number;
   earningsScore?: number;
   analystScore?: number;
+  previousScore?: number; // Previous conviction score (for delta tracking)
   // Fundamental metrics (for display)
   eps?: number | null;
   peRatio?: number | null;
@@ -100,7 +102,6 @@ export interface StockWithConviction extends Stock {
   conviction: ConvictionResult;
   buyPriority?: 'BUY' | 'SELL' | null; // AI/rule-based trade signal (null = no action)
   buyPriorityReasoning?: string; // AI-generated context-aware reasoning
-  previousScore?: number;
   positionValue?: number;
   portfolioWeight?: number;
   isLoading?: boolean; // True while fetching real data
