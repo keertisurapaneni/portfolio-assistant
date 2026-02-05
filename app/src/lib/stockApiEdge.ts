@@ -39,6 +39,15 @@ export interface AnalystRating {
   targetLow: number;
 }
 
+export interface NewsItem {
+  headline: string;
+  summary: string;
+  source: string;
+  datetime: number; // Unix timestamp
+  url: string;
+  sentiment?: 'positive' | 'negative' | 'neutral';
+}
+
 export interface StockData {
   ticker: string;
   name: string;
@@ -64,6 +73,7 @@ export interface StockData {
   // Raw data for display
   quarterlyEPS: QuarterlyFinancials[];
   analystRating: AnalystRating | null;
+  recentNews: NewsItem[]; // Last 3 news items for context
 }
 
 // ============================================
@@ -84,7 +94,7 @@ async function rateLimitedFetch(url: string, options: RequestInit): Promise<Resp
 
 async function fetchFromEdge<T>(
   ticker: string,
-  endpoint: 'quote' | 'metrics' | 'recommendations' | 'earnings',
+  endpoint: 'quote' | 'metrics' | 'recommendations' | 'earnings' | 'news',
   cacheKey: string
 ): Promise<T | null> {
   // Check client-side cache first
@@ -197,6 +207,18 @@ interface FinnhubEarnings {
   surprisePercent: number;
   symbol: string;
   year: number;
+}
+
+interface FinnhubNews {
+  category: string;
+  datetime: number;
+  headline: string;
+  id: number;
+  image: string;
+  related: string;
+  source: string;
+  summary: string;
+  url: string;
 }
 
 // ============================================
@@ -493,11 +515,12 @@ export async function getStockData(ticker: string): Promise<StockData | null> {
 
   try {
     // Fetch all data in parallel through Edge Function
-    const [quote, metricsData, recommendations, earnings] = await Promise.all([
+    const [quote, metricsData, recommendations, earnings, news] = await Promise.all([
       fetchFromEdge<FinnhubQuote>(symbol, 'quote', `quote-${symbol}`),
       fetchFromEdge<FinnhubMetrics>(symbol, 'metrics', `metrics-${symbol}`),
       fetchFromEdge<FinnhubRecommendation[]>(symbol, 'recommendations', `recs-${symbol}`),
       fetchFromEdge<FinnhubEarnings[]>(symbol, 'earnings', `earnings-${symbol}`),
+      fetchFromEdge<FinnhubNews[]>(symbol, 'news', `news-${symbol}`),
     ]);
 
     if (!quote || quote.c === 0) {
@@ -535,6 +558,24 @@ export async function getStockData(ticker: string): Promise<StockData | null> {
       netMargin: 0,
     }));
 
+    // Process recent news (last 3 items, last 7 days)
+    const recentNews: NewsItem[] = [];
+    if (news && Array.isArray(news)) {
+      const sevenDaysAgo = Date.now() / 1000 - 7 * 24 * 60 * 60;
+      recentNews.push(
+        ...news
+          .filter(n => n.datetime > sevenDaysAgo)
+          .slice(0, 3)
+          .map(n => ({
+            headline: n.headline,
+            summary: n.summary,
+            source: n.source,
+            datetime: n.datetime,
+            url: n.url,
+          }))
+      );
+    }
+
     const result: StockData = {
       ticker: symbol,
       name: symbol, // Edge Function doesn't fetch profile, use ticker as name
@@ -558,6 +599,7 @@ export async function getStockData(ticker: string): Promise<StockData | null> {
       analystScore,
       quarterlyEPS,
       analystRating,
+      recentNews,
     };
 
     console.log(

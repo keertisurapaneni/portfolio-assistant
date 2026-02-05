@@ -37,6 +37,14 @@ export interface Stock {
   };
   // Quarterly EPS data from Yahoo Finance
   quarterlyEPS?: QuarterlyEPS[];
+  // Recent news (last 7 days)
+  recentNews?: {
+    headline: string;
+    summary: string;
+    source: string;
+    datetime: number;
+    url: string;
+  }[];
 }
 
 export interface QuarterlyEPS {

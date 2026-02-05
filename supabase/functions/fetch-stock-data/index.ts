@@ -14,7 +14,7 @@ const corsHeaders = {
 
 interface RequestPayload {
   ticker: string;
-  endpoint: 'quote' | 'metrics' | 'recommendations' | 'earnings';
+  endpoint: 'quote' | 'metrics' | 'recommendations' | 'earnings' | 'news';
 }
 
 interface CacheEntry {
@@ -42,7 +42,7 @@ Deno.serve(async req => {
       );
     }
 
-    const validEndpoints = ['quote', 'metrics', 'recommendations', 'earnings'];
+    const validEndpoints = ['quote', 'metrics', 'recommendations', 'earnings', 'news'];
     if (!validEndpoints.includes(endpoint)) {
       return new Response(
         JSON.stringify({ error: `Invalid endpoint. Must be one of: ${validEndpoints.join(', ')}` }),
@@ -114,6 +114,12 @@ Deno.serve(async req => {
         break;
       case 'earnings':
         apiUrl = `${FINNHUB_BASE}/stock/earnings?symbol=${symbol}&token=${finnhubApiKey}`;
+        break;
+      case 'news':
+        // Get news from last 7 days
+        const toDate = new Date().toISOString().split('T')[0];
+        const fromDate = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+        apiUrl = `${FINNHUB_BASE}/company-news?symbol=${symbol}&from=${fromDate}&to=${toDate}&token=${finnhubApiKey}`;
         break;
     }
 

@@ -100,7 +100,8 @@ export async function generateAIInsights(
   priceChangePercent?: number,
   analystRating?: Stock['analystRating'],
   riskProfile?: RiskProfile,
-  volume?: number
+  volume?: number,
+  recentNews?: Stock['recentNews']
 ): Promise<AIInsight | null> {
   // Check cache first
   const cached = getCachedInsight(stock.ticker);
@@ -241,6 +242,30 @@ ${upsidePct ? `• Implied Upside: ${upsidePct}%` : ''}`;
       analystContext = '\nWALL STREET CONSENSUS: [Not available]';
     }
 
+    // Build recent news context (CRITICAL for context-aware decisions)
+    let newsContext = '';
+    if (recentNews && recentNews.length > 0) {
+      const newsItems = recentNews.map((news, idx) => {
+        const date = new Date(news.datetime * 1000);
+        const daysAgo = Math.floor((Date.now() - date.getTime()) / (1000 * 60 * 60 * 24));
+        const timeStr = daysAgo === 0 ? 'TODAY' : daysAgo === 1 ? 'YESTERDAY' : `${daysAgo}d ago`;
+        return `${idx + 1}. [${timeStr}] ${news.headline}\n   ${news.summary.substring(0, 150)}... (${news.source})`;
+      }).join('\n');
+
+      newsContext = `
+
+RECENT NEWS & EVENTS (Last 7 days):
+${newsItems}
+
+⚠️ IMPORTANT: Analyze these news items carefully! They explain WHY the price moved.
+- Earnings miss/beat? → Key buying/selling opportunity
+- Major announcement? → Validates or breaks investment thesis
+- Negative news + quality stock? → Potential "buy the dip"
+- Positive news + weak stock? → Temporary bounce, stay cautious`;
+    } else {
+      newsContext = '\n\nRECENT NEWS: [No recent news available - rely on metrics only]';
+    }
+
     const prompt = `You are Warren Buffett's quantitative analyst. Make BUY/SELL decisions for a long-term portfolio using provided metrics.
 
 STOCK: ${stock.ticker} (${stock.name || stock.ticker})
@@ -252,7 +277,7 @@ METRICS (0-100):
 • Momentum: ${momentumScore}/100 ${momentumScore >= 60 ? '✓' : momentumScore >= 40 ? '⚠' : '✗'}  |  Analyst: ${analystScore}/100 ${analystScore >= 60 ? '✓' : analystScore >= 40 ? '⚠' : '✗'}
 • COMPOSITE: ${avgScore.toFixed(0)}/100
 • FUNDAMENTALS: ${metrics.length > 0 ? metrics.join(', ') : '[Limited]'}
-${analystContext}
+${analystContext}${newsContext}
 
 QUANTITATIVE TRADING RULES (Data-Driven, Remove Emotion):
 
@@ -348,13 +373,25 @@ KEY PRINCIPLES (Quantitative, Data-Driven):
 10. Systematic Approach: Follow rules, not emotions. Data beats gut feelings
 
 YOUR TASK:
-Analyze ${stock.ticker} using these principles. Think like the examples above.
+Analyze ${stock.ticker} using these principles AND the recent news/events above. Think like the examples.
+
+**CRITICAL**: Your reasoning MUST explain WHY using news context:
+- If there's an earnings report → Did they beat/miss? Is the drop/rally justified?
+- If there's negative news → Is this a buying opportunity for a quality company?
+- If there's no major news → Why is the stock moving? Just market noise?
+- Position size matters → But don't buy just because position is small. Buy because of compelling VALUE/NEWS.
+
+Examples of GOOD reasoning:
+✅ "Dropped 7% after earnings miss, but quality strong (76/100). Overreaction = buy opportunity"
+✅ "Up 15% on product launch hype, momentum 85. Take profits - maximum greed"
+✅ "Weak earnings (45/100) + negative guidance news. Thesis broken - exit"
+❌ "Exceptional quality (avg 76/100), position 14.0% has room" ← TOO MECHANICAL, NO CONTEXT!
 
 Return JSON:
 {
   "buyPriority": "BUY" | "SELL" | null,
-  "reasoning": "One sentence citing specific metrics (e.g., 'Quality 72, Position 5%, down 5.2%')",
-  "summary": "Brief company context"
+  "reasoning": "ONE sentence with NEWS CONTEXT + metrics (e.g., 'Earnings miss but quality intact - buy the dip')",
+  "summary": "Brief company context with news"
 }
 
 Be decisive on clear opportunities/problems, silent on holds. ONLY valid JSON.`;
@@ -373,8 +410,8 @@ Be decisive on clear opportunities/problems, silent on holds. ONLY valid JSON.`;
             },
           ],
           generationConfig: {
-            temperature: 0.2, // Low but allow reasoning through examples
-            maxOutputTokens: 300,
+            temperature: 0.3, // Allow natural reasoning with news context
+            maxOutputTokens: 500, // More space for context-rich explanations
           },
         }),
       }

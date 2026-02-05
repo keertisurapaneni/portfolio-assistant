@@ -87,7 +87,8 @@ export function StockDetail({ stock, onClose, onUpdate }: StockDetailProps) {
         stock.priceChangePercent,
         stock.analystRating,
         getRiskProfile(),
-        stock.volume
+        stock.volume,
+        stock.recentNews
       );
       setAIInsight(insight);
       setIsLoadingInsight(false);
