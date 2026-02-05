@@ -333,6 +333,25 @@ function calculateEarningsScoreWithHistory(
 ): number {
   let score = 50;
 
+  // Check for recent profitability FIRST (last 2-3 quarters)
+  let recentlyProfitable = false;
+  let persistentlyUnprofitable = false;
+  
+  if (earnings && earnings.length >= 2) {
+    const lastTwoQuarters = earnings.slice(0, 2);
+    
+    // Company is "recently profitable" if last 2 quarters are positive
+    recentlyProfitable = lastTwoQuarters.every(q => q.actual > 0);
+    
+    // Company is "persistently unprofitable" if 3+ of last 4 quarters are negative
+    const negativeQuarters = earnings.slice(0, 4).filter(q => q.actual < 0).length;
+    persistentlyUnprofitable = negativeQuarters >= 3;
+    
+    if (recentlyProfitable) {
+      console.log(`[Earnings] Recently profitable: Last ${lastTwoQuarters.length} quarters positive`);
+    }
+  }
+
   // Part 1: Use metrics for growth rates
   if (metrics) {
     // Revenue growth
@@ -373,11 +392,22 @@ function calculateEarningsScoreWithHistory(
       }
     }
 
-    // EPS positivity check
+    // EPS positivity check - BUT don't penalize if recently turned profitable
     const eps = metrics.epsTTM ?? metrics.epsAnnual;
     if (eps !== undefined && eps < 0) {
-      score -= 15;
-      console.log(`[Earnings] Negative EPS (${eps.toFixed(2)}) → -15`);
+      if (recentlyProfitable) {
+        // Company turned profitable recently - lighter penalty or bonus
+        score += 5;
+        console.log(`[Earnings] TTM EPS negative (${eps.toFixed(2)}) but recently profitable → +5`);
+      } else if (persistentlyUnprofitable) {
+        // Still consistently losing money
+        score -= 15;
+        console.log(`[Earnings] Persistently negative EPS (${eps.toFixed(2)}) → -15`);
+      } else {
+        // Mixed results
+        score -= 10;
+        console.log(`[Earnings] Negative TTM EPS (${eps.toFixed(2)}) → -10`);
+      }
     }
   }
 
@@ -414,13 +444,15 @@ function calculateEarningsScoreWithHistory(
       console.log(`[Earnings] Miss pattern: ${beats} beats, ${misses} misses → -${netMisses * 5}`);
     }
 
-    // Persistent negative EPS penalty
-    if (negativeCount >= 3) {
-      score -= 15;
-      console.log(`[Earnings] ${negativeCount}/4 quarters with negative EPS → -15`);
-    } else if (negativeCount >= 2) {
-      score -= 10;
-      console.log(`[Earnings] ${negativeCount}/4 quarters with negative EPS → -10`);
+    // Persistent negative EPS penalty - ONLY if not recently profitable
+    if (!recentlyProfitable) {
+      if (negativeCount >= 3) {
+        score -= 15;
+        console.log(`[Earnings] ${negativeCount}/4 quarters with negative EPS → -15`);
+      } else if (negativeCount >= 2) {
+        score -= 10;
+        console.log(`[Earnings] ${negativeCount}/4 quarters with negative EPS → -10`);
+      }
     }
   }
 

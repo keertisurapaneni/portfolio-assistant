@@ -159,11 +159,17 @@ export function getConfidence(inputs: ScoreInputs, finalScore: number): Confiden
 export function generateRationale(inputs: ScoreInputs): string[] {
   const bullets: string[] = [];
 
+  // Check for improving/declining trend (earnings score tells us recent trend)
+  const earningsImproving = inputs.earningsScore >= 55; // Above neutral suggests improvement
+  const qualityWeak = inputs.qualityScore < 40;
+
   // Quality assessment
   if (inputs.qualityScore >= 70) {
     bullets.push('Strong profitability and fundamentals');
-  } else if (inputs.qualityScore < 15) {
+  } else if (inputs.qualityScore < 15 && !earningsImproving) {
     bullets.push('🚨 UNPROFITABLE: Company is losing money');
+  } else if (inputs.qualityScore < 25 && earningsImproving) {
+    bullets.push('💡 Profitability improving (recent quarters positive)');
   } else if (inputs.qualityScore < 25) {
     bullets.push('⚠️ Major quality issues (negative margins/earnings)');
   } else if (inputs.qualityScore < 40) {
@@ -173,6 +179,8 @@ export function generateRationale(inputs: ScoreInputs): string[] {
   // Earnings assessment
   if (inputs.earningsScore >= 70) {
     bullets.push('Strong earnings track record');
+  } else if (inputs.earningsScore >= 60 && qualityWeak) {
+    bullets.push('📈 Recent earnings improving (turning profitable)');
   } else if (inputs.earningsScore < 15) {
     bullets.push('🚨 PERSISTENT LOSSES: Multiple quarters of negative EPS');
   } else if (inputs.earningsScore < 25) {
@@ -199,13 +207,16 @@ export function generateRationale(inputs: ScoreInputs): string[] {
     bullets.push('Negative price momentum');
   }
 
-  // Red flag summary
+  // Red flag summary - adjusted for improving trends
   if (inputs.qualityScore < 25 && inputs.earningsScore < 25) {
     if (inputs.analystScore >= 65) {
       bullets.unshift('⚠️ Turnaround play: Weak fundamentals but Wall Street sees potential');
     } else {
       bullets.unshift('🚨 RED FLAG: Both quality and earnings severely impaired');
     }
+  } else if (inputs.qualityScore < 25 && inputs.earningsScore >= 55) {
+    // Recently turning profitable - highlight the positive trend
+    bullets.unshift('💡 Growth story: Recently profitable with improving earnings');
   }
 
   return bullets.slice(0, 3);
