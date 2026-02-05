@@ -154,7 +154,7 @@ export function ImportPortfolioModal({ onClose, onComplete }: ImportPortfolioMod
           {step === 'mapping' && (
             <div className="space-y-4">
               <p className="text-sm text-[hsl(var(--muted-foreground))]">
-                Map your file columns to the required fields. Ticker is required.
+                Map your file columns to the required fields. Ticker is required. For optional fields, select "Not available" if your file doesn't have that data.
               </p>
 
               {/* Mapping dropdowns */}
@@ -174,7 +174,9 @@ export function ImportPortfolioModal({ onClose, onComplete }: ImportPortfolioMod
                         : 'border-[hsl(var(--border))]'
                     )}
                   >
-                    <option value="">-- Select column --</option>
+                    <option value="">
+                      {field === 'ticker' ? '-- Select column --' : '-- Not available in file --'}
+                    </option>
                     {headers.map(h => (
                       <option key={h} value={h}>
                         {h}
