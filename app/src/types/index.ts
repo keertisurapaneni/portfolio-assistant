@@ -14,6 +14,9 @@ export interface Stock {
   momentumScore?: number;
   earningsScore?: number;
   analystScore?: number;
+  // Fundamental metrics (for display)
+  eps?: number | null;
+  peRatio?: number | null;
   // Analyst rating details
   analystRating?: {
     rating: string;

@@ -42,9 +42,12 @@ function App() {
         analystScore: stock.analystScore ?? 50,
       };
 
+      // Determine if fundamental metrics data is available
+      const hasMetricsData = (stock.peRatio !== null && stock.peRatio !== undefined) || (stock.eps !== null && stock.eps !== undefined);
+
       return {
         ...stock,
-        conviction: getConvictionResult(inputs),
+        conviction: getConvictionResult(inputs, hasMetricsData),
         isLoading: !hasRealData, // Mark as loading if data is missing
       };
     });
@@ -146,6 +149,8 @@ function App() {
           analystScore: data.analystScore,
           analystRating: data.analystRating || undefined,
           quarterlyEPS: data.quarterlyEPS,
+          eps: data.eps,
+          peRatio: data.peRatio,
         });
         loadStocks();
       }
@@ -179,6 +184,8 @@ function App() {
           analystScore: data.analystScore,
           analystRating: data.analystRating || undefined,
           quarterlyEPS: data.quarterlyEPS,
+          eps: data.eps,
+          peRatio: data.peRatio,
         });
         updated++;
       });

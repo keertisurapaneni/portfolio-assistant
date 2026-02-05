@@ -155,25 +155,30 @@ export function getConfidence(inputs: ScoreInputs, finalScore: number): Confiden
 
 /**
  * Generate human-readable rationale bullets.
+ * 
+ * @param inputs - Score inputs including metadata about data availability
+ * @param hasMetricsData - Whether Finnhub returned fundamental metrics (optional)
  */
-export function generateRationale(inputs: ScoreInputs): string[] {
+export function generateRationale(inputs: ScoreInputs, hasMetricsData = true): string[] {
   const bullets: string[] = [];
 
   // Check for improving/declining trend (earnings score tells us recent trend)
   const earningsImproving = inputs.earningsScore >= 55; // Above neutral suggests improvement
   const qualityWeak = inputs.qualityScore < 40;
 
-  // Quality assessment
+  // Quality assessment - be careful not to claim "unprofitable" if we don't have data
   if (inputs.qualityScore >= 70) {
     bullets.push('Strong profitability and fundamentals');
-  } else if (inputs.qualityScore < 15 && !earningsImproving) {
+  } else if (inputs.qualityScore < 15 && !earningsImproving && hasMetricsData) {
     bullets.push('🚨 UNPROFITABLE: Company is losing money');
   } else if (inputs.qualityScore < 25 && earningsImproving) {
     bullets.push('💡 Profitability improving (recent quarters positive)');
-  } else if (inputs.qualityScore < 25) {
+  } else if (inputs.qualityScore < 25 && hasMetricsData) {
     bullets.push('⚠️ Major quality issues (negative margins/earnings)');
-  } else if (inputs.qualityScore < 40) {
+  } else if (inputs.qualityScore < 40 && hasMetricsData) {
     bullets.push('Weak quality metrics');
+  } else if (!hasMetricsData && inputs.qualityScore === 50) {
+    bullets.push('ℹ️ Limited fundamental data available');
   }
 
   // Earnings assessment
@@ -224,13 +229,16 @@ export function generateRationale(inputs: ScoreInputs): string[] {
 
 /**
  * Get full conviction result for a stock.
+ * 
+ * @param inputs - Score inputs for the stock
+ * @param hasMetricsData - Whether fundamental metrics data is available from Finnhub
  */
-export function getConvictionResult(inputs: ScoreInputs): ConvictionResult {
+export function getConvictionResult(inputs: ScoreInputs, hasMetricsData = true): ConvictionResult {
   const score = calculateConviction(inputs);
   return {
     score,
     posture: getPosture(score),
     confidence: getConfidence(inputs, score),
-    rationale: generateRationale(inputs),
+    rationale: generateRationale(inputs, hasMetricsData),
   };
 }

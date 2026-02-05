@@ -26,7 +26,9 @@ export function StockDetail({ stock, onClose, onUpdate }: StockDetailProps) {
     earningsScore: stock.earningsScore ?? 50,
     analystScore: stock.analystScore ?? 50,
   };
-  const conviction = getConvictionResult(inputs);
+  // Determine if fundamental metrics data is available
+  const hasMetricsData = (stock.peRatio !== null && stock.peRatio !== undefined) || (stock.eps !== null && stock.eps !== undefined);
+  const conviction = getConvictionResult(inputs, hasMetricsData);
 
   // Posture styling
   const postureConfig = {
@@ -167,6 +169,42 @@ export function StockDetail({ stock, onClose, onUpdate }: StockDetailProps) {
               ))}
             </div>
           )}
+
+          {/* Key Fundamentals */}
+          <div>
+            <h3 className="text-sm font-medium text-[hsl(var(--foreground))] mb-3">
+              📊 Key Fundamentals
+            </h3>
+            {(stock.peRatio !== null && stock.peRatio !== undefined) || (stock.eps !== null && stock.eps !== undefined) ? (
+              <div className="grid grid-cols-2 gap-3">
+                {stock.eps !== null && stock.eps !== undefined && (
+                  <div className="p-3 bg-[hsl(var(--secondary))] rounded-lg">
+                    <p className="text-xs text-[hsl(var(--muted-foreground))]">EPS (TTM)</p>
+                    <p className={cn("font-semibold", stock.eps < 0 ? "text-red-600" : "text-green-600")}>
+                      ${stock.eps.toFixed(2)}
+                    </p>
+                  </div>
+                )}
+                {stock.peRatio !== null && stock.peRatio !== undefined && (
+                  <div className="p-3 bg-[hsl(var(--secondary))] rounded-lg">
+                    <p className="text-xs text-[hsl(var(--muted-foreground))]">P/E Ratio</p>
+                    <p className="font-semibold">
+                      {stock.peRatio < 0 ? 'N/A' : stock.peRatio.toFixed(1)}
+                    </p>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg text-sm">
+                <p className="text-amber-800">
+                  <span className="font-medium">⚠️ Limited fundamental data available</span>
+                </p>
+                <p className="text-amber-700 text-xs mt-1">
+                  Finnhub free tier may not have full metrics for {stock.ticker}. Check EPS history below and Yahoo Finance for detailed fundamentals.
+                </p>
+              </div>
+            )}
+          </div>
 
           {/* Score Breakdown */}
           <div>
