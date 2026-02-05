@@ -78,7 +78,8 @@ function App() {
         stock.portfolioWeight,
         stock.shares,
         stock.avgCost,
-        stock.priceChangePercent
+        stock.priceChangePercent,
+        stock.currentPrice
       );
 
       return {

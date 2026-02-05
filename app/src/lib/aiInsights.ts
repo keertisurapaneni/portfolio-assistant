@@ -87,7 +87,8 @@ export async function generateAIInsights(
       portfolioWeight,
       shares,
       avgCost,
-      priceChangePercent
+      priceChangePercent,
+      stock.currentPrice
     );
     const insight: AIInsight = {
       summary: generateEnhancedSummary(stock, qualityScore, earningsScore, analystScore),
@@ -143,6 +144,23 @@ export async function generateAIInsights(
           : `📈 UP ${priceChangePercent.toFixed(2)}% today`
         : '[Price change unavailable]';
 
+    // Calculate gain/loss from purchase price for trading rules
+    let gainLossContext = '';
+    if (avgCost && stock.currentPrice && avgCost > 0) {
+      const gainLossPct = (((stock.currentPrice - avgCost) / avgCost) * 100);
+      const gainLossAbs = stock.currentPrice - avgCost;
+      
+      if (gainLossPct <= -7) {
+        gainLossContext = `\n⚠️ STOP-LOSS ALERT: Down ${Math.abs(gainLossPct).toFixed(1)}% from purchase ($${avgCost.toFixed(2)}) - Consider 7% rule`;
+      } else if (gainLossPct >= 20) {
+        gainLossContext = `\n💰 PROFIT-TAKING ZONE: Up ${gainLossPct.toFixed(1)}% from purchase ($${avgCost.toFixed(2)}) - Consider 20-25% rule`;
+      } else if (gainLossPct < 0) {
+        gainLossContext = `\nPosition P&L: ${gainLossPct.toFixed(1)}% (${gainLossAbs >= 0 ? '+' : ''}$${gainLossAbs.toFixed(2)})`;
+      } else {
+        gainLossContext = `\nPosition P&L: +${gainLossPct.toFixed(1)}% (+$${gainLossAbs.toFixed(2)})`;
+      }
+    }
+
     // Build Wall Street analyst context
     let analystContext = '';
     if (analystRating) {
@@ -178,7 +196,7 @@ ${upsidePct ? `• Implied Upside: ${upsidePct}%` : ''}`;
 
 STOCK: ${stock.ticker} (${stock.name || stock.ticker})
 POSITION: ${positionContext}${!hasPositionData ? ' [No position data - be conservative]' : ''}
-PRICE TODAY: ${priceChangeText}
+PRICE TODAY: ${priceChangeText}${gainLossContext}
 
 METRICS (0-100):
 • Quality: ${qualityScore}/100 ${qualityScore >= 60 ? '✓' : qualityScore >= 40 ? '⚠' : '✗'}  |  Earnings: ${earningsScore}/100 ${earningsScore >= 60 ? '✓' : earningsScore >= 40 ? '⚠' : '✗'}
@@ -186,6 +204,22 @@ METRICS (0-100):
 • COMPOSITE: ${avgScore.toFixed(0)}/100
 • FUNDAMENTALS: ${metrics.length > 0 ? metrics.join(', ') : '[Limited]'}
 ${analystContext}
+
+TRADING RULES TO APPLY:
+1. **SELL Rules**:
+   - Cut losses if stock down 7-8% from purchase price (protect capital)
+   - Take profits when up 20-25% from breakout (lock in gains)
+   - Exit immediately if fundamentals deteriorate or thesis breaks
+   
+2. **BUY Rules**:
+   - Buy quality stocks on market dips (temporary weakness = opportunity)
+   - Prefer companies with P/E < 20-25 (reasonable valuations)
+   - Focus on strong management, consistent earnings, solid fundamentals
+   
+3. **HOLD Rules**:
+   - Never sell quality just because it hit new highs (let winners run)
+   - Hold when investment thesis intact and fundamentals strong
+   - Ignore short-term noise for long-term compounding
 
 INVESTMENT PHILOSOPHY (Learn from these examples):
 
@@ -285,7 +319,8 @@ Be decisive on clear opportunities/problems, silent on holds. ONLY valid JSON.`;
       portfolioWeight,
       shares,
       avgCost,
-      priceChangePercent
+      priceChangePercent,
+      stock.currentPrice
     );
 
     const insight: AIInsight = {
@@ -316,7 +351,8 @@ Be decisive on clear opportunities/problems, silent on holds. ONLY valid JSON.`;
       portfolioWeight,
       shares,
       avgCost,
-      priceChangePercent
+      priceChangePercent,
+      stock.currentPrice
     );
     const insight: AIInsight = {
       summary: generateEnhancedSummary(stock, qualityScore, earningsScore, analystScore),
@@ -343,7 +379,8 @@ export function generateRuleBased(
   portfolioWeight?: number,
   shares?: number,
   avgCost?: number,
-  priceChangePercent?: number
+  priceChangePercent?: number,
+  currentPrice?: number
 ): {
   buyPriority: AIInsight['buyPriority'];
   reasoning: string;
@@ -411,6 +448,40 @@ export function generateRuleBased(
 
   const isDown3Plus = priceChangePercent !== undefined && priceChangePercent <= -3;
   const isDown5Plus = priceChangePercent !== undefined && priceChangePercent <= -5;
+
+  // CRITICAL TRADING RULES: Apply 7% stop-loss and 20-25% profit-taking
+  // These override other logic (risk management first!)
+  if (hasCostData && avgCost && avgCost > 0 && currentPrice && currentPrice > 0) {
+    const gainLossPct = ((currentPrice - avgCost) / avgCost) * 100;
+
+    // Rule 1: 7-8% Stop-Loss Rule (protect capital)
+    if (gainLossPct <= -7) {
+      // Exception: Don't stop-loss on quality stocks during market-wide dips
+      // (temporary market weakness vs fundamental problems)
+      if (!(isQuality && momentumScore >= 40)) {
+        return {
+          buyPriority: 'SELL',
+          reasoning: `Stop-loss triggered: Down ${Math.abs(gainLossPct).toFixed(1)}% from purchase ($${avgCost.toFixed(2)}) - 7% rule applies`,
+          dataCompleteness,
+          missingData,
+        };
+      }
+    }
+
+    // Rule 2: 20-25% Profit-Taking Rule (lock in gains)
+    if (gainLossPct >= 20) {
+      // Exception: Don't sell exceptional quality that's still strong
+      // ("Let winners run" unless momentum deteriorating)
+      if (!(isQuality && momentumScore >= 55)) {
+        return {
+          buyPriority: 'SELL',
+          reasoning: `Profit-taking zone: Up ${gainLossPct.toFixed(1)}% from purchase ($${avgCost.toFixed(2)}) - 20-25% rule applies`,
+          dataCompleteness,
+          missingData,
+        };
+      }
+    }
+  }
 
   // Principle 1: Buy quality on dips (best opportunities)
   if (isDown5Plus && isStrong && position < 12) {
