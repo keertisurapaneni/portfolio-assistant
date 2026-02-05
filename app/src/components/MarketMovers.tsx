@@ -119,7 +119,7 @@ export function MarketMovers() {
             </tr>
           </thead>
           <tbody className="divide-y divide-[hsl(var(--border))]">
-            {movers.map((mover, idx) => (
+            {movers.map((mover) => (
               <tr key={mover.symbol} className="hover:bg-[hsl(var(--secondary))] transition-colors">
                 <td className="px-4 py-3">
                   <a

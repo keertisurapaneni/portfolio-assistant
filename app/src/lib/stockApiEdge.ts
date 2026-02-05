@@ -4,7 +4,6 @@
  */
 
 const EDGE_FUNCTION_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/fetch-stock-data`;
-const YAHOO_NEWS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/fetch-yahoo-news`;
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
 
 // Client-side cache to avoid redundant Edge Function calls
@@ -143,53 +142,6 @@ async function fetchFromEdge<T>(
   } catch (error) {
     console.error(`[Edge API] Fetch error:`, error);
     return null;
-  }
-}
-
-async function fetchYahooNews(ticker: string): Promise<NewsItem[]> {
-  const cacheKey = `yahoo-news-${ticker}`;
-
-  // Check client-side cache first
-  const cached = cache.get(cacheKey);
-  if (cached && Date.now() - cached.timestamp < CACHE_DURATION) {
-    console.log(`[Yahoo News] Using client cache for ${ticker}`);
-    return cached.data as NewsItem[];
-  }
-
-  try {
-    console.log(`[Yahoo News] Fetching news for ${ticker}`);
-
-    const response = await rateLimitedFetch(YAHOO_NEWS_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
-        apikey: SUPABASE_ANON_KEY,
-      },
-      body: JSON.stringify({ symbol: ticker }),
-    });
-
-    if (!response.ok) {
-      console.error(`[Yahoo News] HTTP error ${response.status}`);
-      return [];
-    }
-
-    const data = await response.json();
-
-    if (data.error) {
-      console.error(`[Yahoo News] API error:`, data.error);
-      return [];
-    }
-
-    const newsItems = data.news || [];
-    console.log(`[Yahoo News] Fetched ${newsItems.length} news items for ${ticker}`);
-
-    // Cache the result
-    cache.set(cacheKey, { data: newsItems, timestamp: Date.now() });
-    return newsItems;
-  } catch (error) {
-    console.error(`[Yahoo News] Fetch error:`, error);
-    return [];
   }
 }
 
@@ -676,9 +628,33 @@ export async function getStockData(ticker: string): Promise<StockData | null> {
         `[Stock API] ${symbol} - ${relevant.length} headlines mention the company (from ${newsArray.length} total)`
       );
 
-      // Take the 3 most recent relevant headlines
+      // Prioritize earnings/results news over generic mentions
+      const EARNINGS_KEYWORDS = [
+        'earnings', 'revenue', 'results', 'quarter', 'q1', 'q2', 'q3', 'q4',
+        'beat', 'miss', 'eps', 'profit', 'guidance', 'outlook', 'forecast',
+        'capex', 'spending', 'dividend', 'buyback', 'split',
+      ];
+      const earningsNews: typeof relevant = [];
+      const otherNews: typeof relevant = [];
+
+      for (const n of relevant) {
+        const h = n.headline.toLowerCase();
+        if (EARNINGS_KEYWORDS.some(kw => h.includes(kw))) {
+          earningsNews.push(n);
+        } else {
+          otherNews.push(n);
+        }
+      }
+
+      // Earnings first, then other news
+      const prioritized = [...earningsNews, ...otherNews];
+      console.log(
+        `[Stock API] ${symbol} - ${earningsNews.length} earnings-related, ${otherNews.length} other`
+      );
+
+      // Take the 3 most relevant headlines (earnings first)
       recentNews.push(
-        ...relevant.slice(0, 3).map(n => ({
+        ...prioritized.slice(0, 3).map(n => ({
           headline: n.headline,
           source: n.source,
           datetime: n.datetime,

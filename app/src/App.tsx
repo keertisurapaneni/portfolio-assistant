@@ -17,6 +17,59 @@ import { StockDetail } from './components/StockDetail';
 import { AddTickersModal } from './components/AddTickersModal';
 import SettingsModal from './components/SettingsModal';
 
+const FALLBACK_QUOTE =
+  '"Be fearful when others are greedy, and greedy when others are fearful." — Warren Buffett';
+
+async function getDailyQuote(): Promise<string> {
+  const today = new Date().toISOString().slice(0, 10);
+  const cacheKey = 'daily-investing-quote';
+  const cached = localStorage.getItem(cacheKey);
+
+  if (cached) {
+    try {
+      const { date, quote } = JSON.parse(cached);
+      if (date === today && quote) return quote;
+    } catch {
+      /* expired or corrupt */
+    }
+  }
+
+  const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
+  if (!apiKey) return FALLBACK_QUOTE;
+
+  try {
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [
+            {
+              parts: [
+                {
+                  text: `Give me one short, powerful investing or stock market quote from a famous investor, trader, or business leader. Include the person's name. Pick someone different each time — Warren Buffett, Charlie Munger, Peter Lynch, Benjamin Graham, Ray Dalio, George Soros, John Templeton, Philip Fisher, Howard Marks, Jesse Livermore, Mohnish Pabrai, Jack Bogle, or any other legend. Format exactly like: "Quote text." — Person Name. Nothing else, no extra text.`,
+                },
+              ],
+            },
+          ],
+          generationConfig: { temperature: 1.5, maxOutputTokens: 100 },
+        }),
+      }
+    );
+
+    if (!response.ok) return FALLBACK_QUOTE;
+    const data = await response.json();
+    const quote = data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+    if (!quote) return FALLBACK_QUOTE;
+
+    localStorage.setItem(cacheKey, JSON.stringify({ date: today, quote }));
+    return quote;
+  } catch {
+    return FALLBACK_QUOTE;
+  }
+}
+
 function App() {
   const [activeTab, setActiveTab] = useState<ActiveTab>('portfolio');
   const [stocks, setStocks] = useState<StockWithConviction[]>([]);
@@ -28,6 +81,12 @@ function App() {
   const [refreshProgress, setRefreshProgress] = useState<string | null>(null);
   const [portfolioDrawdown, setPortfolioDrawdown] = useState<number | null>(null);
   const [hasAutoRefreshed, setHasAutoRefreshed] = useState(false);
+  const [investingQuote, setInvestingQuote] = useState(FALLBACK_QUOTE);
+
+  // Fetch AI-generated daily quote on mount
+  useEffect(() => {
+    getDailyQuote().then(setInvestingQuote);
+  }, []);
 
   // Load and process stocks
   const loadStocks = useCallback(() => {
@@ -87,7 +146,9 @@ function App() {
         stock.priceChangePercent,
         stock.currentPrice,
         riskProfile,
-        stock.recentNews
+        stock.recentNews,
+        stock.fiftyTwoWeekHigh,
+        stock.fiftyTwoWeekLow,
       );
 
       return {
@@ -178,6 +239,8 @@ function App() {
             roe: data.roe,
             profitMargin: data.profitMargin,
             operatingMargin: data.operatingMargin,
+            fiftyTwoWeekHigh: data.fiftyTwoWeekHigh,
+            fiftyTwoWeekLow: data.fiftyTwoWeekLow,
             lastDataFetch: timestamp,
             // No previousScore for brand new stocks
           });
@@ -224,6 +287,8 @@ function App() {
           roe: data.roe,
           profitMargin: data.profitMargin,
           operatingMargin: data.operatingMargin,
+          fiftyTwoWeekHigh: data.fiftyTwoWeekHigh,
+          fiftyTwoWeekLow: data.fiftyTwoWeekLow,
           lastDataFetch: new Date().toISOString(),
           // No previousScore for brand new stocks
         });
@@ -293,6 +358,8 @@ function App() {
           roe: data.roe,
           profitMargin: data.profitMargin,
           operatingMargin: data.operatingMargin,
+          fiftyTwoWeekHigh: data.fiftyTwoWeekHigh,
+          fiftyTwoWeekLow: data.fiftyTwoWeekLow,
           lastDataFetch: timestamp,
           previousScore: currentScore,
         });
@@ -344,8 +411,8 @@ function App() {
               <h1 className="text-2xl font-bold text-[hsl(var(--foreground))] tracking-tight">
                 Portfolio Assistant
               </h1>
-              <p className="text-sm text-[hsl(var(--muted-foreground))] mt-0.5">
-                Data-driven conviction scores
+              <p className="text-sm text-[hsl(var(--muted-foreground))] mt-0.5 italic">
+                {investingQuote}
               </p>
             </div>
             <div className="flex items-center gap-3">

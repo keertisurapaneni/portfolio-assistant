@@ -177,6 +177,24 @@ export async function generateAIInsights(
 
     const hasPositionData = shares !== undefined && shares > 0;
 
+    // 52-week range context
+    let rangeContext = '';
+    if (stock.fiftyTwoWeekHigh > 0 && stock.fiftyTwoWeekLow > 0 && stock.currentPrice > 0) {
+      const range = stock.fiftyTwoWeekHigh - stock.fiftyTwoWeekLow;
+      const positionInRange = range > 0 ? ((stock.currentPrice - stock.fiftyTwoWeekLow) / range) * 100 : 50;
+      const offHigh = ((stock.fiftyTwoWeekHigh - stock.currentPrice) / stock.fiftyTwoWeekHigh) * 100;
+
+      if (offHigh >= 20) {
+        rangeContext = `\n🔥 DIP ALERT: Trading ${offHigh.toFixed(1)}% below 52-week high ($${stock.fiftyTwoWeekHigh.toFixed(2)}). Near bottom of range (${positionInRange.toFixed(0)}th percentile). 52W Low: $${stock.fiftyTwoWeekLow.toFixed(2)}`;
+      } else if (offHigh >= 10) {
+        rangeContext = `\n📉 PULLBACK: ${offHigh.toFixed(1)}% off 52-week high ($${stock.fiftyTwoWeekHigh.toFixed(2)}). In lower half of range (${positionInRange.toFixed(0)}th percentile). 52W Low: $${stock.fiftyTwoWeekLow.toFixed(2)}`;
+      } else if (positionInRange >= 90) {
+        rangeContext = `\n📈 NEAR HIGHS: Only ${offHigh.toFixed(1)}% from 52-week high ($${stock.fiftyTwoWeekHigh.toFixed(2)}). Trading at top of range.`;
+      } else {
+        rangeContext = `\n52W Range: $${stock.fiftyTwoWeekLow.toFixed(2)} - $${stock.fiftyTwoWeekHigh.toFixed(2)} (currently ${positionInRange.toFixed(0)}th percentile)`;
+      }
+    }
+
     // Price change context for buy-the-dip opportunities
     const priceChangeText =
       priceChangePercent !== undefined
@@ -249,22 +267,27 @@ ${upsidePct ? `• Implied Upside: ${upsidePct}%` : ''}`;
       const newsItems = recentNews
         .map((news, idx) => {
           const date = new Date(news.datetime * 1000);
-          const daysAgo = Math.floor((Date.now() - date.getTime()) / (1000 * 60 * 60 * 24));
-          const timeStr = daysAgo === 0 ? 'TODAY' : daysAgo === 1 ? 'YESTERDAY' : `${daysAgo}d ago`;
-          return `${idx + 1}. [${timeStr}] ${news.headline}\n   ${news.summary.substring(0, 150)}... (${news.source})`;
+          const hoursAgo = Math.floor((Date.now() - date.getTime()) / (1000 * 60 * 60));
+          const timeStr = hoursAgo < 1 ? 'JUST NOW' : hoursAgo < 24 ? `${hoursAgo}h ago` : `${Math.floor(hoursAgo / 24)}d ago`;
+          const summary = news.summary ? ` — ${news.summary.substring(0, 120)}` : '';
+          return `${idx + 1}. [${timeStr}] ${news.headline}${summary} (${news.source})`;
         })
         .join('\n');
 
+      // Detect if earnings-related news is present
+      const hasEarningsNews = recentNews.some(n => {
+        const h = (n.headline || '').toLowerCase();
+        return ['earnings', 'results', 'revenue', 'quarter', 'q1', 'q2', 'q3', 'q4', 'beat', 'miss', 'eps', 'guidance', 'capex'].some(kw => h.includes(kw));
+      });
+
       newsContext = `
 
-RECENT NEWS & EVENTS (Last 7 days):
+RECENT NEWS & EVENTS:
 ${newsItems}
-
-⚠️ IMPORTANT: Analyze these news items carefully! They explain WHY the price moved.
-- Earnings miss/beat? → Key buying/selling opportunity
-- Major announcement? → Validates or breaks investment thesis
-- Negative news + quality stock? → Potential "buy the dip"
-- Positive news + weak stock? → Temporary bounce, stay cautious`;
+${hasEarningsNews ? `
+🔴 EARNINGS NEWS DETECTED — This is the MOST important context for your analysis.
+You MUST reference the earnings in your reasoning. Did they beat or miss? What was the market reaction? What does it mean for the stock going forward?` : `
+⚠️ Analyze these headlines. They explain WHY the price moved. Connect the dots between news and price action in your reasoning.`}`;
     } else {
       newsContext = '\n\nRECENT NEWS: [No recent news available - rely on metrics only]';
     }
@@ -275,7 +298,7 @@ STOCK ANALYSIS REQUEST: ${stock.ticker} (${stock.name || stock.ticker})
 
 THE DATA YOU HAVE:
 • Current Position: ${positionContext}${!hasPositionData ? ' [No position data available]' : ''}
-• Today's Price Action: ${priceChangeText}${gainLossContext}${riskRuleNote}
+• Today's Price Action: ${priceChangeText}${rangeContext}${gainLossContext}${riskRuleNote}
 
 QUANTITATIVE SCORES (0-100 scale):
 • Quality: ${qualityScore}/100 ${qualityScore >= 60 ? '✓' : qualityScore >= 40 ? '⚠' : '✗'} — Profitability, margins, financial health
@@ -288,6 +311,15 @@ ${analystContext}${newsContext}
 YOUR MISSION:
 Think like a stock analyst who wants to make clients wealthy. Look at the data above - the scores, the news, the price action, the position size. Is this a compelling BUY opportunity right now? A problem to SELL? Or just... nothing special (return null)?
 
+CRITICAL RULES FOR YOUR REASONING:
+1. If there's EARNINGS news — you MUST mention what happened (beat/miss, revenue, guidance, capex plans) and what it means.
+2. If the stock is DOWN today — explain WHY it's down (earnings reaction? market sell-off? bad news?) and whether the dip is a buying opportunity or a warning sign.
+3. If the stock is UP today — explain the catalyst (good earnings? sector rotation? analyst upgrade?).
+4. If the stock is 10%+ below its 52-week high AND quality is high — this is a potential dip-buying opportunity. Call it out explicitly.
+5. If a quality stock drops 3%+ in a day on no company-specific bad news — that's likely market fear, a classic buy-the-dip setup.
+6. NEVER give generic reasoning like "strong fundamentals" without connecting it to current events, price action, or the 52-week range.
+7. Your reasoning should read like a quick analyst note — specific, actionable, referencing today's data.
+
 YOUR STYLE:
 - You're selective - most stocks get no signal (null). Only clear opportunities or problems get BUY/SELL.
 - You connect dots - if there's news, explain how it relates to the opportunity/risk.
@@ -298,7 +330,7 @@ YOUR STYLE:
 RESPOND WITH JSON ONLY:
 {
   "buyPriority": "BUY" | "SELL" | null,
-  "reasoning": "One clear sentence explaining your call using the news/data context",
+  "reasoning": "1-2 sentences referencing specific news/earnings/price action. Be specific, not generic.",
   "summary": "Brief company overview"
 }`;
 
@@ -430,7 +462,9 @@ export function generateRuleBased(
   priceChangePercent?: number,
   currentPrice?: number,
   riskProfile: RiskProfile = 'moderate',
-  _recentNews?: Array<{ headline: string; datetime: number }> // News displayed separately in UI
+  _recentNews?: Array<{ headline: string; datetime: number }>, // News displayed separately in UI
+  fiftyTwoWeekHigh?: number,
+  fiftyTwoWeekLow?: number,
 ): {
   buyPriority: AIInsight['buyPriority'];
   reasoning: string;
@@ -637,6 +671,31 @@ export function generateRuleBased(
       dataCompleteness,
       missingData,
     };
+  }
+
+  // 52-Week Range Dip Detection: Quality stock well below highs = opportunity
+  if (fiftyTwoWeekHigh && fiftyTwoWeekHigh > 0 && currentPrice && currentPrice > 0) {
+    const offHighPct = ((fiftyTwoWeekHigh - currentPrice) / fiftyTwoWeekHigh) * 100;
+
+    // Quality stock 20%+ off highs = deep value opportunity
+    if (offHighPct >= 20 && isQuality && position < buyPositionLimit) {
+      return {
+        buyPriority: 'BUY',
+        reasoning: `Trading ${offHighPct.toFixed(0)}% below 52-week high ($${fiftyTwoWeekHigh.toFixed(2)}) with strong fundamentals — deep value opportunity.`,
+        dataCompleteness,
+        missingData,
+      };
+    }
+
+    // Good stock 15%+ off highs with decent momentum = pullback buy
+    if (offHighPct >= 15 && isStrong && momentumScore >= 40 && position < dipBuyLimit) {
+      return {
+        buyPriority: 'BUY',
+        reasoning: `${offHighPct.toFixed(0)}% pullback from 52-week high ($${fiftyTwoWeekHigh.toFixed(2)}) — solid company at a discount.`,
+        dataCompleteness,
+        missingData,
+      };
+    }
   }
 
   // Principle 2: Sell broken companies (avoid mediocrity)

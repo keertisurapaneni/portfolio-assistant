@@ -25,6 +25,8 @@ export interface Stock {
   roe?: number | null;
   profitMargin?: number | null;
   operatingMargin?: number | null;
+  fiftyTwoWeekHigh?: number;
+  fiftyTwoWeekLow?: number;
   // Analyst rating details
   analystRating?: {
     rating: string;
@@ -42,7 +44,7 @@ export interface Stock {
   // Recent news (last 7 days)
   recentNews?: {
     headline: string;
-    summary: string;
+    summary?: string;
     source: string;
     datetime: number;
     url: string;
