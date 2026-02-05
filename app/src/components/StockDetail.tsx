@@ -142,9 +142,6 @@ export function StockDetail({ stock, onClose, onUpdate }: StockDetailProps) {
                 {conviction.score}/100
               </span>
             </div>
-            <p className="text-sm text-[hsl(var(--muted-foreground))] italic">
-              Score is 100% data-driven from Finnhub
-            </p>
           </div>
 
           {/* Current Price */}
