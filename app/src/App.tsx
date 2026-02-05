@@ -250,10 +250,10 @@ function App() {
       let updated = 0;
       let failed = 0;
       const timestamp = new Date().toISOString();
-      
+
       tickers.forEach(ticker => {
         const data = stockData.get(ticker);
-        
+
         if (!data) {
           // Stock failed to fetch
           failed++;
@@ -262,13 +262,16 @@ function App() {
 
         // Capture current score as previousScore before updating
         const currentStock = stocks.find(s => s.ticker === ticker);
-        const currentScore = currentStock 
-          ? getConvictionResult({
-              qualityScore: currentStock.qualityScore ?? 50,
-              momentumScore: currentStock.momentumScore ?? 50,
-              earningsScore: currentStock.earningsScore ?? 50,
-              analystScore: currentStock.analystScore ?? 50,
-            }, true).score
+        const currentScore = currentStock
+          ? getConvictionResult(
+              {
+                qualityScore: currentStock.qualityScore ?? 50,
+                momentumScore: currentStock.momentumScore ?? 50,
+                earningsScore: currentStock.earningsScore ?? 50,
+                analystScore: currentStock.analystScore ?? 50,
+              },
+              true
+            ).score
           : undefined;
 
         updateStock(ticker, {
@@ -296,13 +299,13 @@ function App() {
       });
 
       loadStocks();
-      
+
       if (failed > 0) {
         setRefreshProgress(`✓ Updated ${updated} stocks. ${failed} failed - using cached data.`);
       } else {
         setRefreshProgress(`✓ Updated ${updated} stocks!`);
       }
-      
+
       setTimeout(() => setRefreshProgress(null), 3000);
     } catch (error) {
       console.error('Failed to refresh:', error);

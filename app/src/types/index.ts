@@ -118,7 +118,6 @@ export interface ParsedRow {
 
 export interface ColumnMapping {
   ticker: string | null;
-  name: string | null;
   shares: string | null;
   avgCost: string | null;
 }

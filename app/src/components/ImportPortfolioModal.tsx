@@ -25,7 +25,6 @@ export function ImportPortfolioModal({ onClose, onComplete }: ImportPortfolioMod
   const [rows, setRows] = useState<Record<string, string>[]>([]);
   const [mapping, setMapping] = useState<ColumnMapping>({
     ticker: null,
-    name: null,
     shares: null,
     avgCost: null,
   });
@@ -158,7 +157,7 @@ export function ImportPortfolioModal({ onClose, onComplete }: ImportPortfolioMod
               </p>
 
               {/* Mapping dropdowns */}
-              {(['ticker', 'name', 'shares', 'avgCost'] as const).map(field => (
+              {(['ticker', 'shares', 'avgCost'] as const).map(field => (
                 <div key={field} className="flex items-center gap-4">
                   <span className="w-24 text-sm font-medium capitalize">
                     {field === 'avgCost' ? 'Avg Cost' : field}
@@ -229,7 +228,6 @@ export function ImportPortfolioModal({ onClose, onComplete }: ImportPortfolioMod
                   <thead className="bg-[hsl(var(--secondary))]">
                     <tr>
                       <th className="px-3 py-2 text-left font-medium">Ticker</th>
-                      <th className="px-3 py-2 text-left font-medium">Name</th>
                       <th className="px-3 py-2 text-right font-medium">Shares</th>
                       <th className="px-3 py-2 text-right font-medium">Avg Cost</th>
                     </tr>
@@ -238,9 +236,6 @@ export function ImportPortfolioModal({ onClose, onComplete }: ImportPortfolioMod
                     {preview.map((row, i) => (
                       <tr key={i} className="border-t border-[hsl(var(--border))]">
                         <td className="px-3 py-2 font-medium">{row.ticker}</td>
-                        <td className="px-3 py-2 text-[hsl(var(--muted-foreground))]">
-                          {row.name || '—'}
-                        </td>
                         <td className="px-3 py-2 text-right">
                           {row.shares?.toLocaleString() || '—'}
                         </td>

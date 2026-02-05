@@ -180,15 +180,16 @@ export function StockCard({ stock, onClick }: StockCardProps) {
                 )}
 
                 {/* Data Age (if > 5 minutes) */}
-                {stock.lastDataFetch && (() => {
-                  const ageMs = Date.now() - new Date(stock.lastDataFetch).getTime();
-                  const ageMinutes = Math.round(ageMs / (1000 * 60));
-                  return ageMinutes >= 5 ? (
-                    <span className="text-xs text-[hsl(var(--muted-foreground))] opacity-60">
-                      {ageMinutes < 60 ? `${ageMinutes}m` : `${Math.round(ageMinutes / 60)}h`}
-                    </span>
-                  ) : null;
-                })()}
+                {stock.lastDataFetch &&
+                  (() => {
+                    const ageMs = Date.now() - new Date(stock.lastDataFetch).getTime();
+                    const ageMinutes = Math.round(ageMs / (1000 * 60));
+                    return ageMinutes >= 5 ? (
+                      <span className="text-xs text-[hsl(var(--muted-foreground))] opacity-60">
+                        {ageMinutes < 60 ? `${ageMinutes}m` : `${Math.round(ageMinutes / 60)}h`}
+                      </span>
+                    ) : null;
+                  })()}
               </>
             )}
 
@@ -223,7 +224,9 @@ export function StockCard({ stock, onClick }: StockCardProps) {
             ) : (
               <>
                 <p className="text-sm text-[hsl(var(--muted-foreground))] leading-relaxed">
-                  {stock.buyPriorityReasoning || conviction.rationale[0] || 'Click refresh to fetch market data'}
+                  {stock.buyPriorityReasoning ||
+                    conviction.rationale[0] ||
+                    'Click refresh to fetch market data'}
                 </p>
 
                 {/* Current price with change */}
@@ -244,7 +247,9 @@ export function StockCard({ stock, onClick }: StockCardProps) {
                             stock.priceChange === 0 && 'text-gray-500'
                           )}
                         >
-                          {stock.priceChange >= 0 ? '+' : '-'}${Math.abs(stock.priceChange).toFixed(2)} ({stock.priceChange >= 0 ? '+' : ''}
+                          {stock.priceChange >= 0 ? '+' : '-'}$
+                          {Math.abs(stock.priceChange).toFixed(2)} (
+                          {stock.priceChange >= 0 ? '+' : ''}
                           {stock.priceChangePercent.toFixed(2)}%)
                         </span>
                       )}
@@ -262,8 +267,12 @@ export function StockCard({ stock, onClick }: StockCardProps) {
                         </p>
                         <span className="text-[hsl(var(--muted-foreground))] opacity-60 text-[10px]">
                           {(() => {
-                            const hoursAgo = Math.round((Date.now() - stock.recentNews[0].datetime * 1000) / (1000 * 60 * 60));
-                            return hoursAgo < 24 ? `${hoursAgo}h ago` : `${Math.round(hoursAgo / 24)}d ago`;
+                            const hoursAgo = Math.round(
+                              (Date.now() - stock.recentNews[0].datetime * 1000) / (1000 * 60 * 60)
+                            );
+                            return hoursAgo < 24
+                              ? `${hoursAgo}h ago`
+                              : `${Math.round(hoursAgo / 24)}d ago`;
                           })()}
                         </span>
                       </div>

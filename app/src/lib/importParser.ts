@@ -82,7 +82,6 @@ export function detectColumns(headers: string[]): ColumnMapping {
   const tickerKeywords = ['ticker', 'symbol', 'stock', 'code'];
   const sharesKeywords = ['shares', 'quantity', 'qty', 'units', 'position', 'amount'];
   const costKeywords = ['avg', 'cost', 'price', 'basis', 'average', 'paid'];
-  const nameKeywords = ['name', 'company', 'description', 'security'];
   
   const findColumn = (keywords: string[]): string | null => {
     const found = headers.find(h => keywords.some(k => normalize(h).includes(k)));
@@ -93,7 +92,6 @@ export function detectColumns(headers: string[]): ColumnMapping {
     ticker: findColumn(tickerKeywords),
     shares: findColumn(sharesKeywords),
     avgCost: findColumn(costKeywords),
-    name: findColumn(nameKeywords),
   };
 }
 
@@ -122,7 +120,6 @@ export function applyMapping(
       
       const parsed: ParsedRow = {
         ticker,
-        name: mapping.name ? row[mapping.name]?.trim() : undefined,
         shares: mapping.shares ? parseNumber(row[mapping.shares]) : undefined,
         avgCost: mapping.avgCost ? parseNumber(row[mapping.avgCost]) : undefined,
       };
