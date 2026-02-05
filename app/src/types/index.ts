@@ -96,7 +96,7 @@ export interface UserData {
 }
 
 // UI state types
-export type ActiveTab = 'portfolio' | 'suggested';
+export type ActiveTab = 'portfolio' | 'suggested' | 'movers';
 
 export interface StockWithConviction extends Stock {
   conviction: ConvictionResult;

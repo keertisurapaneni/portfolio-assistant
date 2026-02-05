@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Briefcase, Lightbulb, Plus, RefreshCw, Settings } from 'lucide-react';
+import { Briefcase, Lightbulb, Plus, RefreshCw, Settings, TrendingUp } from 'lucide-react';
 import type { ActiveTab, StockWithConviction, RiskProfile } from './types';
 import { getUserData, addStock, addTickers, updateStock, clearAllData } from './lib/storage';
 import { getConvictionResult } from './lib/convictionEngine';
@@ -12,6 +12,7 @@ import { cn } from './lib/utils';
 // Components
 import { Dashboard } from './components/Dashboard';
 import { SuggestedFinds } from './components/SuggestedFinds';
+import { MarketMovers } from './components/MarketMovers';
 import { StockDetail } from './components/StockDetail';
 import { AddTickersModal } from './components/AddTickersModal';
 import SettingsModal from './components/SettingsModal';
@@ -433,6 +434,18 @@ function App() {
               <Lightbulb className="w-4 h-4" />
               Suggested Finds
             </button>
+            <button
+              onClick={() => setActiveTab('movers')}
+              className={cn(
+                'flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-medium transition-all',
+                activeTab === 'movers'
+                  ? 'bg-[hsl(var(--foreground))] text-white shadow-md'
+                  : 'text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--secondary))] hover:text-[hsl(var(--foreground))]'
+              )}
+            >
+              <TrendingUp className="w-4 h-4" />
+              Market Movers
+            </button>
           </div>
         </div>
       </header>
@@ -446,8 +459,10 @@ function App() {
             onAddTickers={() => setShowAddModal(true)}
             onClearAll={handleClearAll}
           />
-        ) : (
+        ) : activeTab === 'suggested' ? (
           <SuggestedFinds existingTickers={existingTickers} onAddStock={handleAddFromSuggested} />
+        ) : (
+          <MarketMovers />
         )}
       </main>
 

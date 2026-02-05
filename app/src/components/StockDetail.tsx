@@ -463,28 +463,6 @@ export function StockDetail({ stock, onClose, onUpdate }: StockDetailProps) {
             </div>
           </div>
 
-          {/* Rationale */}
-          <div>
-            <h3 className="text-sm font-medium text-[hsl(var(--foreground))] mb-2">Rationale</h3>
-            <ul className="space-y-1">
-              {conviction.rationale.length > 0 ? (
-                conviction.rationale.map((bullet, i) => (
-                  <li
-                    key={i}
-                    className="text-sm text-[hsl(var(--muted-foreground))] flex items-start gap-2"
-                  >
-                    <span className="text-[hsl(var(--primary))]">•</span>
-                    {bullet}
-                  </li>
-                ))
-              ) : (
-                <li className="text-sm text-[hsl(var(--muted-foreground))] italic">
-                  Refresh to get data signals
-                </li>
-              )}
-            </ul>
-          </div>
-
           {/* Analyst Consensus */}
           {stock.analystRating && (
             <div>

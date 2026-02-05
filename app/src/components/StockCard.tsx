@@ -269,9 +269,15 @@ export function StockCard({ stock, onClick }: StockCardProps) {
                     <div className="flex items-start gap-1.5 text-xs">
                       <span className="text-blue-600 mt-0.5">📰</span>
                       <div className="flex-1">
-                        <p className="text-[hsl(var(--muted-foreground))] line-clamp-2">
+                        <a
+                          href={stock.recentNews[0].url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          onClick={e => e.stopPropagation()}
+                          className="text-[hsl(var(--muted-foreground))] hover:text-blue-600 hover:underline line-clamp-2 block"
+                        >
                           {stock.recentNews[0].headline}
-                        </p>
+                        </a>
                         <span className="text-[hsl(var(--muted-foreground))] opacity-60 text-[10px]">
                           {(() => {
                             const hoursAgo = Math.round(

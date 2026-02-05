@@ -58,9 +58,10 @@ function cacheInsight(ticker: string, insight: AIInsight): void {
  * Calculate liquidity risk based on trading volume
  * Returns risk level and warning message
  */
-function calculateLiquidityRisk(
-  volume?: number
-): { risk: 'LOW' | 'MEDIUM' | 'HIGH' | null; warning?: string } {
+function calculateLiquidityRisk(volume?: number): {
+  risk: 'LOW' | 'MEDIUM' | 'HIGH' | null;
+  warning?: string;
+} {
   if (!volume || volume === 0) {
     return { risk: null };
   }
@@ -174,7 +175,6 @@ export async function generateAIInsights(
                 : `Very large position (${portfolioWeight.toFixed(1)}%)`
         : 'Position unknown';
 
-    const avgScore = (qualityScore + earningsScore + momentumScore) / 3;
     const hasPositionData = shares !== undefined && shares > 0;
 
     // Price change context for buy-the-dip opportunities
@@ -188,9 +188,9 @@ export async function generateAIInsights(
     // Calculate gain/loss from purchase price for trading rules
     let gainLossContext = '';
     if (avgCost && stock.currentPrice && avgCost > 0) {
-      const gainLossPct = (((stock.currentPrice - avgCost) / avgCost) * 100);
+      const gainLossPct = ((stock.currentPrice - avgCost) / avgCost) * 100;
       const gainLossAbs = stock.currentPrice - avgCost;
-      
+
       if (gainLossPct <= -7) {
         gainLossContext = `\n⚠️ STOP-LOSS ALERT: Down ${Math.abs(gainLossPct).toFixed(1)}% from purchase ($${avgCost.toFixed(2)}) - 7% rule (or 3-4% in volatile markets)`;
       } else if (gainLossPct <= -3 && momentumScore < 40) {
@@ -205,11 +205,12 @@ export async function generateAIInsights(
         gainLossContext = `\nPosition P&L: +${gainLossPct.toFixed(1)}% (+$${gainLossAbs.toFixed(2)})`;
       }
     }
-    
+
     // Note on 2% Risk Rule (portfolio-level guidance)
-    const riskRuleNote = portfolioWeight && portfolioWeight > 0 
-      ? `\n📊 RISK RULE: Position is ${portfolioWeight.toFixed(1)}% of portfolio. Never risk >2% of total capital on any single trade.`
-      : '';
+    const riskRuleNote =
+      portfolioWeight && portfolioWeight > 0
+        ? `\n📊 RISK RULE: Position is ${portfolioWeight.toFixed(1)}% of portfolio. Never risk >2% of total capital on any single trade.`
+        : '';
 
     // Build Wall Street analyst context
     let analystContext = '';
@@ -245,12 +246,14 @@ ${upsidePct ? `• Implied Upside: ${upsidePct}%` : ''}`;
     // Build recent news context (CRITICAL for context-aware decisions)
     let newsContext = '';
     if (recentNews && recentNews.length > 0) {
-      const newsItems = recentNews.map((news, idx) => {
-        const date = new Date(news.datetime * 1000);
-        const daysAgo = Math.floor((Date.now() - date.getTime()) / (1000 * 60 * 60 * 24));
-        const timeStr = daysAgo === 0 ? 'TODAY' : daysAgo === 1 ? 'YESTERDAY' : `${daysAgo}d ago`;
-        return `${idx + 1}. [${timeStr}] ${news.headline}\n   ${news.summary.substring(0, 150)}... (${news.source})`;
-      }).join('\n');
+      const newsItems = recentNews
+        .map((news, idx) => {
+          const date = new Date(news.datetime * 1000);
+          const daysAgo = Math.floor((Date.now() - date.getTime()) / (1000 * 60 * 60 * 24));
+          const timeStr = daysAgo === 0 ? 'TODAY' : daysAgo === 1 ? 'YESTERDAY' : `${daysAgo}d ago`;
+          return `${idx + 1}. [${timeStr}] ${news.headline}\n   ${news.summary.substring(0, 150)}... (${news.source})`;
+        })
+        .join('\n');
 
       newsContext = `
 
@@ -266,135 +269,38 @@ ${newsItems}
       newsContext = '\n\nRECENT NEWS: [No recent news available - rely on metrics only]';
     }
 
-    const prompt = `You are Warren Buffett's quantitative analyst. Make BUY/SELL decisions for a long-term portfolio using provided metrics.
+    const prompt = `You are an elite stock analyst whose clients rely on you to make them rich. Your reputation is built on spotting opportunities others miss and protecting capital when risks appear.
 
-STOCK: ${stock.ticker} (${stock.name || stock.ticker})
-POSITION: ${positionContext}${!hasPositionData ? ' [No position data - be conservative]' : ''}
-PRICE TODAY: ${priceChangeText}${gainLossContext}${riskRuleNote}
+STOCK ANALYSIS REQUEST: ${stock.ticker} (${stock.name || stock.ticker})
 
-METRICS (0-100):
-• Quality: ${qualityScore}/100 ${qualityScore >= 60 ? '✓' : qualityScore >= 40 ? '⚠' : '✗'}  |  Earnings: ${earningsScore}/100 ${earningsScore >= 60 ? '✓' : earningsScore >= 40 ? '⚠' : '✗'}
-• Momentum: ${momentumScore}/100 ${momentumScore >= 60 ? '✓' : momentumScore >= 40 ? '⚠' : '✗'}  |  Analyst: ${analystScore}/100 ${analystScore >= 60 ? '✓' : analystScore >= 40 ? '⚠' : '✗'}
-• COMPOSITE: ${avgScore.toFixed(0)}/100
-• FUNDAMENTALS: ${metrics.length > 0 ? metrics.join(', ') : '[Limited]'}
+THE DATA YOU HAVE:
+• Current Position: ${positionContext}${!hasPositionData ? ' [No position data available]' : ''}
+• Today's Price Action: ${priceChangeText}${gainLossContext}${riskRuleNote}
+
+QUANTITATIVE SCORES (0-100 scale):
+• Quality: ${qualityScore}/100 ${qualityScore >= 60 ? '✓' : qualityScore >= 40 ? '⚠' : '✗'} — Profitability, margins, financial health
+• Earnings: ${earningsScore}/100 ${earningsScore >= 60 ? '✓' : earningsScore >= 40 ? '⚠' : '✗'} — EPS trend, beat/miss history
+• Momentum: ${momentumScore}/100 ${momentumScore >= 60 ? '✓' : momentumScore >= 40 ? '⚠' : '✗'} — Price trend, 52-week position
+• Analyst Consensus: ${analystScore}/100 ${analystScore >= 60 ? '✓' : analystScore >= 40 ? '⚠' : '✗'} — Wall Street ratings
+• Fundamentals: ${metrics.length > 0 ? metrics.join(', ') : '[Limited data]'}
 ${analystContext}${newsContext}
 
-QUANTITATIVE TRADING RULES (Data-Driven, Remove Emotion):
+YOUR MISSION:
+Think like a stock analyst who wants to make clients wealthy. Look at the data above - the scores, the news, the price action, the position size. Is this a compelling BUY opportunity right now? A problem to SELL? Or just... nothing special (return null)?
 
-1. **SELL Rules** (Strict Risk Management):
-   - 7-8% Stop-Loss: Auto-sell if down 7-8% from purchase (protect capital)
-   - 3-4% Tightened Stops: Use in volatile/correcting markets for faster exit
-   - 2% Risk Rule: Never risk >2% of total portfolio on single position loss
-   - 20-25% Profit Target: Lock gains at pre-set targets (remove greed)
-   - Sell Into Strength: Exit during rapid, excessive gains (maximum greed)
-   - Fundamental Decay: Exit when earnings/growth/competitive position deteriorates
-   - Market Correction: Sell when broader market enters correction mode
-   - Rebalance: Trim if position >25% of portfolio (unless exceptional quality)
-   - Wash-Sale: Don't rebuy within 30 days after tax-loss sale
-   
-2. **BUY Rules** (Systematic Entry Points):
-   - Maximum Fear: Buy quality during market panic/recession (buy low)
-   - Breakout Point: Buy above resistance level with high volume confirmation
-   - Market Dips: Buy quality down 3-5%+ during temporary weakness
-   - P/E Comparison: Prefer P/E < industry average or < 20 for value
-   - Analyst Upgrades: Buy on upward price target revisions
-   - Oversold RSI: Look for RSI < 30 technical oversold signals
-   - Volume Confirmation: Heavy first-hour volume establishes trend
-   - Optimal Timing: First 15-60 mins after open (high volatility)
-   - Optimal Months: April, Oct, Nov historically stronger for buying
-   
-3. **HOLD Rules** (Long-Term Compounding):
-   - Never sell quality at new highs (let winners compound)
-   - Hold 1+ year for long-term capital gains tax rates
-   - 70/30 Allocation: Maintain ~70% equities, 30% bonds for balance
-   - Ignore noise when fundamentals strong
-   - Follow strategy, not emotion
+YOUR STYLE:
+- You're selective - most stocks get no signal (null). Only clear opportunities or problems get BUY/SELL.
+- You connect dots - if there's news, explain how it relates to the opportunity/risk.
+- You manage risk - big losses destroy wealth, so you respect stop-losses and position sizing.
+- You love quality companies on sale - panic creates the best opportunities.
+- You hate losing money - if fundamentals are broken or a stop-loss hits, you're out.
 
-INVESTMENT PHILOSOPHY (Learn from these examples):
-
-Example 1: META - Quality 78, Earnings 72, Momentum 55, Position 20%, Flat price
-→ Decision: null (no badge)
-→ Why: Exceptional quality company. Never sell winners just because position is large. Let compounders compound.
-
-Example 2: GOOGL - Quality 72, Earnings 68, Momentum 50, Position 5%, DOWN 5.2%
-→ Decision: "BUY"
-→ Why: High-quality stock on sale. Down 5%+ is a gift. Position has room. Buy the dip.
-
-Example 3: SNOW - Quality 35, Earnings 42, Momentum 38, Position 8%, Flat price
-→ Decision: "SELL"
-→ Why: Weak fundamentals across the board. Don't own mediocre companies. Exit cleanly.
-
-Example 4: NVDA - Quality 82, Earnings 88, Momentum 75, Position 2%, UP 3%
-→ Decision: "BUY"
-→ Why: Exceptional quality, tiny position, strong momentum. Add aggressively despite run-up.
-
-Example 5: AAPL - Quality 68, Earnings 55, Momentum 48, Position 12%, Flat price
-→ Decision: null (no badge)
-→ Why: Good company, appropriately sized. No catalyst to add or trim. Hold quietly.
-
-Example 6: Weak Tech Stock - Quality 28, Earnings 35, Momentum 25, Position 6%, DOWN 8%
-→ Decision: "SELL"
-→ Why: Broken company. Don't catch falling knives. Price drop confirms weakness.
-
-Example 7: Overconcentrated Mediocre Stock - Quality 52, Earnings 48, Momentum 42, Position 28%
-→ Decision: "SELL"
-→ Why: Mediocre fundamentals + overconcentrated (28% of portfolio). Rebalancing needed.
-
-Example 8: Stock Down 8% from Purchase - Quality 55, Earnings 50, P&L: -8.2%
-→ Decision: "SELL"
-→ Why: Stop-loss triggered at -8%. Protect capital. Cut losses before they grow.
-
-Example 9: Stock Up 23% from Purchase - Quality 60, Earnings 65, P&L: +23.1%
-→ Decision: "SELL"
-→ Why: Hit 20-25% profit target. Lock in gains. Can reassess entry later if needed.
-
-Example 10: Stock Down 4% in Volatile Market - Quality 58, Earnings 62, Momentum 38 (declining)
-→ Decision: "SELL"
-→ Why: Market in correction, momentum deteriorating. Tighten stop to 3-4% in volatile conditions.
-
-Example 11: Rapid 15% Gain in 3 Days - Quality 55, Earnings 60, Momentum 85
-→ Decision: "SELL"
-→ Why: Excessive fast-paced gains = maximum greed. Sell into strength, take profits quickly.
-
-Example 12: Quality Stock During Market Panic - Quality 75, Earnings 70, DOWN 8% (market -5%)
-→ Decision: "BUY"
-→ Why: Maximum fear = opportunity. Exceptional quality on sale during broad market panic.
-
-KEY PRINCIPLES (Quantitative, Data-Driven):
-1. Risk Management First: 7-8% stop-loss (3-4% in volatile markets) and 20-25% profit-taking override all
-2. 2% Risk Cap: Never risk >2% of total portfolio on any single position
-3. Buy Fear, Sell Greed: Enter during panic, exit during euphoria or rapid gains
-4. Quality + Math: Exceptional quality (70+) gets more leeway, but math rules apply
-5. Volume = Confirmation: High volume on breakouts = valid signal
-6. Market Context: Tighten stops in corrections, buy aggressively in maximum fear
-7. Position Sizing: Can own 20%+ of winners, but rebalance if >25% + not exceptional
-8. Momentum Matters: Weak momentum (<40) + weak quality (<50) = immediate exit
-9. Be Selective: Most stocks → null. Only BUY top opportunities, SELL real problems
-10. Systematic Approach: Follow rules, not emotions. Data beats gut feelings
-
-YOUR TASK:
-Analyze ${stock.ticker} using these principles AND the recent news/events above. Think like the examples.
-
-**CRITICAL**: Your reasoning MUST explain WHY using news context:
-- If there's an earnings report → Did they beat/miss? Is the drop/rally justified?
-- If there's negative news → Is this a buying opportunity for a quality company?
-- If there's no major news → Why is the stock moving? Just market noise?
-- Position size matters → But don't buy just because position is small. Buy because of compelling VALUE/NEWS.
-
-Examples of GOOD reasoning:
-✅ "Dropped 7% after earnings miss, but quality strong (76/100). Overreaction = buy opportunity"
-✅ "Up 15% on product launch hype, momentum 85. Take profits - maximum greed"
-✅ "Weak earnings (45/100) + negative guidance news. Thesis broken - exit"
-❌ "Exceptional quality (avg 76/100), position 14.0% has room" ← TOO MECHANICAL, NO CONTEXT!
-
-Return JSON:
+RESPOND WITH JSON ONLY:
 {
   "buyPriority": "BUY" | "SELL" | null,
-  "reasoning": "ONE sentence with NEWS CONTEXT + metrics (e.g., 'Earnings miss but quality intact - buy the dip')",
-  "summary": "Brief company context with news"
-}
-
-Be decisive on clear opportunities/problems, silent on holds. ONLY valid JSON.`;
+  "reasoning": "One clear sentence explaining your call using the news/data context",
+  "summary": "Brief company overview"
+}`;
 
     const response = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`,
@@ -486,7 +392,8 @@ Be decisive on clear opportunities/problems, silent on holds. ONLY valid JSON.`;
       avgCost,
       priceChangePercent,
       stock.currentPrice,
-      riskProfile
+      riskProfile,
+      recentNews
     );
     const insight: AIInsight = {
       summary: generateEnhancedSummary(stock, qualityScore, earningsScore, analystScore),
@@ -507,7 +414,7 @@ Be decisive on clear opportunities/problems, silent on holds. ONLY valid JSON.`;
 /**
  * Rule-based buy priority logic (fallback when no LLM)
  * Exported for use in main app to show priority on all stocks
- * 
+ *
  * Risk profiles adjust thresholds:
  * - Aggressive: Lower stop-loss (3-4%), higher position limits (30%), more aggressive
  * - Moderate: Standard thresholds (7-8% stop, 25% position limit)
@@ -523,7 +430,7 @@ export function generateRuleBased(
   priceChangePercent?: number,
   currentPrice?: number,
   riskProfile: RiskProfile = 'moderate',
-  recentNews?: Array<{ headline: string; datetime: number }>
+  _recentNews?: Array<{ headline: string; datetime: number }> // News displayed separately in UI
 ): {
   buyPriority: AIInsight['buyPriority'];
   reasoning: string;
@@ -561,15 +468,6 @@ export function generateRuleBased(
 
   const thresholds = riskThresholds[riskProfile];
 
-  // Format news context for reasoning (if available)
-  const getNewsContext = (): string => {
-    if (!recentNews || recentNews.length === 0) return '';
-    const latestHeadline = recentNews[0].headline;
-    const newsAge = Math.round((Date.now() - recentNews[0].datetime * 1000) / (1000 * 60 * 60)); // hours ago
-    const ageText = newsAge < 24 ? `${newsAge}h ago` : `${Math.round(newsAge / 24)}d ago`;
-    return ` 📰 "${latestHeadline}" (${ageText}).`;
-  };
-
   // Determine data completeness
   let dataCompleteness: AIInsight['dataCompleteness'] = 'FULL';
   const missingData: string[] = [];
@@ -586,13 +484,12 @@ export function generateRuleBased(
   // If we don't have position data, apply simple quality-based logic
   if (!hasPositionData) {
     const avgScore = (qualityScore + earningsScore + momentumScore) / 3;
-    const newsCtx = getNewsContext();
 
     // BUY: Exceptional quality (like Buffett finding great companies)
     if (avgScore >= 65 && momentumScore > 50) {
       return {
         buyPriority: 'BUY',
-        reasoning: `Exceptional quality (avg ${avgScore.toFixed(0)}/100) - Quality ${qualityScore}, Earnings ${earningsScore}.${newsCtx} Add position data for sizing.`,
+        reasoning: `Quality company. Import your holdings to see recommended position size.`,
         dataCompleteness,
         missingData,
       };
@@ -602,7 +499,7 @@ export function generateRuleBased(
     if (avgScore < 45) {
       return {
         buyPriority: 'SELL',
-        reasoning: `Weak fundamentals (avg ${avgScore.toFixed(0)}/100) - Quality ${qualityScore}, Earnings ${earningsScore}, Momentum ${momentumScore}.${newsCtx}`,
+        reasoning: `Weak fundamentals across quality, earnings, and momentum. Consider avoiding.`,
         dataCompleteness,
         missingData,
       };
@@ -611,7 +508,7 @@ export function generateRuleBased(
     // Default: No badge (need position context)
     return {
       buyPriority: null,
-      reasoning: `Avg ${avgScore.toFixed(0)}/100${newsCtx ? ` -${newsCtx}` : ''} - add position data for personalized decisions.`,
+      reasoning: `Import portfolio for personalized buy/sell recommendations.`,
       dataCompleteness,
       missingData,
     };
@@ -628,14 +525,12 @@ export function generateRuleBased(
 
   const isDown3Plus = priceChangePercent !== undefined && priceChangePercent <= -3;
   const isDown5Plus = priceChangePercent !== undefined && priceChangePercent <= -5;
-  
-  const newsCtx = getNewsContext();
 
   // CRITICAL TRADING RULES: Apply stop-loss and profit-taking
   // These override other logic (risk management first!)
   if (hasCostData && avgCost && avgCost > 0 && currentPrice && currentPrice > 0) {
     const gainLossPct = ((currentPrice - avgCost) / avgCost) * 100;
-    
+
     // Detect volatile/correcting market conditions (use momentum as proxy)
     const isVolatileMarket = momentumScore < 40;
 
@@ -645,7 +540,7 @@ export function generateRuleBased(
       if (!isQuality || momentumScore < 35) {
         return {
           buyPriority: 'SELL',
-          reasoning: `Tightened stop-loss (${riskProfile}, volatile): Down ${Math.abs(gainLossPct).toFixed(1)}% from purchase ($${avgCost.toFixed(2)}) - Momentum ${momentumScore}.${newsCtx}`,
+          reasoning: `Down ${Math.abs(gainLossPct).toFixed(1)}% from your $${avgCost.toFixed(2)} entry - cut losses in volatile market.`,
           dataCompleteness,
           missingData,
         };
@@ -659,7 +554,7 @@ export function generateRuleBased(
       if (!(isQuality && momentumScore >= 40)) {
         return {
           buyPriority: 'SELL',
-          reasoning: `Stop-loss (${riskProfile}): Down ${Math.abs(gainLossPct).toFixed(1)}% from purchase ($${avgCost.toFixed(2)}) - ${Math.abs(thresholds.stopLoss)}% threshold.${newsCtx}`,
+          reasoning: `Down ${Math.abs(gainLossPct).toFixed(1)}% from your $${avgCost.toFixed(2)} entry - stop-loss triggered.`,
           dataCompleteness,
           missingData,
         };
@@ -671,7 +566,7 @@ export function generateRuleBased(
     if (gainLossPct >= 10 && momentumScore >= 80) {
       return {
         buyPriority: 'SELL',
-        reasoning: `Sell into strength: Up ${gainLossPct.toFixed(1)}% with extreme momentum (${momentumScore}) - Maximum greed, take profits fast.${newsCtx}`,
+        reasoning: `Up ${gainLossPct.toFixed(1)}% with extreme momentum - take profits before reversal.`,
         dataCompleteness,
         missingData,
       };
@@ -684,7 +579,7 @@ export function generateRuleBased(
       if (!(isQuality && momentumScore >= 55)) {
         return {
           buyPriority: 'SELL',
-          reasoning: `Profit-taking (${riskProfile}): Up ${gainLossPct.toFixed(1)}% from purchase ($${avgCost.toFixed(2)}) - ${thresholds.profitTarget}% target hit.${newsCtx}`,
+          reasoning: `Up ${gainLossPct.toFixed(1)}% from your $${avgCost.toFixed(2)} entry - profit target reached.`,
           dataCompleteness,
           missingData,
         };
@@ -698,7 +593,7 @@ export function generateRuleBased(
     if (!isQuality || momentumScore < 45) {
       return {
         buyPriority: 'SELL',
-        reasoning: `Overconcentrated (${riskProfile}): ${position.toFixed(1)}% of portfolio (>${thresholds.rebalanceAt}%). ${!isQuality ? 'Not exceptional quality - rebalance' : 'Momentum weakening - trim'}.${newsCtx}`,
+        reasoning: `${position.toFixed(1)}% of portfolio - too concentrated. ${!isQuality ? 'Rebalance into better opportunities' : 'Trim to reduce risk'}.`,
         dataCompleteness,
         missingData,
       };
@@ -708,15 +603,15 @@ export function generateRuleBased(
 
   // Principle 1: Buy During Maximum Fear (panic = opportunity)
   const isDown8Plus = priceChangePercent !== undefined && priceChangePercent <= -8;
-  
+
   // Calculate buy position limits based on risk profile
   const buyPositionLimit = thresholds.maxPosition * 0.7; // Can buy up to 70% of max position
-  
+
   // Maximum Fear: Quality stock down 8%+ = panic selling, aggressive buy
   if (isDown8Plus && isQuality && position < buyPositionLimit) {
     return {
       buyPriority: 'BUY',
-      reasoning: `MAXIMUM FEAR (${riskProfile})! Quality stock down ${Math.abs(priceChangePercent!).toFixed(1)}% - Panic = opportunity. Avg ${avgScore.toFixed(0)}/100, position ${position.toFixed(1)}%.${newsCtx}`,
+      reasoning: `Big drop (${Math.abs(priceChangePercent!).toFixed(1)}%) on quality company - buy the panic. You own ${position.toFixed(1)}%.`,
       dataCompleteness,
       missingData,
     };
@@ -727,7 +622,7 @@ export function generateRuleBased(
   if (isDown5Plus && isStrong && position < dipBuyLimit) {
     return {
       buyPriority: 'BUY',
-      reasoning: `Quality on sale (${riskProfile})! Down ${Math.abs(priceChangePercent!).toFixed(1)}%, avg ${avgScore.toFixed(0)}/100, position ${position.toFixed(1)}% - Quality ${qualityScore}, Earnings ${earningsScore}.${newsCtx}`,
+      reasoning: `Quality company down ${Math.abs(priceChangePercent!).toFixed(1)}% - good entry point. You own ${position.toFixed(1)}%.`,
       dataCompleteness,
       missingData,
     };
@@ -738,7 +633,7 @@ export function generateRuleBased(
   if (isDown3Plus && isQuality && position < qualityDipLimit) {
     return {
       buyPriority: 'BUY',
-      reasoning: `Exceptional quality dip (${riskProfile})! Down ${Math.abs(priceChangePercent!).toFixed(1)}%, avg ${avgScore.toFixed(0)}/100, position ${position.toFixed(1)}%.${newsCtx}`,
+      reasoning: `Strong fundamentals, down ${Math.abs(priceChangePercent!).toFixed(1)}%. Add to your ${position.toFixed(1)}% position.`,
       dataCompleteness,
       missingData,
     };
@@ -748,7 +643,7 @@ export function generateRuleBased(
   if (isWeak) {
     return {
       buyPriority: 'SELL',
-      reasoning: `Weak fundamentals (avg ${avgScore.toFixed(0)}/100) - Quality ${qualityScore}, Earnings ${earningsScore}, Momentum ${momentumScore}.${newsCtx}`,
+      reasoning: `Poor fundamentals across quality, earnings, and momentum. Consider selling.`,
       dataCompleteness,
       missingData,
     };
@@ -757,7 +652,7 @@ export function generateRuleBased(
   if (momentumScore < 35 && isMediocre) {
     return {
       buyPriority: 'SELL',
-      reasoning: `Deteriorating mediocre stock - Momentum ${momentumScore}, avg ${avgScore.toFixed(0)}/100.${newsCtx}`,
+      reasoning: `Weak momentum on mediocre company. Consider trimming position.`,
       dataCompleteness,
       missingData,
     };
@@ -768,7 +663,7 @@ export function generateRuleBased(
   if (isStrong && position < smallPositionLimit && momentumScore >= 45) {
     return {
       buyPriority: 'BUY',
-      reasoning: `Strong company (${riskProfile}): avg ${avgScore.toFixed(0)}/100, small position ${position.toFixed(1)}% - Quality ${qualityScore}, Earnings ${earningsScore}`,
+      reasoning: `Solid company with room to grow your ${position.toFixed(1)}% position.`,
       dataCompleteness,
       missingData,
     };
@@ -778,7 +673,7 @@ export function generateRuleBased(
   if (isQuality && position < qualityPositionLimit && momentumScore >= 50) {
     return {
       buyPriority: 'BUY',
-      reasoning: `Exceptional quality (${riskProfile}): avg ${avgScore.toFixed(0)}/100, position ${position.toFixed(1)}% has room`,
+      reasoning: `High-quality company - consider adding to your ${position.toFixed(1)}% position.`,
       dataCompleteness,
       missingData,
     };
@@ -788,7 +683,7 @@ export function generateRuleBased(
   // Most stocks land here - hold quietly
   return {
     buyPriority: null,
-    reasoning: `Avg ${avgScore.toFixed(0)}/100, position ${position.toFixed(1)}% - no clear action`,
+    reasoning: `Solid holding at ${position.toFixed(1)}% - no immediate action needed.`,
     dataCompleteness,
     missingData,
   };

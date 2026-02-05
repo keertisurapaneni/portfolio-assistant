@@ -4,6 +4,7 @@
  */
 
 const EDGE_FUNCTION_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/fetch-stock-data`;
+const YAHOO_NEWS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/fetch-yahoo-news`;
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
 
 // Client-side cache to avoid redundant Edge Function calls
@@ -41,7 +42,7 @@ export interface AnalystRating {
 
 export interface NewsItem {
   headline: string;
-  summary: string;
+  summary?: string;
   source: string;
   datetime: number; // Unix timestamp
   url: string;
@@ -142,6 +143,53 @@ async function fetchFromEdge<T>(
   } catch (error) {
     console.error(`[Edge API] Fetch error:`, error);
     return null;
+  }
+}
+
+async function fetchYahooNews(ticker: string): Promise<NewsItem[]> {
+  const cacheKey = `yahoo-news-${ticker}`;
+
+  // Check client-side cache first
+  const cached = cache.get(cacheKey);
+  if (cached && Date.now() - cached.timestamp < CACHE_DURATION) {
+    console.log(`[Yahoo News] Using client cache for ${ticker}`);
+    return cached.data as NewsItem[];
+  }
+
+  try {
+    console.log(`[Yahoo News] Fetching news for ${ticker}`);
+
+    const response = await rateLimitedFetch(YAHOO_NEWS_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+        apikey: SUPABASE_ANON_KEY,
+      },
+      body: JSON.stringify({ symbol: ticker }),
+    });
+
+    if (!response.ok) {
+      console.error(`[Yahoo News] HTTP error ${response.status}`);
+      return [];
+    }
+
+    const data = await response.json();
+
+    if (data.error) {
+      console.error(`[Yahoo News] API error:`, data.error);
+      return [];
+    }
+
+    const newsItems = data.news || [];
+    console.log(`[Yahoo News] Fetched ${newsItems.length} news items for ${ticker}`);
+
+    // Cache the result
+    cache.set(cacheKey, { data: newsItems, timestamp: Date.now() });
+    return newsItems;
+  } catch (error) {
+    console.error(`[Yahoo News] Fetch error:`, error);
+    return [];
   }
 }
 
@@ -541,13 +589,6 @@ export async function getStockData(ticker: string): Promise<StockData | null> {
       recommendationsArray = Object.values(recommendations);
     }
 
-    // Convert news to proper format if it's an object (happens with cached JSONB data)
-    let newsArray: FinnhubNews[] | null = news;
-    if (news && !Array.isArray(news)) {
-      newsArray = Object.values(news);
-      console.log(`[Stock API] ${symbol} - Converted news object to array (${newsArray.length} items)`);
-    }
-
     // Calculate all scores
     const qualityScore = calculateQualityScore(metrics);
     const momentumScore = calculateMomentumScore(quote, metrics);
@@ -565,26 +606,87 @@ export async function getStockData(ticker: string): Promise<StockData | null> {
       netMargin: 0,
     }));
 
-    // Process recent news (last 3 items, last 7 days)
+    // Process Finnhub news with strict headline-based filtering
+    // Finnhub returns 250+ items; we only keep ones that mention the company by name
+    let newsArray: FinnhubNews[] | null = news;
+    if (news && !Array.isArray(news)) {
+      newsArray = Object.values(news);
+    }
+
     const recentNews: NewsItem[] = [];
     if (newsArray && newsArray.length > 0) {
-      console.log(`[Stock API] ${symbol} - Received ${newsArray.length} news items`);
-      const sevenDaysAgo = Date.now() / 1000 - 7 * 24 * 60 * 60;
-      const filteredNews = newsArray.filter(n => n.datetime > sevenDaysAgo);
-      console.log(`[Stock API] ${symbol} - ${filteredNews.length} news items from last 7 days`);
+      console.log(`[Stock API] ${symbol} - Received ${newsArray.length} news items from Finnhub`);
+
+      // Company name/ticker terms to match in headlines
+      const COMPANY_NAMES: Record<string, string[]> = {
+        NVDA: ['nvidia'],
+        MSFT: ['microsoft'],
+        AAPL: ['apple'],
+        GOOGL: ['google', 'alphabet'],
+        GOOG: ['google', 'alphabet'],
+        AMZN: ['amazon'],
+        META: ['meta platforms', 'meta ai', 'facebook', 'instagram', 'whatsapp', 'zuckerberg'],
+        TSLA: ['tesla'],
+        NFLX: ['netflix'],
+        CRM: ['salesforce'],
+        AVGO: ['broadcom'],
+        AMD: ['amd'],
+        INTC: ['intel'],
+        ORCL: ['oracle'],
+        ADBE: ['adobe'],
+        RBRK: ['rubrik'],
+        SNOW: ['snowflake'],
+        PLTR: ['palantir'],
+        UBER: ['uber'],
+        ABNB: ['airbnb'],
+        SHOP: ['shopify'],
+        COIN: ['coinbase'],
+        PYPL: ['paypal'],
+        DIS: ['disney'],
+        JPM: ['jpmorgan', 'jp morgan'],
+        WMT: ['walmart'],
+        COST: ['costco'],
+        V: ['visa'],
+        MA: ['mastercard'],
+        JNJ: ['johnson & johnson'],
+        PFE: ['pfizer'],
+        UNH: ['unitedhealth'],
+        XOM: ['exxon'],
+        CVX: ['chevron'],
+        HD: ['home depot'],
+        BAC: ['bank of america'],
+        SQ: ['block inc'],
+        PINS: ['pinterest'],
+        SNAP: ['snap inc', 'snapchat'],
+      };
+
+      const searchTerms = [symbol.toLowerCase()];
+      if (COMPANY_NAMES[symbol]) {
+        searchTerms.push(...COMPANY_NAMES[symbol]);
+      }
+
+      // Filter: headline MUST mention the company name or ticker
+      const relevant = newsArray.filter(n => {
+        if (!n.headline) return false;
+        const headline = n.headline.toLowerCase();
+        return searchTerms.some(term => headline.includes(term));
+      });
+
+      console.log(
+        `[Stock API] ${symbol} - ${relevant.length} headlines mention the company (from ${newsArray.length} total)`
+      );
+
+      // Take the 3 most recent relevant headlines
       recentNews.push(
-        ...filteredNews.slice(0, 3).map(n => ({
+        ...relevant.slice(0, 3).map(n => ({
           headline: n.headline,
-          summary: n.summary,
           source: n.source,
           datetime: n.datetime,
           url: n.url,
         }))
       );
-      console.log(`[Stock API] ${symbol} - Displaying ${recentNews.length} news items on card`);
-    } else {
-      console.log(`[Stock API] ${symbol} - No news data: newsArray is ${typeof newsArray}, isArray: ${Array.isArray(newsArray)}, length: ${newsArray?.length || 0}`);
     }
+    console.log(`[Stock API] ${symbol} - Displaying ${recentNews.length} news items on card`);
 
     const result: StockData = {
       ticker: symbol,
