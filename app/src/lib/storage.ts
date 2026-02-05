@@ -146,12 +146,26 @@ export function importStocksWithPositions(
     
     if (existingIndex !== -1) {
       // Update existing stock with position data
-      data.stocks[existingIndex] = {
+      const updatedStock: Stock = {
         ...data.stocks[existingIndex],
         name: stock.name || data.stocks[existingIndex].name,
-        shares: stock.shares,
-        avgCost: stock.avgCost,
       };
+      
+      // Only set shares/avgCost if provided (undefined means user didn't map those columns)
+      // Explicitly delete old values if new import has empty columns
+      if (stock.shares !== undefined) {
+        updatedStock.shares = stock.shares;
+      } else {
+        delete updatedStock.shares; // Clear old value if not in new import
+      }
+      
+      if (stock.avgCost !== undefined) {
+        updatedStock.avgCost = stock.avgCost;
+      } else {
+        delete updatedStock.avgCost; // Clear old value if not in new import
+      }
+      
+      data.stocks[existingIndex] = updatedStock;
       updated.push(normalized);
     } else {
       // Add new stock
@@ -159,9 +173,16 @@ export function importStocksWithPositions(
         ticker: normalized,
         name: stock.name || normalized,
         dateAdded: new Date().toISOString(),
-        shares: stock.shares,
-        avgCost: stock.avgCost,
       };
+      
+      // Only add position data if provided
+      if (stock.shares !== undefined) {
+        newStock.shares = stock.shares;
+      }
+      if (stock.avgCost !== undefined) {
+        newStock.avgCost = stock.avgCost;
+      }
+      
       data.stocks.push(newStock);
       added.push(normalized);
     }

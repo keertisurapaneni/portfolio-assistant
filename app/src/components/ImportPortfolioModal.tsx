@@ -208,6 +208,19 @@ export function ImportPortfolioModal({ onClose, onComplete }: ImportPortfolioMod
                 Preview of {rows.length} rows to import:
               </p>
 
+              {/* Warning if no position data */}
+              {preview.every(row => !row.shares && !row.avgCost) && (
+                <div className="flex items-start gap-2 p-3 bg-amber-50 text-amber-800 rounded-lg text-sm">
+                  <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+                  <div>
+                    <p className="font-medium">No position data found</p>
+                    <p className="text-xs mt-1">
+                      Portfolio weight and risk warnings won't be available without shares and avg cost data.
+                    </p>
+                  </div>
+                </div>
+              )}
+
               <div className="border border-[hsl(var(--border))] rounded-lg overflow-hidden">
                 <table className="w-full text-sm">
                   <thead className="bg-[hsl(var(--secondary))]">
