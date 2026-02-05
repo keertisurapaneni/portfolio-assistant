@@ -3,7 +3,7 @@
  * Enhances rule-based scores with contextual analysis
  */
 
-import type { Stock } from '../types';
+import type { Stock, RiskProfile } from '../types';
 
 export interface AIInsight {
   summary: string; // 1-2 sentence contextual summary
@@ -11,6 +11,8 @@ export interface AIInsight {
   reasoning: string; // Metric-based rationale
   dataCompleteness: 'FULL' | 'SCORES_ONLY' | 'MINIMAL'; // How much data we have
   missingData?: string[]; // What data would improve the recommendation
+  liquidityRisk?: 'LOW' | 'MEDIUM' | 'HIGH' | null; // Liquidity/volume warning
+  liquidityWarning?: string; // Specific warning message
   industryContext?: string; // Industry-specific perspective
   riskFactors?: string[]; // Key risks to watch
   opportunities?: string[]; // Why this might be attractive
@@ -53,6 +55,36 @@ function cacheInsight(ticker: string, insight: AIInsight): void {
 }
 
 /**
+ * Calculate liquidity risk based on trading volume
+ * Returns risk level and warning message
+ */
+function calculateLiquidityRisk(
+  volume?: number
+): { risk: 'LOW' | 'MEDIUM' | 'HIGH' | null; warning?: string } {
+  if (!volume || volume === 0) {
+    return { risk: null };
+  }
+
+  // Volume thresholds (daily shares traded)
+  const LOW_VOLUME_THRESHOLD = 100_000; // < 100K shares = high risk
+  const MEDIUM_VOLUME_THRESHOLD = 500_000; // < 500K shares = medium risk
+
+  if (volume < LOW_VOLUME_THRESHOLD) {
+    return {
+      risk: 'HIGH',
+      warning: `⚠️ LOW LIQUIDITY: Only ${(volume / 1000).toFixed(0)}K shares traded daily - May be hard to exit quickly`,
+    };
+  } else if (volume < MEDIUM_VOLUME_THRESHOLD) {
+    return {
+      risk: 'MEDIUM',
+      warning: `⚠️ MODERATE LIQUIDITY: ${(volume / 1000).toFixed(0)}K shares traded daily - Exercise caution with large positions`,
+    };
+  }
+
+  return { risk: 'LOW' }; // Healthy liquidity, no warning
+}
+
+/**
  * Generate AI insights for a stock using Google Gemini (FREE)
  * Gemini 1.5 Flash: 1,500 requests/day free tier
  */
@@ -66,7 +98,9 @@ export async function generateAIInsights(
   shares?: number,
   avgCost?: number,
   priceChangePercent?: number,
-  analystRating?: Stock['analystRating']
+  analystRating?: Stock['analystRating'],
+  riskProfile?: RiskProfile,
+  volume?: number
 ): Promise<AIInsight | null> {
   // Check cache first
   const cached = getCachedInsight(stock.ticker);
@@ -76,6 +110,9 @@ export async function generateAIInsights(
   }
 
   const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
+
+  // Calculate liquidity risk
+  const liquidity = calculateLiquidityRisk(volume);
 
   // If no API key, fall back to rule-based insights
   if (!GEMINI_API_KEY) {
@@ -88,7 +125,8 @@ export async function generateAIInsights(
       shares,
       avgCost,
       priceChangePercent,
-      stock.currentPrice
+      stock.currentPrice,
+      riskProfile
     );
     const insight: AIInsight = {
       summary: generateEnhancedSummary(stock, qualityScore, earningsScore, analystScore),
@@ -96,6 +134,8 @@ export async function generateAIInsights(
       reasoning: ruleBased.reasoning,
       dataCompleteness: ruleBased.dataCompleteness,
       missingData: ruleBased.missingData,
+      liquidityRisk: liquidity.risk,
+      liquidityWarning: liquidity.warning,
       industryContext: generateIndustryContext(stock),
       cached: false,
       timestamp: new Date().toISOString(),
@@ -373,7 +413,8 @@ Be decisive on clear opportunities/problems, silent on holds. ONLY valid JSON.`;
       shares,
       avgCost,
       priceChangePercent,
-      stock.currentPrice
+      stock.currentPrice,
+      riskProfile
     );
 
     const insight: AIInsight = {
@@ -384,6 +425,8 @@ Be decisive on clear opportunities/problems, silent on holds. ONLY valid JSON.`;
       reasoning: parsedResponse.reasoning || ruleBased.reasoning,
       dataCompleteness: ruleBased.dataCompleteness,
       missingData: ruleBased.missingData,
+      liquidityRisk: liquidity.risk,
+      liquidityWarning: liquidity.warning,
       industryContext: undefined,
       cached: false,
       timestamp: new Date().toISOString(),
@@ -405,7 +448,8 @@ Be decisive on clear opportunities/problems, silent on holds. ONLY valid JSON.`;
       shares,
       avgCost,
       priceChangePercent,
-      stock.currentPrice
+      stock.currentPrice,
+      riskProfile
     );
     const insight: AIInsight = {
       summary: generateEnhancedSummary(stock, qualityScore, earningsScore, analystScore),
@@ -413,6 +457,8 @@ Be decisive on clear opportunities/problems, silent on holds. ONLY valid JSON.`;
       reasoning: ruleBased.reasoning,
       dataCompleteness: ruleBased.dataCompleteness,
       missingData: ruleBased.missingData,
+      liquidityRisk: liquidity.risk,
+      liquidityWarning: liquidity.warning,
       cached: false,
       timestamp: new Date().toISOString(),
     };
@@ -424,6 +470,11 @@ Be decisive on clear opportunities/problems, silent on holds. ONLY valid JSON.`;
 /**
  * Rule-based buy priority logic (fallback when no LLM)
  * Exported for use in main app to show priority on all stocks
+ * 
+ * Risk profiles adjust thresholds:
+ * - Aggressive: Lower stop-loss (3-4%), higher position limits (30%), more aggressive
+ * - Moderate: Standard thresholds (7-8% stop, 25% position limit)
+ * - Conservative: Tighter stop-loss (5-6%), lower position limits (20%), more cautious
  */
 export function generateRuleBased(
   qualityScore: number,
@@ -433,7 +484,8 @@ export function generateRuleBased(
   shares?: number,
   avgCost?: number,
   priceChangePercent?: number,
-  currentPrice?: number
+  currentPrice?: number,
+  riskProfile: RiskProfile = 'moderate'
 ): {
   buyPriority: AIInsight['buyPriority'];
   reasoning: string;
@@ -443,6 +495,33 @@ export function generateRuleBased(
   const position = portfolioWeight ?? 0;
   const hasPositionData = shares !== undefined && shares > 0;
   const hasCostData = avgCost !== undefined && avgCost > 0;
+
+  // Risk Profile Adjustments
+  const riskThresholds = {
+    aggressive: {
+      stopLoss: -4, // More tolerant of volatility
+      tightenedStop: -5, // Slightly tighter in volatile markets
+      profitTarget: 25, // Higher profit target
+      maxPosition: 30, // Can concentrate more
+      rebalanceAt: 30, // Rebalance at 30%
+    },
+    moderate: {
+      stopLoss: -7, // Standard stop-loss
+      tightenedStop: -3, // Standard tightened
+      profitTarget: 20, // Standard profit target
+      maxPosition: 25, // Standard concentration
+      rebalanceAt: 25, // Rebalance at 25%
+    },
+    conservative: {
+      stopLoss: -5, // Tighter stop-loss
+      tightenedStop: -3, // Same tightened (already conservative)
+      profitTarget: 15, // Lower profit target (take profits sooner)
+      maxPosition: 20, // Less concentration
+      rebalanceAt: 20, // Rebalance earlier
+    },
+  };
+
+  const thresholds = riskThresholds[riskProfile];
 
   // Determine data completeness
   let dataCompleteness: AIInsight['dataCompleteness'] = 'FULL';
@@ -510,27 +589,27 @@ export function generateRuleBased(
     // Detect volatile/correcting market conditions (use momentum as proxy)
     const isVolatileMarket = momentumScore < 40;
 
-    // Rule 1A: Tightened Stop-Loss (3-4%) in Volatile Markets
-    if (isVolatileMarket && gainLossPct <= -3) {
-      // In volatile markets, tighten stops to 3-4% for faster exits
+    // Rule 1A: Tightened Stop-Loss in Volatile Markets (risk-profile adjusted)
+    if (isVolatileMarket && gainLossPct <= thresholds.tightenedStop) {
+      // In volatile markets, tighten stops for faster exits
       if (!isQuality || momentumScore < 35) {
         return {
           buyPriority: 'SELL',
-          reasoning: `Tightened stop-loss (volatile market): Down ${Math.abs(gainLossPct).toFixed(1)}% from purchase ($${avgCost.toFixed(2)}) - Momentum ${momentumScore}`,
+          reasoning: `Tightened stop-loss (${riskProfile}, volatile): Down ${Math.abs(gainLossPct).toFixed(1)}% from purchase ($${avgCost.toFixed(2)}) - Momentum ${momentumScore}`,
           dataCompleteness,
           missingData,
         };
       }
     }
 
-    // Rule 1B: Standard 7-8% Stop-Loss Rule (protect capital)
-    if (gainLossPct <= -7) {
+    // Rule 1B: Standard Stop-Loss (risk-profile adjusted: aggressive=-4%, moderate=-7%, conservative=-5%)
+    if (gainLossPct <= thresholds.stopLoss) {
       // Exception: Don't stop-loss on quality stocks during market-wide dips
       // (temporary market weakness vs fundamental problems)
       if (!(isQuality && momentumScore >= 40)) {
         return {
           buyPriority: 'SELL',
-          reasoning: `Stop-loss triggered: Down ${Math.abs(gainLossPct).toFixed(1)}% from purchase ($${avgCost.toFixed(2)}) - 7% rule applies`,
+          reasoning: `Stop-loss (${riskProfile}): Down ${Math.abs(gainLossPct).toFixed(1)}% from purchase ($${avgCost.toFixed(2)}) - ${Math.abs(thresholds.stopLoss)}% threshold`,
           dataCompleteness,
           missingData,
         };
@@ -548,14 +627,14 @@ export function generateRuleBased(
       };
     }
 
-    // Rule 2B: 20-25% Profit-Taking Rule (lock in gains)
-    if (gainLossPct >= 20) {
+    // Rule 2B: Profit-Taking Rule (risk-profile adjusted: aggressive=25%, moderate=20%, conservative=15%)
+    if (gainLossPct >= thresholds.profitTarget) {
       // Exception: Don't sell exceptional quality that's still strong
       // ("Let winners run" unless momentum deteriorating)
       if (!(isQuality && momentumScore >= 55)) {
         return {
           buyPriority: 'SELL',
-          reasoning: `Profit-taking zone: Up ${gainLossPct.toFixed(1)}% from purchase ($${avgCost.toFixed(2)}) - 20-25% rule applies`,
+          reasoning: `Profit-taking (${riskProfile}): Up ${gainLossPct.toFixed(1)}% from purchase ($${avgCost.toFixed(2)}) - ${thresholds.profitTarget}% target hit`,
           dataCompleteness,
           missingData,
         };
@@ -563,13 +642,13 @@ export function generateRuleBased(
     }
   }
 
-  // Rebalancing Rule: Position too large (>25% of portfolio)
+  // Rebalancing Rule: Position too large (risk-profile adjusted: aggressive=30%, moderate=25%, conservative=20%)
   // Only suggest trimming if it's not exceptional quality OR if it's becoming risky
-  if (position > 25) {
+  if (position > thresholds.rebalanceAt) {
     if (!isQuality || momentumScore < 45) {
       return {
         buyPriority: 'SELL',
-        reasoning: `Overconcentrated position: ${position.toFixed(1)}% of portfolio. ${!isQuality ? 'Not exceptional quality - rebalance recommended' : 'Momentum weakening - consider trimming'}`,
+        reasoning: `Overconcentrated (${riskProfile}): ${position.toFixed(1)}% of portfolio (>${thresholds.rebalanceAt}%). ${!isQuality ? 'Not exceptional quality - rebalance' : 'Momentum weakening - trim'}`,
         dataCompleteness,
         missingData,
       };
@@ -580,30 +659,36 @@ export function generateRuleBased(
   // Principle 1: Buy During Maximum Fear (panic = opportunity)
   const isDown8Plus = priceChangePercent !== undefined && priceChangePercent <= -8;
   
+  // Calculate buy position limits based on risk profile
+  const buyPositionLimit = thresholds.maxPosition * 0.7; // Can buy up to 70% of max position
+  
   // Maximum Fear: Quality stock down 8%+ = panic selling, aggressive buy
-  if (isDown8Plus && isQuality && position < 20) {
+  if (isDown8Plus && isQuality && position < buyPositionLimit) {
     return {
       buyPriority: 'BUY',
-      reasoning: `MAXIMUM FEAR! Quality stock down ${Math.abs(priceChangePercent!).toFixed(1)}% - Panic = opportunity. Avg ${avgScore.toFixed(0)}/100, position ${position.toFixed(1)}%`,
+      reasoning: `MAXIMUM FEAR (${riskProfile})! Quality stock down ${Math.abs(priceChangePercent!).toFixed(1)}% - Panic = opportunity. Avg ${avgScore.toFixed(0)}/100, position ${position.toFixed(1)}%`,
       dataCompleteness,
       missingData,
     };
   }
 
-  // Quality on sale during dips
-  if (isDown5Plus && isStrong && position < 12) {
+  // Quality on sale during dips (use 40% of max as threshold)
+  const dipBuyLimit = thresholds.maxPosition * 0.4;
+  if (isDown5Plus && isStrong && position < dipBuyLimit) {
     return {
       buyPriority: 'BUY',
-      reasoning: `Quality on sale! Down ${Math.abs(priceChangePercent!).toFixed(1)}%, avg ${avgScore.toFixed(0)}/100, position ${position.toFixed(1)}% - Quality ${qualityScore}, Earnings ${earningsScore}`,
+      reasoning: `Quality on sale (${riskProfile})! Down ${Math.abs(priceChangePercent!).toFixed(1)}%, avg ${avgScore.toFixed(0)}/100, position ${position.toFixed(1)}% - Quality ${qualityScore}, Earnings ${earningsScore}`,
       dataCompleteness,
       missingData,
     };
   }
 
-  if (isDown3Plus && isQuality && position < 15) {
+  // Exceptional quality dips (use 60% of max as threshold)
+  const qualityDipLimit = thresholds.maxPosition * 0.6;
+  if (isDown3Plus && isQuality && position < qualityDipLimit) {
     return {
       buyPriority: 'BUY',
-      reasoning: `Exceptional quality dip! Down ${Math.abs(priceChangePercent!).toFixed(1)}%, avg ${avgScore.toFixed(0)}/100, position ${position.toFixed(1)}%`,
+      reasoning: `Exceptional quality dip (${riskProfile})! Down ${Math.abs(priceChangePercent!).toFixed(1)}%, avg ${avgScore.toFixed(0)}/100, position ${position.toFixed(1)}%`,
       dataCompleteness,
       missingData,
     };
@@ -628,20 +713,22 @@ export function generateRuleBased(
     };
   }
 
-  // Principle 3: Buy quality with room to grow position
-  if (isStrong && position < 8 && momentumScore >= 45) {
+  // Principle 3: Buy quality with room to grow position (risk-profile adjusted)
+  const smallPositionLimit = thresholds.maxPosition * 0.27; // Can buy if < 27% of max
+  if (isStrong && position < smallPositionLimit && momentumScore >= 45) {
     return {
       buyPriority: 'BUY',
-      reasoning: `Strong company (avg ${avgScore.toFixed(0)}/100), small position ${position.toFixed(1)}% - Quality ${qualityScore}, Earnings ${earningsScore}`,
+      reasoning: `Strong company (${riskProfile}): avg ${avgScore.toFixed(0)}/100, small position ${position.toFixed(1)}% - Quality ${qualityScore}, Earnings ${earningsScore}`,
       dataCompleteness,
       missingData,
     };
   }
 
-  if (isQuality && position < 15 && momentumScore >= 50) {
+  const qualityPositionLimit = thresholds.maxPosition * 0.5; // Can buy if < 50% of max
+  if (isQuality && position < qualityPositionLimit && momentumScore >= 50) {
     return {
       buyPriority: 'BUY',
-      reasoning: `Exceptional quality (avg ${avgScore.toFixed(0)}/100), position ${position.toFixed(1)}% has room`,
+      reasoning: `Exceptional quality (${riskProfile}): avg ${avgScore.toFixed(0)}/100, position ${position.toFixed(1)}% has room`,
       dataCompleteness,
       missingData,
     };

@@ -45,6 +45,7 @@ export interface StockData {
   currentPrice: number;
   change: number;
   changePercent: number;
+  volume: number; // Trading volume
   marketCap: number;
   peRatio: number | null;
   eps: number | null;
@@ -147,6 +148,7 @@ interface FinnhubQuote {
   o: number; // Open
   pc: number; // Previous close
   t?: number; // Timestamp
+  v?: number; // Volume
 }
 
 interface FinnhubMetrics {
@@ -539,6 +541,7 @@ export async function getStockData(ticker: string): Promise<StockData | null> {
       currentPrice: quote.c,
       change: quote.d,
       changePercent: quote.dp,
+      volume: quote.v || 0, // Trading volume for liquidity analysis
       marketCap: (metrics?.marketCapitalization || 0) * 1e6,
       peRatio: metrics?.peTTM ?? metrics?.peAnnual ?? null,
       eps: metrics?.epsTTM ?? metrics?.epsAnnual ?? null,

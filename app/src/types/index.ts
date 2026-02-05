@@ -11,6 +11,7 @@ export interface Stock {
   currentPrice?: number;
   priceChange?: number; // Dollar change from previous close
   priceChangePercent?: number; // Percentage change
+  volume?: number; // Trading volume (for liquidity risk)
   // Cached scores (refreshed from Yahoo Finance)
   qualityScore?: number;
   momentumScore?: number;
@@ -70,9 +71,18 @@ export interface SuggestedStock {
   reason: string;
 }
 
+export type RiskProfile = 'aggressive' | 'moderate' | 'conservative';
+
+export interface PortfolioSettings {
+  riskProfile: RiskProfile;
+  portfolioPeakValue?: number; // Track all-time high for drawdown calculation
+  lastPeakDate?: string;
+}
+
 export interface UserData {
   stocks: Stock[];
   lastUpdated: string;
+  settings?: PortfolioSettings;
 }
 
 // UI state types
