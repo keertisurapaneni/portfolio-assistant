@@ -28,6 +28,10 @@ export function StockDetail({ stock, onClose, onUpdate }: StockDetailProps) {
   };
   // Determine if fundamental metrics data is available
   const hasMetricsData = (stock.peRatio !== null && stock.peRatio !== undefined) || (stock.eps !== null && stock.eps !== undefined);
+  
+  // Debug logging
+  console.log(`[StockDetail] ${stock.ticker}: eps=${stock.eps}, peRatio=${stock.peRatio}, hasMetricsData=${hasMetricsData}`);
+  
   const conviction = getConvictionResult(inputs, hasMetricsData);
 
   // Posture styling

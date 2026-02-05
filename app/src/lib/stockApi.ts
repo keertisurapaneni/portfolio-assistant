@@ -580,7 +580,7 @@ export async function getStockData(ticker: string): Promise<StockData | null> {
     };
 
     console.log(
-      `[Finnhub] ${ticker}: quality=${qualityScore}, momentum=${momentumScore}, earnings=${earningsScore}, analyst=${analystScore}`
+      `[Finnhub] ${ticker}: quality=${qualityScore}, momentum=${momentumScore}, earnings=${earningsScore}, analyst=${analystScore}, eps=${result.eps}, peRatio=${result.peRatio}`
     );
 
     return result;
