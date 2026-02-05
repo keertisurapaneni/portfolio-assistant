@@ -6,6 +6,7 @@ import { getConvictionResult } from '../lib/convictionEngine';
 import { formatPositionValue, formatShares, formatAvgCost } from '../lib/portfolioCalc';
 import { getWarnings } from '../lib/warnings';
 import { generateAIInsights, type AIInsight } from '../lib/aiInsights';
+import { getRiskProfile } from '../lib/settingsStorage';
 import { cn } from '../lib/utils';
 
 // URL helpers
@@ -84,7 +85,9 @@ export function StockDetail({ stock, onClose, onUpdate }: StockDetailProps) {
         stock.shares,
         stock.avgCost,
         stock.priceChangePercent,
-        stock.analystRating
+        stock.analystRating,
+        getRiskProfile(),
+        stock.volume
       );
       setAIInsight(insight);
       setIsLoadingInsight(false);
@@ -258,6 +261,45 @@ export function StockDetail({ stock, onClose, onUpdate }: StockDetailProps) {
                   {aiInsight.summary}
                 </p>
               )}
+            </div>
+          )}
+
+          {/* Liquidity Risk Warning */}
+          {aiInsight && aiInsight.liquidityRisk && aiInsight.liquidityRisk !== 'LOW' && (
+            <div
+              className={cn(
+                'p-4 border rounded-lg',
+                aiInsight.liquidityRisk === 'HIGH'
+                  ? 'bg-red-50 border-red-300'
+                  : 'bg-yellow-50 border-yellow-300'
+              )}
+            >
+              <div className="flex items-start gap-2">
+                <AlertTriangle
+                  className={cn(
+                    'w-4 h-4 mt-0.5 flex-shrink-0',
+                    aiInsight.liquidityRisk === 'HIGH' ? 'text-red-600' : 'text-yellow-600'
+                  )}
+                />
+                <div className="flex-1">
+                  <h3
+                    className={cn(
+                      'text-sm font-medium mb-1',
+                      aiInsight.liquidityRisk === 'HIGH' ? 'text-red-900' : 'text-yellow-900'
+                    )}
+                  >
+                    Liquidity Risk: {aiInsight.liquidityRisk}
+                  </h3>
+                  <p
+                    className={cn(
+                      'text-sm',
+                      aiInsight.liquidityRisk === 'HIGH' ? 'text-red-700' : 'text-yellow-700'
+                    )}
+                  >
+                    {aiInsight.liquidityWarning}
+                  </p>
+                </div>
+              </div>
             </div>
           )}
 

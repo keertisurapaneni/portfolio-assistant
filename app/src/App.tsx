@@ -1,11 +1,12 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Briefcase, Lightbulb, Plus, RefreshCw } from 'lucide-react';
-import type { ActiveTab, StockWithConviction } from './types';
+import { Briefcase, Lightbulb, Plus, RefreshCw, Settings } from 'lucide-react';
+import type { ActiveTab, StockWithConviction, RiskProfile } from './types';
 import { getUserData, addStock, addTickers, updateStock, clearAllData } from './lib/storage';
 import { getConvictionResult } from './lib/convictionEngine';
 import { calculatePortfolioWeights } from './lib/portfolioCalc';
 import { getStockData, fetchMultipleStocks } from './lib/stockApiEdge';
 import { generateRuleBased } from './lib/aiInsights';
+import { getRiskProfile, setRiskProfile, calculateDrawdown } from './lib/settingsStorage';
 import { cn } from './lib/utils';
 
 // Components
@@ -13,14 +14,18 @@ import { Dashboard } from './components/Dashboard';
 import { SuggestedFinds } from './components/SuggestedFinds';
 import { StockDetail } from './components/StockDetail';
 import { AddTickersModal } from './components/AddTickersModal';
+import SettingsModal from './components/SettingsModal';
 
 function App() {
   const [activeTab, setActiveTab] = useState<ActiveTab>('portfolio');
   const [stocks, setStocks] = useState<StockWithConviction[]>([]);
   const [selectedStock, setSelectedStock] = useState<StockWithConviction | null>(null);
   const [showAddModal, setShowAddModal] = useState(false);
+  const [showSettingsModal, setShowSettingsModal] = useState(false);
+  const [riskProfile, setRiskProfileState] = useState<RiskProfile>(getRiskProfile());
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [refreshProgress, setRefreshProgress] = useState<string | null>(null);
+  const [portfolioDrawdown, setPortfolioDrawdown] = useState<number | null>(null);
   const [hasAutoRefreshed, setHasAutoRefreshed] = useState(false);
 
   // Load and process stocks
@@ -79,7 +84,8 @@ function App() {
         stock.shares,
         stock.avgCost,
         stock.priceChangePercent,
-        stock.currentPrice
+        stock.currentPrice,
+        riskProfile
       );
 
       return {
@@ -89,8 +95,18 @@ function App() {
       };
     });
 
+    // Calculate portfolio drawdown
+    const totalValue = withPortfolioContext.reduce(
+      (sum, stock) => sum + (stock.positionValue || 0),
+      0
+    );
+    if (totalValue > 0) {
+      const drawdown = calculateDrawdown(totalValue);
+      setPortfolioDrawdown(drawdown);
+    }
+
     setStocks(withPortfolioContext);
-  }, []);
+  }, [riskProfile]);
 
   // Initial load
   useEffect(() => {
@@ -264,6 +280,13 @@ function App() {
     setSelectedStock(null);
   };
 
+  // Handle risk profile change
+  const handleRiskProfileChange = (newProfile: RiskProfile) => {
+    setRiskProfile(newProfile); // Save to localStorage
+    setRiskProfileState(newProfile); // Update state
+    loadStocks(); // Recalculate with new profile
+  };
+
   // Get existing tickers for suggested tab
   const existingTickers = stocks.map(s => s.ticker);
 
@@ -282,6 +305,22 @@ function App() {
               </p>
             </div>
             <div className="flex items-center gap-3">
+              {/* Drawdown Indicator */}
+              {portfolioDrawdown !== null && portfolioDrawdown < -5 && (
+                <div className="flex items-center gap-2 px-3 py-2 bg-red-50 text-red-700 rounded-lg text-sm font-medium">
+                  <span>📉 Drawdown: {portfolioDrawdown.toFixed(1)}%</span>
+                </div>
+              )}
+
+              {/* Settings Button */}
+              <button
+                onClick={() => setShowSettingsModal(true)}
+                className="p-2.5 rounded-xl bg-[hsl(var(--secondary))] hover:bg-[hsl(var(--border))] transition-colors"
+                title={`Risk Profile: ${riskProfile.charAt(0).toUpperCase() + riskProfile.slice(1)}`}
+              >
+                <Settings className="w-5 h-5" />
+              </button>
+
               {/* Refresh Button */}
               {stocks.length > 0 && (
                 <button
@@ -386,6 +425,14 @@ function App() {
       {showAddModal && (
         <AddTickersModal onClose={() => setShowAddModal(false)} onAddTickers={handleAddTickers} />
       )}
+
+      {/* Settings Modal */}
+      <SettingsModal
+        isOpen={showSettingsModal}
+        onClose={() => setShowSettingsModal(false)}
+        currentProfile={riskProfile}
+        onProfileChange={handleRiskProfileChange}
+      />
     </div>
   );
 }
