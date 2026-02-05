@@ -215,7 +215,8 @@ export function ImportPortfolioModal({ onClose, onComplete }: ImportPortfolioMod
                   <div>
                     <p className="font-medium">No position data found</p>
                     <p className="text-xs mt-1">
-                      Portfolio weight and risk warnings won't be available without shares and avg cost data.
+                      Portfolio weight and risk warnings won't be available without shares and avg
+                      cost data.
                     </p>
                   </div>
                 </div>
