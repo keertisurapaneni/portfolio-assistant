@@ -233,7 +233,7 @@ export function StockCard({ stock, onClick }: StockCardProps) {
                             stock.priceChange === 0 && 'text-gray-500'
                           )}
                         >
-                          {stock.priceChange > 0 ? '+' : ''}${Math.abs(stock.priceChange).toFixed(2)} ({stock.priceChange > 0 ? '+' : ''}
+                          {stock.priceChange >= 0 ? '+' : '-'}${Math.abs(stock.priceChange).toFixed(2)} ({stock.priceChange >= 0 ? '+' : ''}
                           {stock.priceChangePercent.toFixed(2)}%)
                         </span>
                       )}
