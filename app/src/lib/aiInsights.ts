@@ -151,15 +151,24 @@ export async function generateAIInsights(
       const gainLossAbs = stock.currentPrice - avgCost;
       
       if (gainLossPct <= -7) {
-        gainLossContext = `\n⚠️ STOP-LOSS ALERT: Down ${Math.abs(gainLossPct).toFixed(1)}% from purchase ($${avgCost.toFixed(2)}) - Consider 7% rule`;
+        gainLossContext = `\n⚠️ STOP-LOSS ALERT: Down ${Math.abs(gainLossPct).toFixed(1)}% from purchase ($${avgCost.toFixed(2)}) - 7% rule (or 3-4% in volatile markets)`;
+      } else if (gainLossPct <= -3 && momentumScore < 40) {
+        gainLossContext = `\n⚠️ VOLATILE MARKET: Down ${Math.abs(gainLossPct).toFixed(1)}% from purchase ($${avgCost.toFixed(2)}) + weak momentum (${momentumScore}) - Tighten stops?`;
       } else if (gainLossPct >= 20) {
-        gainLossContext = `\n💰 PROFIT-TAKING ZONE: Up ${gainLossPct.toFixed(1)}% from purchase ($${avgCost.toFixed(2)}) - Consider 20-25% rule`;
+        gainLossContext = `\n💰 PROFIT-TAKING ZONE: Up ${gainLossPct.toFixed(1)}% from purchase ($${avgCost.toFixed(2)}) - 20-25% rule applies`;
+      } else if (gainLossPct >= 10 && momentumScore >= 80) {
+        gainLossContext = `\n🚀 RAPID GAINS: Up ${gainLossPct.toFixed(1)}%, momentum ${momentumScore} - Consider selling into strength (greed zone)`;
       } else if (gainLossPct < 0) {
         gainLossContext = `\nPosition P&L: ${gainLossPct.toFixed(1)}% (${gainLossAbs >= 0 ? '+' : ''}$${gainLossAbs.toFixed(2)})`;
       } else {
         gainLossContext = `\nPosition P&L: +${gainLossPct.toFixed(1)}% (+$${gainLossAbs.toFixed(2)})`;
       }
     }
+    
+    // Note on 2% Risk Rule (portfolio-level guidance)
+    const riskRuleNote = portfolioWeight && portfolioWeight > 0 
+      ? `\n📊 RISK RULE: Position is ${portfolioWeight.toFixed(1)}% of portfolio. Never risk >2% of total capital on any single trade.`
+      : '';
 
     // Build Wall Street analyst context
     let analystContext = '';
@@ -196,7 +205,7 @@ ${upsidePct ? `• Implied Upside: ${upsidePct}%` : ''}`;
 
 STOCK: ${stock.ticker} (${stock.name || stock.ticker})
 POSITION: ${positionContext}${!hasPositionData ? ' [No position data - be conservative]' : ''}
-PRICE TODAY: ${priceChangeText}${gainLossContext}
+PRICE TODAY: ${priceChangeText}${gainLossContext}${riskRuleNote}
 
 METRICS (0-100):
 • Quality: ${qualityScore}/100 ${qualityScore >= 60 ? '✓' : qualityScore >= 40 ? '⚠' : '✗'}  |  Earnings: ${earningsScore}/100 ${earningsScore >= 60 ? '✓' : earningsScore >= 40 ? '⚠' : '✗'}
@@ -205,27 +214,36 @@ METRICS (0-100):
 • FUNDAMENTALS: ${metrics.length > 0 ? metrics.join(', ') : '[Limited]'}
 ${analystContext}
 
-TRADING RULES TO APPLY:
+QUANTITATIVE TRADING RULES (Data-Driven, Remove Emotion):
 
-1. **SELL Rules** (Risk Management & Profit-Taking):
-   - 7-8% Stop-Loss: Cut losses immediately to protect capital
-   - 20-25% Profit Target: Lock in gains at pre-set targets
-   - Broken Fundamentals: Exit if financials weaken or competitive edge lost
-   - Rebalance: Consider trimming if position exceeds 25% of portfolio
-   - Tax Loss Harvesting: Use underperformers to offset capital gains
+1. **SELL Rules** (Strict Risk Management):
+   - 7-8% Stop-Loss: Auto-sell if down 7-8% from purchase (protect capital)
+   - 3-4% Tightened Stops: Use in volatile/correcting markets for faster exit
+   - 2% Risk Rule: Never risk >2% of total portfolio on single position loss
+   - 20-25% Profit Target: Lock gains at pre-set targets (remove greed)
+   - Sell Into Strength: Exit during rapid, excessive gains (maximum greed)
+   - Fundamental Decay: Exit when earnings/growth/competitive position deteriorates
+   - Market Correction: Sell when broader market enters correction mode
+   - Rebalance: Trim if position >25% of portfolio (unless exceptional quality)
+   - Wash-Sale: Don't rebuy within 30 days after tax-loss sale
    
 2. **BUY Rules** (Systematic Entry Points):
-   - Market Dips: Buy strong companies during temporary downturns
-   - Oversold Conditions: Look for RSI < 30 or technical oversold signals
-   - Catalysts: Buy on analyst upgrades, product launches, strong earnings
-   - Valuation: Prefer P/E < 20 for value, but accept higher for growth
-   - Timing: Best opportunities in first 15-60 mins of trading day
+   - Maximum Fear: Buy quality during market panic/recession (buy low)
+   - Breakout Point: Buy above resistance level with high volume confirmation
+   - Market Dips: Buy quality down 3-5%+ during temporary weakness
+   - P/E Comparison: Prefer P/E < industry average or < 20 for value
+   - Analyst Upgrades: Buy on upward price target revisions
+   - Oversold RSI: Look for RSI < 30 technical oversold signals
+   - Volume Confirmation: Heavy first-hour volume establishes trend
+   - Optimal Timing: First 15-60 mins after open (high volatility)
+   - Optimal Months: April, Oct, Nov historically stronger for buying
    
 3. **HOLD Rules** (Long-Term Compounding):
-   - Never sell quality just because it hit new highs (let winners run)
-   - Hold 1+ year for long-term capital gains tax benefits
-   - Ignore short-term noise when fundamentals remain strong
-   - Base decisions on strategy, not emotion
+   - Never sell quality at new highs (let winners compound)
+   - Hold 1+ year for long-term capital gains tax rates
+   - 70/30 Allocation: Maintain ~70% equities, 30% bonds for balance
+   - Ignore noise when fundamentals strong
+   - Follow strategy, not emotion
 
 INVESTMENT PHILOSOPHY (Learn from these examples):
 
@@ -265,14 +283,29 @@ Example 9: Stock Up 23% from Purchase - Quality 60, Earnings 65, P&L: +23.1%
 → Decision: "SELL"
 → Why: Hit 20-25% profit target. Lock in gains. Can reassess entry later if needed.
 
-KEY PRINCIPLES:
-1. Risk Management First: 7-8% stop-loss and 20-25% profit-taking override other factors
-2. Quality First: Never sell great companies (70+), trim mediocre ones (<50)
-3. Buy Dips: Strong stocks down 3-5%+ = opportunity (if position <15%)
-4. Position Sizing: Can own 20%+ of exceptional winners, but rebalance if >25% + not quality
-5. Momentum Matters: Weak momentum (<40) + weak quality (<50) = avoid/exit
-6. Be Selective: Most stocks → null. Only show BUY for top opportunities, SELL for real problems
-7. Think Long-Term: Prefer holding 1+ year for tax benefits, but rules override emotions
+Example 10: Stock Down 4% in Volatile Market - Quality 58, Earnings 62, Momentum 38 (declining)
+→ Decision: "SELL"
+→ Why: Market in correction, momentum deteriorating. Tighten stop to 3-4% in volatile conditions.
+
+Example 11: Rapid 15% Gain in 3 Days - Quality 55, Earnings 60, Momentum 85
+→ Decision: "SELL"
+→ Why: Excessive fast-paced gains = maximum greed. Sell into strength, take profits quickly.
+
+Example 12: Quality Stock During Market Panic - Quality 75, Earnings 70, DOWN 8% (market -5%)
+→ Decision: "BUY"
+→ Why: Maximum fear = opportunity. Exceptional quality on sale during broad market panic.
+
+KEY PRINCIPLES (Quantitative, Data-Driven):
+1. Risk Management First: 7-8% stop-loss (3-4% in volatile markets) and 20-25% profit-taking override all
+2. 2% Risk Cap: Never risk >2% of total portfolio on any single position
+3. Buy Fear, Sell Greed: Enter during panic, exit during euphoria or rapid gains
+4. Quality + Math: Exceptional quality (70+) gets more leeway, but math rules apply
+5. Volume = Confirmation: High volume on breakouts = valid signal
+6. Market Context: Tighten stops in corrections, buy aggressively in maximum fear
+7. Position Sizing: Can own 20%+ of winners, but rebalance if >25% + not exceptional
+8. Momentum Matters: Weak momentum (<40) + weak quality (<50) = immediate exit
+9. Be Selective: Most stocks → null. Only BUY top opportunities, SELL real problems
+10. Systematic Approach: Follow rules, not emotions. Data beats gut feelings
 
 YOUR TASK:
 Analyze ${stock.ticker} using these principles. Think like the examples above.
@@ -469,12 +502,28 @@ export function generateRuleBased(
   const isDown3Plus = priceChangePercent !== undefined && priceChangePercent <= -3;
   const isDown5Plus = priceChangePercent !== undefined && priceChangePercent <= -5;
 
-  // CRITICAL TRADING RULES: Apply 7% stop-loss and 20-25% profit-taking
+  // CRITICAL TRADING RULES: Apply stop-loss and profit-taking
   // These override other logic (risk management first!)
   if (hasCostData && avgCost && avgCost > 0 && currentPrice && currentPrice > 0) {
     const gainLossPct = ((currentPrice - avgCost) / avgCost) * 100;
+    
+    // Detect volatile/correcting market conditions (use momentum as proxy)
+    const isVolatileMarket = momentumScore < 40;
 
-    // Rule 1: 7-8% Stop-Loss Rule (protect capital)
+    // Rule 1A: Tightened Stop-Loss (3-4%) in Volatile Markets
+    if (isVolatileMarket && gainLossPct <= -3) {
+      // In volatile markets, tighten stops to 3-4% for faster exits
+      if (!isQuality || momentumScore < 35) {
+        return {
+          buyPriority: 'SELL',
+          reasoning: `Tightened stop-loss (volatile market): Down ${Math.abs(gainLossPct).toFixed(1)}% from purchase ($${avgCost.toFixed(2)}) - Momentum ${momentumScore}`,
+          dataCompleteness,
+          missingData,
+        };
+      }
+    }
+
+    // Rule 1B: Standard 7-8% Stop-Loss Rule (protect capital)
     if (gainLossPct <= -7) {
       // Exception: Don't stop-loss on quality stocks during market-wide dips
       // (temporary market weakness vs fundamental problems)
@@ -488,7 +537,18 @@ export function generateRuleBased(
       }
     }
 
-    // Rule 2: 20-25% Profit-Taking Rule (lock in gains)
+    // Rule 2A: Sell Into Strength (Excessive Fast Gains = Maximum Greed)
+    // If stock up 10-15%+ AND very high momentum (80+), likely euphoria - take profits fast
+    if (gainLossPct >= 10 && momentumScore >= 80) {
+      return {
+        buyPriority: 'SELL',
+        reasoning: `Sell into strength: Up ${gainLossPct.toFixed(1)}% with extreme momentum (${momentumScore}) - Maximum greed, take profits fast`,
+        dataCompleteness,
+        missingData,
+      };
+    }
+
+    // Rule 2B: 20-25% Profit-Taking Rule (lock in gains)
     if (gainLossPct >= 20) {
       // Exception: Don't sell exceptional quality that's still strong
       // ("Let winners run" unless momentum deteriorating)
@@ -517,7 +577,20 @@ export function generateRuleBased(
     // For exceptional quality (65+) with strong momentum, just note it but don't force sell
   }
 
-  // Principle 1: Buy quality on dips (best opportunities)
+  // Principle 1: Buy During Maximum Fear (panic = opportunity)
+  const isDown8Plus = priceChangePercent !== undefined && priceChangePercent <= -8;
+  
+  // Maximum Fear: Quality stock down 8%+ = panic selling, aggressive buy
+  if (isDown8Plus && isQuality && position < 20) {
+    return {
+      buyPriority: 'BUY',
+      reasoning: `MAXIMUM FEAR! Quality stock down ${Math.abs(priceChangePercent!).toFixed(1)}% - Panic = opportunity. Avg ${avgScore.toFixed(0)}/100, position ${position.toFixed(1)}%`,
+      dataCompleteness,
+      missingData,
+    };
+  }
+
+  // Quality on sale during dips
   if (isDown5Plus && isStrong && position < 12) {
     return {
       buyPriority: 'BUY',
