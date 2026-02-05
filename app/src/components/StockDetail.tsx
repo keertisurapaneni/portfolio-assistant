@@ -27,11 +27,15 @@ export function StockDetail({ stock, onClose, onUpdate }: StockDetailProps) {
     analystScore: stock.analystScore ?? 50,
   };
   // Determine if fundamental metrics data is available
-  const hasMetricsData = (stock.peRatio !== null && stock.peRatio !== undefined) || (stock.eps !== null && stock.eps !== undefined);
-  
+  const hasMetricsData =
+    (stock.peRatio !== null && stock.peRatio !== undefined) ||
+    (stock.eps !== null && stock.eps !== undefined);
+
   // Debug logging
-  console.log(`[StockDetail] ${stock.ticker}: eps=${stock.eps}, peRatio=${stock.peRatio}, hasMetricsData=${hasMetricsData}`);
-  
+  console.log(
+    `[StockDetail] ${stock.ticker}: eps=${stock.eps}, peRatio=${stock.peRatio}, roe=${stock.roe}, profitMargin=${stock.profitMargin}, operatingMargin=${stock.operatingMargin}, hasMetricsData=${hasMetricsData}`
+  );
+
   const conviction = getConvictionResult(inputs, hasMetricsData);
 
   // Posture styling
@@ -177,25 +181,111 @@ export function StockDetail({ stock, onClose, onUpdate }: StockDetailProps) {
           {/* Key Fundamentals */}
           <div>
             <h3 className="text-sm font-medium text-[hsl(var(--foreground))] mb-3">
-              📊 Key Fundamentals
+              📊 Key Fundamentals (Quality Score Inputs)
             </h3>
-            {(stock.peRatio !== null && stock.peRatio !== undefined) || (stock.eps !== null && stock.eps !== undefined) ? (
-              <div className="grid grid-cols-2 gap-3">
-                {stock.eps !== null && stock.eps !== undefined && (
-                  <div className="p-3 bg-[hsl(var(--secondary))] rounded-lg">
-                    <p className="text-xs text-[hsl(var(--muted-foreground))]">EPS (TTM)</p>
-                    <p className={cn("font-semibold", stock.eps < 0 ? "text-red-600" : "text-green-600")}>
-                      ${stock.eps.toFixed(2)}
-                    </p>
-                  </div>
-                )}
-                {stock.peRatio !== null && stock.peRatio !== undefined && (
-                  <div className="p-3 bg-[hsl(var(--secondary))] rounded-lg">
-                    <p className="text-xs text-[hsl(var(--muted-foreground))]">P/E Ratio</p>
-                    <p className="font-semibold">
-                      {stock.peRatio < 0 ? 'N/A' : stock.peRatio.toFixed(1)}
-                    </p>
-                  </div>
+            {(stock.peRatio !== null && stock.peRatio !== undefined) ||
+            (stock.eps !== null && stock.eps !== undefined) ||
+            (stock.roe !== null && stock.roe !== undefined) ||
+            (stock.profitMargin !== null && stock.profitMargin !== undefined) ||
+            (stock.operatingMargin !== null && stock.operatingMargin !== undefined) ? (
+              <div className="space-y-3">
+                {/* Show only available metrics in a flexible grid */}
+                <div className="grid grid-cols-2 gap-3">
+                  {stock.eps !== null && stock.eps !== undefined && (
+                    <div className="p-3 bg-[hsl(var(--secondary))] rounded-lg">
+                      <p className="text-xs text-[hsl(var(--muted-foreground))]">EPS (TTM)</p>
+                      <p
+                        className={cn(
+                          'font-semibold',
+                          stock.eps < 0 ? 'text-red-600' : 'text-green-600'
+                        )}
+                      >
+                        ${stock.eps.toFixed(2)}
+                      </p>
+                    </div>
+                  )}
+                  {stock.peRatio !== null && stock.peRatio !== undefined && (
+                    <div className="p-3 bg-[hsl(var(--secondary))] rounded-lg">
+                      <p className="text-xs text-[hsl(var(--muted-foreground))]">P/E Ratio</p>
+                      <p
+                        className={cn(
+                          'font-semibold',
+                          stock.peRatio < 0
+                            ? 'text-gray-400'
+                            : stock.peRatio <= 25
+                              ? 'text-green-600'
+                              : stock.peRatio > 40
+                                ? 'text-red-600'
+                                : 'text-yellow-600'
+                        )}
+                      >
+                        {stock.peRatio < 0 ? 'N/A' : stock.peRatio.toFixed(1)}
+                      </p>
+                    </div>
+                  )}
+                  {stock.roe !== null && stock.roe !== undefined && (
+                    <div className="p-3 bg-[hsl(var(--secondary))] rounded-lg">
+                      <p className="text-xs text-[hsl(var(--muted-foreground))]">ROE</p>
+                      <p
+                        className={cn(
+                          'font-semibold',
+                          stock.roe < 0 ? 'text-red-600' : stock.roe > 15 ? 'text-green-600' : ''
+                        )}
+                      >
+                        {stock.roe.toFixed(1)}%
+                      </p>
+                    </div>
+                  )}
+                  {stock.profitMargin !== null && stock.profitMargin !== undefined && (
+                    <div className="p-3 bg-[hsl(var(--secondary))] rounded-lg">
+                      <p className="text-xs text-[hsl(var(--muted-foreground))]">Profit Margin</p>
+                      <p
+                        className={cn(
+                          'font-semibold',
+                          stock.profitMargin < 0
+                            ? 'text-red-600'
+                            : stock.profitMargin > 20
+                              ? 'text-green-600'
+                              : ''
+                        )}
+                      >
+                        {stock.profitMargin.toFixed(1)}%
+                      </p>
+                    </div>
+                  )}
+                  {stock.operatingMargin !== null && stock.operatingMargin !== undefined && (
+                    <div className="p-3 bg-[hsl(var(--secondary))] rounded-lg">
+                      <p className="text-xs text-[hsl(var(--muted-foreground))]">
+                        Operating Margin
+                      </p>
+                      <p
+                        className={cn(
+                          'font-semibold',
+                          stock.operatingMargin < 0
+                            ? 'text-red-600'
+                            : stock.operatingMargin > 20
+                              ? 'text-green-600'
+                              : ''
+                        )}
+                      >
+                        {stock.operatingMargin.toFixed(1)}%
+                      </p>
+                    </div>
+                  )}
+                </div>
+
+                {/* Only show note if MOST metrics are missing (3 or more out of 5) */}
+                {[
+                  stock.eps,
+                  stock.peRatio,
+                  stock.roe,
+                  stock.profitMargin,
+                  stock.operatingMargin,
+                ].filter(m => m === null || m === undefined).length >= 3 && (
+                  <p className="text-xs text-gray-600 bg-gray-50 p-2 rounded">
+                    ℹ️ Limited metrics available. Quality score uses available data + earnings
+                    history.
+                  </p>
                 )}
               </div>
             ) : (
@@ -204,7 +294,8 @@ export function StockDetail({ stock, onClose, onUpdate }: StockDetailProps) {
                   <span className="font-medium">⚠️ Limited fundamental data available</span>
                 </p>
                 <p className="text-amber-700 text-xs mt-1">
-                  Finnhub free tier may not have full metrics for {stock.ticker}. Check EPS history below and Yahoo Finance for detailed fundamentals.
+                  Finnhub free tier may not have full metrics for {stock.ticker}. Check EPS history
+                  below and Yahoo Finance for detailed fundamentals.
                 </p>
               </div>
             )}
@@ -353,7 +444,7 @@ export function StockDetail({ stock, onClose, onUpdate }: StockDetailProps) {
           {stock.quarterlyEPS && stock.quarterlyEPS.length > 0 && (
             <div>
               <h3 className="text-sm font-medium text-[hsl(var(--foreground))] mb-3">
-                📈 EPS History
+                📈 EPS History (Last 4 Quarters)
               </h3>
               <div className="space-y-2">
                 {stock.quarterlyEPS.slice(0, 4).map((quarter, index) => {
@@ -389,7 +480,8 @@ export function StockDetail({ stock, onClose, onUpdate }: StockDetailProps) {
 
           {/* Data source note */}
           <p className="text-xs text-[hsl(var(--muted-foreground))] italic text-center py-2">
-            Score is 100% data-driven from Finnhub. Conviction reflects cumulative signals, not a price prediction.
+            Score is 100% data-driven from Finnhub. Conviction reflects cumulative signals, not a
+            price prediction.
           </p>
 
           {/* Delete */}
@@ -410,15 +502,7 @@ export function StockDetail({ stock, onClose, onUpdate }: StockDetailProps) {
 }
 
 // Score bar component with info tooltip
-function ScoreBar({
-  label,
-  value,
-  tooltip,
-}: {
-  label: string;
-  value: number;
-  tooltip?: string;
-}) {
+function ScoreBar({ label, value, tooltip }: { label: string; value: number; tooltip?: string }) {
   const [showTooltip, setShowTooltip] = useState(false);
 
   const getBarColor = (val: number) => {

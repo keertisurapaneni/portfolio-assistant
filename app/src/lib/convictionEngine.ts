@@ -155,7 +155,7 @@ export function getConfidence(inputs: ScoreInputs, finalScore: number): Confiden
 
 /**
  * Generate human-readable rationale bullets.
- * 
+ *
  * @param inputs - Score inputs including metadata about data availability
  * @param hasMetricsData - Whether Finnhub returned fundamental metrics (optional)
  */
@@ -169,6 +169,8 @@ export function generateRationale(inputs: ScoreInputs, hasMetricsData = true): s
   // Quality assessment - be careful not to claim "unprofitable" if we don't have data
   if (inputs.qualityScore >= 70) {
     bullets.push('Strong profitability and fundamentals');
+  } else if (inputs.qualityScore === 0 && hasMetricsData) {
+    bullets.push('🚨 DEEPLY UNPROFITABLE: Negative EPS and margins across the board');
   } else if (inputs.qualityScore < 15 && !earningsImproving && hasMetricsData) {
     bullets.push('🚨 UNPROFITABLE: Company is losing money');
   } else if (inputs.qualityScore < 25 && earningsImproving) {
@@ -220,8 +222,8 @@ export function generateRationale(inputs: ScoreInputs, hasMetricsData = true): s
       bullets.unshift('🚨 RED FLAG: Both quality and earnings severely impaired');
     }
   } else if (inputs.qualityScore < 25 && inputs.earningsScore >= 55) {
-    // Recently turning profitable - highlight the positive trend
-    bullets.unshift('💡 Growth story: Recently profitable with improving earnings');
+    // Earnings improving but still unprofitable - be honest about it
+    bullets.unshift('📈 Improving trajectory: Strong earnings growth but not yet profitable');
   }
 
   return bullets.slice(0, 3);
@@ -229,7 +231,7 @@ export function generateRationale(inputs: ScoreInputs, hasMetricsData = true): s
 
 /**
  * Get full conviction result for a stock.
- * 
+ *
  * @param inputs - Score inputs for the stock
  * @param hasMetricsData - Whether fundamental metrics data is available from Finnhub
  */

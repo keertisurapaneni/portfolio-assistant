@@ -336,19 +336,21 @@ function calculateEarningsScoreWithHistory(
   // Check for recent profitability FIRST (last 2-3 quarters)
   let recentlyProfitable = false;
   let persistentlyUnprofitable = false;
-  
+
   if (earnings && earnings.length >= 2) {
     const lastTwoQuarters = earnings.slice(0, 2);
-    
+
     // Company is "recently profitable" if last 2 quarters are positive
     recentlyProfitable = lastTwoQuarters.every(q => q.actual > 0);
-    
+
     // Company is "persistently unprofitable" if 3+ of last 4 quarters are negative
     const negativeQuarters = earnings.slice(0, 4).filter(q => q.actual < 0).length;
     persistentlyUnprofitable = negativeQuarters >= 3;
-    
+
     if (recentlyProfitable) {
-      console.log(`[Earnings] Recently profitable: Last ${lastTwoQuarters.length} quarters positive`);
+      console.log(
+        `[Earnings] Recently profitable: Last ${lastTwoQuarters.length} quarters positive`
+      );
     }
   }
 

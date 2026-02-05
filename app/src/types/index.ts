@@ -17,6 +17,9 @@ export interface Stock {
   // Fundamental metrics (for display)
   eps?: number | null;
   peRatio?: number | null;
+  roe?: number | null;
+  profitMargin?: number | null;
+  operatingMargin?: number | null;
   // Analyst rating details
   analystRating?: {
     rating: string;

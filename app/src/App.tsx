@@ -151,6 +151,9 @@ function App() {
           quarterlyEPS: data.quarterlyEPS,
           eps: data.eps,
           peRatio: data.peRatio,
+          roe: data.roe,
+          profitMargin: data.profitMargin,
+          operatingMargin: data.operatingMargin,
         });
         loadStocks();
       }
@@ -186,6 +189,9 @@ function App() {
           quarterlyEPS: data.quarterlyEPS,
           eps: data.eps,
           peRatio: data.peRatio,
+          roe: data.roe,
+          profitMargin: data.profitMargin,
+          operatingMargin: data.operatingMargin,
         });
         updated++;
       });

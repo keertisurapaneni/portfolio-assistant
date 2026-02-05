@@ -48,6 +48,9 @@ export interface StockData {
   marketCap: number;
   peRatio: number | null;
   eps: number | null;
+  roe: number | null;
+  profitMargin: number | null;
+  operatingMargin: number | null;
   fiftyTwoWeekHigh: number;
   fiftyTwoWeekLow: number;
   beta: number | null;
@@ -539,6 +542,9 @@ export async function getStockData(ticker: string): Promise<StockData | null> {
       marketCap: (metrics?.marketCapitalization || 0) * 1e6,
       peRatio: metrics?.peTTM ?? metrics?.peAnnual ?? null,
       eps: metrics?.epsTTM ?? metrics?.epsAnnual ?? null,
+      roe: metrics?.roeTTM ?? metrics?.roeAnnual ?? null,
+      profitMargin: metrics?.netProfitMarginTTM ?? metrics?.netProfitMarginAnnual ?? null,
+      operatingMargin: metrics?.operatingMarginTTM ?? metrics?.operatingMarginAnnual ?? null,
       fiftyTwoWeekHigh: metrics?.['52WeekHigh'] || 0,
       fiftyTwoWeekLow: metrics?.['52WeekLow'] || 0,
       beta: metrics?.beta ?? null,
@@ -552,7 +558,10 @@ export async function getStockData(ticker: string): Promise<StockData | null> {
     };
 
     console.log(
-      `[Edge API] ${ticker}: quality=${qualityScore}, momentum=${momentumScore}, earnings=${earningsScore}, analyst=${analystScore}, eps=${result.eps}, peRatio=${result.peRatio}`
+      `[Edge API] ${ticker}: quality=${qualityScore}, momentum=${momentumScore}, earnings=${earningsScore}, analyst=${analystScore}`
+    );
+    console.log(
+      `[Edge API] ${ticker} metrics: eps=${result.eps}, peRatio=${result.peRatio}, roe=${result.roe}, profitMargin=${result.profitMargin}, operatingMargin=${result.operatingMargin}`
     );
 
     return result;
