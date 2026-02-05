@@ -97,121 +97,128 @@ export function StockCard({ stock, onClick }: StockCardProps) {
             </span>
           </div>
 
-          {/* Middle Row: Posture Badge + Buy Priority + Score + Delta */}
-          <div className="flex items-center gap-3 mb-3 flex-wrap">
-            {stock.isLoading ? (
-              /* Loading skeleton */
-              <>
-                <div className="h-8 w-32 bg-gray-200 animate-pulse rounded-full" />
-                <div className="h-8 w-20 bg-gray-200 animate-pulse rounded" />
-              </>
-            ) : (
-              <>
-                {/* Posture Pill - with confidence intensity */}
-                <span
-                  className={cn(
-                    'inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-semibold border',
-                    posture.bg,
-                    posture.text,
-                    posture.border,
-                    // High confidence = ring highlight
-                    conviction.confidence === 'High' && 'ring-2 ring-offset-1',
-                    conviction.confidence === 'High' &&
-                      conviction.posture === 'Buy' &&
-                      'ring-emerald-400',
-                    conviction.confidence === 'High' &&
-                      conviction.posture === 'Hold' &&
-                      'ring-amber-400',
-                    conviction.confidence === 'High' &&
-                      conviction.posture === 'Sell' &&
-                      'ring-red-400',
-                    // Low confidence = dashed border
-                    conviction.confidence === 'Low' && 'border-dashed'
-                  )}
-                >
-                  <span className={cn('w-2 h-2 rounded-full', posture.dot)} />
-                  {conviction.posture}
-                  <span
-                    className={cn('font-normal', conviction.confidence === 'High' && 'font-medium')}
-                  >
-                    ({conviction.confidence})
-                  </span>
-                </span>
-
-                {/* Trade Signal Badge - Only show BUY or SELL */}
-                {stock.buyPriority && (
+          {/* Middle Row: Conviction Badge + Score + Delta (always together) */}
+          <div className="flex items-center justify-between gap-3 mb-3">
+            <div className="flex items-center gap-3 flex-wrap">
+              {stock.isLoading ? (
+                /* Loading skeleton */
+                <>
+                  <div className="h-8 w-32 bg-gray-200 animate-pulse rounded-full" />
+                  <div className="h-8 w-20 bg-gray-200 animate-pulse rounded" />
+                </>
+              ) : (
+                <>
+                  {/* Posture Pill - with confidence intensity */}
                   <span
                     className={cn(
-                      'inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-bold border',
-                      stock.buyPriority === 'BUY' &&
-                        'bg-green-100 text-green-800 border-green-300 shadow-sm',
-                      stock.buyPriority === 'SELL' && 'bg-red-100 text-red-700 border-red-300',
-                      // Add subtle dashed border if missing position data
-                      !stock.shares && 'border-dashed opacity-75'
+                      'inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-semibold border',
+                      posture.bg,
+                      posture.text,
+                      posture.border,
+                      // High confidence = ring highlight
+                      conviction.confidence === 'High' && 'ring-2 ring-offset-1',
+                      conviction.confidence === 'High' &&
+                        conviction.posture === 'Buy' &&
+                        'ring-emerald-400',
+                      conviction.confidence === 'High' &&
+                        conviction.posture === 'Hold' &&
+                        'ring-amber-400',
+                      conviction.confidence === 'High' &&
+                        conviction.posture === 'Sell' &&
+                        'ring-red-400',
+                      // Low confidence = dashed border
+                      conviction.confidence === 'Low' && 'border-dashed'
                     )}
-                    title={
-                      !stock.shares
-                        ? 'Limited data - add position info for accurate signals'
-                        : stock.buyPriority === 'BUY'
-                          ? 'Strong opportunity - deploy capital'
-                          : 'Trim position - reduce risk'
-                    }
                   >
-                    {stock.buyPriority === 'BUY' && '🎯 BUY'}
-                    {stock.buyPriority === 'SELL' && '🔻 SELL'}
-                    {!stock.shares && <span className="text-[0.6rem]">*</span>}
+                    <span className={cn('w-2 h-2 rounded-full', posture.dot)} />
+                    {conviction.posture}
+                    <span
+                      className={cn('font-normal', conviction.confidence === 'High' && 'font-medium')}
+                    >
+                      ({conviction.confidence})
+                    </span>
                   </span>
-                )}
 
-                {/* Score */}
-                <div className="flex items-baseline gap-1">
-                  <span className="text-2xl font-bold text-[hsl(var(--foreground))]">
-                    {conviction.score}
-                  </span>
-                  <span className="text-sm text-[hsl(var(--muted-foreground))]">/100</span>
-                </div>
-
-                {/* Delta */}
-                {delta !== 0 && (
-                  <span className={cn('flex items-center gap-1 text-sm font-medium', deltaColor)}>
-                    <DeltaIcon className="w-4 h-4" />
-                    {delta > 0 ? `+${delta}` : delta}
-                  </span>
-                )}
-
-                {/* Data Age (if > 5 minutes) */}
-                {stock.lastDataFetch &&
-                  (() => {
-                    const ageMs = Date.now() - new Date(stock.lastDataFetch).getTime();
-                    const ageMinutes = Math.round(ageMs / (1000 * 60));
-                    return ageMinutes >= 5 ? (
-                      <span className="text-xs text-[hsl(var(--muted-foreground))] opacity-60">
-                        {ageMinutes < 60 ? `${ageMinutes}m` : `${Math.round(ageMinutes / 60)}h`}
+                  {/* Score + Delta (always together) */}
+                  <div className="flex items-center gap-2">
+                    <div className="flex items-baseline gap-1">
+                      <span className="text-2xl font-bold text-[hsl(var(--foreground))]">
+                        {conviction.score}
                       </span>
-                    ) : null;
-                  })()}
-              </>
-            )}
+                      <span className="text-sm text-[hsl(var(--muted-foreground))]">/100</span>
+                    </div>
 
-            {/* Warning Badge */}
-            {!stock.isLoading && topWarning && (
-              <span
-                className={cn(
-                  'inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium border',
-                  topWarning.severity === 'critical' && 'bg-red-100 text-red-700 border-red-200',
-                  topWarning.severity === 'warning' &&
-                    'bg-amber-100 text-amber-700 border-amber-200',
-                  topWarning.severity === 'info' && 'bg-blue-100 text-blue-700 border-blue-200'
-                )}
-                title={topWarning.action}
-              >
-                <AlertTriangle className="w-3 h-3" />
-                {topWarning.type === 'loss' && 'Loss'}
-                {topWarning.type === 'concentration' && 'Concentrated'}
-                {topWarning.type === 'gain' && 'Gain'}
-                {topWarning.type === 'rebalance' && 'Rebalance'}
-              </span>
-            )}
+                    {/* Delta */}
+                    {delta !== 0 && (
+                      <span className={cn('flex items-center gap-1 text-sm font-medium', deltaColor)}>
+                        <DeltaIcon className="w-4 h-4" />
+                        {delta > 0 ? `+${delta}` : delta}
+                      </span>
+                    )}
+
+                    {/* Data Age (if > 5 minutes) */}
+                    {stock.lastDataFetch &&
+                      (() => {
+                        const ageMs = Date.now() - new Date(stock.lastDataFetch).getTime();
+                        const ageMinutes = Math.round(ageMs / (1000 * 60));
+                        return ageMinutes >= 5 ? (
+                          <span className="text-xs text-[hsl(var(--muted-foreground))] opacity-60">
+                            {ageMinutes < 60 ? `${ageMinutes}m` : `${Math.round(ageMinutes / 60)}h`}
+                          </span>
+                        ) : null;
+                      })()}
+                  </div>
+                </>
+              )}
+            </div>
+
+            {/* Right side: Buy Priority + Warnings */}
+            <div className="flex items-center gap-2">
+              {/* Trade Signal Badge - Only show BUY or SELL */}
+              {!stock.isLoading && stock.buyPriority && (
+                <span
+                  className={cn(
+                    'inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-bold border',
+                    stock.buyPriority === 'BUY' &&
+                      'bg-green-100 text-green-800 border-green-300 shadow-sm',
+                    stock.buyPriority === 'SELL' && 'bg-red-100 text-red-700 border-red-300',
+                    // Add subtle dashed border if missing position data
+                    !stock.shares && 'border-dashed opacity-75'
+                  )}
+                  title={
+                    !stock.shares
+                      ? 'Limited data - add position info for accurate signals'
+                      : stock.buyPriority === 'BUY'
+                        ? 'Strong opportunity - deploy capital'
+                        : 'Trim position - reduce risk'
+                  }
+                >
+                  {stock.buyPriority === 'BUY' && '🎯 BUY'}
+                  {stock.buyPriority === 'SELL' && '🔻 SELL'}
+                  {!stock.shares && <span className="text-[0.6rem]">*</span>}
+                </span>
+              )}
+
+              {/* Warning Badge */}
+              {!stock.isLoading && topWarning && (
+                <span
+                  className={cn(
+                    'inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium border',
+                    topWarning.severity === 'critical' && 'bg-red-100 text-red-700 border-red-200',
+                    topWarning.severity === 'warning' &&
+                      'bg-amber-100 text-amber-700 border-amber-200',
+                    topWarning.severity === 'info' && 'bg-blue-100 text-blue-700 border-blue-200'
+                  )}
+                  title={topWarning.action}
+                >
+                  <AlertTriangle className="w-3 h-3" />
+                  {topWarning.type === 'loss' && 'Loss'}
+                  {topWarning.type === 'concentration' && 'Concentrated'}
+                  {topWarning.type === 'gain' && 'Gain'}
+                  {topWarning.type === 'rebalance' && 'Rebalance'}
+                </span>
+              )}
+            </div>
           </div>
 
           {/* Bottom Row: Rationale */}
