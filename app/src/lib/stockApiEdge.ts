@@ -541,6 +541,13 @@ export async function getStockData(ticker: string): Promise<StockData | null> {
       recommendationsArray = Object.values(recommendations);
     }
 
+    // Convert news to proper format if it's an object (happens with cached JSONB data)
+    let newsArray: FinnhubNews[] | null = news;
+    if (news && !Array.isArray(news)) {
+      newsArray = Object.values(news);
+      console.log(`[Stock API] ${symbol} - Converted news object to array (${newsArray.length} items)`);
+    }
+
     // Calculate all scores
     const qualityScore = calculateQualityScore(metrics);
     const momentumScore = calculateMomentumScore(quote, metrics);
@@ -560,20 +567,23 @@ export async function getStockData(ticker: string): Promise<StockData | null> {
 
     // Process recent news (last 3 items, last 7 days)
     const recentNews: NewsItem[] = [];
-    if (news && Array.isArray(news)) {
+    if (newsArray && newsArray.length > 0) {
+      console.log(`[Stock API] ${symbol} - Received ${newsArray.length} news items`);
       const sevenDaysAgo = Date.now() / 1000 - 7 * 24 * 60 * 60;
+      const filteredNews = newsArray.filter(n => n.datetime > sevenDaysAgo);
+      console.log(`[Stock API] ${symbol} - ${filteredNews.length} news items from last 7 days`);
       recentNews.push(
-        ...news
-          .filter(n => n.datetime > sevenDaysAgo)
-          .slice(0, 3)
-          .map(n => ({
-            headline: n.headline,
-            summary: n.summary,
-            source: n.source,
-            datetime: n.datetime,
-            url: n.url,
-          }))
+        ...filteredNews.slice(0, 3).map(n => ({
+          headline: n.headline,
+          summary: n.summary,
+          source: n.source,
+          datetime: n.datetime,
+          url: n.url,
+        }))
       );
+      console.log(`[Stock API] ${symbol} - Displaying ${recentNews.length} news items on card`);
+    } else {
+      console.log(`[Stock API] ${symbol} - No news data: newsArray is ${typeof newsArray}, isArray: ${Array.isArray(newsArray)}, length: ${newsArray?.length || 0}`);
     }
 
     const result: StockData = {
