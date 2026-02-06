@@ -358,27 +358,6 @@ Return ONLY valid JSON:
 }`;
 }
 
-// Quality filter: reject only the absolute worst stocks — let AI prompt handle nuance
-function filterQualityMetrics(metrics: FinnhubMetricData[]): FinnhubMetricData[] {
-  return metrics.filter((m) => {
-    // Only reject catastrophically unprofitable companies (ROE < -80%)
-    if (m.roe !== null && m.roe < -80) {
-      console.log(`[Discovery] Filtering out ${m.ticker}: ROE ${m.roe.toFixed(1)}% catastrophic`);
-      return false;
-    }
-    // Reject companies losing money AND shrinking AND terrible margins (all three)
-    if (
-      m.profitMargin !== null && m.profitMargin < -30 &&
-      m.revenueGrowth !== null && m.revenueGrowth < -10 &&
-      m.operatingMargin !== null && m.operatingMargin < -30
-    ) {
-      console.log(`[Discovery] Filtering out ${m.ticker}: all metrics terrible`);
-      return false;
-    }
-    return true;
-  });
-}
-
 // Step B: Gemini analyzes Gold Mine picks with REAL Finnhub data + headline context (same format as Compounders)
 function buildGoldMineAnalysisPrompt(
   metrics: FinnhubMetricData[],
@@ -426,8 +405,8 @@ RULES:
 - For "reason" and "whyGreat": combine the headline catalyst WITH the financial data.
 - Each whyGreat point should cite a specific metric from the data.
 - Be concise and factual. No hype.
-- CRITICAL: If a stock has BAD fundamentals (negative ROE, negative profit margins, declining revenue), do NOT include it. Only include stocks where the data supports a genuine investment thesis.
-- Do NOT try to spin negative metrics as positives. If the numbers are bad, the stock doesn't belong here.
+- Be HONEST about weak metrics — mention them as risks, don't spin them as positives.
+- Include ALL stocks provided — let the user decide. Flag risks clearly in whyGreat.
 
 RECENT HEADLINES (for context):
 ${headlinesSummary}
@@ -752,12 +731,10 @@ export async function discoverStocks(
   console.log('[Discovery] Step 5b: Fetching Finnhub metrics for Gold Mine picks...');
   const goldMineTickers = goldMineCandidates.map((c) => c.ticker);
   const goldMineMetrics = await fetchMetricsForTickers(goldMineTickers);
-  const validGoldMineMetrics = filterQualityMetrics(
-    goldMineMetrics.filter(
-      (m) => m.roe !== null || m.profitMargin !== null || m.eps !== null
-    )
+  const validGoldMineMetrics = goldMineMetrics.filter(
+    (m) => m.roe !== null || m.profitMargin !== null || m.eps !== null
   );
-  console.log(`[Discovery] Got quality metrics for ${validGoldMineMetrics.length}/${goldMineTickers.length} Gold Mine picks (after quality filter)`);
+  console.log(`[Discovery] Got metrics for ${validGoldMineMetrics.length}/${goldMineTickers.length} Gold Mine picks`);
 
   // Step 5c: Gemini analyzes Gold Mines with real Finnhub data + headline context
   console.log('[Discovery] Step 5c: Gemini analyzing Gold Mines with real data + headlines...');
