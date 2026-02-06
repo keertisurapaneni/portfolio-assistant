@@ -4,7 +4,6 @@ import type { StockWithConviction, ScoreInputs } from '../types';
 import { removeStock } from '../lib/storage';
 import { getConvictionResult } from '../lib/convictionEngine';
 import { formatPositionValue, formatShares, formatAvgCost } from '../lib/portfolioCalc';
-import { getWarnings } from '../lib/warnings';
 import { generateAIInsights, type AIInsight } from '../lib/aiInsights';
 import { getRiskProfile } from '../lib/settingsStorage';
 import { cn } from '../lib/utils';
@@ -62,14 +61,6 @@ export function StockDetail({ stock, onClose, onUpdate }: StockDetailProps) {
 
   // Calculate position value for display
   const positionValue = stock.shares && stock.avgCost ? stock.shares * stock.avgCost : undefined;
-
-  // Get warnings for this stock
-  const warnings = getWarnings({
-    ticker: stock.ticker,
-    portfolioWeight: stock.portfolioWeight,
-    avgCost: stock.avgCost,
-    currentPrice: stock.currentPrice,
-  });
 
   // Fetch AI insights — uses cache from the per-stock refresh flow (instant if already cached).
   // Same insight drives both the main card and this detail view — no disagreement possible.

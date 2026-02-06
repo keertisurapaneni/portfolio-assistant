@@ -85,7 +85,7 @@ This document provides the complete epic and story breakdown for Portfolio Assis
 
 **User Interface & Navigation (5 FRs):**
 
-- FR40: Users can navigate between "My Portfolio" and "Suggested Finds" tabs
+- FR40: Users can navigate between "My Portfolio", "Suggested Finds", and "Market Movers" tabs
 - FR41: Users can view detailed stock information in slide-over panel
 - FR42: Users can close slide-over panels to return to main view
 - FR43: System displays guest mode banner for unauthenticated users
@@ -98,7 +98,50 @@ This document provides the complete epic and story breakdown for Portfolio Assis
 - FR47: System enforces Row Level Security (users only see their own data)
 - FR48: System maintains data consistency between client and server
 
-**Total: 48 Functional Requirements**
+**AI-Powered Trade Signals (11 FRs) — IMPLEMENTED:**
+
+- FR49: AI generates BUY/SELL/null trade signals per stock via LLM (Groq Llama 3.3 70B)
+- FR50: AI signals display on main stock cards and detail view (single source of truth)
+- FR51: Mechanical guardrails fire SELL for stop-loss, profit-take, overconcentration
+- FR52: Guardrail thresholds adjust based on risk profile (Aggressive/Moderate/Conservative)
+- FR53: AI calls routed through Supabase Edge Function (API keys never in browser)
+- FR54: Two-model pipeline: 70B primary, 32B fallback on rate limit
+- FR55: AI results cached 4 hours per stock with prompt-version invalidation
+- FR56: Trigger detection skips AI call when no actionable catalyst
+- FR57: AI progress bar shows per-stock analysis status
+- FR58: Failed stocks auto-retry after cooldown
+- FR59: System message includes few-shot examples, trading rules, analyst persona
+
+**Market Intelligence (5 FRs) — IMPLEMENTED:**
+
+- FR60: Display top 25 gainers and losers in sortable tables
+- FR61: Fetch market movers from Yahoo Finance Screener via Edge Function
+- FR62: Sortable columns (Price, Change, Change %)
+- FR63: Yahoo Finance links for each mover
+- FR64: Last-updated timestamp and manual refresh
+
+**Risk Profile Settings (4 FRs) — IMPLEMENTED:**
+
+- FR65: User-selectable risk profile (Aggressive/Moderate/Conservative)
+- FR66: Risk profile adjusts stop-loss, profit-take, max position thresholds
+- FR67: Risk profile persists in localStorage
+- FR68: AI guardrails use risk-profile-adjusted thresholds
+
+**Portfolio Value Display (4 FRs) — IMPLEMENTED:**
+
+- FR69: Per-stock position value (shares × current price) on cards
+- FR70: Total portfolio value in dashboard header
+- FR71: Total daily P&L change in dollar terms
+- FR72: Values hidden when no share data entered
+
+**News Integration (4 FRs) — IMPLEMENTED:**
+
+- FR73: Recent news headline on each stock card
+- FR74: Clickable news links to source articles
+- FR75: AI considers news in BUY/SELL decisions
+- FR76: News filtered for company relevance
+
+**Total: 76 Functional Requirements (48 original + 28 new)**
 
 ---
 
@@ -181,7 +224,7 @@ This document provides the complete epic and story breakdown for Portfolio Assis
 
 **UI Implementation:**
 
-- 2-tab SPA structure (My Portfolio, Suggested Finds)
+- 3-tab SPA structure (My Portfolio, Suggested Finds, Market Movers)
 - Slide-over panel for stock details
 - Modal components (Add Tickers with tabs, Import Portfolio, Add Earnings)
 - Guest mode banner with "Try without signup" message
@@ -279,7 +322,27 @@ This document provides the complete epic and story breakdown for Portfolio Assis
 - NFR1-NFR28: All non-functional requirements (performance, security, reliability, usability)
 - Infrastructure: Supabase setup, Edge Functions, Vercel deployment
 
-**Total Coverage: 48 FRs + 28 NFRs + Infrastructure Requirements ✅**
+**Epic 7 (AI-Powered Trade Signals):**
+
+- FR49-FR59: All AI trade signal requirements
+
+**Epic 8 (Market Movers):**
+
+- FR60-FR64: Market movers display and data fetching
+
+**Epic 9 (Risk Profile Settings):**
+
+- FR65-FR68: Risk profile selection and threshold adjustment
+
+**Epic 10 (Portfolio Value Display):**
+
+- FR69-FR72: Position value and total portfolio value
+
+**Epic 11 (News Integration):**
+
+- FR73-FR76: News headlines and AI news context
+
+**Total Coverage: 76 FRs + 28 NFRs + Infrastructure Requirements ✅**
 
 ---
 
@@ -2451,3 +2514,275 @@ So that I can maintain the app and respond to issues.
 ---
 
 **Epic 6 Complete!**
+
+---
+
+## Epic 7: AI-Powered Trade Signals (IMPLEMENTED)
+
+Users receive AI-generated BUY/SELL trade signals powered by Groq's Llama 3.3 70B model, with mechanical guardrails for stop-loss, profit-taking, and overconcentration.
+
+**Status:** ✅ Fully implemented
+
+**New FRs covered:**
+
+- FR49: AI generates BUY/SELL/null trade signals per stock via LLM
+- FR50: AI signals display on main stock cards and detail view (single source of truth)
+- FR51: Mechanical guardrails fire SELL for stop-loss, profit-take, and overconcentration before AI call
+- FR52: Guardrail thresholds adjust based on user's risk profile (Aggressive/Moderate/Conservative)
+- FR53: AI calls are routed through Supabase Edge Function (API keys never exposed to browser)
+- FR54: Two-model pipeline: Llama 3.3 70B primary, Qwen3 32B fallback on rate limit
+- FR55: AI results cached for 4 hours per stock with prompt-version-based invalidation
+- FR56: Trigger detection skips AI call when no actionable catalyst exists (saves tokens)
+- FR57: AI progress bar shows per-stock analysis status during refresh
+- FR58: Failed stocks auto-retry after 10s cooldown
+- FR59: AI system message includes few-shot examples, trading rules, and analyst persona
+
+### Story 7.1: AI Proxy Edge Function
+
+As a developer,
+I want AI API calls routed through a Supabase Edge Function,
+So that API keys are never exposed in the browser.
+
+**Acceptance Criteria:**
+
+**Given** the user triggers an AI analysis refresh
+**When** each stock is analyzed
+**Then** the call goes to `gemini-proxy` Edge Function → Groq API
+**And** Groq API key is stored as a Supabase secret (not in .env)
+**And** the Edge Function strips `<think>` tags and markdown fences from responses
+**And** the response includes the model used (for debugging)
+
+---
+
+### Story 7.2: Two-Model Fallback Pipeline
+
+As a user,
+I want AI analysis to complete even when rate limits are hit,
+So that I get signals for all my stocks.
+
+**Acceptance Criteria:**
+
+**Given** the primary model (70B) returns 429
+**When** the Edge Function receives the rate limit
+**Then** it immediately retries with the fallback model (32B)
+**And** if the fallback also 429s, it waits 3s and retries once more
+**And** the client retries any still-failed stocks after a 10s cooldown
+
+---
+
+### Story 7.3: AI Trade Signal Display
+
+As an investor,
+I want to see AI-generated BUY/SELL signals on my stock cards,
+So that I know what action to take today.
+
+**Acceptance Criteria:**
+
+**Given** AI analysis has completed
+**When** viewing the portfolio
+**Then** each stock card shows a BUY (green) or SELL (red) badge if the AI recommends action
+**And** a 5-8 word card note summarizes the reason
+**And** clicking the card shows the full AI reasoning (2-3 sentences)
+**And** the main card and detail view always show the same signal (no discrepancies)
+
+---
+
+### Story 7.4: Trigger-Based Analysis
+
+As a system,
+I want to skip AI calls for stocks with no actionable trigger,
+So that token usage stays within free-tier limits.
+
+**Acceptance Criteria:**
+
+**Given** a stock has no significant price move, no stop-loss/profit-take zone, no overconcentration, and no earnings news
+**When** AI analysis runs
+**Then** the stock is skipped (returns null instantly, no API call)
+**And** only stocks with triggers consume tokens
+
+---
+
+### Story 7.5: Mechanical SELL Guardrails
+
+As an investor,
+I want automatic SELL signals for clear-cut risk situations,
+So that stop-losses and profit-taking are never missed.
+
+**Acceptance Criteria:**
+
+**Given** a stock hits the stop-loss threshold (risk-profile adjusted)
+**When** AI analysis runs
+**Then** a SELL signal is immediately returned without calling the LLM
+**And** the reasoning explains the threshold breach
+**And** the same logic applies for profit-taking and overconcentration
+
+---
+
+### Story 7.6: AI Analysis Progress Indicator
+
+As a user,
+I want to see which stock is being analyzed and how many are done,
+So that I know the refresh is still working.
+
+**Acceptance Criteria:**
+
+**Given** AI analysis is running after a refresh
+**When** viewing the portfolio
+**Then** a purple progress bar shows "AI analyzing {TICKER}... (X/Y)"
+**And** the bar fills proportionally as stocks complete
+**And** if retries happen, the bar shows "waiting to retry..." then "retrying {TICKER}"
+**And** the bar disappears when all stocks are done
+
+---
+
+## Epic 8: Market Movers (IMPLEMENTED)
+
+Users can view top market gainers and losers in a dedicated tab, fetched dynamically from Yahoo Finance.
+
+**Status:** ✅ Fully implemented
+
+**New FRs covered:**
+
+- FR60: Display top 25 gainers and top 25 losers in sortable tables
+- FR61: Fetch market mover data from Yahoo Finance Screener via Edge Function
+- FR62: Allow sorting by Price, Change ($), and Change (%) columns
+- FR63: Provide Yahoo Finance links for each mover
+- FR64: Show last-updated timestamp and manual refresh button
+
+### Story 8.1: Market Movers Tab
+
+As an investor,
+I want a "Market Movers" tab showing today's biggest gainers and losers,
+So that I can spot opportunities and risks across the broader market.
+
+**Acceptance Criteria:**
+
+**Given** I click the "Market Movers" tab
+**When** the tab loads
+**Then** I see two tables: "Top Gainers" and "Top Losers"
+**And** each table shows Symbol, Name, Price, Change ($), Change (%)
+**And** columns with numerical values are sortable (ascending/descending)
+**And** each row links to Yahoo Finance for the stock
+**And** a timestamp shows when data was last fetched
+
+---
+
+## Epic 9: Risk Profile Settings (IMPLEMENTED)
+
+Users can select a risk profile (Aggressive/Moderate/Conservative) that adjusts trading thresholds across the entire application.
+
+**Status:** ✅ Fully implemented
+
+**New FRs covered:**
+
+- FR65: Users can select risk profile from Settings modal
+- FR66: Risk profile adjusts stop-loss, profit-take, and max position thresholds
+- FR67: Risk profile persists in localStorage
+- FR68: AI guardrails and trigger detection use risk-profile-adjusted thresholds
+
+### Story 9.1: Risk Profile Settings
+
+As an investor,
+I want to choose my risk tolerance level,
+So that trade signals match my investing style.
+
+**Acceptance Criteria:**
+
+**Given** I open Settings (gear icon)
+**When** I select Aggressive, Moderate, or Conservative
+**Then** all thresholds adjust accordingly:
+
+- Aggressive: -4% stop-loss, +25% profit-take, 30% max position
+- Moderate: -7% stop-loss, +20% profit-take, 25% max position
+- Conservative: -5% stop-loss, +20% profit-take, 20% max position
+  **And** the next AI refresh uses the new thresholds
+  **And** my selection persists across sessions
+
+---
+
+## Epic 10: Portfolio Value Display (IMPLEMENTED)
+
+Users can see their position value per stock and total portfolio value when they've entered share counts.
+
+**Status:** ✅ Fully implemented
+
+**New FRs covered:**
+
+- FR69: Display per-stock position value (shares × current price) on stock cards
+- FR70: Display total portfolio value in the dashboard header
+- FR71: Display total daily P&L change in dollar terms
+- FR72: Values only appear when user has entered share data
+
+### Story 10.1: Portfolio Value on Cards and Header
+
+As an investor,
+I want to see how much each position is worth and my total portfolio value,
+So that I understand my exposure in dollar terms.
+
+**Acceptance Criteria:**
+
+**Given** I have entered share counts for my stocks
+**When** viewing the portfolio
+**Then** each stock card shows "X shares · $Y,YYY" next to the price
+**And** the dashboard header shows "Your Holdings $XXX,XXX"
+**And** the header shows daily P&L change (e.g., "+$1,230 today" or "-$850 today")
+**And** values are hidden if no share data is entered
+
+---
+
+## Epic 11: News Integration (IMPLEMENTED)
+
+Users see recent news headlines on stock cards and in the AI analysis context.
+
+**Status:** ✅ Fully implemented
+
+**New FRs covered:**
+
+- FR73: Display most recent news headline on each stock card
+- FR74: News headlines are clickable links to the source article
+- FR75: AI analysis considers recent news when making BUY/SELL decisions
+- FR76: News is filtered for company relevance (removes generic market news)
+
+### Story 11.1: News on Stock Cards
+
+As an investor,
+I want to see the latest news for each stock on the card,
+So that I have context for price movements at a glance.
+
+**Acceptance Criteria:**
+
+**Given** a stock has recent news from Finnhub
+**When** viewing the portfolio
+**Then** the most recent headline appears at the bottom of the card
+**And** the headline is a clickable link opening in a new tab
+**And** a relative timestamp shows when the article was published (e.g., "3h ago")
+
+---
+
+## Implementation Status Summary
+
+| Epic                           | Status     | Notes                                             |
+| ------------------------------ | ---------- | ------------------------------------------------- |
+| **1: Portfolio Management**    | ✅ Done    | Manual entry, CSV/Excel import, clear all         |
+| **2: Conviction Intelligence** | ✅ Done    | 4-factor scoring, posture, confidence, rationale  |
+| **3: Risk Monitoring**         | ✅ Done    | Concentration, loss, gain warnings                |
+| **4: Curated Discovery**       | ✅ Done    | Quiet Compounders + Gold Mines                    |
+| **5: Cloud Sync**              | ⏳ Pending | Auth not implemented, using localStorage only     |
+| **6: Production Deploy**       | ✅ Partial | Vercel + Supabase deployed, monitoring pending    |
+| **7: AI Trade Signals**        | ✅ Done    | Groq 70B/32B, mechanical guardrails, progress bar |
+| **8: Market Movers**           | ✅ Done    | Yahoo Finance screener, sortable tables           |
+| **9: Risk Profiles**           | ✅ Done    | Aggressive/Moderate/Conservative settings         |
+| **10: Portfolio Values**       | ✅ Done    | Per-stock + total portfolio with daily P&L        |
+| **11: News Integration**       | ✅ Done    | Headlines on cards + AI context                   |
+
+---
+
+## Pending / Future Work
+
+- **Epic 5 (Cloud Sync):** User authentication, cloud storage, guest-to-auth migration
+- **Additional data for AI:** Volume vs average volume, DMA trend state, earnings date proximity
+- **File organization:** Move root-level docs to `docs/` folder
+- **Mobile optimization:** Responsive design for small screens
+- **Broker integration:** Auto-sync with Robinhood, Fidelity, etc.
+- **Tax-loss harvesting:** Recommendations based on capital gains
+- **Sector exposure analysis:** Portfolio diversification view
