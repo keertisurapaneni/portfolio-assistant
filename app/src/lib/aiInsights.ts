@@ -68,7 +68,7 @@ export interface AIInsight {
 }
 
 // Bump PROMPT_VERSION whenever the AI prompt changes to invalidate stale cache
-const PROMPT_VERSION = 34; // v34: Cache keyed by risk profile — switching profiles shows correct insights instantly
+const PROMPT_VERSION = 35; // v35: Risk-profile-aware trigger thresholds — more BUY opportunities for all profiles
 const CACHE_PREFIX = `ai-insight-v${PROMPT_VERSION}`;
 const CACHE_DURATION = 1000 * 60 * 60 * 4; // 4 hours
 
@@ -201,15 +201,28 @@ export async function generateAIInsights(
     conservative: { stopLoss: -4, profitTake: 20, rebalanceAt: 20 },
   }[riskProfile ?? 'moderate'];
 
-  // ── Client-side trigger detection ──
+  // ── Client-side trigger detection (risk-profile-aware) ──
   // Only call the 70B model when there's a reason to act. This keeps us
   // well within Groq's free-tier 100K TPD limit for llama-3.3-70b-versatile.
+  // Trigger thresholds adapt to risk profile: aggressive gets more AI evaluations,
+  // conservative gets fewer but higher-quality ones. The AI prompt handles selectivity.
   const avgScore = Math.round((qualityScore + earningsScore + momentumScore + analystScore) / 4);
   const triggers: string[] = [];
 
-  // Price move trigger: significant daily change
-  if (priceChangePercent !== undefined && Math.abs(priceChangePercent) >= 2.5) {
+  const triggerThresholds = {
+    aggressive:    { priceMove: 1.5, offHigh: 10, offHighMinScore: 55, qualityDipScore: 60 },
+    moderate:      { priceMove: 2.0, offHigh: 12, offHighMinScore: 60, qualityDipScore: 68 },
+    conservative:  { priceMove: 2.5, offHigh: 15, offHighMinScore: 65, qualityDipScore: 75 },
+  }[riskProfile ?? 'moderate'];
+
+  // Price move trigger: significant daily change (risk-adjusted)
+  if (priceChangePercent !== undefined && Math.abs(priceChangePercent) >= triggerThresholds.priceMove) {
     triggers.push(`price ${priceChangePercent >= 0 ? '+' : ''}${priceChangePercent.toFixed(1)}%`);
+  }
+
+  // Quality stock on a red day — let the AI evaluate potential BUY
+  if (priceChangePercent !== undefined && priceChangePercent < 0 && avgScore >= triggerThresholds.qualityDipScore) {
+    triggers.push(`quality dip (avg ${avgScore}, down ${Math.abs(priceChangePercent).toFixed(1)}%)`);
   }
 
   // Stop-loss trigger: from purchase price (risk-adjusted)
@@ -226,12 +239,14 @@ export async function generateAIInsights(
     triggers.push(`overconcentrated (${portfolioWeight.toFixed(1)}%)`);
   }
 
-  // 52-week range trigger: 15%+ off high with quality scores
+  // 52-week range trigger: off high with quality scores (risk-adjusted)
   const high52 = stock.fiftyTwoWeekHigh ?? 0;
   const curPrice = stock.currentPrice ?? 0;
   if (high52 > 0 && curPrice > 0) {
     const offHigh = ((high52 - curPrice) / high52) * 100;
-    if (offHigh >= 15 && avgScore >= 65) triggers.push(`${offHigh.toFixed(0)}% off 52W high`);
+    if (offHigh >= triggerThresholds.offHigh && avgScore >= triggerThresholds.offHighMinScore) {
+      triggers.push(`${offHigh.toFixed(0)}% off 52W high`);
+    }
   }
 
   // Earnings/news trigger: detect earnings keywords in recent headlines
