@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback } from 'react';
+import { BrowserRouter, Routes, Route, NavLink, useLocation } from 'react-router-dom';
 import { SpeedInsights } from '@vercel/speed-insights/react';
 import { Briefcase, Brain, Lightbulb, Plus, RefreshCw, TrendingUp } from 'lucide-react';
-import type { ActiveTab, StockWithConviction, RiskProfile } from './types';
+import type { StockWithConviction, RiskProfile } from './types';
 import { getUserData, addTickers, updateStock, clearAllData } from './lib/storage';
 import { getConvictionResult } from './lib/convictionEngine';
 import { calculatePortfolioWeights } from './lib/portfolioCalc';
@@ -58,8 +59,9 @@ function getDailyQuote(): string {
   return INVESTING_QUOTES[dayOfYear % INVESTING_QUOTES.length];
 }
 
-function App() {
-  const [activeTab, setActiveTab] = useState<ActiveTab>('portfolio');
+function AppContent() {
+  const location = useLocation();
+  const activeTab = location.pathname === '/finds' ? 'suggested' : location.pathname === '/movers' ? 'movers' : 'portfolio';
   const [stocks, setStocks] = useState<StockWithConviction[]>([]);
   const [selectedStock, setSelectedStock] = useState<StockWithConviction | null>(null);
   const [showAddModal, setShowAddModal] = useState(false);
@@ -562,13 +564,14 @@ function App() {
             </div>
           )}
 
-          {/* Tabs */}
+          {/* Tabs — NavLinks for client-side routing */}
           <div className="flex gap-2 mt-6">
-            <button
-              onClick={() => setActiveTab('portfolio')}
-              className={cn(
+            <NavLink
+              to="/"
+              end
+              className={({ isActive }) => cn(
                 'flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-medium transition-all',
-                activeTab === 'portfolio'
+                isActive
                   ? 'bg-[hsl(var(--foreground))] text-white shadow-md'
                   : 'text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--secondary))] hover:text-[hsl(var(--foreground))]'
               )}
@@ -585,51 +588,51 @@ function App() {
                   {stocks.length}
                 </span>
               )}
-            </button>
-            <button
-              onClick={() => setActiveTab('suggested')}
-              className={cn(
+            </NavLink>
+            <NavLink
+              to="/finds"
+              className={({ isActive }) => cn(
                 'flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-medium transition-all',
-                activeTab === 'suggested'
+                isActive
                   ? 'bg-[hsl(var(--foreground))] text-white shadow-md'
                   : 'text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--secondary))] hover:text-[hsl(var(--foreground))]'
               )}
             >
               <Lightbulb className="w-4 h-4" />
               Suggested Finds
-            </button>
-            <button
-              onClick={() => setActiveTab('movers')}
-              className={cn(
+            </NavLink>
+            <NavLink
+              to="/movers"
+              className={({ isActive }) => cn(
                 'flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-medium transition-all',
-                activeTab === 'movers'
+                isActive
                   ? 'bg-[hsl(var(--foreground))] text-white shadow-md'
                   : 'text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--secondary))] hover:text-[hsl(var(--foreground))]'
               )}
             >
               <TrendingUp className="w-4 h-4" />
               Market Movers
-            </button>
+            </NavLink>
           </div>
         </div>
       </header>
 
-      {/* Main Content */}
+      {/* Main Content — Routed */}
       <main className="max-w-4xl mx-auto px-6 py-8">
-        {activeTab === 'portfolio' ? (
-          <Dashboard
-            stocks={stocks}
-            onStockSelect={setSelectedStock}
-            onAddTickers={() => setShowAddModal(true)}
-            onClearAll={handleClearAll}
-            riskProfile={riskProfile}
-            onRiskProfileChange={handleRiskProfileChange}
-          />
-        ) : activeTab === 'suggested' ? (
-          <SuggestedFinds existingTickers={existingTickers} />
-        ) : (
-          <MarketMovers />
-        )}
+        <Routes>
+          <Route path="/" element={
+            <Dashboard
+              stocks={stocks}
+              onStockSelect={setSelectedStock}
+              onAddTickers={() => setShowAddModal(true)}
+              onClearAll={handleClearAll}
+              riskProfile={riskProfile}
+              onRiskProfileChange={handleRiskProfileChange}
+            />
+          } />
+          <Route path="/finds" element={<SuggestedFinds existingTickers={existingTickers} />} />
+          <Route path="/movers" element={<MarketMovers />} />
+        </Routes>
       </main>
 
       {/* Stock Detail Slide-over */}
@@ -659,6 +662,14 @@ function App() {
 
       <SpeedInsights />
     </div>
+  );
+}
+
+function App() {
+  return (
+    <BrowserRouter>
+      <AppContent />
+    </BrowserRouter>
   );
 }
 

@@ -20,7 +20,7 @@ const DAILY_SUGGESTIONS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1
 const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
 // Cache config
-const PROMPT_VERSION = 6; // v6: Relaxed quality filters — only reject catastrophic stocks
+const PROMPT_VERSION = 7; // v7: Gold Mines — theme-first approach, quality beneficiaries not headline mentions
 const CACHE_KEY = `gemini-discovery-v${PROMPT_VERSION}`;
 const CACHE_DURATION = 1000 * 60 * 60 * 24; // 24 hours
 
@@ -324,36 +324,41 @@ function buildGoldMineCandidatePrompt(news: MarketNewsItem[], excludeTickers: st
     })
     .join('\n');
 
-  return `You are a disciplined macro analyst. Below are real market headlines.
+  return `You are a macro-driven stock analyst. Below are real market headlines.
 
-STRICT RULES:
-1. ONLY pick stocks that are DIRECTLY mentioned by name or ticker in the headlines.
-2. Do NOT pick stocks based on vague sector association. "Tech rebounds" does NOT justify random tech stocks.
-3. Prefer stocks with POSITIVE catalysts: earnings beats, revenue growth, expansion, new products, partnerships, insider buying, positive guidance, deals, upgrades.
-4. Avoid stocks mentioned ONLY because they are crashing, being sued, or in serious trouble — unless there's a genuine turnaround catalyst.
-5. NOT mega-caps: exclude AAPL, MSFT, GOOGL, AMZN, META, NVDA, TSLA.
-6. Quality over quantity — if fewer than 4 stocks are directly mentioned, return fewer.
+Your job: identify the DOMINANT investable macro theme from these headlines, then recommend 4-6 QUALITY stocks that are the best ways to play that theme.
+
+APPROACH:
+1. Read all headlines and identify the strongest macro theme (e.g., "AI infrastructure spending surge", "Healthcare cost reform", "Energy transition acceleration", "Defense spending ramp").
+2. Then pick 4-6 well-run, fundamentally sound companies that BENEFIT from this theme.
+3. These do NOT need to be mentioned in the headlines — they need to be the BEST companies positioned for the theme.
+
+STOCK SELECTION RULES:
+- DIVERSIFY across the VALUE CHAIN of whatever theme you identify. Don't cluster picks in one niche.
+  Example: if the theme were infrastructure spending, you'd pick across construction, materials, engineering, equipment, logistics — not 6 construction companies.
+  Example: if the theme were an energy transition, you'd pick across solar, storage, grid tech, utilities, mining — not 6 solar companies.
+- Each pick should be from a DIFFERENT part of the value chain — no two stocks from the same niche.
+- Pick companies with strong businesses: profitable or near-profitable, growing revenue, clear competitive moat.
+- NOT mega-caps: exclude AAPL, MSFT, GOOGL, AMZN, META, NVDA, TSLA, BRK.
+- NOT penny stocks, SPACs, or speculative turnarounds.
+- NOT stocks that are merely in the news because they're crashing.
+- Think like an investor: "If this theme plays out over 6-12 months, which quality companies across the entire ecosystem win?"
 ${exclude}
 
 HEADLINES:
 ${newsBlock}
 
-TASK:
-1. Identify companies EXPLICITLY mentioned by name with POSITIVE catalysts.
-2. Identify the dominant investable theme from those positive stories.
-3. Return 4-6 tickers and the theme. FEWER is better than including weak picks.
-
 Return ONLY valid JSON:
 {
   "theme": {
     "name": "Theme Name",
-    "description": "1-2 sentences citing specific headline facts",
+    "description": "1-2 sentences explaining the macro catalyst from the headlines",
     "categories": [
-      { "name": "Category", "description": "Brief description" }
+      { "name": "Sub-theme", "description": "Brief description" }
     ]
   },
   "tickers": [
-    { "ticker": "SYM", "name": "Company Name", "category": "Category", "headline_ref": "Which headline # mentions them", "catalyst": "Brief positive catalyst from headline" }
+    { "ticker": "SYM", "name": "Company Name", "category": "Sub-theme", "headline_ref": "Which headlines support the theme", "catalyst": "Why this company benefits from the theme" }
   ]
 }`;
 }
