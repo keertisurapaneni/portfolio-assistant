@@ -14,7 +14,7 @@ const corsHeaders = {
 
 interface RequestPayload {
   ticker: string;
-  endpoint: 'quote' | 'metrics' | 'recommendations' | 'earnings' | 'news';
+  endpoint: 'quote' | 'metrics' | 'recommendations' | 'earnings' | 'news' | 'general_news';
 }
 
 interface CacheEntry {
@@ -42,7 +42,7 @@ Deno.serve(async req => {
       );
     }
 
-    const validEndpoints = ['quote', 'metrics', 'recommendations', 'earnings', 'news'];
+    const validEndpoints = ['quote', 'metrics', 'recommendations', 'earnings', 'news', 'general_news'];
     if (!validEndpoints.includes(endpoint)) {
       return new Response(
         JSON.stringify({ error: `Invalid endpoint. Must be one of: ${validEndpoints.join(', ')}` }),
@@ -50,7 +50,8 @@ Deno.serve(async req => {
       );
     }
 
-    const symbol = ticker.toUpperCase();
+    // general_news doesn't need a real ticker — use "_MARKET" as cache key
+    const symbol = endpoint === 'general_news' ? '_MARKET' : ticker.toUpperCase();
 
     // Initialize Supabase client (service role for cache write access)
     // Note: Using service role key which is auto-available in Edge Functions
@@ -115,11 +116,16 @@ Deno.serve(async req => {
       case 'earnings':
         apiUrl = `${FINNHUB_BASE}/stock/earnings?symbol=${symbol}&token=${finnhubApiKey}`;
         break;
-      case 'news':
+      case 'news': {
         // Get news from last 7 days
         const toDate = new Date().toISOString().split('T')[0];
         const fromDate = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
         apiUrl = `${FINNHUB_BASE}/company-news?symbol=${symbol}&from=${fromDate}&to=${toDate}&token=${finnhubApiKey}`;
+        break;
+      }
+      case 'general_news':
+        // Broad market news for macro theme detection (Gold Mines)
+        apiUrl = `${FINNHUB_BASE}/news?category=general&token=${finnhubApiKey}`;
         break;
     }
 

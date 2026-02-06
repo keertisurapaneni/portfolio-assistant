@@ -16,43 +16,39 @@ const RISK_PROFILES: {
   id: RiskProfile;
   name: string;
   description: string;
-  allocation: string;
+  aiStyle: string;
   thresholds: {
     stopLoss: string;
-    profitTarget: string;
     maxPosition: string;
   };
 }[] = [
   {
     id: 'aggressive',
     name: 'Aggressive',
-    description: 'High risk tolerance, seeking maximum growth',
-    allocation: '90% Stocks / 10% Bonds',
+    description: 'More buy signals on dips, higher tolerance for volatility',
+    aiStyle: 'Leans into fear dips on decent stocks',
     thresholds: {
       stopLoss: '-4%',
-      profitTarget: '+25%',
       maxPosition: '30%',
     },
   },
   {
     id: 'moderate',
     name: 'Moderate',
-    description: 'Balanced approach with managed risk',
-    allocation: '70% Stocks / 30% Bonds',
+    description: 'Balanced — acts when conviction is clear',
+    aiStyle: 'Buys quality dips, cautious on weak names',
     thresholds: {
       stopLoss: '-7%',
-      profitTarget: '+20%',
       maxPosition: '25%',
     },
   },
   {
     id: 'conservative',
     name: 'Conservative',
-    description: 'Lower risk, capital preservation focus',
-    allocation: '50% Stocks / 50% Bonds',
+    description: 'Capital preservation first, acts only on high conviction',
+    aiStyle: 'Rarely signals buy — only obvious setups',
     thresholds: {
       stopLoss: '-5%',
-      profitTarget: '+15%',
       maxPosition: '20%',
     },
   },
@@ -146,28 +142,22 @@ export default function SettingsModal({
                         </span>
                       )}
                     </div>
-                    <p className="text-sm text-gray-600 mb-3">{profile.description}</p>
+                    <p className="text-sm text-gray-600 mb-2">{profile.description}</p>
 
-                    {/* Allocation */}
+                    {/* AI Style */}
                     <div className="mb-3">
                       <span className="text-xs font-medium text-gray-500 uppercase">
-                        Recommended Allocation
+                        AI Behavior
                       </span>
-                      <p className="text-sm font-medium text-gray-900">{profile.allocation}</p>
+                      <p className="text-sm font-medium text-gray-900">{profile.aiStyle}</p>
                     </div>
 
                     {/* Thresholds */}
-                    <div className="grid grid-cols-3 gap-3">
+                    <div className="grid grid-cols-2 gap-3">
                       <div>
                         <span className="text-xs font-medium text-gray-500">Stop-Loss</span>
                         <p className="text-sm font-semibold text-red-600">
                           {profile.thresholds.stopLoss}
-                        </p>
-                      </div>
-                      <div>
-                        <span className="text-xs font-medium text-gray-500">Profit Target</span>
-                        <p className="text-sm font-semibold text-green-600">
-                          {profile.thresholds.profitTarget}
                         </p>
                       </div>
                       <div>
@@ -199,12 +189,12 @@ export default function SettingsModal({
               </svg>
               <div>
                 <h4 className="text-sm font-semibold text-blue-900 mb-1">
-                  About Risk Profiles
+                  How this works
                 </h4>
                 <p className="text-sm text-blue-800">
-                  Your risk profile adjusts all trading rules including stop-loss thresholds,
-                  profit targets, position sizing limits, and rebalancing triggers. All BUY/SELL
-                  signals will use these personalized thresholds.
+                  Your risk profile controls how the AI analyst behaves — aggressive sees more
+                  buy opportunities on dips, conservative only flags high-conviction setups.
+                  Stop-loss and position limits are enforced automatically.
                 </p>
               </div>
             </div>

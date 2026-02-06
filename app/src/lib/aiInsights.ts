@@ -53,6 +53,7 @@ async function callAI(prompt: string, temperature = 0.1, maxOutputTokens = 2000)
 export interface AIInsight {
   summary: string; // 1-2 sentence contextual summary
   buyPriority: 'BUY' | 'SELL' | null; // Binary trade decision
+  confidence: 'HIGH' | 'MEDIUM' | 'LOW' | null; // AI conviction level
   reasoning: string; // Full detailed rationale (shown in detail view)
   cardNote: string; // 5-8 word summary for the main card
   dataCompleteness: 'FULL' | 'SCORES_ONLY' | 'MINIMAL'; // How much data we have
@@ -67,7 +68,7 @@ export interface AIInsight {
 }
 
 // Bump PROMPT_VERSION whenever the AI prompt changes to invalidate stale cache
-const PROMPT_VERSION = 31; // v31: AI prompt fix — weak stocks declining with fundamental problems = SELL, not null
+const PROMPT_VERSION = 33; // v33: Removed mechanical profit-take SELL — AI evaluates quality stocks with gains
 const CACHE_KEY_PREFIX = `ai-insight-v${PROMPT_VERSION}-`;
 const CACHE_DURATION = 1000 * 60 * 60 * 4; // 4 hours (refresh more often during trading day)
 
@@ -100,6 +101,24 @@ function cacheInsight(ticker: string, insight: AIInsight): void {
   } catch {
     // Storage full, ignore
   }
+}
+
+/**
+ * Clear all cached AI insights — call when risk profile changes
+ * so the AI re-evaluates with the new profile
+ */
+export function clearAllInsightCache(): void {
+  try {
+    const keysToRemove: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key && key.startsWith(CACHE_KEY_PREFIX)) {
+        keysToRemove.push(key);
+      }
+    }
+    keysToRemove.forEach(k => localStorage.removeItem(k));
+    console.log(`[AI Cache] Cleared ${keysToRemove.length} cached insights for risk profile change`);
+  } catch { /* */ }
 }
 
 /**
@@ -185,9 +204,9 @@ export async function generateAIInsights(
 
   // ── Risk-profile-adjusted thresholds (must match generateRuleBased) ──
   const guardrails = {
-    aggressive: { stopLoss: -4, profitTake: 25, rebalanceAt: 30 },
+    aggressive: { stopLoss: -10, profitTake: 25, rebalanceAt: 30 },
     moderate: { stopLoss: -7, profitTake: 20, rebalanceAt: 25 },
-    conservative: { stopLoss: -5, profitTake: 20, rebalanceAt: 20 },
+    conservative: { stopLoss: -4, profitTake: 20, rebalanceAt: 20 },
   }[riskProfile ?? 'moderate'];
 
   // ── Client-side trigger detection ──
@@ -245,15 +264,17 @@ export async function generateAIInsights(
     if (hasEarnings) triggers.push('earnings news');
   }
 
-  // ── Mechanical SELL guardrails — these are definitive, no AI needed ──
-  // Uses the SAME risk-adjusted thresholds as generateRuleBased so main card
-  // and detail view always agree. No more discrepancies.
+  // ── Mechanical SELL guardrails — only for capital protection ──
+  // Stop-loss is mechanical (protect capital, no debate).
+  // Profit-take is NOT mechanical — a quality stock up 20% may have more to run.
+  // Instead, profit-take is a trigger that sends the stock to AI for evaluation.
   if (avgCost && stock.currentPrice && avgCost > 0) {
     const gainLossPct = ((stock.currentPrice - avgCost) / avgCost) * 100;
     if (gainLossPct <= guardrails.stopLoss) {
       const sellInsight: AIInsight = {
         summary: stock.name || stock.ticker,
         buyPriority: 'SELL',
+        confidence: 'HIGH',
         reasoning: `Down ${Math.abs(gainLossPct).toFixed(1)}% from your $${avgCost.toFixed(2)} entry — stop-loss triggered (${riskProfile ?? 'moderate'} profile: ${guardrails.stopLoss}%). Protect capital and reassess.`,
         cardNote: `Stop-loss: ${gainLossPct.toFixed(1)}% from entry`,
         dataCompleteness: 'FULL',
@@ -265,26 +286,14 @@ export async function generateAIInsights(
       cacheInsight(stock.ticker, sellInsight);
       return sellInsight;
     }
-    if (gainLossPct >= guardrails.profitTake) {
-      const sellInsight: AIInsight = {
-        summary: stock.name || stock.ticker,
-        buyPriority: 'SELL',
-        reasoning: `Up ${gainLossPct.toFixed(1)}% from your $${avgCost.toFixed(2)} entry — profit-taking zone (${riskProfile ?? 'moderate'} profile: +${guardrails.profitTake}%). Lock in gains and trim position.`,
-        cardNote: `Profit-take: +${gainLossPct.toFixed(1)}% from entry`,
-        dataCompleteness: 'FULL',
-        liquidityRisk: liquidity.risk,
-        liquidityWarning: liquidity.warning,
-        cached: false,
-        timestamp: new Date().toISOString(),
-      };
-      cacheInsight(stock.ticker, sellInsight);
-      return sellInsight;
-    }
+    // Profit-take zone: NOT an automatic SELL — AI evaluates based on fundamentals
+    // The trigger was already added above (line ~209) so AI will see it
   }
   if (portfolioWeight && portfolioWeight > guardrails.rebalanceAt) {
     const sellInsight: AIInsight = {
       summary: stock.name || stock.ticker,
       buyPriority: 'SELL',
+      confidence: 'HIGH',
       reasoning: `Position is ${portfolioWeight.toFixed(1)}% of portfolio — overconcentrated (${riskProfile ?? 'moderate'} profile limit: ${guardrails.rebalanceAt}%). Trim to manage risk.`,
       cardNote: `Overconcentrated: ${portfolioWeight.toFixed(1)}% of portfolio`,
       dataCompleteness: 'FULL',
@@ -300,6 +309,7 @@ export async function generateAIInsights(
     const sellInsight: AIInsight = {
       summary: stock.name || stock.ticker,
       buyPriority: 'SELL',
+      confidence: 'MEDIUM',
       reasoning: `Weak fundamentals (avg score ${avgScore}) and poor momentum (${momentumScore}) — review if the thesis still holds.`,
       cardNote: `Weak fundamentals + momentum`,
       dataCompleteness: 'FULL',
@@ -318,6 +328,7 @@ export async function generateAIInsights(
     const noActionInsight: AIInsight = {
       summary: stock.name || stock.ticker,
       buyPriority: null,
+      confidence: null,
       reasoning: 'No significant triggers today — no action needed.',
       cardNote: 'No triggers, hold steady',
       dataCompleteness: 'FULL',
@@ -447,6 +458,7 @@ Risk: ${riskProfile || 'moderate'}`;
     // Try to parse JSON response — handle markdown wrapping, thinking artifacts, etc.
     let parsedResponse: {
       buyPriority?: string;
+      confidence?: string;
       reasoning?: string;
       cardNote?: string;
       summary?: string;
@@ -493,11 +505,18 @@ Risk: ${riskProfile || 'moderate'}`;
     if (parsedResponse.buyPriority === 'BUY') aiBuyPriority = 'BUY';
     else if (parsedResponse.buyPriority === 'SELL') aiBuyPriority = 'SELL';
 
+    // Map confidence: accept HIGH, MEDIUM, LOW
+    let aiConfidence: AIInsight['confidence'] = null;
+    if (parsedResponse.confidence === 'HIGH') aiConfidence = 'HIGH';
+    else if (parsedResponse.confidence === 'MEDIUM') aiConfidence = 'MEDIUM';
+    else if (parsedResponse.confidence === 'LOW') aiConfidence = 'LOW';
+
     const insight: AIInsight = {
       summary:
         parsedResponse.summary ||
         generateEnhancedSummary(stock, qualityScore, earningsScore, analystScore),
       buyPriority: aiBuyPriority,
+      confidence: aiConfidence,
       reasoning: parsedResponse.reasoning || ruleBased.reasoning,
       cardNote: parsedResponse.cardNote || '',
       dataCompleteness: ruleBased.dataCompleteness,
@@ -532,6 +551,7 @@ Risk: ${riskProfile || 'moderate'}`;
     const insight: AIInsight = {
       summary: generateEnhancedSummary(stock, qualityScore, earningsScore, analystScore),
       buyPriority: ruleBased.buyPriority,
+      confidence: ruleBased.buyPriority ? 'MEDIUM' : null,
       reasoning: ruleBased.reasoning,
       cardNote:
         ruleBased.reasoning.length > 50
@@ -583,9 +603,9 @@ export function generateRuleBased(
   const avgScore = (qualityScore + earningsScore + momentumScore) / 3;
 
   const guardrails = {
-    aggressive: { stopLoss: -4, rebalanceAt: 30 },
+    aggressive: { stopLoss: -10, rebalanceAt: 30 },
     moderate: { stopLoss: -7, rebalanceAt: 25 },
-    conservative: { stopLoss: -5, rebalanceAt: 20 },
+    conservative: { stopLoss: -4, rebalanceAt: 20 },
   }[riskProfile];
 
   // Determine data completeness
@@ -687,17 +707,3 @@ function generateEnhancedSummary(
   }
 }
 
-// Industry context is handled by the AI prompt directly
-
-/**
- * Get LLM provider configuration
- */
-export function getAIConfig() {
-  return {
-    enabled: false, // TODO: Enable when LLM integration is ready
-    provider: 'openrouter', // or 'together', 'groq', 'openai'
-    model: 'anthropic/claude-3-haiku', // Lightweight and fast
-    maxTokens: 150,
-    temperature: 0.3, // Low temperature for consistent financial analysis
-  };
-}

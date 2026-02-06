@@ -1,6 +1,6 @@
 import { useState } from 'react';
-import { Plus, ArrowUpDown, BarChart3, Trash2 } from 'lucide-react';
-import type { StockWithConviction } from '../types';
+import { Plus, ArrowUpDown, BarChart3, Trash2, Shield } from 'lucide-react';
+import type { StockWithConviction, RiskProfile } from '../types';
 import { StockCard } from './StockCard';
 import { cn } from '../lib/utils';
 
@@ -9,6 +9,8 @@ interface DashboardProps {
   onStockSelect: (stock: StockWithConviction) => void;
   onAddTickers: () => void;
   onClearAll: () => void;
+  riskProfile: RiskProfile;
+  onRiskProfileChange: (profile: RiskProfile) => void;
 }
 
 type SortOption =
@@ -20,7 +22,7 @@ type SortOption =
   | 'change-pct'
   | 'change-dollar';
 
-export function Dashboard({ stocks, onStockSelect, onAddTickers, onClearAll }: DashboardProps) {
+export function Dashboard({ stocks, onStockSelect, onAddTickers, onClearAll, riskProfile, onRiskProfileChange }: DashboardProps) {
   const [sortBy, setSortBy] = useState<SortOption>('score-desc');
   const [showClearConfirm, setShowClearConfirm] = useState(false);
 
@@ -124,33 +126,73 @@ export function Dashboard({ stocks, onStockSelect, onAddTickers, onClearAll }: D
           </p>
         </div>
 
-        <div className="flex items-center gap-3">
-          {/* Clear All Button */}
-          <button
-            onClick={() => setShowClearConfirm(true)}
-            className="p-2 rounded-lg text-[hsl(var(--muted-foreground))] hover:text-red-600 hover:bg-red-50 transition-colors"
-            title="Clear all stocks"
-          >
-            <Trash2 className="w-5 h-5" />
-          </button>
+        {/* Clear All Button */}
+        <button
+          onClick={() => setShowClearConfirm(true)}
+          className="p-2 rounded-lg text-[hsl(var(--muted-foreground))] hover:text-red-600 hover:bg-red-50 transition-colors"
+          title="Clear all stocks"
+        >
+          <Trash2 className="w-5 h-5" />
+        </button>
+      </div>
 
-          {/* Sort dropdown */}
-          <div className="flex items-center gap-2 bg-white rounded-xl border border-[hsl(var(--border))] px-3 py-2 shadow-sm">
-            <ArrowUpDown className="w-4 h-4 text-[hsl(var(--muted-foreground))]" />
+      {/* Controls Row — Risk Appetite + Sort */}
+      <div className="flex items-center justify-between mb-5">
+        <div className="flex items-center gap-3">
+          {/* Risk Appetite */}
+          <div className={cn(
+            'flex items-center gap-2 rounded-xl border px-3 py-2 shadow-sm',
+            riskProfile === 'aggressive' && 'bg-red-50 border-red-200',
+            riskProfile === 'moderate' && 'bg-blue-50 border-blue-200',
+            riskProfile === 'conservative' && 'bg-emerald-50 border-emerald-200',
+          )}
+            title={
+              riskProfile === 'aggressive' ? 'More buy signals on dips · Stop-Loss: -10% · Max Position: 30%'
+              : riskProfile === 'moderate' ? 'Balanced — acts on conviction · Stop-Loss: -7% · Max Position: 25%'
+              : 'Capital preservation first · Stop-Loss: -4% · Max Position: 20%'
+            }
+          >
+            <Shield className={cn(
+              'w-4 h-4',
+              riskProfile === 'aggressive' && 'text-red-500',
+              riskProfile === 'moderate' && 'text-blue-500',
+              riskProfile === 'conservative' && 'text-emerald-500',
+            )} />
             <select
-              value={sortBy}
-              onChange={e => setSortBy(e.target.value as SortOption)}
-              className="text-sm bg-transparent text-[hsl(var(--foreground))] focus:outline-none cursor-pointer pr-2"
+              value={riskProfile}
+              onChange={e => onRiskProfileChange(e.target.value as RiskProfile)}
+              className={cn(
+                'text-sm bg-transparent font-semibold focus:outline-none cursor-pointer pr-1',
+                riskProfile === 'aggressive' && 'text-red-700',
+                riskProfile === 'moderate' && 'text-blue-700',
+                riskProfile === 'conservative' && 'text-emerald-700',
+              )}
             >
-              <option value="score-desc">Highest Score</option>
-              <option value="score-asc">Lowest Score</option>
-              <option value="change-pct">Biggest Drop (%)</option>
-              <option value="change-dollar">Biggest Drop ($)</option>
-              <option value="weight">Largest Position</option>
-              <option value="ticker">Ticker A-Z</option>
-              <option value="recent">Recently Added</option>
+              <option value="aggressive">Aggressive</option>
+              <option value="moderate">Moderate</option>
+              <option value="conservative">Conservative</option>
             </select>
           </div>
+
+          <span className="text-[10px] text-[hsl(var(--muted-foreground))]">Affects AI buy/sell signals, not conviction scores</span>
+        </div>
+
+        {/* Sort dropdown */}
+        <div className="flex items-center gap-2 bg-white rounded-xl border border-[hsl(var(--border))] px-3 py-2 shadow-sm">
+          <ArrowUpDown className="w-4 h-4 text-[hsl(var(--muted-foreground))]" />
+          <select
+            value={sortBy}
+            onChange={e => setSortBy(e.target.value as SortOption)}
+            className="text-sm bg-transparent text-[hsl(var(--foreground))] focus:outline-none cursor-pointer pr-2"
+          >
+            <option value="score-desc">Highest Score</option>
+            <option value="score-asc">Lowest Score</option>
+            <option value="change-pct">Biggest Drop (%)</option>
+            <option value="change-dollar">Biggest Drop ($)</option>
+            <option value="weight">Largest Position</option>
+            <option value="ticker">Ticker A-Z</option>
+            <option value="recent">Recently Added</option>
+          </select>
         </div>
       </div>
 

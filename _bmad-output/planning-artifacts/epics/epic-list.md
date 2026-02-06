@@ -91,3 +91,22 @@ Users can access Portfolio Assistant via public URL with enterprise-grade securi
 - Performance optimizations (caching, batching, lazy loading)
 
 ---
+
+## Epic 12: AI-Powered Stock Discovery (Gemini Flash)
+
+Transform Suggested Finds from static curated lists into a dynamic AI-powered discovery engine using Google Gemini Flash. Clean separation: Groq handles Portfolio AI Analysis, Gemini handles Suggested Finds discovery.
+
+**Builds on:** Epic 4 (Curated Stock Discovery — "V2 AI-powered discovery")
+
+**User Value:** Dynamic, market-aware stock suggestions that evolve with market themes. AI-identified Quiet Compounders and Gold Mines with investment theses, personalized to exclude stocks already in portfolio.
+
+**Implementation Notes:**
+
+- New Supabase Edge Function (`gemini-proxy`) for server-side Gemini API access
+- Client-side discovery service with structured prompts per archetype
+- React hook abstraction layer (`useSuggestedFinds`) for clean data flow
+- 24-hour localStorage cache with manual refresh capability
+- Fallback chain: AI fresh → AI cached → Clean empty state with message (no hardcoded data)
+- UI enhancements: loading skeletons, AI badges, refresh button, timestamps
+
+---

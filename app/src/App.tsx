@@ -1,12 +1,12 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Briefcase, Brain, Lightbulb, Plus, RefreshCw, Settings, TrendingUp } from 'lucide-react';
+import { Briefcase, Brain, Lightbulb, Plus, RefreshCw, TrendingUp } from 'lucide-react';
 import type { ActiveTab, StockWithConviction, RiskProfile } from './types';
-import { getUserData, addStock, addTickers, updateStock, clearAllData } from './lib/storage';
+import { getUserData, addTickers, updateStock, clearAllData } from './lib/storage';
 import { getConvictionResult } from './lib/convictionEngine';
 import { calculatePortfolioWeights } from './lib/portfolioCalc';
-import { getStockData, fetchMultipleStocks } from './lib/stockApiEdge';
-import { generateAIInsights } from './lib/aiInsights';
-import { getRiskProfile, setRiskProfile, calculateDrawdown } from './lib/settingsStorage';
+import { fetchMultipleStocks } from './lib/stockApiEdge';
+import { generateAIInsights, clearAllInsightCache } from './lib/aiInsights';
+import { getRiskProfile, setRiskProfile } from './lib/settingsStorage';
 import { cn } from './lib/utils';
 
 // Components
@@ -15,7 +15,6 @@ import { SuggestedFinds } from './components/SuggestedFinds';
 import { MarketMovers } from './components/MarketMovers';
 import { StockDetail } from './components/StockDetail';
 import { AddTickersModal } from './components/AddTickersModal';
-import SettingsModal from './components/SettingsModal';
 
 // Zero API calls — rotate through legendary quotes by day-of-year
 const INVESTING_QUOTES = [
@@ -63,7 +62,7 @@ function App() {
   const [stocks, setStocks] = useState<StockWithConviction[]>([]);
   const [selectedStock, setSelectedStock] = useState<StockWithConviction | null>(null);
   const [showAddModal, setShowAddModal] = useState(false);
-  const [showSettingsModal, setShowSettingsModal] = useState(false);
+
   const [riskProfile, setRiskProfileState] = useState<RiskProfile>(getRiskProfile());
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [refreshProgress, setRefreshProgress] = useState<string | null>(null);
@@ -72,7 +71,6 @@ function App() {
     done: number;
     total: number;
   } | null>(null);
-  const [portfolioDrawdown, setPortfolioDrawdown] = useState<number | null>(null);
   const [hasAutoRefreshed, setHasAutoRefreshed] = useState(false);
   const investingQuote = getDailyQuote(); // Synchronous — zero API calls
 
@@ -131,15 +129,6 @@ function App() {
       };
     });
 
-    // Calculate portfolio drawdown
-    const totalValue = withPortfolioContext.reduce(
-      (sum, stock) => sum + (stock.positionValue || 0),
-      0
-    );
-    if (totalValue > 0) {
-      const drawdown = calculateDrawdown(totalValue);
-      setPortfolioDrawdown(drawdown);
-    }
 
     // Show rule-based results instantly — AI runs separately after fresh data
     setStocks(withPortfolioContext);
@@ -376,46 +365,8 @@ function App() {
     }
   };
 
-  // Handle adding from suggested
-  const handleAddFromSuggested = async (ticker: string, name: string) => {
-    try {
-      addStock({ ticker, name });
-      loadStocks();
-
-      // Fetch real data
-      setRefreshProgress(`Fetching ${ticker}...`);
-      const data = await getStockData(ticker);
-      if (data) {
-        updateStock(ticker, {
-          name: data.name,
-          currentPrice: data.currentPrice,
-          priceChange: data.change,
-          priceChangePercent: data.changePercent,
-          volume: data.volume,
-          qualityScore: data.qualityScore,
-          momentumScore: data.momentumScore,
-          earningsScore: data.earningsScore,
-          analystScore: data.analystScore,
-          analystRating: data.analystRating || undefined,
-          quarterlyEPS: data.quarterlyEPS,
-          recentNews: data.recentNews,
-          eps: data.eps,
-          peRatio: data.peRatio,
-          roe: data.roe,
-          profitMargin: data.profitMargin,
-          operatingMargin: data.operatingMargin,
-          fiftyTwoWeekHigh: data.fiftyTwoWeekHigh,
-          fiftyTwoWeekLow: data.fiftyTwoWeekLow,
-          lastDataFetch: new Date().toISOString(),
-          // No previousScore for brand new stocks
-        });
-        loadStocks();
-      }
-      setRefreshProgress(null);
-    } catch {
-      // Already exists, ignore
-    }
-  };
+  // Note: Stock adding is now only through the Add Tickers modal on the portfolio tab.
+  // Suggested Finds and Market Movers are read-only discovery tabs.
 
   // Refresh all stock data
   const handleRefreshAll = async () => {
@@ -511,10 +462,11 @@ function App() {
     setSelectedStock(null);
   };
 
-  // Handle risk profile change
+  // Handle risk profile change — clear AI cache so it re-evaluates with new profile
   const handleRiskProfileChange = (newProfile: RiskProfile) => {
     setRiskProfile(newProfile); // Save to localStorage
     setRiskProfileState(newProfile); // Update state
+    clearAllInsightCache(); // Wipe cached insights so AI re-runs with new risk profile
     const freshStocks = loadStocks(); // Recalculate with new profile
     if (freshStocks) runAIAnalysis(freshStocks); // Re-analyze with new risk profile
   };
@@ -537,24 +489,8 @@ function App() {
               </p>
             </div>
             <div className="flex items-center gap-3">
-              {/* Drawdown Indicator */}
-              {portfolioDrawdown !== null && portfolioDrawdown < -5 && (
-                <div className="flex items-center gap-2 px-3 py-2 bg-red-50 text-red-700 rounded-lg text-sm font-medium">
-                  <span>📉 Drawdown: {portfolioDrawdown.toFixed(1)}%</span>
-                </div>
-              )}
-
-              {/* Settings Button */}
-              <button
-                onClick={() => setShowSettingsModal(true)}
-                className="p-2.5 rounded-xl bg-[hsl(var(--secondary))] hover:bg-[hsl(var(--border))] transition-colors"
-                title={`Risk Profile: ${riskProfile.charAt(0).toUpperCase() + riskProfile.slice(1)}`}
-              >
-                <Settings className="w-5 h-5" />
-              </button>
-
-              {/* Refresh Button */}
-              {stocks.length > 0 && (
+              {/* Refresh Button — only on portfolio tab */}
+              {activeTab === 'portfolio' && stocks.length > 0 && (
                 <button
                   onClick={handleRefreshAll}
                   disabled={isRefreshing}
@@ -568,14 +504,16 @@ function App() {
                 </button>
               )}
 
-              {/* Add Stocks Button */}
-              <button
-                onClick={() => setShowAddModal(true)}
-                className="flex items-center gap-2 px-5 py-2.5 bg-[hsl(var(--primary))] text-white rounded-xl hover:bg-[hsl(221,83%,48%)] shadow-lg shadow-blue-500/20 text-sm font-medium"
-              >
-                <Plus className="w-4 h-4" />
-                Add Stocks
-              </button>
+              {/* Add Stocks Button — only on portfolio tab */}
+              {activeTab === 'portfolio' && (
+                <button
+                  onClick={() => setShowAddModal(true)}
+                  className="flex items-center gap-2 px-5 py-2.5 bg-[hsl(var(--primary))] text-white rounded-xl hover:bg-[hsl(221,83%,48%)] shadow-lg shadow-blue-500/20 text-sm font-medium"
+                >
+                  <Plus className="w-4 h-4" />
+                  Add Stocks
+                </button>
+              )}
             </div>
           </div>
 
@@ -667,9 +605,11 @@ function App() {
             onStockSelect={setSelectedStock}
             onAddTickers={() => setShowAddModal(true)}
             onClearAll={handleClearAll}
+            riskProfile={riskProfile}
+            onRiskProfileChange={handleRiskProfileChange}
           />
         ) : activeTab === 'suggested' ? (
-          <SuggestedFinds existingTickers={existingTickers} onAddStock={handleAddFromSuggested} />
+          <SuggestedFinds existingTickers={existingTickers} />
         ) : (
           <MarketMovers />
         )}
@@ -700,13 +640,6 @@ function App() {
         </p>
       </footer>
 
-      {/* Settings Modal */}
-      <SettingsModal
-        isOpen={showSettingsModal}
-        onClose={() => setShowSettingsModal(false)}
-        currentProfile={riskProfile}
-        onProfileChange={handleRiskProfileChange}
-      />
     </div>
   );
 }

@@ -43,38 +43,45 @@ export function MarketMovers() {
       const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
       const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
-      // Fetch gainers and losers in parallel
-      const [gainersRes, losersRes] = await Promise.all([
-        fetch(`${supabaseUrl}/functions/v1/scrape-market-movers`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${supabaseKey}`,
-          },
-          body: JSON.stringify({ type: 'gainers' }),
-        }),
-        fetch(`${supabaseUrl}/functions/v1/scrape-market-movers`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${supabaseKey}`,
-          },
-          body: JSON.stringify({ type: 'losers' }),
-        }),
+      // Fetch gainers and losers in parallel — handle partial failures gracefully
+      const fetchType = async (type: string) => {
+        try {
+          const res = await fetch(`${supabaseUrl}/functions/v1/scrape-market-movers`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${supabaseKey}`,
+            },
+            body: JSON.stringify({ type }),
+          });
+          if (!res.ok) {
+            console.warn(`[Market Movers] ${type} returned ${res.status}`);
+            return [];
+          }
+          const data = await res.json();
+          return data.movers || [];
+        } catch (err) {
+          console.warn(`[Market Movers] ${type} fetch failed:`, err);
+          return [];
+        }
+      };
+
+      const [gainers, losers] = await Promise.all([
+        fetchType('gainers'),
+        fetchType('losers'),
       ]);
 
-      if (!gainersRes.ok || !losersRes.ok) {
-        throw new Error('Failed to fetch market movers');
-      }
-
-      const gainersData = await gainersRes.json();
-      const losersData = await losersRes.json();
-
       setData({
-        gainers: gainersData.movers || [],
-        losers: losersData.movers || [],
+        gainers,
+        losers,
         isLoading: false,
-        error: null,
+        error: gainers.length === 0 && losers.length === 0
+          ? 'Market data is unavailable right now. This usually happens outside market hours (Mon-Fri 9:30 AM - 4 PM ET).'
+          : losers.length === 0 && gainers.length > 0
+            ? 'Losers data temporarily unavailable'
+            : gainers.length === 0 && losers.length > 0
+              ? 'Gainers data temporarily unavailable'
+              : null,
         lastUpdated: new Date().toISOString(),
       });
     } catch (error) {

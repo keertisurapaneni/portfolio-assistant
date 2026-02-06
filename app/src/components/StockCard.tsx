@@ -182,8 +182,8 @@ export function StockCard({ stock, onClick }: StockCardProps) {
                 </span>
               )}
 
-              {/* Warning Badge */}
-              {!stock.isLoading && topWarning && (
+              {/* Warning Badge — only show concentration/rebalance, not gain/loss */}
+              {!stock.isLoading && topWarning && (topWarning.type === 'concentration' || topWarning.type === 'rebalance') && (
                 <span
                   className={cn(
                     'inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium border',
@@ -195,9 +195,7 @@ export function StockCard({ stock, onClick }: StockCardProps) {
                   title={topWarning.action}
                 >
                   <AlertTriangle className="w-3 h-3" />
-                  {topWarning.type === 'loss' && 'Loss'}
                   {topWarning.type === 'concentration' && 'Concentrated'}
-                  {topWarning.type === 'gain' && 'Gain'}
                   {topWarning.type === 'rebalance' && 'Rebalance'}
                 </span>
               )}

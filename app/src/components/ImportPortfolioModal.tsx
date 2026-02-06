@@ -76,7 +76,7 @@ export function ImportPortfolioModal({ onClose, onComplete }: ImportPortfolioMod
     }
   };
 
-  // Handle import — saves to storage, shows success, waits for user to click Done
+  // Handle import — saves to storage and auto-completes
   const handleImport = () => {
     try {
       const parsed = applyMapping(rows, mapping);
@@ -88,11 +88,18 @@ export function ImportPortfolioModal({ onClose, onComplete }: ImportPortfolioMod
       const importResult = importStocksWithPositions(validRows);
       setResult(importResult);
       setStep('done');
-      // User clicks "Done" to trigger refresh — no auto-trigger
+      // Auto-complete after showing brief success feedback
+      setTimeout(() => {
+        onComplete(importResult.added);
+      }, 1500);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Import failed');
     }
   };
+
+  // Check which columns have data
+  const hasSharesData = preview.some(row => row.shares !== undefined && row.shares !== null);
+  const hasAvgCostData = preview.some(row => row.avgCost !== undefined && row.avgCost !== null);
 
   return (
     <>
@@ -222,20 +229,28 @@ export function ImportPortfolioModal({ onClose, onComplete }: ImportPortfolioMod
                   <thead className="bg-[hsl(var(--secondary))]">
                     <tr>
                       <th className="px-3 py-2 text-left font-medium">Ticker</th>
-                      <th className="px-3 py-2 text-right font-medium">Shares</th>
-                      <th className="px-3 py-2 text-right font-medium">Avg Cost</th>
+                      {hasSharesData && (
+                        <th className="px-3 py-2 text-right font-medium">Shares</th>
+                      )}
+                      {hasAvgCostData && (
+                        <th className="px-3 py-2 text-right font-medium">Avg Cost</th>
+                      )}
                     </tr>
                   </thead>
                   <tbody>
                     {preview.map((row, i) => (
                       <tr key={i} className="border-t border-[hsl(var(--border))]">
                         <td className="px-3 py-2 font-medium">{row.ticker}</td>
-                        <td className="px-3 py-2 text-right">
-                          {row.shares?.toLocaleString() || '—'}
-                        </td>
-                        <td className="px-3 py-2 text-right">
-                          {row.avgCost ? `$${row.avgCost.toFixed(2)}` : '—'}
-                        </td>
+                        {hasSharesData && (
+                          <td className="px-3 py-2 text-right">
+                            {row.shares?.toLocaleString() || '—'}
+                          </td>
+                        )}
+                        {hasAvgCostData && (
+                          <td className="px-3 py-2 text-right">
+                            {row.avgCost ? `$${row.avgCost.toFixed(2)}` : '—'}
+                          </td>
+                        )}
                       </tr>
                     ))}
                   </tbody>
@@ -265,15 +280,15 @@ export function ImportPortfolioModal({ onClose, onComplete }: ImportPortfolioMod
             </div>
           )}
 
-          {/* Step: Done */}
+          {/* Step: Done — auto-closes after brief feedback */}
           {step === 'done' && result && (
-            <div className="text-center py-4">
+            <div className="text-center py-6">
               <div className="w-12 h-12 mx-auto mb-4 bg-green-100 rounded-full flex items-center justify-center">
                 <Check className="w-6 h-6 text-green-600" />
               </div>
-              <h3 className="font-medium mb-4">Import Complete!</h3>
+              <h3 className="font-medium mb-3">Import Complete!</h3>
 
-              <div className="space-y-2 text-sm mb-6">
+              <div className="space-y-2 text-sm">
                 {result.added.length > 0 && (
                   <p className="text-green-600">✓ {result.added.length} stocks added</p>
                 )}
@@ -286,13 +301,6 @@ export function ImportPortfolioModal({ onClose, onComplete }: ImportPortfolioMod
                   </p>
                 )}
               </div>
-
-              <button
-                onClick={() => onComplete(result?.added || [])}
-                className="px-6 py-3 bg-[hsl(var(--primary))] text-white rounded-lg font-medium hover:opacity-90"
-              >
-                Done
-              </button>
             </div>
           )}
         </div>

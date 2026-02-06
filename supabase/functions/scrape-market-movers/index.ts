@@ -43,16 +43,27 @@ serve(async req => {
 
     console.log(`[Market Movers] Fetching ${type} from Yahoo Finance screener`);
     
-    const response = await fetch(url.toString(), {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
-        'Accept': 'application/json,text/plain,*/*',
-        'Referer': 'https://finance.yahoo.com/markets/stocks/gainers/',
-      },
-    });
+    // Try with retry — Yahoo Finance can be flaky
+    let response: Response | null = null;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      response = await fetch(url.toString(), {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'Accept': 'application/json,text/plain,*/*',
+          'Referer': 'https://finance.yahoo.com/markets/stocks/gainers/',
+        },
+      });
+      if (response.ok) break;
+      console.warn(`[Market Movers] Yahoo returned ${response.status} (attempt ${attempt + 1}/2)`);
+      if (attempt === 0) await new Promise(r => setTimeout(r, 1000));
+    }
 
-    if (!response.ok) {
-      throw new Error(`Yahoo Finance API returned ${response.status}`);
+    if (!response || !response.ok) {
+      // Return 200 with empty movers instead of 500 — let client handle gracefully
+      console.warn(`[Market Movers] Yahoo Finance unavailable for ${type}`);
+      return new Response(JSON.stringify({ movers: [], type, cached: false, warning: 'Yahoo Finance temporarily unavailable' }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
     }
 
     const data = await response.json();
@@ -104,8 +115,8 @@ serve(async req => {
     });
   } catch (error) {
     console.error('[Market Movers] Error:', error);
-    return new Response(JSON.stringify({ error: error.message, movers: [] }), {
-      status: 500,
+    // Return 200 with empty data — client handles gracefully
+    return new Response(JSON.stringify({ movers: [], warning: error.message }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });
   }
