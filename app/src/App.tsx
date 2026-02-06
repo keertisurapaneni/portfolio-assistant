@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { BrowserRouter, Routes, Route, NavLink, useLocation } from 'react-router-dom';
 import { SpeedInsights } from '@vercel/speed-insights/react';
+import { Analytics } from '@vercel/analytics/react';
 import { Briefcase, Brain, Lightbulb, Plus, RefreshCw, TrendingUp } from 'lucide-react';
 import type { StockWithConviction, RiskProfile } from './types';
 import { getUserData, addTickers, updateStock, clearAllData } from './lib/storage';
@@ -661,6 +662,7 @@ function AppContent() {
       </footer>
 
       <SpeedInsights />
+      <Analytics />
     </div>
   );
 }
