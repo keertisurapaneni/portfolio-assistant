@@ -147,8 +147,11 @@ function App() {
   // Each stock gets its own AI call (cached for 4h). Same insight is used
   // on main card AND expanded card — no disagreement possible.
   // Cached stocks return instantly (no delay needed).
+  // profileOverride: pass directly when changing risk profile to avoid stale closure
   const runAIAnalysis = useCallback(
-    async (stockList: StockWithConviction[]) => {
+    async (stockList: StockWithConviction[], profileOverride?: RiskProfile) => {
+      const activeProfile = profileOverride ?? riskProfile;
+
       // Prevent overlapping runs
       if (isAIRunning) {
         console.log('[AI] Analysis already in progress, skipping');
@@ -177,7 +180,7 @@ function App() {
               stock.avgCost,
               stock.priceChangePercent,
               stock.analystRating,
-              riskProfile,
+              activeProfile,
               stock.volume,
               stock.recentNews
             );
@@ -240,7 +243,7 @@ function App() {
                 stock.avgCost,
                 stock.priceChangePercent,
                 stock.analystRating,
-                riskProfile,
+                activeProfile,
                 stock.volume,
                 stock.recentNews
               );
@@ -463,12 +466,23 @@ function App() {
     setSelectedStock(null);
   };
 
-  // Handle risk profile change — clear AI cache so it re-evaluates with new profile
+  // Handle risk profile change — pass new profile directly to avoid stale closure
   const handleRiskProfileChange = (newProfile: RiskProfile) => {
     setRiskProfile(newProfile); // Save to localStorage
     setRiskProfileState(newProfile); // Update state
+
+    // Show user that re-analysis is happening
+    const profileLabel = newProfile.charAt(0).toUpperCase() + newProfile.slice(1);
+    setRefreshProgress(`Switching to ${profileLabel} risk profile — re-analyzing...`);
+
     const freshStocks = loadStocks(); // Recalculate with new profile
-    if (freshStocks) runAIAnalysis(freshStocks); // Re-analyze with new risk profile
+    if (freshStocks) {
+      // Pass profile directly — React state hasn't updated yet (async)
+      runAIAnalysis(freshStocks, newProfile);
+    }
+
+    // Clear the banner after a few seconds (aiProgress bar will take over)
+    setTimeout(() => setRefreshProgress(null), 3000);
   };
 
   // Get existing tickers for suggested tab
