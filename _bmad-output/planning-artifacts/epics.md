@@ -2547,7 +2547,7 @@ So that API keys are never exposed in the browser.
 
 **Given** the user triggers an AI analysis refresh
 **When** each stock is analyzed
-**Then** the call goes to `gemini-proxy` Edge Function → Groq API
+**Then** the call goes to `ai-proxy` Edge Function → Groq API
 **And** Groq API key is stored as a Supabase secret (not in .env)
 **And** the Edge Function strips `<think>` tags and markdown fences from responses
 **And** the response includes the model used (for debugging)

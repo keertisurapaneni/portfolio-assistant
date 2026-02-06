@@ -5,7 +5,7 @@
 
 import type { Stock, RiskProfile } from '../types';
 
-const GEMINI_PROXY_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/gemini-proxy`;
+const AI_PROXY_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/ai-proxy`;
 
 // Global cooldown: after a 429, pause before the next AI call
 let rateLimitedUntil = 0;
@@ -25,7 +25,7 @@ async function callAI(prompt: string, temperature = 0.1, maxOutputTokens = 2000)
   }
 
   const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
-  const response = await fetch(GEMINI_PROXY_URL, {
+  const response = await fetch(AI_PROXY_URL, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',

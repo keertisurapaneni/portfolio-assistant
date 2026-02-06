@@ -639,7 +639,7 @@ Portfolio Assistant is a **Single Page Application (SPA)** built with React 18 +
 
 - Stock Data: Finnhub API (60 calls/min free tier)
 - News Data: Finnhub News API
-- LLM Analysis: OpenAI/Claude via Supabase Edge Functions (V2)
+- LLM Analysis: Groq (Llama 3.3 70B / Qwen3 32B) via Supabase Edge Functions
 - Rate Limiting: Client-side throttling, backend caching
 
 **Security:**
@@ -648,3 +648,128 @@ Portfolio Assistant is a **Single Page Application (SPA)** built with React 18 +
 - User Data: Row Level Security in Supabase
 - Authentication: Supabase Auth (email/password)
 - HTTPS: Enforced via Vercel deployment
+
+---
+
+## Post-MVP Implementation Update (2026-02-05)
+
+The following features were implemented during the initial build phase, exceeding the original MVP scope. These were originally planned as V2 or emerged from user feedback during development.
+
+### Features Implemented Beyond MVP
+
+#### AI-Powered Trade Signals (Originally V2)
+
+**What was planned:** "LLM-based News → Portfolio Action Engine" in V2 phase.
+
+**What was built:**
+
+- Full AI trade signal system using Groq's Llama 3.3 70B model
+- Two-model pipeline (70B primary, Qwen3 32B fallback) via Supabase Edge Function
+- BUY/SELL/null signals per stock based on scores, price action, news, and position data
+- Mechanical guardrails for stop-loss, profit-taking, and overconcentration
+- Trigger-based analysis (skips AI call when no actionable catalyst)
+- 4-hour caching per stock with prompt-version invalidation
+- AI progress bar showing per-stock analysis during refresh
+- Auto-retry for rate-limited stocks
+- System prompt with few-shot examples, trading rules, and analyst persona
+
+**Key Design Decisions:**
+
+- AI is the single source of truth — no separate rule-based layer
+- API keys never exposed to browser (all calls via Edge Function)
+- Risk-profile-adjusted thresholds ensure consistency across views
+- Weak stocks with fundamental problems = SELL, not "no action"
+
+#### Market Movers Tab (New Feature)
+
+**Not in original plan.** Added based on user request.
+
+- Top 25 gainers and top 25 losers from Yahoo Finance Screener
+- Sortable columns (Price, Change, Change %)
+- Fetched via Supabase Edge Function (`scrape-market-movers`)
+- Yahoo Finance links for each stock
+- Manual refresh with last-updated timestamp
+
+#### Risk Profile Settings (New Feature)
+
+**Not in original plan.** Added to make trading thresholds user-adjustable.
+
+- Three profiles: Aggressive, Moderate, Conservative
+- Adjusts: stop-loss threshold, profit-take threshold, max position size
+- Persists in localStorage
+- All AI guardrails and trigger detection use risk-adjusted thresholds
+
+| Setting      | Stop-Loss | Profit-Take | Max Position |
+| ------------ | --------- | ----------- | ------------ |
+| Aggressive   | -4%       | +25%        | 30%          |
+| Moderate     | -7%       | +20%        | 25%          |
+| Conservative | -5%       | +20%        | 20%          |
+
+#### Portfolio Value Display (New Feature)
+
+**Not in original plan.** Added to show dollar exposure.
+
+- Per-stock position value (shares × current price) on stock cards
+- Total portfolio value in dashboard header
+- Total daily P&L change in dollar terms
+- Only visible when user has entered share data
+
+#### News Integration (Originally V2)
+
+**What was planned:** "News Intelligence Layer" in V2.
+
+**What was built:**
+
+- Recent news headline on each stock card (clickable link to source)
+- News context fed to AI for BUY/SELL decisions
+- Company-specific filtering (removes generic market noise)
+- Relative timestamps (e.g., "3h ago")
+
+### Updated Technical Architecture
+
+**AI Pipeline:**
+
+- Client → Supabase Edge Function (`gemini-proxy`) → Groq API (70B or 32B fallback)
+- Rate limiting: 4s inter-call delay, 15s cooldown on 429, server-side fallback retry
+- System prompt maintained server-side in Edge Function
+
+**Edge Functions Deployed:**
+
+1. `fetch-stock-data` — Proxies Finnhub API with 15-minute server-side cache
+2. `ai-proxy` — AI proxy with two-model pipeline (keeps Groq key server-side)
+3. `scrape-market-movers` — Yahoo Finance Screener for gainers/losers
+4. `fetch-yahoo-news` — Company-specific news from Yahoo Finance
+
+**API Keys:**
+
+- Finnhub key: Supabase secret (`FINNHUB_API_KEY`)
+- Groq key: Supabase secret (`GROQ_API_KEY`)
+- No API keys in `.env` or client-side code
+
+### Updated Scope Assessment
+
+**MVP + Implemented V2 Features:**
+
+- ✅ Conviction Dashboard with 4-factor scoring
+- ✅ Portfolio Import (CSV/Excel)
+- ✅ Suggested Finds (Quiet Compounders + Gold Mines)
+- ✅ Risk Warning System
+- ✅ AI Trade Signals (BUY/SELL/null)
+- ✅ Market Movers (Top Gainers/Losers)
+- ✅ Risk Profile Settings
+- ✅ Portfolio Value Display
+- ✅ News Integration
+- ✅ Vercel + Supabase deployment
+
+**Still Pending (Original Epic 5):**
+
+- ⏳ User authentication (Supabase Auth)
+- ⏳ Cloud storage for authenticated users
+- ⏳ Guest-to-auth data migration
+- ⏳ Multi-device access
+
+**Still Pending (Other):**
+
+- ⏳ Mobile-responsive design
+- ⏳ Historical conviction score tracking
+- ⏳ Additional AI data: volume vs average, DMA trends, earnings proximity

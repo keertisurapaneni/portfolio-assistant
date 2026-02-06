@@ -1,226 +1,195 @@
 # Portfolio Assistant
 
-A personal investing decision-support tool for tracking stock portfolios with automated conviction scoring, risk monitoring, and curated discovery.
+AI-powered stock signals — skip the noise, catch the plays.
+
+A personal investing decision-support tool that combines automated conviction scoring with AI trade signals (Groq Llama 3.3 70B) to help you know when to buy, sell, or sit tight.
+
+## Features
+
+### My Portfolio
+
+- **Conviction Scoring** — Automated 0-100 score based on 4 factors: Quality (30%), Earnings (30%), Analyst (25%), Momentum (15%)
+- **AI Trade Signals** — BUY/SELL recommendations powered by Groq's Llama 3.3 70B with risk-adjusted guardrails
+- **Portfolio Values** — Per-stock position value and total portfolio with daily P&L
+- **Risk Warnings** — Concentration, stop-loss, profit-taking, and overconcentration alerts
+- **News Headlines** — Latest company-specific news on each card with clickable links
+- **Portfolio Import** — CSV/Excel upload with smart column detection (ticker, shares, avg cost)
+
+### Market Movers
+
+- Top 25 gainers and losers from Yahoo Finance
+- Sortable columns (Price, Change, Change %)
+
+### Suggested Finds
+
+- Curated "Quiet Compounders" and "Gold Mines" with expandable investment theses
+- One-click add to portfolio
+
+### Risk Profile Settings
+
+- **Aggressive** — -4% stop-loss, +25% profit-take, 30% max position
+- **Moderate** — -7% stop-loss, +20% profit-take, 25% max position
+- **Conservative** — -5% stop-loss, +20% profit-take, 20% max position
 
 ## Tech Stack
 
-- **Frontend:** React 18 + TypeScript + Vite
-- **Styling:** Tailwind CSS 4 + shadcn/ui
-- **Backend:** Supabase (PostgreSQL + Auth + Edge Functions)
-- **Deployment:** Vercel (Frontend) + Supabase (Backend)
-- **APIs:** Finnhub (stock data)
+- **Frontend:** React 18 + TypeScript + Vite + Tailwind CSS 4
+- **AI:** Groq (Llama 3.3 70B + Qwen3 32B fallback) via Supabase Edge Function
+- **Data:** Finnhub API (quotes, metrics, recommendations, earnings, news)
+- **Backend:** Supabase (Edge Functions + PostgreSQL cache)
+- **Deployment:** Vercel (frontend) + Supabase (backend)
 
-## Environment Setup
+## Architecture
+
+```
+Browser → Supabase Edge Functions → External APIs
+                                     ├── Groq (AI trade signals)
+                                     ├── Finnhub (stock data)
+                                     └── Yahoo Finance (market movers, news)
+```
+
+**Edge Functions:**
+| Function | Purpose |
+|---|---|
+| `fetch-stock-data` | Proxies Finnhub API with 15-min server cache |
+| `ai-proxy` | AI proxy with 70B/32B fallback pipeline |
+| `scrape-market-movers` | Yahoo Finance screener for gainers/losers |
+| `fetch-yahoo-news` | Company-specific news from Yahoo Finance |
+
+**API keys never touch the browser** — all sensitive keys stored as Supabase secrets.
+
+## Quick Start
 
 ### Prerequisites
 
-- Node.js 18.x or 20.x (LTS recommended)
-- npm or yarn package manager
-- Supabase account (for cloud features)
-- Finnhub API key (free tier available)
+- Node.js 18+ (LTS recommended)
+- Supabase account + CLI
+- Finnhub API key (free: https://finnhub.io/register)
+- Groq API key (free: https://console.groq.com)
 
-### Local Development Setup
-
-1. **Clone the repository** (when using git later)
-
-2. **Install dependencies:**
-
-   ```bash
-   npm install
-   ```
-
-3. **Configure environment variables:**
-
-   Copy the example environment file:
-
-   ```bash
-   cp .env.example .env
-   ```
-
-4. **Set up API keys in `.env`:**
-
-   **Finnhub API Key** (Required for stock data):
-   - Sign up at: https://finnhub.io/register
-   - Copy your API key
-   - Update `.env`: `VITE_FINNHUB_API_KEY=your_actual_key`
-
-   **Supabase Configuration** (Required for multi-user features):
-   - Create a project at: https://app.supabase.com
-   - Go to Project Settings → API
-   - Copy the Project URL and anon/public key
-   - Update `.env`:
-     ```
-     VITE_SUPABASE_URL=https://your-project-id.supabase.co
-     VITE_SUPABASE_ANON_KEY=your_actual_anon_key
-     ```
-
-   **Note:** The app will work in **guest mode** without Supabase (using localStorage). Cloud features (authentication, multi-device sync) require Supabase to be configured (Story 5.1). Until then, leave the placeholder values as-is.
-
-5. **Run the development server:**
-
-   ```bash
-   npm run dev
-   ```
-
-   Open http://localhost:5173 in your browser.
-
-### Environment Variables Reference
-
-| Variable                 | Description                    | Required             | Where to Get                        |
-| ------------------------ | ------------------------------ | -------------------- | ----------------------------------- |
-| `VITE_FINNHUB_API_KEY`   | Finnhub API key for stock data | Yes                  | https://finnhub.io/register         |
-| `VITE_SUPABASE_URL`      | Supabase project URL           | Yes (for auth/cloud) | Supabase Dashboard → Settings → API |
-| `VITE_SUPABASE_ANON_KEY` | Supabase anonymous/public key  | Yes (for auth/cloud) | Supabase Dashboard → Settings → API |
-
-**Important Security Notes:**
-
-- ✅ `.env` is gitignored - your secrets are safe
-- ✅ `VITE_SUPABASE_ANON_KEY` is safe to use in client code (Row Level Security protects data)
-- ⚠️ Never commit `.env` file or share your API keys publicly
-- ⚠️ Never use Supabase `service_role` key in client code
-- 🔄 **If you accidentally commit secrets:** Immediately revoke and rotate your API keys (Finnhub dashboard, Supabase dashboard)
-
-**Local Development vs Production:**
-
-- `.env` is for **local development only** - these variables are loaded by Vite during `npm run dev`
-- **Production (Vercel):** Environment variables are set in Vercel Dashboard → Project Settings → Environment Variables
-- The same variable names are used in both environments, but values are managed separately
-- Never commit `.env` to git - each environment has its own configuration
-
-### Supabase Edge Function Secrets
-
-When deploying the Supabase Edge Function (Story 2.1), you'll need to set the Finnhub API key as a Supabase secret.
-
-**Prerequisites:**
-
-1. Supabase CLI installed: `npm install -g supabase`
-2. Supabase project created (see configuration step above)
-3. Supabase CLI authenticated: `supabase login`
-4. Project linked: `supabase link --project-ref your-project-ref`
-
-**Set Edge Function Secret:**
+### Setup
 
 ```bash
-# Set Edge Function secret (keeps API key secure on server)
-supabase secrets set FINNHUB_API_KEY=your_finnhub_api_key_here
+# Clone and install
+git clone <repo-url>
+cd portfolio-assistant/app
+npm install
+
+# Configure environment
+cp .env.example .env
+# Edit .env with your Supabase URL and anon key
 ```
 
-This keeps the API key secure on the server side and enables shared caching for all users.
+### Environment Variables
 
-## Troubleshooting
+| Variable                 | Description              | Where to Get                        |
+| ------------------------ | ------------------------ | ----------------------------------- |
+| `VITE_SUPABASE_URL`      | Supabase project URL     | Supabase Dashboard → Settings → API |
+| `VITE_SUPABASE_ANON_KEY` | Supabase anon/public key | Supabase Dashboard → Settings → API |
 
-### Common Setup Issues
-
-**Port 5173 already in use:**
+**Supabase Secrets** (set via CLI, not in .env):
 
 ```bash
-# Kill process on port 5173
-lsof -ti:5173 | xargs kill -9
-
-# Or run on a different port
-npm run dev -- --port 3000
+supabase secrets set FINNHUB_API_KEY=your_key
+supabase secrets set GROQ_API_KEY=your_key
 ```
 
-**Environment variables not loading:**
+### Run
 
-- Verify `.env` file exists in `/app` directory (not project root)
-- Check that variable names start with `VITE_` prefix
-- Restart dev server after changing `.env`
-- Try: `cat .env` to verify file contents
+```bash
+npm run dev
+# Open http://localhost:5173
+```
 
-**API key errors (401 Unauthorized):**
+### Deploy
 
-- Verify Finnhub API key is valid at https://finnhub.io/dashboard
-- Check for extra spaces or quotes in `.env` file
-- Ensure `VITE_FINNHUB_API_KEY` is set correctly
+```bash
+# Deploy Edge Functions
+supabase functions deploy fetch-stock-data --no-verify-jwt
+supabase functions deploy ai-proxy --no-verify-jwt
+supabase functions deploy scrape-market-movers --no-verify-jwt
+supabase functions deploy fetch-yahoo-news --no-verify-jwt
 
-**Supabase connection errors:**
+# Frontend auto-deploys to Vercel on git push to master
+git push origin master
+```
 
-- Verify project URL and anon key are correct
-- Check Supabase project status at https://app.supabase.com
-- If not using auth yet, the app should work in guest mode (localStorage)
+## Project Structure
 
-**Build errors:**
-
-- Clear node_modules and reinstall: `rm -rf node_modules && npm install`
-- Clear Vite cache: `rm -rf node_modules/.vite`
-- Check Node.js version: `node -v` (should be 18.x or 20.x)
-
-**"Cannot find module" errors:**
-
-- Ensure all dependencies installed: `npm install`
-- Check TypeScript paths in `tsconfig.json`
-
-### Getting Help
-
-If you encounter issues not covered here:
-
-1. Check browser console for error messages (F12 → Console)
-2. Check terminal for build/server errors
-3. Verify all environment variables are set correctly
-4. Try restarting the dev server
+```
+portfolio-assistant/
+├── app/                          # React frontend
+│   ├── src/
+│   │   ├── components/           # UI components
+│   │   │   ├── Dashboard.tsx     # Portfolio overview + total value
+│   │   │   ├── StockCard.tsx     # Individual stock card
+│   │   │   ├── StockDetail.tsx   # Slide-over detail panel
+│   │   │   ├── MarketMovers.tsx  # Gainers/losers tables
+│   │   │   ├── SuggestedFinds.tsx
+│   │   │   ├── SettingsModal.tsx # Risk profile settings
+│   │   │   ├── AddTickersModal.tsx
+│   │   │   └── ImportPortfolioModal.tsx
+│   │   ├── lib/                  # Business logic
+│   │   │   ├── aiInsights.ts     # AI trade signals + caching
+│   │   │   ├── convictionEngine.ts # 4-factor scoring engine
+│   │   │   ├── stockApiEdge.ts   # Finnhub API integration
+│   │   │   ├── portfolioCalc.ts  # Portfolio weight calculations
+│   │   │   ├── warnings.ts      # Risk warning system
+│   │   │   ├── settingsStorage.ts # Risk profile + drawdown
+│   │   │   ├── storage.ts       # localStorage CRUD
+│   │   │   ├── importParser.ts  # CSV/Excel parsing
+│   │   │   └── utils.ts         # Tailwind helpers
+│   │   ├── types/index.ts       # TypeScript types
+│   │   └── App.tsx              # Main app + AI orchestration
+│   └── .env.example
+├── supabase/functions/           # Edge Functions
+│   ├── fetch-stock-data/         # Finnhub proxy + cache
+│   ├── ai-proxy/                 # AI proxy (Groq 70B/32B)
+│   ├── scrape-market-movers/     # Yahoo Finance screener
+│   └── fetch-yahoo-news/         # Yahoo Finance news
+├── docs/                         # Documentation
+│   ├── AI-BUY-PRIORITY-SYSTEM.md # AI signal system docs
+│   ├── DEPLOY_MARKET_MOVERS.md
+│   ├── DEPLOY_YAHOO_NEWS.md
+│   ├── GET_SUPABASE_KEYS.md
+│   └── verify-code-consistency.md
+└── _bmad-output/                 # BMAD planning artifacts
+    └── planning-artifacts/
+        ├── prd.md                # Product Requirements Document
+        ├── epics.md              # Epic & story breakdown
+        ├── architecture.md       # Architecture decisions
+        └── ux-design-specification.md
+```
 
 ## Available Scripts
 
-- `npm run dev` - Start development server
-- `npm run build` - Build for production
-- `npm run preview` - Preview production build locally
-- `npm run lint` - Run ESLint
-
-## Guest vs Authenticated Modes
-
-**Guest Mode (Default):**
-
-- No login required
-- Data saved in browser localStorage
-- Full functionality available
-- Data persists in browser only
-
-**Authenticated Mode (Optional):**
-
-- Sign up with email/password
-- Portfolio synced to cloud (Supabase)
-- Access from any device
-- Guest data automatically migrated on signup
-
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend updating the configuration to enable type aware lint rules:
-
-- Configure the top-level `parserOptions` property like this:
-
-```js
-export default tseslint.config({
-  languageOptions: {
-    // other options...
-    parserOptions: {
-      project: ['./tsconfig.node.json', './tsconfig.app.json'],
-      tsconfigRootDir: import.meta.dirname,
-    },
-  },
-});
+```bash
+npm run dev      # Start development server
+npm run build    # Build for production (tsc + vite)
+npm run preview  # Preview production build
+npm run lint     # Run ESLint
 ```
 
-- Replace `tseslint.configs.recommended` to `tseslint.configs.recommendedTypeChecked` or `tseslint.configs.strictTypeChecked`
-- Optionally add `...tseslint.configs.stylisticTypeChecked`
-- Install [eslint-plugin-react](https://github.com/jsx-eslint/eslint-plugin-react) and update the config:
+## How AI Signals Work
 
-```js
-// eslint.config.js
-import react from 'eslint-plugin-react';
+1. **Trigger Detection** — Client checks if a stock has a reason to analyze (price move, stop-loss zone, earnings news, etc.)
+2. **Mechanical Guardrails** — Hard SELL for stop-loss, profit-taking, overconcentration (risk-profile adjusted)
+3. **AI Analysis** — Remaining stocks sent to Groq 70B via Edge Function with full context (scores, price, news, position data)
+4. **Fallback Pipeline** — If 70B rate-limits → tries 32B → retries after 3s → client retries after 10s
+5. **Display** — BUY/SELL badge on main card + full reasoning in detail view (always in sync)
 
-export default tseslint.config({
-  // Set the react version
-  settings: { react: { version: '18.3' } },
-  plugins: {
-    // Add the react plugin
-    react,
-  },
-  rules: {
-    // other rules...
-    // Enable its recommended rules
-    ...react.configs.recommended.rules,
-    ...react.configs['jsx-runtime'].rules,
-  },
-});
-```
+Signals only run on explicit refresh — no background API calls.
+
+## Troubleshooting
+
+| Issue              | Fix                                                                       |
+| ------------------ | ------------------------------------------------------------------------- |
+| Port 5173 in use   | `lsof -ti:5173 \| xargs kill -9`                                          |
+| .env not loading   | Must be in `app/` directory, vars need `VITE_` prefix, restart dev server |
+| 429 rate limits    | Wait 15s (auto-cooldown), or reduce portfolio size                        |
+| AI signals missing | Hit refresh — signals don't load from cache on page load                  |
+| Build errors       | `rm -rf node_modules && npm install` then `npm run build`                 |
+
+## License
+
+Personal project — not for redistribution.
