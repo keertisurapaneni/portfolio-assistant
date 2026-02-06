@@ -36,9 +36,10 @@ Deno.serve(async (req) => {
         .single();
 
       if (error || !data) {
+        // Return 200 with cached:false instead of 404 to avoid noisy browser console errors
         return new Response(
           JSON.stringify({ cached: false, date: today }),
-          { status: 404, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+          { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
         );
       }
 
