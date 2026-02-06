@@ -148,8 +148,9 @@ function App() {
   // on main card AND expanded card — no disagreement possible.
   // Cached stocks return instantly (no delay needed).
   // profileOverride: pass directly when changing risk profile to avoid stale closure
+  // onComplete: optional callback when analysis finishes (used for risk profile change UX)
   const runAIAnalysis = useCallback(
-    async (stockList: StockWithConviction[], profileOverride?: RiskProfile) => {
+    async (stockList: StockWithConviction[], profileOverride?: RiskProfile, onComplete?: () => void) => {
       const activeProfile = profileOverride ?? riskProfile;
 
       // Prevent overlapping runs
@@ -272,6 +273,7 @@ function App() {
       } finally {
         setIsAIRunning(false);
         setAiProgress(null);
+        if (onComplete) onComplete();
         if (uncachedCount > 0) {
           console.log(`[AI] Completed: ${uncachedCount} fresh API calls, rest from cache`);
         }
@@ -471,18 +473,19 @@ function App() {
     setRiskProfile(newProfile); // Save to localStorage
     setRiskProfileState(newProfile); // Update state
 
-    // Show user that re-analysis is happening
+    // Show user that re-analysis is happening (stays visible until done)
     const profileLabel = newProfile.charAt(0).toUpperCase() + newProfile.slice(1);
-    setRefreshProgress(`Switching to ${profileLabel} risk profile — re-analyzing...`);
+    setRefreshProgress(`Re-analyzing with ${profileLabel} risk profile...`);
 
     const freshStocks = loadStocks(); // Recalculate with new profile
     if (freshStocks) {
       // Pass profile directly — React state hasn't updated yet (async)
-      runAIAnalysis(freshStocks, newProfile);
+      runAIAnalysis(freshStocks, newProfile, () => {
+        // Show "Done" when analysis completes
+        setRefreshProgress(`✓ Done — updated signals for ${profileLabel} profile`);
+        setTimeout(() => setRefreshProgress(null), 2500);
+      });
     }
-
-    // Clear the banner after a few seconds (aiProgress bar will take over)
-    setTimeout(() => setRefreshProgress(null), 3000);
   };
 
   // Get existing tickers for suggested tab
