@@ -68,7 +68,7 @@ export interface AIInsight {
 }
 
 // Bump PROMPT_VERSION whenever the AI prompt changes to invalidate stale cache
-const PROMPT_VERSION = 36; // v36: BUY on dips only — separate dip/surge triggers, AI prompt updated
+const PROMPT_VERSION = 37; // v37: Smart stop-loss — no mechanical sell on recovering (green) stocks
 const CACHE_PREFIX = `ai-insight-v${PROMPT_VERSION}`;
 const CACHE_DURATION = 1000 * 60 * 60 * 4; // 4 hours
 
@@ -278,29 +278,41 @@ export async function generateAIInsights(
   }
 
   // ── Mechanical SELL guardrails — only for capital protection ──
-  // Stop-loss is mechanical (protect capital, no debate).
+  // Stop-loss logic:
+  //   - Down from entry AND red today (still bleeding) → mechanical SELL
+  //   - Down from entry BUT green today (recovering) → send to AI for evaluation
+  //   - Deep loss (2x stop-loss threshold) → mechanical SELL regardless of today's direction
   // Profit-take is NOT mechanical — a quality stock up 20% may have more to run.
-  // Instead, profit-take is a trigger that sends the stock to AI for evaluation.
   if (avgCost && stock.currentPrice && avgCost > 0) {
     const gainLossPct = ((stock.currentPrice - avgCost) / avgCost) * 100;
+    const isGreenToday = (priceChangePercent ?? 0) > 0;
+    const deepLossThreshold = guardrails.stopLoss * 2; // e.g., -14% for moderate (-7% * 2)
+
     if (gainLossPct <= guardrails.stopLoss) {
-      const sellInsight: AIInsight = {
-        summary: stock.name || stock.ticker,
-        buyPriority: 'SELL',
-        confidence: 'HIGH',
-        reasoning: `Down ${Math.abs(gainLossPct).toFixed(1)}% from your $${avgCost.toFixed(2)} entry — stop-loss triggered (${riskProfile ?? 'moderate'} profile: ${guardrails.stopLoss}%). Protect capital and reassess.`,
-        cardNote: `Stop-loss: ${gainLossPct.toFixed(1)}% from entry`,
-        dataCompleteness: 'FULL',
-        liquidityRisk: liquidity.risk,
-        liquidityWarning: liquidity.warning,
-        cached: false,
-        timestamp: new Date().toISOString(),
-      };
-      cacheInsight(stock.ticker, sellInsight);
-      return sellInsight;
+      if (isGreenToday && gainLossPct > deepLossThreshold) {
+        // Stock is recovering (green today) and loss isn't extreme — let AI evaluate
+        // The trigger was already added above, AI will see "stop-loss zone" in context
+        console.log(`[AI Insights] ${stock.ticker}: stop-loss zone (${gainLossPct.toFixed(1)}%) but green today — sending to AI`);
+      } else {
+        // Still bleeding (red today) OR deep loss — mechanical SELL
+        const sellInsight: AIInsight = {
+          summary: stock.name || stock.ticker,
+          buyPriority: 'SELL',
+          confidence: 'HIGH',
+          reasoning: `Down ${Math.abs(gainLossPct).toFixed(1)}% from your $${avgCost.toFixed(2)} entry${!isGreenToday ? ' and still falling' : ''} — stop-loss triggered (${riskProfile ?? 'moderate'} profile: ${guardrails.stopLoss}%). Protect capital and reassess.`,
+          cardNote: `Stop-loss: ${gainLossPct.toFixed(1)}% from entry`,
+          dataCompleteness: 'FULL',
+          liquidityRisk: liquidity.risk,
+          liquidityWarning: liquidity.warning,
+          cached: false,
+          timestamp: new Date().toISOString(),
+        };
+        cacheInsight(stock.ticker, sellInsight);
+        return sellInsight;
+      }
     }
     // Profit-take zone: NOT an automatic SELL — AI evaluates based on fundamentals
-    // The trigger was already added above (line ~209) so AI will see it
+    // The trigger was already added above so AI will see it
   }
   if (portfolioWeight && portfolioWeight > guardrails.rebalanceAt) {
     const sellInsight: AIInsight = {
