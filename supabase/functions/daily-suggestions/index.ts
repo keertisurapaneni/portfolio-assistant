@@ -118,6 +118,28 @@ Deno.serve(async (req) => {
       );
     }
 
+    // ── DELETE: Clear today's cache (for regenration after bug fixes) ──
+    if (req.method === 'DELETE') {
+      const { error: deleteError } = await supabase
+        .from('daily_suggestions')
+        .delete()
+        .eq('suggestion_date', today);
+
+      if (deleteError) {
+        console.error(`[Daily Suggestions] Delete error:`, deleteError);
+        return new Response(
+          JSON.stringify({ error: 'Failed to clear cache', details: deleteError.message }),
+          { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      }
+
+      console.log(`[Daily Suggestions] Cleared cache for ${today}`);
+      return new Response(
+        JSON.stringify({ cleared: true, date: today }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
     return new Response(
       JSON.stringify({ error: 'Method not allowed' }),
       { status: 405, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
