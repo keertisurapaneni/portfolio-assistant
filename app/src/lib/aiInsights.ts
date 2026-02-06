@@ -68,7 +68,7 @@ export interface AIInsight {
 }
 
 // Bump PROMPT_VERSION whenever the AI prompt changes to invalidate stale cache
-const PROMPT_VERSION = 35; // v35: Risk-profile-aware trigger thresholds — more BUY opportunities for all profiles
+const PROMPT_VERSION = 36; // v36: BUY on dips only — separate dip/surge triggers, AI prompt updated
 const CACHE_PREFIX = `ai-insight-v${PROMPT_VERSION}`;
 const CACHE_DURATION = 1000 * 60 * 60 * 4; // 4 hours
 
@@ -215,9 +215,15 @@ export async function generateAIInsights(
     conservative:  { priceMove: 2.5, offHigh: 15, offHighMinScore: 65, qualityDipScore: 75 },
   }[riskProfile ?? 'moderate'];
 
-  // Price move trigger: significant daily change (risk-adjusted)
-  if (priceChangePercent !== undefined && Math.abs(priceChangePercent) >= triggerThresholds.priceMove) {
-    triggers.push(`price ${priceChangePercent >= 0 ? '+' : ''}${priceChangePercent.toFixed(1)}%`);
+  // Price move triggers: differentiate dip vs surge for proper AI context
+  if (priceChangePercent !== undefined) {
+    if (priceChangePercent <= -triggerThresholds.priceMove) {
+      // Dip trigger — potential BUY opportunity for quality stocks
+      triggers.push(`price dip ${priceChangePercent.toFixed(1)}%`);
+    } else if (priceChangePercent >= triggerThresholds.priceMove) {
+      // Surge trigger — evaluate for SELL/profit-take, NOT for BUY
+      triggers.push(`price surge +${priceChangePercent.toFixed(1)}%`);
+    }
   }
 
   // Quality stock on a red day — let the AI evaluate potential BUY
