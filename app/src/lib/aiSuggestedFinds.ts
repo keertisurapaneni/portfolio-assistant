@@ -20,7 +20,7 @@ const DAILY_SUGGESTIONS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1
 const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
 // Cache config
-const PROMPT_VERSION = 5; // v5: Gold Mine quality filters + positive-only catalysts + server cache
+const PROMPT_VERSION = 6; // v6: Relaxed quality filters — only reject catastrophic stocks
 const CACHE_KEY = `gemini-discovery-v${PROMPT_VERSION}`;
 const CACHE_DURATION = 1000 * 60 * 60 * 24; // 24 hours
 
@@ -329,10 +329,10 @@ function buildGoldMineCandidatePrompt(news: MarketNewsItem[], excludeTickers: st
 STRICT RULES:
 1. ONLY pick stocks that are DIRECTLY mentioned by name or ticker in the headlines.
 2. Do NOT pick stocks based on vague sector association. "Tech rebounds" does NOT justify random tech stocks.
-3. ONLY pick stocks with POSITIVE catalysts: earnings beats, revenue growth, expansion, new products, partnerships, insider buying on strong companies, positive guidance.
-4. Do NOT pick stocks mentioned because they are FALLING, declining, being sued, missing earnings, or in trouble. A stock "soaring" after being down 90% is NOT a positive catalyst.
+3. Prefer stocks with POSITIVE catalysts: earnings beats, revenue growth, expansion, new products, partnerships, insider buying, positive guidance, deals, upgrades.
+4. Avoid stocks mentioned ONLY because they are crashing, being sued, or in serious trouble — unless there's a genuine turnaround catalyst.
 5. NOT mega-caps: exclude AAPL, MSFT, GOOGL, AMZN, META, NVDA, TSLA.
-6. Quality over quantity — if fewer than 4 stocks have genuinely positive catalysts, return fewer.
+6. Quality over quantity — if fewer than 4 stocks are directly mentioned, return fewer.
 ${exclude}
 
 HEADLINES:
@@ -358,22 +358,21 @@ Return ONLY valid JSON:
 }`;
 }
 
-// Quality filter: reject stocks with clearly terrible fundamentals
+// Quality filter: reject only the absolute worst stocks — let AI prompt handle nuance
 function filterQualityMetrics(metrics: FinnhubMetricData[]): FinnhubMetricData[] {
   return metrics.filter((m) => {
-    // Reject deeply unprofitable companies
-    if (m.roe !== null && m.roe < -30) {
-      console.log(`[Discovery] Filtering out ${m.ticker}: ROE ${m.roe.toFixed(1)}% too low`);
+    // Only reject catastrophically unprofitable companies (ROE < -80%)
+    if (m.roe !== null && m.roe < -80) {
+      console.log(`[Discovery] Filtering out ${m.ticker}: ROE ${m.roe.toFixed(1)}% catastrophic`);
       return false;
     }
-    // Reject companies with terrible profit margins AND revenue decline
-    if (m.profitMargin !== null && m.profitMargin < -15 && m.revenueGrowth !== null && m.revenueGrowth < 0) {
-      console.log(`[Discovery] Filtering out ${m.ticker}: margin ${m.profitMargin.toFixed(1)}% + revenue decline ${m.revenueGrowth.toFixed(1)}%`);
-      return false;
-    }
-    // Reject companies with extremely negative operating margins
-    if (m.operatingMargin !== null && m.operatingMargin < -25) {
-      console.log(`[Discovery] Filtering out ${m.ticker}: operating margin ${m.operatingMargin.toFixed(1)}% too low`);
+    // Reject companies losing money AND shrinking AND terrible margins (all three)
+    if (
+      m.profitMargin !== null && m.profitMargin < -30 &&
+      m.revenueGrowth !== null && m.revenueGrowth < -10 &&
+      m.operatingMargin !== null && m.operatingMargin < -30
+    ) {
+      console.log(`[Discovery] Filtering out ${m.ticker}: all metrics terrible`);
       return false;
     }
     return true;
