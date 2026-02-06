@@ -68,16 +68,23 @@ export interface AIInsight {
 }
 
 // Bump PROMPT_VERSION whenever the AI prompt changes to invalidate stale cache
-const PROMPT_VERSION = 33; // v33: Removed mechanical profit-take SELL — AI evaluates quality stocks with gains
-const CACHE_KEY_PREFIX = `ai-insight-v${PROMPT_VERSION}-`;
-const CACHE_DURATION = 1000 * 60 * 60 * 4; // 4 hours (refresh more often during trading day)
+const PROMPT_VERSION = 34; // v34: Cache keyed by risk profile — switching profiles shows correct insights instantly
+const CACHE_PREFIX = `ai-insight-v${PROMPT_VERSION}`;
+const CACHE_DURATION = 1000 * 60 * 60 * 4; // 4 hours
+
+// Current risk profile for cache keying — set by generateAIInsights
+let _currentRiskProfile = 'moderate';
+
+function cacheKey(ticker: string): string {
+  return `${CACHE_PREFIX}-${_currentRiskProfile}-${ticker}`;
+}
 
 /**
  * Get cached insight if available and fresh
  */
 export function getCachedInsight(ticker: string): AIInsight | null {
   try {
-    const cached = localStorage.getItem(`${CACHE_KEY_PREFIX}${ticker}`);
+    const cached = localStorage.getItem(cacheKey(ticker));
     if (!cached) return null;
 
     const insight = JSON.parse(cached) as AIInsight;
@@ -97,28 +104,10 @@ export function getCachedInsight(ticker: string): AIInsight | null {
  */
 function cacheInsight(ticker: string, insight: AIInsight): void {
   try {
-    localStorage.setItem(`${CACHE_KEY_PREFIX}${ticker}`, JSON.stringify(insight));
+    localStorage.setItem(cacheKey(ticker), JSON.stringify(insight));
   } catch {
     // Storage full, ignore
   }
-}
-
-/**
- * Clear all cached AI insights — call when risk profile changes
- * so the AI re-evaluates with the new profile
- */
-export function clearAllInsightCache(): void {
-  try {
-    const keysToRemove: string[] = [];
-    for (let i = 0; i < localStorage.length; i++) {
-      const key = localStorage.key(i);
-      if (key && key.startsWith(CACHE_KEY_PREFIX)) {
-        keysToRemove.push(key);
-      }
-    }
-    keysToRemove.forEach(k => localStorage.removeItem(k));
-    console.log(`[AI Cache] Cleared ${keysToRemove.length} cached insights for risk profile change`);
-  } catch { /* */ }
 }
 
 /**
@@ -160,7 +149,7 @@ try {
     if (
       key &&
       (key.startsWith('ai-card-') || key.startsWith('ai-insight-')) &&
-      !key.startsWith(CACHE_KEY_PREFIX)
+      !key.startsWith(CACHE_PREFIX)
     ) {
       keysToRemove.push(key);
     }
@@ -192,10 +181,13 @@ export async function generateAIInsights(
   volume?: number,
   recentNews?: Stock['recentNews']
 ): Promise<AIInsight | null> {
-  // Check cache first
+  // Set risk profile for cache keying
+  _currentRiskProfile = riskProfile ?? 'moderate';
+
+  // Check cache first (keyed by ticker + risk profile)
   const cached = getCachedInsight(stock.ticker);
   if (cached) {
-    console.log(`[AI Insights] Using cached insights for ${stock.ticker}`);
+    console.log(`[AI Insights] Using cached insights for ${stock.ticker} (${_currentRiskProfile})`);
     return cached;
   }
 

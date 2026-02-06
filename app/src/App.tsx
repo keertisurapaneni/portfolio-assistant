@@ -5,7 +5,7 @@ import { getUserData, addTickers, updateStock, clearAllData } from './lib/storag
 import { getConvictionResult } from './lib/convictionEngine';
 import { calculatePortfolioWeights } from './lib/portfolioCalc';
 import { fetchMultipleStocks } from './lib/stockApiEdge';
-import { generateAIInsights, clearAllInsightCache } from './lib/aiInsights';
+import { generateAIInsights } from './lib/aiInsights';
 import { getRiskProfile, setRiskProfile } from './lib/settingsStorage';
 import { cn } from './lib/utils';
 
@@ -466,7 +466,6 @@ function App() {
   const handleRiskProfileChange = (newProfile: RiskProfile) => {
     setRiskProfile(newProfile); // Save to localStorage
     setRiskProfileState(newProfile); // Update state
-    clearAllInsightCache(); // Wipe cached insights so AI re-runs with new risk profile
     const freshStocks = loadStocks(); // Recalculate with new profile
     if (freshStocks) runAIAnalysis(freshStocks); // Re-analyze with new risk profile
   };
