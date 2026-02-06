@@ -656,7 +656,7 @@ export function getCachedTimestamp(): string | null {
 // ──────────────────────────────────────────────────────────
 
 export async function discoverStocks(
-  existingTickers: string[],
+  _existingTickers: string[],
   forceRefresh = false,
   onStep?: (step: DiscoveryStep) => void
 ): Promise<DiscoveryResult> {
