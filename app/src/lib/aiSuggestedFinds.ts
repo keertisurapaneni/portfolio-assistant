@@ -16,10 +16,11 @@ import type { EnhancedSuggestedStock } from '../data/suggestedFinds';
 
 const GEMINI_PROXY_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/gemini-proxy`;
 const STOCK_DATA_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/fetch-stock-data`;
+const DAILY_SUGGESTIONS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/daily-suggestions`;
 const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
 // Cache config
-const PROMPT_VERSION = 4; // v4: Gold Mines now include real Finnhub metrics
+const PROMPT_VERSION = 5; // v5: Gold Mine quality filters + positive-only catalysts + server cache
 const CACHE_KEY = `gemini-discovery-v${PROMPT_VERSION}`;
 const CACHE_DURATION = 1000 * 60 * 60 * 24; // 24 hours
 
@@ -313,7 +314,7 @@ async function fetchGeneralMarketNews(): Promise<MarketNewsItem[]> {
 // Step A: Gemini extracts tickers + theme from headlines (lightweight — tickers only)
 function buildGoldMineCandidatePrompt(news: MarketNewsItem[], excludeTickers: string[]): string {
   const exclude = excludeTickers.length > 0
-    ? `\nEXCLUDE these tickers (user already owns them): ${excludeTickers.join(', ')}`
+    ? `\nEXCLUDE these tickers: ${excludeTickers.join(', ')}`
     : '';
 
   const newsBlock = news
@@ -328,18 +329,19 @@ function buildGoldMineCandidatePrompt(news: MarketNewsItem[], excludeTickers: st
 STRICT RULES:
 1. ONLY pick stocks that are DIRECTLY mentioned by name or ticker in the headlines.
 2. Do NOT pick stocks based on vague sector association. "Tech rebounds" does NOT justify random tech stocks.
-3. Do NOT spin bearish headlines into buy theses.
-4. NOT mega-caps: exclude AAPL, MSFT, GOOGL, AMZN, META, NVDA, TSLA.
-5. Quality over quantity — if fewer than 4 stocks are directly mentioned, return fewer.
+3. ONLY pick stocks with POSITIVE catalysts: earnings beats, revenue growth, expansion, new products, partnerships, insider buying on strong companies, positive guidance.
+4. Do NOT pick stocks mentioned because they are FALLING, declining, being sued, missing earnings, or in trouble. A stock "soaring" after being down 90% is NOT a positive catalyst.
+5. NOT mega-caps: exclude AAPL, MSFT, GOOGL, AMZN, META, NVDA, TSLA.
+6. Quality over quantity — if fewer than 4 stocks have genuinely positive catalysts, return fewer.
 ${exclude}
 
 HEADLINES:
 ${newsBlock}
 
 TASK:
-1. Identify companies EXPLICITLY mentioned by name in the headlines.
-2. Identify the dominant investable theme.
-3. Return 4-6 tickers and the theme.
+1. Identify companies EXPLICITLY mentioned by name with POSITIVE catalysts.
+2. Identify the dominant investable theme from those positive stories.
+3. Return 4-6 tickers and the theme. FEWER is better than including weak picks.
 
 Return ONLY valid JSON:
 {
@@ -351,9 +353,31 @@ Return ONLY valid JSON:
     ]
   },
   "tickers": [
-    { "ticker": "SYM", "name": "Company Name", "category": "Category", "headline_ref": "Which headline # mentions them" }
+    { "ticker": "SYM", "name": "Company Name", "category": "Category", "headline_ref": "Which headline # mentions them", "catalyst": "Brief positive catalyst from headline" }
   ]
 }`;
+}
+
+// Quality filter: reject stocks with clearly terrible fundamentals
+function filterQualityMetrics(metrics: FinnhubMetricData[]): FinnhubMetricData[] {
+  return metrics.filter((m) => {
+    // Reject deeply unprofitable companies
+    if (m.roe !== null && m.roe < -30) {
+      console.log(`[Discovery] Filtering out ${m.ticker}: ROE ${m.roe.toFixed(1)}% too low`);
+      return false;
+    }
+    // Reject companies with terrible profit margins AND revenue decline
+    if (m.profitMargin !== null && m.profitMargin < -15 && m.revenueGrowth !== null && m.revenueGrowth < 0) {
+      console.log(`[Discovery] Filtering out ${m.ticker}: margin ${m.profitMargin.toFixed(1)}% + revenue decline ${m.revenueGrowth.toFixed(1)}%`);
+      return false;
+    }
+    // Reject companies with extremely negative operating margins
+    if (m.operatingMargin !== null && m.operatingMargin < -25) {
+      console.log(`[Discovery] Filtering out ${m.ticker}: operating margin ${m.operatingMargin.toFixed(1)}% too low`);
+      return false;
+    }
+    return true;
+  });
 }
 
 // Step B: Gemini analyzes Gold Mine picks with REAL Finnhub data + headline context (same format as Compounders)
@@ -403,6 +427,8 @@ RULES:
 - For "reason" and "whyGreat": combine the headline catalyst WITH the financial data.
 - Each whyGreat point should cite a specific metric from the data.
 - Be concise and factual. No hype.
+- CRITICAL: If a stock has BAD fundamentals (negative ROE, negative profit margins, declining revenue), do NOT include it. Only include stocks where the data supports a genuine investment thesis.
+- Do NOT try to spin negative metrics as positives. If the numbers are bad, the stock doesn't belong here.
 
 RECENT HEADLINES (for context):
 ${headlinesSummary}
@@ -552,10 +578,51 @@ function parseCandidateTickers(raw: string): string[] {
 }
 
 // ──────────────────────────────────────────────────────────
-// Cache management
+// Cache management (server-first, localStorage fallback)
 // ──────────────────────────────────────────────────────────
 
-function getCachedDiscovery(): CachedDiscovery | null {
+// Server-side cache: shared across ALL users for the day
+async function getServerCachedDiscovery(): Promise<DiscoveryResult | null> {
+  try {
+    const response = await fetch(DAILY_SUGGESTIONS_URL, {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${SUPABASE_KEY}`,
+        apikey: SUPABASE_KEY,
+      },
+    });
+    if (!response.ok) return null;
+
+    const result = await response.json();
+    if (result.cached && result.data) {
+      console.log(`[Discovery] Server cache HIT for ${result.date}`);
+      return result.data as DiscoveryResult;
+    }
+  } catch (err) {
+    console.warn('[Discovery] Server cache check failed:', err);
+  }
+  return null;
+}
+
+async function storeServerCache(data: DiscoveryResult): Promise<void> {
+  try {
+    await fetch(DAILY_SUGGESTIONS_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${SUPABASE_KEY}`,
+        apikey: SUPABASE_KEY,
+      },
+      body: JSON.stringify({ data }),
+    });
+    console.log('[Discovery] Stored results in server cache');
+  } catch (err) {
+    console.warn('[Discovery] Failed to store server cache:', err);
+  }
+}
+
+// Local cache: fast fallback for same user within the day
+function getLocalCachedDiscovery(): CachedDiscovery | null {
   try {
     const raw = localStorage.getItem(CACHE_KEY);
     if (!raw) return null;
@@ -566,7 +633,7 @@ function getCachedDiscovery(): CachedDiscovery | null {
   return null;
 }
 
-function cacheDiscovery(data: DiscoveryResult): void {
+function cacheLocalDiscovery(data: DiscoveryResult): void {
   try {
     localStorage.setItem(CACHE_KEY, JSON.stringify({ data, timestamp: new Date().toISOString() }));
   } catch { /* storage full */ }
@@ -593,15 +660,30 @@ export async function discoverStocks(
   forceRefresh = false,
   onStep?: (step: DiscoveryStep) => void
 ): Promise<DiscoveryResult> {
-  // Check cache
+  // Cache priority: localStorage (instant) → server (shared) → generate fresh
   if (!forceRefresh) {
-    const cached = getCachedDiscovery();
-    if (cached) {
-      console.log('[Discovery] Using 24h cached results');
+    // 1. Local cache (same user, same browser)
+    const localCached = getLocalCachedDiscovery();
+    if (localCached) {
+      console.log('[Discovery] Using local cached results');
       onStep?.('done');
-      return cached.data;
+      return localCached.data;
+    }
+
+    // 2. Server cache (shared across all users for the day)
+    const serverCached = await getServerCachedDiscovery();
+    if (serverCached) {
+      console.log('[Discovery] Using server-cached results (shared daily)');
+      cacheLocalDiscovery(serverCached); // Store locally for fast access
+      onStep?.('done');
+      return serverCached;
     }
   }
+
+  // 3. No cache — generate fresh (first visitor of the day)
+  // Note: We do NOT exclude user-specific tickers during generation
+  // because results are shared. Filtering happens on display.
+  console.log('[Discovery] No cache found — generating fresh suggestions...');
 
   // ── QUIET COMPOUNDERS PIPELINE ──
 
@@ -609,7 +691,7 @@ export async function discoverStocks(
   onStep?.('finding_candidates');
   console.log('[Discovery] Step 1: Asking Gemini for compounder candidates...');
   const candidateRaw = await callGemini(
-    buildCandidatePrompt(existingTickers),
+    buildCandidatePrompt([]), // No user-specific exclusions for shared cache
     'discover_compounders',
     0.5,
     1000 // Enough room for a JSON array of 10 tickers
@@ -659,7 +741,7 @@ export async function discoverStocks(
   await new Promise((r) => setTimeout(r, 2000));
 
   const goldMineCandidateRaw = await callGemini(
-    buildGoldMineCandidatePrompt(marketNews, existingTickers),
+    buildGoldMineCandidatePrompt(marketNews, []), // No user-specific exclusions for shared cache
     'discover_goldmines',
     0.3,
     1500
@@ -667,14 +749,16 @@ export async function discoverStocks(
   const { theme: currentTheme, candidates: goldMineCandidates } = parseGoldMineCandidates(goldMineCandidateRaw);
   console.log(`[Discovery] Theme: "${currentTheme.name}" — ${goldMineCandidates.length} candidates: ${goldMineCandidates.map(c => c.ticker).join(', ')}`);
 
-  // Step 5b: Fetch real Finnhub metrics for Gold Mine picks
+  // Step 5b: Fetch real Finnhub metrics for Gold Mine picks + quality filter
   console.log('[Discovery] Step 5b: Fetching Finnhub metrics for Gold Mine picks...');
   const goldMineTickers = goldMineCandidates.map((c) => c.ticker);
   const goldMineMetrics = await fetchMetricsForTickers(goldMineTickers);
-  const validGoldMineMetrics = goldMineMetrics.filter(
-    (m) => m.roe !== null || m.profitMargin !== null || m.eps !== null
+  const validGoldMineMetrics = filterQualityMetrics(
+    goldMineMetrics.filter(
+      (m) => m.roe !== null || m.profitMargin !== null || m.eps !== null
+    )
   );
-  console.log(`[Discovery] Got metrics for ${validGoldMineMetrics.length}/${goldMineTickers.length} Gold Mine picks`);
+  console.log(`[Discovery] Got quality metrics for ${validGoldMineMetrics.length}/${goldMineTickers.length} Gold Mine picks (after quality filter)`);
 
   // Step 5c: Gemini analyzes Gold Mines with real Finnhub data + headline context
   console.log('[Discovery] Step 5c: Gemini analyzing Gold Mines with real data + headlines...');
@@ -700,7 +784,9 @@ export async function discoverStocks(
     timestamp: new Date().toISOString(),
   };
 
-  cacheDiscovery(result);
+  // Store in both local and server cache
+  cacheLocalDiscovery(result);
+  storeServerCache(result); // Fire-and-forget — don't block return
   onStep?.('done');
   return result;
 }
