@@ -10,7 +10,14 @@ interface DashboardProps {
   onClearAll: () => void;
 }
 
-type SortOption = 'score-desc' | 'score-asc' | 'ticker' | 'recent' | 'weight';
+type SortOption =
+  | 'score-desc'
+  | 'score-asc'
+  | 'ticker'
+  | 'recent'
+  | 'weight'
+  | 'change-pct'
+  | 'change-dollar';
 
 export function Dashboard({ stocks, onStockSelect, onAddTickers, onClearAll }: DashboardProps) {
   const [sortBy, setSortBy] = useState<SortOption>('score-desc');
@@ -29,6 +36,10 @@ export function Dashboard({ stocks, onStockSelect, onAddTickers, onClearAll }: D
         return new Date(b.dateAdded).getTime() - new Date(a.dateAdded).getTime();
       case 'weight':
         return (b.portfolioWeight ?? 0) - (a.portfolioWeight ?? 0);
+      case 'change-pct':
+        return (a.priceChangePercent ?? 0) - (b.priceChangePercent ?? 0);
+      case 'change-dollar':
+        return (a.priceChange ?? 0) - (b.priceChange ?? 0);
       default:
         return 0;
     }
@@ -92,6 +103,8 @@ export function Dashboard({ stocks, onStockSelect, onAddTickers, onClearAll }: D
             >
               <option value="score-desc">Highest Score</option>
               <option value="score-asc">Lowest Score</option>
+              <option value="change-pct">Biggest Drop (%)</option>
+              <option value="change-dollar">Biggest Drop ($)</option>
               <option value="weight">Largest Position</option>
               <option value="ticker">Ticker A-Z</option>
               <option value="recent">Recently Added</option>

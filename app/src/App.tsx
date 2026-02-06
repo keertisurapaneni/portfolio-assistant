@@ -5,7 +5,7 @@ import { getUserData, addStock, addTickers, updateStock, clearAllData } from './
 import { getConvictionResult } from './lib/convictionEngine';
 import { calculatePortfolioWeights } from './lib/portfolioCalc';
 import { getStockData, fetchMultipleStocks } from './lib/stockApiEdge';
-import { generateRuleBased } from './lib/aiInsights';
+import { generateRuleBased, getAICardDecisions } from './lib/aiInsights';
 import { getRiskProfile, setRiskProfile, calculateDrawdown } from './lib/settingsStorage';
 import { cn } from './lib/utils';
 
@@ -135,8 +135,8 @@ function App() {
         (stock.peRatio !== null && stock.peRatio !== undefined) ||
         (stock.eps !== null && stock.eps !== undefined);
 
-      // Calculate rule-based buy priority (instant, no API)
-      const { buyPriority, reasoning } = generateRuleBased(
+      // Use rule-based as instant placeholder (only fires on stop-loss / overconcentration)
+      const { buyPriority: rulePriority, reasoning: ruleReasoning } = generateRuleBased(
         inputs.qualityScore,
         inputs.earningsScore,
         inputs.momentumScore,
@@ -148,14 +148,14 @@ function App() {
         riskProfile,
         stock.recentNews,
         stock.fiftyTwoWeekHigh,
-        stock.fiftyTwoWeekLow,
+        stock.fiftyTwoWeekLow
       );
 
       return {
         ...stock,
         conviction: getConvictionResult(inputs, hasMetricsData, stock.portfolioWeight),
-        buyPriority: buyPriority ?? undefined,
-        buyPriorityReasoning: reasoning,
+        buyPriority: rulePriority ?? undefined,
+        buyPriorityReasoning: ruleReasoning,
       };
     });
 
@@ -169,7 +169,36 @@ function App() {
       setPortfolioDrawdown(drawdown);
     }
 
+    // Show rule-based results instantly while AI loads
     setStocks(withPortfolioContext);
+
+    // ONE Gemini call for ALL stocks (batch), then update cards
+    const stockInputs = withPortfolioContext.map(stock => ({
+      stock,
+      qualityScore: stock.qualityScore ?? 50,
+      earningsScore: stock.earningsScore ?? 50,
+      momentumScore: stock.momentumScore ?? 50,
+      analystScore: stock.analystScore ?? 50,
+      portfolioWeight: stock.portfolioWeight,
+      avgCost: stock.avgCost,
+    }));
+
+    getAICardDecisions(stockInputs, riskProfile).then(aiMap => {
+      if (aiMap.size === 0) return;
+      setStocks(prev =>
+        prev.map(stock => {
+          const ai = aiMap.get(stock.ticker);
+          if (!ai) return stock;
+          // AI overrides rule-based UNLESS rule-based triggered a SELL (safety guardrail)
+          if (stock.buyPriority === 'SELL') return stock;
+          return {
+            ...stock,
+            buyPriority: ai.buyPriority ?? undefined,
+            buyPriorityReasoning: ai.reasoning,
+          };
+        })
+      );
+    });
   }, [riskProfile]);
 
   // Initial load

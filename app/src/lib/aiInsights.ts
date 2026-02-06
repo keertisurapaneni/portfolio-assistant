@@ -20,8 +20,10 @@ export interface AIInsight {
   timestamp: string;
 }
 
-const CACHE_KEY_PREFIX = 'ai-insight-';
-const CACHE_DURATION = 1000 * 60 * 60 * 24; // 24 hours
+// Bump PROMPT_VERSION whenever the AI prompt changes to invalidate stale cache
+const PROMPT_VERSION = 8;
+const CACHE_KEY_PREFIX = `ai-insight-v${PROMPT_VERSION}-`;
+const CACHE_DURATION = 1000 * 60 * 60 * 4; // 4 hours (refresh more often during trading day)
 
 /**
  * Get cached insight if available and fresh
@@ -83,6 +85,195 @@ function calculateLiquidityRisk(volume?: number): {
   }
 
   return { risk: 'LOW' }; // Healthy liquidity, no warning
+}
+
+// ─────────────────────────────────────────────────────────────────
+// BATCH AI decisions — ONE Gemini call for ALL stocks at once
+// ─────────────────────────────────────────────────────────────────
+
+const CARD_CACHE_PREFIX = `ai-card-v${PROMPT_VERSION}-`;
+
+export interface CardDecision {
+  buyPriority: 'BUY' | 'SELL' | null;
+  reasoning: string;
+  timestamp: string;
+}
+
+function getCachedCardDecision(ticker: string): CardDecision | null {
+  try {
+    const raw = localStorage.getItem(`${CARD_CACHE_PREFIX}${ticker}`);
+    if (!raw) return null;
+    const d = JSON.parse(raw) as CardDecision;
+    if (Date.now() - new Date(d.timestamp).getTime() < CACHE_DURATION) return d;
+  } catch {
+    /* */
+  }
+  return null;
+}
+
+function cacheCardDecision(ticker: string, d: CardDecision): void {
+  try {
+    localStorage.setItem(`${CARD_CACHE_PREFIX}${ticker}`, JSON.stringify(d));
+  } catch {
+    /* */
+  }
+}
+
+/**
+ * ONE Gemini call to analyze ALL stocks at once.
+ * Returns a Map of ticker → CardDecision.
+ * Cached per-stock so only uncached stocks go to Gemini.
+ */
+export async function getAICardDecisions(
+  stocks: Array<{
+    stock: Stock;
+    qualityScore: number;
+    earningsScore: number;
+    momentumScore: number;
+    analystScore: number;
+    portfolioWeight?: number;
+    avgCost?: number;
+  }>,
+  riskProfile: RiskProfile = 'moderate'
+): Promise<Map<string, CardDecision>> {
+  const results = new Map<string, CardDecision>();
+
+  // Check cache first — only send uncached stocks to Gemini
+  const uncached: typeof stocks = [];
+  for (const s of stocks) {
+    const cached = getCachedCardDecision(s.stock.ticker);
+    if (cached) {
+      results.set(s.stock.ticker, cached);
+    } else {
+      uncached.push(s);
+    }
+  }
+
+  if (uncached.length === 0) {
+    console.log('[AI Cards] All stocks cached, skipping Gemini call');
+    return results;
+  }
+
+  const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
+  if (!GEMINI_API_KEY) {
+    console.warn('[AI Cards] No Gemini API key');
+    return results;
+  }
+
+  // Build compact data for each uncached stock
+  const stockLines = uncached
+    .map(
+      ({
+        stock,
+        qualityScore,
+        earningsScore,
+        momentumScore,
+        analystScore,
+        portfolioWeight,
+        avgCost,
+      }) => {
+        const changePct = stock.priceChangePercent ?? 0;
+        const changeStr =
+          changePct !== 0 ? `${changePct > 0 ? '+' : ''}${changePct.toFixed(1)}%` : 'flat';
+        const priceStr = stock.currentPrice ? `$${stock.currentPrice.toFixed(2)}` : '?';
+        const high52 = stock.fiftyTwoWeekHigh ?? 0;
+        const offHigh =
+          high52 > 0 && stock.currentPrice
+            ? `${(((high52 - stock.currentPrice) / high52) * 100).toFixed(0)}% off 52w high`
+            : '';
+        const posStr = portfolioWeight ? `${portfolioWeight.toFixed(1)}% of portfolio` : '';
+        const plStr =
+          avgCost && stock.currentPrice
+            ? `P/L: ${(((stock.currentPrice - avgCost) / avgCost) * 100).toFixed(1)}%`
+            : '';
+        const newsStr =
+          (stock.recentNews ?? [])
+            .slice(0, 2)
+            .map(n => n.headline)
+            .join(' | ') || 'No news';
+        const avgScore = ((qualityScore + earningsScore + momentumScore) / 3).toFixed(0);
+
+        return `${stock.ticker}: ${priceStr} (${changeStr}) ${offHigh} | Q:${qualityScore} E:${earningsScore} M:${momentumScore} A:${analystScore} avg:${avgScore} | ${posStr} ${plStr} | News: ${newsStr}`;
+      }
+    )
+    .join('\n');
+
+  const prompt = `You are my portfolio analyst. I'm showing you ${uncached.length} stocks. For EACH one, decide: BUY, SELL, or null.
+
+BE SELECTIVE. A good analyst doesn't say "buy everything." Out of ${uncached.length} stocks, probably only 2-5 deserve a BUY or SELL today. The rest are null — good companies doing nothing special right now.
+
+WHEN TO SAY BUY (only when there's a clear reason TODAY):
+- Earnings dip: GOOGL dropped 4% post-earnings, but 86% analysts rate it buy + AI infrastructure leader → BUY the overreaction
+- Deep value: Stock 20%+ off highs while fundamentals are strong and revenue growing → market is mispricing, BUY
+- Sector catalyst: NVDA is the AI computing leader with massive demand → BUY on any weakness
+- Fear-based dip: quality stock down 4%+ on broad market sell-off, no company-specific bad news → BUY
+
+WHEN TO SAY SELL:
+- Broken thesis: missed earnings AND cut guidance → SELL
+- Stop-loss: down 8%+ from entry with weak momentum → SELL
+
+WHEN TO SAY null (THE MOST COMMON ANSWER):
+- Stock is up or down 1-2% — that's normal noise, not a signal
+- Great company trading normally — the conviction score already shows quality
+- Stock is flat, no news, no catalyst — nothing to do
+- Stock moved but for no clear reason — don't guess, say null
+
+CRITICAL: If a stock is just "a good company" with no specific catalyst today, the answer is null. Being a good company is NOT a reason to BUY — the conviction score already captures that. BUY means "act NOW because something specific happened."
+
+Risk profile: ${riskProfile}
+
+MY PORTFOLIO:
+${stockLines}
+
+Return a JSON array with one object per stock, in the SAME order. No markdown, no backticks:
+[{"ticker":"AAPL","buyPriority":"BUY","reasoning":"1 sentence about what happened today"},{"ticker":"MSFT","buyPriority":null,"reasoning":"1 sentence"},...]`;
+
+  try {
+    console.log(`[AI Cards] Sending ${uncached.length} stocks to Gemini...`);
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: { temperature: 0.3, maxOutputTokens: 2000 },
+        }),
+      }
+    );
+
+    if (!response.ok) throw new Error(`Gemini API ${response.status}`);
+
+    const data = await response.json();
+    const text = data?.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
+    const jsonStr = text
+      .replace(/```json?\s*/g, '')
+      .replace(/```/g, '')
+      .trim();
+    const parsed = JSON.parse(jsonStr) as Array<{
+      ticker: string;
+      buyPriority: 'BUY' | 'SELL' | null;
+      reasoning: string;
+    }>;
+
+    console.log(`[AI Cards] Got ${parsed.length} decisions from Gemini`);
+
+    const now = new Date().toISOString();
+    for (const item of parsed) {
+      if (!item.ticker) continue;
+      const decision: CardDecision = {
+        buyPriority: item.buyPriority ?? null,
+        reasoning: item.reasoning ?? 'No reasoning.',
+        timestamp: now,
+      };
+      results.set(item.ticker, decision);
+      cacheCardDecision(item.ticker, decision);
+    }
+  } catch (err) {
+    console.error('[AI Cards] Batch Gemini call failed:', err);
+  }
+
+  return results;
 }
 
 /**
@@ -179,19 +370,22 @@ export async function generateAIInsights(
 
     // 52-week range context
     let rangeContext = '';
-    if (stock.fiftyTwoWeekHigh > 0 && stock.fiftyTwoWeekLow > 0 && stock.currentPrice > 0) {
-      const range = stock.fiftyTwoWeekHigh - stock.fiftyTwoWeekLow;
-      const positionInRange = range > 0 ? ((stock.currentPrice - stock.fiftyTwoWeekLow) / range) * 100 : 50;
-      const offHigh = ((stock.fiftyTwoWeekHigh - stock.currentPrice) / stock.fiftyTwoWeekHigh) * 100;
+    const high52 = stock.fiftyTwoWeekHigh ?? 0;
+    const low52 = stock.fiftyTwoWeekLow ?? 0;
+    const curPrice = stock.currentPrice ?? 0;
+    if (high52 > 0 && low52 > 0 && curPrice > 0) {
+      const range = high52 - low52;
+      const positionInRange = range > 0 ? ((curPrice - low52) / range) * 100 : 50;
+      const offHigh = ((high52 - curPrice) / high52) * 100;
 
       if (offHigh >= 20) {
-        rangeContext = `\n🔥 DIP ALERT: Trading ${offHigh.toFixed(1)}% below 52-week high ($${stock.fiftyTwoWeekHigh.toFixed(2)}). Near bottom of range (${positionInRange.toFixed(0)}th percentile). 52W Low: $${stock.fiftyTwoWeekLow.toFixed(2)}`;
+        rangeContext = `\n🔥 DIP ALERT: Trading ${offHigh.toFixed(1)}% below 52-week high ($${high52.toFixed(2)}). Near bottom of range (${positionInRange.toFixed(0)}th percentile). 52W Low: $${low52.toFixed(2)}`;
       } else if (offHigh >= 10) {
-        rangeContext = `\n📉 PULLBACK: ${offHigh.toFixed(1)}% off 52-week high ($${stock.fiftyTwoWeekHigh.toFixed(2)}). In lower half of range (${positionInRange.toFixed(0)}th percentile). 52W Low: $${stock.fiftyTwoWeekLow.toFixed(2)}`;
+        rangeContext = `\n📉 PULLBACK: ${offHigh.toFixed(1)}% off 52-week high ($${high52.toFixed(2)}). In lower half of range (${positionInRange.toFixed(0)}th percentile). 52W Low: $${low52.toFixed(2)}`;
       } else if (positionInRange >= 90) {
-        rangeContext = `\n📈 NEAR HIGHS: Only ${offHigh.toFixed(1)}% from 52-week high ($${stock.fiftyTwoWeekHigh.toFixed(2)}). Trading at top of range.`;
+        rangeContext = `\n📈 NEAR HIGHS: Only ${offHigh.toFixed(1)}% from 52-week high ($${high52.toFixed(2)}). Trading at top of range.`;
       } else {
-        rangeContext = `\n52W Range: $${stock.fiftyTwoWeekLow.toFixed(2)} - $${stock.fiftyTwoWeekHigh.toFixed(2)} (currently ${positionInRange.toFixed(0)}th percentile)`;
+        rangeContext = `\n52W Range: $${low52.toFixed(2)} - $${high52.toFixed(2)} (currently ${positionInRange.toFixed(0)}th percentile)`;
       }
     }
 
@@ -268,7 +462,12 @@ ${upsidePct ? `• Implied Upside: ${upsidePct}%` : ''}`;
         .map((news, idx) => {
           const date = new Date(news.datetime * 1000);
           const hoursAgo = Math.floor((Date.now() - date.getTime()) / (1000 * 60 * 60));
-          const timeStr = hoursAgo < 1 ? 'JUST NOW' : hoursAgo < 24 ? `${hoursAgo}h ago` : `${Math.floor(hoursAgo / 24)}d ago`;
+          const timeStr =
+            hoursAgo < 1
+              ? 'JUST NOW'
+              : hoursAgo < 24
+                ? `${hoursAgo}h ago`
+                : `${Math.floor(hoursAgo / 24)}d ago`;
           const summary = news.summary ? ` — ${news.summary.substring(0, 120)}` : '';
           return `${idx + 1}. [${timeStr}] ${news.headline}${summary} (${news.source})`;
         })
@@ -277,62 +476,61 @@ ${upsidePct ? `• Implied Upside: ${upsidePct}%` : ''}`;
       // Detect if earnings-related news is present
       const hasEarningsNews = recentNews.some(n => {
         const h = (n.headline || '').toLowerCase();
-        return ['earnings', 'results', 'revenue', 'quarter', 'q1', 'q2', 'q3', 'q4', 'beat', 'miss', 'eps', 'guidance', 'capex'].some(kw => h.includes(kw));
+        return [
+          'earnings',
+          'results',
+          'revenue',
+          'quarter',
+          'q1',
+          'q2',
+          'q3',
+          'q4',
+          'beat',
+          'miss',
+          'eps',
+          'guidance',
+          'capex',
+        ].some(kw => h.includes(kw));
       });
 
       newsContext = `
 
 RECENT NEWS & EVENTS:
 ${newsItems}
-${hasEarningsNews ? `
+${
+  hasEarningsNews
+    ? `
 🔴 EARNINGS NEWS DETECTED — This is the MOST important context for your analysis.
-You MUST reference the earnings in your reasoning. Did they beat or miss? What was the market reaction? What does it mean for the stock going forward?` : `
-⚠️ Analyze these headlines. They explain WHY the price moved. Connect the dots between news and price action in your reasoning.`}`;
+You MUST reference the earnings in your reasoning. Did they beat or miss? What was the market reaction? What does it mean for the stock going forward?`
+    : `
+⚠️ Analyze these headlines. They explain WHY the price moved. Connect the dots between news and price action in your reasoning.`
+}`;
     } else {
       newsContext = '\n\nRECENT NEWS: [No recent news available - rely on metrics only]';
     }
 
-    const prompt = `You are an elite stock analyst whose clients rely on you to make them rich. Your reputation is built on spotting opportunities others miss and protecting capital when risks appear.
+    const prompt = `You manage my money. Your only job: tell me what to do with ${stock.ticker} TODAY. Not tomorrow, not long-term — TODAY.
 
-STOCK ANALYSIS REQUEST: ${stock.ticker} (${stock.name || stock.ticker})
+Here's everything I know:
 
-THE DATA YOU HAVE:
-• Current Position: ${positionContext}${!hasPositionData ? ' [No position data available]' : ''}
-• Today's Price Action: ${priceChangeText}${rangeContext}${gainLossContext}${riskRuleNote}
-
-QUANTITATIVE SCORES (0-100 scale):
-• Quality: ${qualityScore}/100 ${qualityScore >= 60 ? '✓' : qualityScore >= 40 ? '⚠' : '✗'} — Profitability, margins, financial health
-• Earnings: ${earningsScore}/100 ${earningsScore >= 60 ? '✓' : earningsScore >= 40 ? '⚠' : '✗'} — EPS trend, beat/miss history
-• Momentum: ${momentumScore}/100 ${momentumScore >= 60 ? '✓' : momentumScore >= 40 ? '⚠' : '✗'} — Price trend, 52-week position
-• Analyst Consensus: ${analystScore}/100 ${analystScore >= 60 ? '✓' : analystScore >= 40 ? '⚠' : '✗'} — Wall Street ratings
-• Fundamentals: ${metrics.length > 0 ? metrics.join(', ') : '[Limited data]'}
+STOCK: ${stock.ticker} (${stock.name || stock.ticker})
+POSITION: ${positionContext}${!hasPositionData ? " [I haven't imported my position data yet]" : ''}
+TODAY: ${priceChangeText}${rangeContext}${gainLossContext}${riskRuleNote}
+SCORES: Quality ${qualityScore}/100, Earnings ${earningsScore}/100, Momentum ${momentumScore}/100, Analysts ${analystScore}/100
+FUNDAMENTALS: ${metrics.length > 0 ? metrics.join(', ') : '[Limited data]'}
 ${analystContext}${newsContext}
 
-YOUR MISSION:
-Think like a stock analyst who wants to make clients wealthy. Look at the data above - the scores, the news, the price action, the position size. Is this a compelling BUY opportunity right now? A problem to SELL? Or just... nothing special (return null)?
+IMPORTANT CONTEXT:
+I already have a conviction score that tells me this is a good or bad company long-term. I don't need you to repeat that. I need you to tell me: is there a reason to ACT today? 
 
-CRITICAL RULES FOR YOUR REASONING:
-1. If there's EARNINGS news — you MUST mention what happened (beat/miss, revenue, guidance, capex plans) and what it means.
-2. If the stock is DOWN today — explain WHY it's down (earnings reaction? market sell-off? bad news?) and whether the dip is a buying opportunity or a warning sign.
-3. If the stock is UP today — explain the catalyst (good earnings? sector rotation? analyst upgrade?).
-4. If the stock is 10%+ below its 52-week high AND quality is high — this is a potential dip-buying opportunity. Call it out explicitly.
-5. If a quality stock drops 3%+ in a day on no company-specific bad news — that's likely market fear, a classic buy-the-dip setup.
-6. NEVER give generic reasoning like "strong fundamentals" without connecting it to current events, price action, or the 52-week range.
-7. Your reasoning should read like a quick analyst note — specific, actionable, referencing today's data.
+Think like my personal analyst who makes me rich. Look at the news, the price move, the earnings. Connect the dots. Is today special or just another day?
 
-YOUR STYLE:
-- You're selective - most stocks get no signal (null). Only clear opportunities or problems get BUY/SELL.
-- You connect dots - if there's news, explain how it relates to the opportunity/risk.
-- You manage risk - big losses destroy wealth, so you respect stop-losses and position sizing.
-- You love quality companies on sale - panic creates the best opportunities.
-- You hate losing money - if fundamentals are broken or a stop-loss hits, you're out.
+- If there's an opportunity (dip on a great company, earnings beat but stock dropped, market panic) → BUY
+- If there's danger (fundamentals broken, thesis changed, earnings disaster) → SELL  
+- If it's just a normal day with no clear catalyst → null (most common answer — don't force it)
 
-RESPOND WITH JSON ONLY:
-{
-  "buyPriority": "BUY" | "SELL" | null,
-  "reasoning": "1-2 sentences referencing specific news/earnings/price action. Be specific, not generic.",
-  "summary": "Brief company overview"
-}`;
+RESPOND WITH JSON ONLY (no markdown, no backticks):
+{"buyPriority": "BUY" or "SELL" or null, "reasoning": "1-2 sentences about TODAY — what happened, why it matters, what I should do", "summary": "One-line company description"}`;
 
     const response = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`,
@@ -462,9 +660,9 @@ export function generateRuleBased(
   priceChangePercent?: number,
   currentPrice?: number,
   riskProfile: RiskProfile = 'moderate',
-  _recentNews?: Array<{ headline: string; datetime: number }>, // News displayed separately in UI
+  recentNews?: Array<{ headline: string; datetime: number }>,
   fiftyTwoWeekHigh?: number,
-  fiftyTwoWeekLow?: number,
+  _fiftyTwoWeekLow?: number
 ): {
   buyPriority: AIInsight['buyPriority'];
   reasoning: string;
@@ -474,38 +672,17 @@ export function generateRuleBased(
   const position = portfolioWeight ?? 0;
   const hasPositionData = shares !== undefined && shares > 0;
   const hasCostData = avgCost !== undefined && avgCost > 0;
+  const avgScore = (qualityScore + earningsScore + momentumScore) / 3;
 
-  // Risk Profile Adjustments
-  const riskThresholds = {
-    aggressive: {
-      stopLoss: -4, // More tolerant of volatility
-      tightenedStop: -5, // Slightly tighter in volatile markets
-      profitTarget: 25, // Higher profit target
-      maxPosition: 30, // Can concentrate more
-      rebalanceAt: 30, // Rebalance at 30%
-    },
-    moderate: {
-      stopLoss: -7, // Standard stop-loss
-      tightenedStop: -3, // Standard tightened
-      profitTarget: 20, // Standard profit target
-      maxPosition: 25, // Standard concentration
-      rebalanceAt: 25, // Rebalance at 25%
-    },
-    conservative: {
-      stopLoss: -5, // Tighter stop-loss
-      tightenedStop: -3, // Same tightened (already conservative)
-      profitTarget: 15, // Lower profit target (take profits sooner)
-      maxPosition: 20, // Less concentration
-      rebalanceAt: 20, // Rebalance earlier
-    },
-  };
-
-  const thresholds = riskThresholds[riskProfile];
+  const guardrails = {
+    aggressive: { stopLoss: -4, rebalanceAt: 30 },
+    moderate: { stopLoss: -7, rebalanceAt: 25 },
+    conservative: { stopLoss: -5, rebalanceAt: 20 },
+  }[riskProfile];
 
   // Determine data completeness
   let dataCompleteness: AIInsight['dataCompleteness'] = 'FULL';
   const missingData: string[] = [];
-
   if (!hasPositionData) {
     dataCompleteness = 'SCORES_ONLY';
     missingData.push('Number of shares owned');
@@ -515,234 +692,117 @@ export function generateRuleBased(
     missingData.push('Average cost/purchase price');
   }
 
-  // If we don't have position data, apply simple quality-based logic
-  if (!hasPositionData) {
-    const avgScore = (qualityScore + earningsScore + momentumScore) / 3;
+  // ─────────────────────────────────────────────────────────────────
+  // Lightweight signals for the main card badge.
+  // Only flag when something happened TODAY that demands attention.
+  // Full AI reasoning runs when user taps the card.
+  // ─────────────────────────────────────────────────────────────────
 
-    // BUY: Exceptional quality (like Buffett finding great companies)
-    if (avgScore >= 65 && momentumScore > 50) {
-      return {
-        buyPriority: 'BUY',
-        reasoning: `Quality company. Import your holdings to see recommended position size.`,
-        dataCompleteness,
-        missingData,
-      };
-    }
+  // Helper: detect if today has earnings-related news
+  const hasEarningsNews =
+    recentNews?.some(n => {
+      const h = n.headline?.toLowerCase() ?? '';
+      return /earnings|beats|misses|revenue|guidance|eps|quarter|q[1-4]\b/.test(h);
+    }) ?? false;
 
-    // SELL: Clearly broken (avoid mediocrity)
-    if (avgScore < 45) {
-      return {
-        buyPriority: 'SELL',
-        reasoning: `Weak fundamentals across quality, earnings, and momentum. Consider avoiding.`,
-        dataCompleteness,
-        missingData,
-      };
-    }
+  // Helper: how far off 52-week high
+  const offHighPct =
+    fiftyTwoWeekHigh && fiftyTwoWeekHigh > 0 && currentPrice && currentPrice > 0
+      ? ((fiftyTwoWeekHigh - currentPrice) / fiftyTwoWeekHigh) * 100
+      : 0;
 
-    // Default: No badge (need position context)
-    return {
-      buyPriority: null,
-      reasoning: `Import portfolio for personalized buy/sell recommendations.`,
-      dataCompleteness,
-      missingData,
-    };
-  }
+  const isDown = priceChangePercent !== undefined && priceChangePercent < 0;
+  const dropPct = isDown ? Math.abs(priceChangePercent!) : 0;
 
-  // Principle-based logic (inspired by Buffett)
-  // "Be fearful when others are greedy, greedy when others are fearful"
+  // ── SELL SIGNALS (mechanical guardrails) ──
 
-  const avgScore = (qualityScore + earningsScore + momentumScore) / 3;
-  const isQuality = avgScore >= 65; // Top tier
-  const isStrong = avgScore >= 60; // Good company
-  const isMediocre = avgScore >= 45 && avgScore < 60; // Meh
-  const isWeak = avgScore < 45; // Problem
-
-  const isDown3Plus = priceChangePercent !== undefined && priceChangePercent <= -3;
-  const isDown5Plus = priceChangePercent !== undefined && priceChangePercent <= -5;
-
-  // CRITICAL TRADING RULES: Apply stop-loss and profit-taking
-  // These override other logic (risk management first!)
+  // Stop-loss triggered
   if (hasCostData && avgCost && avgCost > 0 && currentPrice && currentPrice > 0) {
     const gainLossPct = ((currentPrice - avgCost) / avgCost) * 100;
-
-    // Detect volatile/correcting market conditions (use momentum as proxy)
-    const isVolatileMarket = momentumScore < 40;
-
-    // Rule 1A: Tightened Stop-Loss in Volatile Markets (risk-profile adjusted)
-    if (isVolatileMarket && gainLossPct <= thresholds.tightenedStop) {
-      // In volatile markets, tighten stops for faster exits
-      if (!isQuality || momentumScore < 35) {
-        return {
-          buyPriority: 'SELL',
-          reasoning: `Down ${Math.abs(gainLossPct).toFixed(1)}% from your $${avgCost.toFixed(2)} entry - cut losses in volatile market.`,
-          dataCompleteness,
-          missingData,
-        };
-      }
-    }
-
-    // Rule 1B: Standard Stop-Loss (risk-profile adjusted: aggressive=-4%, moderate=-7%, conservative=-5%)
-    if (gainLossPct <= thresholds.stopLoss) {
-      // Exception: Don't stop-loss on quality stocks during market-wide dips
-      // (temporary market weakness vs fundamental problems)
-      if (!(isQuality && momentumScore >= 40)) {
-        return {
-          buyPriority: 'SELL',
-          reasoning: `Down ${Math.abs(gainLossPct).toFixed(1)}% from your $${avgCost.toFixed(2)} entry - stop-loss triggered.`,
-          dataCompleteness,
-          missingData,
-        };
-      }
-    }
-
-    // Rule 2A: Sell Into Strength (Excessive Fast Gains = Maximum Greed)
-    // If stock up 10-15%+ AND very high momentum (80+), likely euphoria - take profits fast
-    if (gainLossPct >= 10 && momentumScore >= 80) {
+    if (gainLossPct <= guardrails.stopLoss) {
       return {
         buyPriority: 'SELL',
-        reasoning: `Up ${gainLossPct.toFixed(1)}% with extreme momentum - take profits before reversal.`,
-        dataCompleteness,
-        missingData,
-      };
-    }
-
-    // Rule 2B: Profit-Taking Rule (risk-profile adjusted: aggressive=25%, moderate=20%, conservative=15%)
-    if (gainLossPct >= thresholds.profitTarget) {
-      // Exception: Don't sell exceptional quality that's still strong
-      // ("Let winners run" unless momentum deteriorating)
-      if (!(isQuality && momentumScore >= 55)) {
-        return {
-          buyPriority: 'SELL',
-          reasoning: `Up ${gainLossPct.toFixed(1)}% from your $${avgCost.toFixed(2)} entry - profit target reached.`,
-          dataCompleteness,
-          missingData,
-        };
-      }
-    }
-  }
-
-  // Rebalancing Rule: Position too large (risk-profile adjusted: aggressive=30%, moderate=25%, conservative=20%)
-  // Only suggest trimming if it's not exceptional quality OR if it's becoming risky
-  if (position > thresholds.rebalanceAt) {
-    if (!isQuality || momentumScore < 45) {
-      return {
-        buyPriority: 'SELL',
-        reasoning: `${position.toFixed(1)}% of portfolio - too concentrated. ${!isQuality ? 'Rebalance into better opportunities' : 'Trim to reduce risk'}.`,
-        dataCompleteness,
-        missingData,
-      };
-    }
-    // For exceptional quality (65+) with strong momentum, just note it but don't force sell
-  }
-
-  // Principle 1: Buy During Maximum Fear (panic = opportunity)
-  const isDown8Plus = priceChangePercent !== undefined && priceChangePercent <= -8;
-
-  // Calculate buy position limits based on risk profile
-  const buyPositionLimit = thresholds.maxPosition * 0.7; // Can buy up to 70% of max position
-
-  // Maximum Fear: Quality stock down 8%+ = panic selling, aggressive buy
-  if (isDown8Plus && isQuality && position < buyPositionLimit) {
-    return {
-      buyPriority: 'BUY',
-      reasoning: `Big drop (${Math.abs(priceChangePercent!).toFixed(1)}%) on quality company - buy the panic. You own ${position.toFixed(1)}%.`,
-      dataCompleteness,
-      missingData,
-    };
-  }
-
-  // Quality on sale during dips (use 40% of max as threshold)
-  const dipBuyLimit = thresholds.maxPosition * 0.4;
-  if (isDown5Plus && isStrong && position < dipBuyLimit) {
-    return {
-      buyPriority: 'BUY',
-      reasoning: `Quality company down ${Math.abs(priceChangePercent!).toFixed(1)}% - good entry point. You own ${position.toFixed(1)}%.`,
-      dataCompleteness,
-      missingData,
-    };
-  }
-
-  // Exceptional quality dips (use 60% of max as threshold)
-  const qualityDipLimit = thresholds.maxPosition * 0.6;
-  if (isDown3Plus && isQuality && position < qualityDipLimit) {
-    return {
-      buyPriority: 'BUY',
-      reasoning: `Strong fundamentals, down ${Math.abs(priceChangePercent!).toFixed(1)}%. Add to your ${position.toFixed(1)}% position.`,
-      dataCompleteness,
-      missingData,
-    };
-  }
-
-  // 52-Week Range Dip Detection: Quality stock well below highs = opportunity
-  if (fiftyTwoWeekHigh && fiftyTwoWeekHigh > 0 && currentPrice && currentPrice > 0) {
-    const offHighPct = ((fiftyTwoWeekHigh - currentPrice) / fiftyTwoWeekHigh) * 100;
-
-    // Quality stock 20%+ off highs = deep value opportunity
-    if (offHighPct >= 20 && isQuality && position < buyPositionLimit) {
-      return {
-        buyPriority: 'BUY',
-        reasoning: `Trading ${offHighPct.toFixed(0)}% below 52-week high ($${fiftyTwoWeekHigh.toFixed(2)}) with strong fundamentals — deep value opportunity.`,
-        dataCompleteness,
-        missingData,
-      };
-    }
-
-    // Good stock 15%+ off highs with decent momentum = pullback buy
-    if (offHighPct >= 15 && isStrong && momentumScore >= 40 && position < dipBuyLimit) {
-      return {
-        buyPriority: 'BUY',
-        reasoning: `${offHighPct.toFixed(0)}% pullback from 52-week high ($${fiftyTwoWeekHigh.toFixed(2)}) — solid company at a discount.`,
+        reasoning: `Down ${Math.abs(gainLossPct).toFixed(1)}% from your $${avgCost.toFixed(2)} entry — stop-loss triggered.`,
         dataCompleteness,
         missingData,
       };
     }
   }
 
-  // Principle 2: Sell broken companies (avoid mediocrity)
-  if (isWeak) {
+  // Overconcentration
+  if (position > guardrails.rebalanceAt) {
     return {
       buyPriority: 'SELL',
-      reasoning: `Poor fundamentals across quality, earnings, and momentum. Consider selling.`,
+      reasoning: `${position.toFixed(1)}% of portfolio — overconcentrated. Consider trimming.`,
       dataCompleteness,
       missingData,
     };
   }
 
-  if (momentumScore < 35 && isMediocre) {
+  // Weak fundamentals (this stock has problems, not just a bad day)
+  if (avgScore < 35 && momentumScore < 35) {
     return {
       buyPriority: 'SELL',
-      reasoning: `Weak momentum on mediocre company. Consider trimming position.`,
+      reasoning: `Weak fundamentals and momentum — review if the thesis still holds.`,
       dataCompleteness,
       missingData,
     };
   }
 
-  // Principle 3: Buy quality with room to grow position (risk-profile adjusted)
-  const smallPositionLimit = thresholds.maxPosition * 0.27; // Can buy if < 27% of max
-  if (isStrong && position < smallPositionLimit && momentumScore >= 45) {
+  // ── BUY SIGNALS (today-specific catalysts only) ──
+
+  // Earnings dip: stock dropped 4%+ today + earnings news = real overreaction
+  if (hasEarningsNews && dropPct >= 4 && avgScore >= 55) {
     return {
       buyPriority: 'BUY',
-      reasoning: `Solid company with room to grow your ${position.toFixed(1)}% position.`,
+      reasoning: `Down ${dropPct.toFixed(1)}% on earnings news — potential overreaction on solid company.`,
       dataCompleteness,
       missingData,
     };
   }
 
-  const qualityPositionLimit = thresholds.maxPosition * 0.5; // Can buy if < 50% of max
-  if (isQuality && position < qualityPositionLimit && momentumScore >= 50) {
+  // Panic drop: 5%+ daily drop on a decent company
+  if (dropPct >= 5 && avgScore >= 50) {
     return {
       buyPriority: 'BUY',
-      reasoning: `High-quality company - consider adding to your ${position.toFixed(1)}% position.`,
+      reasoning: `Down ${dropPct.toFixed(1)}% today — fear selling on a fundamentally sound stock.`,
       dataCompleteness,
       missingData,
     };
   }
 
-  // Principle 4: Let winners run (no badge for good companies at size)
-  // Most stocks land here - hold quietly
+  // Big dip: 3%+ daily drop on a quality company
+  if (dropPct >= 3 && avgScore >= 60) {
+    return {
+      buyPriority: 'BUY',
+      reasoning: `Quality company down ${dropPct.toFixed(1)}% today — buy the dip.`,
+      dataCompleteness,
+      missingData,
+    };
+  }
+
+  // Deep value: quality stock 20%+ below 52-week high AND red today
+  if (offHighPct >= 20 && isDown && avgScore >= 55) {
+    return {
+      buyPriority: 'BUY',
+      reasoning: `${offHighPct.toFixed(0)}% below 52-week high and still falling — deep value zone.`,
+      dataCompleteness,
+      missingData,
+    };
+  }
+
+  // ── NO SIGNAL (most stocks most days) ──
+  let context = '';
+  if (priceChangePercent !== undefined && Math.abs(priceChangePercent) >= 1) {
+    context =
+      priceChangePercent < 0
+        ? `Down ${Math.abs(priceChangePercent).toFixed(1)}% today.`
+        : `Up ${priceChangePercent.toFixed(1)}% today.`;
+  }
+
   return {
     buyPriority: null,
-    reasoning: `Solid holding at ${position.toFixed(1)}% - no immediate action needed.`,
+    reasoning: context || 'No signal today — tap for AI analysis.',
     dataCompleteness,
     missingData,
   };

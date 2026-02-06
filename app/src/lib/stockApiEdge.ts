@@ -628,28 +628,82 @@ export async function getStockData(ticker: string): Promise<StockData | null> {
         `[Stock API] ${symbol} - ${relevant.length} headlines mention the company (from ${newsArray.length} total)`
       );
 
-      // Prioritize earnings/results news over generic mentions
-      const EARNINGS_KEYWORDS = [
-        'earnings', 'revenue', 'results', 'quarter', 'q1', 'q2', 'q3', 'q4',
-        'beat', 'miss', 'eps', 'profit', 'guidance', 'outlook', 'forecast',
-        'capex', 'spending', 'dividend', 'buyback', 'split',
+      // Tier 1: Actual earnings results (beats, misses, stock reactions)
+      const RESULTS_KEYWORDS = [
+        'misses',
+        'missed',
+        'beats',
+        'beat',
+        'tops',
+        'topped',
+        'falls',
+        'fell',
+        'drops',
+        'plunges',
+        'slides',
+        'slid',
+        'sinks',
+        'tumbles',
+        'surges',
+        'soars',
+        'jumps',
+        'rallies',
+        'climbs',
+        'q4 results',
+        'q3 results',
+        'q2 results',
+        'q1 results',
+        'quarterly results',
+        'fourth quarter',
+        'third quarter',
+        'announces fourth',
+        'announces third',
+        'announces second',
+        'announces first',
+        'earnings snapshot',
+        'by the numbers',
       ];
+      // Tier 2: Earnings-adjacent (guidance, capex, analyst takes)
+      const EARNINGS_KEYWORDS = [
+        'earnings',
+        'revenue',
+        'results',
+        'quarter',
+        'q1',
+        'q2',
+        'q3',
+        'q4',
+        'eps',
+        'profit',
+        'guidance',
+        'outlook',
+        'forecast',
+        'capex',
+        'spending',
+        'dividend',
+        'buyback',
+        'split',
+      ];
+
+      const resultsNews: typeof relevant = [];
       const earningsNews: typeof relevant = [];
       const otherNews: typeof relevant = [];
 
       for (const n of relevant) {
         const h = n.headline.toLowerCase();
-        if (EARNINGS_KEYWORDS.some(kw => h.includes(kw))) {
+        if (RESULTS_KEYWORDS.some(kw => h.includes(kw))) {
+          resultsNews.push(n);
+        } else if (EARNINGS_KEYWORDS.some(kw => h.includes(kw))) {
           earningsNews.push(n);
         } else {
           otherNews.push(n);
         }
       }
 
-      // Earnings first, then other news
-      const prioritized = [...earningsNews, ...otherNews];
+      // Results first, then earnings commentary, then other
+      const prioritized = [...resultsNews, ...earningsNews, ...otherNews];
       console.log(
-        `[Stock API] ${symbol} - ${earningsNews.length} earnings-related, ${otherNews.length} other`
+        `[Stock API] ${symbol} - ${resultsNews.length} results, ${earningsNews.length} earnings-adjacent, ${otherNews.length} other`
       );
 
       // Take the 3 most relevant headlines (earnings first)
