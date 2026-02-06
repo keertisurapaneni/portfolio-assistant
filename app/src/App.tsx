@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { SpeedInsights } from '@vercel/speed-insights/react';
+import { Analytics } from '@vercel/analytics/react';
 import { Briefcase, Brain, Lightbulb, Plus, RefreshCw, TrendingUp } from 'lucide-react';
 import type { ActiveTab, StockWithConviction, RiskProfile } from './types';
 import { getUserData, addTickers, updateStock, clearAllData } from './lib/storage';
@@ -658,6 +659,7 @@ function App() {
       </footer>
 
       <SpeedInsights />
+      <Analytics />
     </div>
   );
 }
