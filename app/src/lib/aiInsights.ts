@@ -1,14 +1,60 @@
 /**
  * AI-powered insights using lightweight LLM
- * Enhances rule-based scores with contextual analysis
+ * All AI calls go through Supabase Edge Function (API key stays server-side)
  */
 
 import type { Stock, RiskProfile } from '../types';
 
+const GEMINI_PROXY_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/gemini-proxy`;
+
+// Global cooldown: after a 429, pause before the next AI call
+let rateLimitedUntil = 0;
+
+/**
+ * Call AI through the secure proxy (Groq/Llama 3.3 — never exposes API key to browser).
+ * If a cooldown is active (from a previous 429), waits for it to expire then retries.
+ * On a fresh 429, activates a cooldown and throws (caller will retry next stock later).
+ */
+async function callAI(prompt: string, temperature = 0.1, maxOutputTokens = 2000): Promise<string> {
+  // If we're in cooldown, WAIT for it to expire instead of failing immediately
+  if (Date.now() < rateLimitedUntil) {
+    const waitMs = rateLimitedUntil - Date.now();
+    const secsLeft = Math.ceil(waitMs / 1000);
+    console.log(`[AI] Rate-limit cooldown active — waiting ${secsLeft}s...`);
+    await new Promise(resolve => setTimeout(resolve, waitMs + 500)); // +500ms buffer
+  }
+
+  const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+  const response = await fetch(GEMINI_PROXY_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${supabaseKey}`,
+    },
+    body: JSON.stringify({ prompt, temperature, maxOutputTokens }),
+  });
+
+  if (response.status === 429) {
+    // Back off for 15 seconds — Edge Function already tries fallback model,
+    // so a 429 here means both models are hot; short cooldown + retry handles it
+    rateLimitedUntil = Date.now() + 15_000;
+    console.warn('[AI] 429 received — cooldown activated for 15s');
+    throw new Error('AI rate-limited — try again in 15s');
+  }
+
+  if (!response.ok) {
+    throw new Error(`AI proxy error: ${response.status}`);
+  }
+
+  const data = await response.json();
+  return data.text ?? '';
+}
+
 export interface AIInsight {
   summary: string; // 1-2 sentence contextual summary
   buyPriority: 'BUY' | 'SELL' | null; // Binary trade decision
-  reasoning: string; // Metric-based rationale
+  reasoning: string; // Full detailed rationale (shown in detail view)
+  cardNote: string; // 5-8 word summary for the main card
   dataCompleteness: 'FULL' | 'SCORES_ONLY' | 'MINIMAL'; // How much data we have
   missingData?: string[]; // What data would improve the recommendation
   liquidityRisk?: 'LOW' | 'MEDIUM' | 'HIGH' | null; // Liquidity/volume warning
@@ -21,14 +67,14 @@ export interface AIInsight {
 }
 
 // Bump PROMPT_VERSION whenever the AI prompt changes to invalidate stale cache
-const PROMPT_VERSION = 8;
+const PROMPT_VERSION = 31; // v31: AI prompt fix — weak stocks declining with fundamental problems = SELL, not null
 const CACHE_KEY_PREFIX = `ai-insight-v${PROMPT_VERSION}-`;
 const CACHE_DURATION = 1000 * 60 * 60 * 4; // 4 hours (refresh more often during trading day)
 
 /**
  * Get cached insight if available and fresh
  */
-function getCachedInsight(ticker: string): AIInsight | null {
+export function getCachedInsight(ticker: string): AIInsight | null {
   try {
     const cached = localStorage.getItem(`${CACHE_KEY_PREFIX}${ticker}`);
     if (!cached) return null;
@@ -87,198 +133,30 @@ function calculateLiquidityRisk(volume?: number): {
   return { risk: 'LOW' }; // Healthy liquidity, no warning
 }
 
-// ─────────────────────────────────────────────────────────────────
-// BATCH AI decisions — ONE Gemini call for ALL stocks at once
-// ─────────────────────────────────────────────────────────────────
-
-const CARD_CACHE_PREFIX = `ai-card-v${PROMPT_VERSION}-`;
-
-export interface CardDecision {
-  buyPriority: 'BUY' | 'SELL' | null;
-  reasoning: string;
-  timestamp: string;
-}
-
-function getCachedCardDecision(ticker: string): CardDecision | null {
-  try {
-    const raw = localStorage.getItem(`${CARD_CACHE_PREFIX}${ticker}`);
-    if (!raw) return null;
-    const d = JSON.parse(raw) as CardDecision;
-    if (Date.now() - new Date(d.timestamp).getTime() < CACHE_DURATION) return d;
-  } catch {
-    /* */
+// Auto-clear stale cache from old prompt versions on module load
+try {
+  const keysToRemove: string[] = [];
+  for (let i = 0; i < localStorage.length; i++) {
+    const key = localStorage.key(i);
+    if (
+      key &&
+      (key.startsWith('ai-card-') || key.startsWith('ai-insight-')) &&
+      !key.startsWith(CACHE_KEY_PREFIX)
+    ) {
+      keysToRemove.push(key);
+    }
   }
-  return null;
-}
-
-function cacheCardDecision(ticker: string, d: CardDecision): void {
-  try {
-    localStorage.setItem(`${CARD_CACHE_PREFIX}${ticker}`, JSON.stringify(d));
-  } catch {
-    /* */
+  if (keysToRemove.length > 0) {
+    console.log(`[AI Cache] Clearing ${keysToRemove.length} stale cache entries`);
+    keysToRemove.forEach(k => localStorage.removeItem(k));
   }
+} catch {
+  /* */
 }
 
 /**
- * ONE Gemini call to analyze ALL stocks at once.
- * Returns a Map of ticker → CardDecision.
- * Cached per-stock so only uncached stocks go to Gemini.
- */
-export async function getAICardDecisions(
-  stocks: Array<{
-    stock: Stock;
-    qualityScore: number;
-    earningsScore: number;
-    momentumScore: number;
-    analystScore: number;
-    portfolioWeight?: number;
-    avgCost?: number;
-  }>,
-  riskProfile: RiskProfile = 'moderate'
-): Promise<Map<string, CardDecision>> {
-  const results = new Map<string, CardDecision>();
-
-  // Check cache first — only send uncached stocks to Gemini
-  const uncached: typeof stocks = [];
-  for (const s of stocks) {
-    const cached = getCachedCardDecision(s.stock.ticker);
-    if (cached) {
-      results.set(s.stock.ticker, cached);
-    } else {
-      uncached.push(s);
-    }
-  }
-
-  if (uncached.length === 0) {
-    console.log('[AI Cards] All stocks cached, skipping Gemini call');
-    return results;
-  }
-
-  const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
-  if (!GEMINI_API_KEY) {
-    console.warn('[AI Cards] No Gemini API key');
-    return results;
-  }
-
-  // Build compact data for each uncached stock
-  const stockLines = uncached
-    .map(
-      ({
-        stock,
-        qualityScore,
-        earningsScore,
-        momentumScore,
-        analystScore,
-        portfolioWeight,
-        avgCost,
-      }) => {
-        const changePct = stock.priceChangePercent ?? 0;
-        const changeStr =
-          changePct !== 0 ? `${changePct > 0 ? '+' : ''}${changePct.toFixed(1)}%` : 'flat';
-        const priceStr = stock.currentPrice ? `$${stock.currentPrice.toFixed(2)}` : '?';
-        const high52 = stock.fiftyTwoWeekHigh ?? 0;
-        const offHigh =
-          high52 > 0 && stock.currentPrice
-            ? `${(((high52 - stock.currentPrice) / high52) * 100).toFixed(0)}% off 52w high`
-            : '';
-        const posStr = portfolioWeight ? `${portfolioWeight.toFixed(1)}% of portfolio` : '';
-        const plStr =
-          avgCost && stock.currentPrice
-            ? `P/L: ${(((stock.currentPrice - avgCost) / avgCost) * 100).toFixed(1)}%`
-            : '';
-        const newsStr =
-          (stock.recentNews ?? [])
-            .slice(0, 2)
-            .map(n => n.headline)
-            .join(' | ') || 'No news';
-        const avgScore = ((qualityScore + earningsScore + momentumScore) / 3).toFixed(0);
-
-        return `${stock.ticker}: ${priceStr} (${changeStr}) ${offHigh} | Q:${qualityScore} E:${earningsScore} M:${momentumScore} A:${analystScore} avg:${avgScore} | ${posStr} ${plStr} | News: ${newsStr}`;
-      }
-    )
-    .join('\n');
-
-  const prompt = `You are my portfolio analyst. I'm showing you ${uncached.length} stocks. For EACH one, decide: BUY, SELL, or null.
-
-BE SELECTIVE. A good analyst doesn't say "buy everything." Out of ${uncached.length} stocks, probably only 2-5 deserve a BUY or SELL today. The rest are null — good companies doing nothing special right now.
-
-WHEN TO SAY BUY (only when there's a clear reason TODAY):
-- Earnings dip: GOOGL dropped 4% post-earnings, but 86% analysts rate it buy + AI infrastructure leader → BUY the overreaction
-- Deep value: Stock 20%+ off highs while fundamentals are strong and revenue growing → market is mispricing, BUY
-- Sector catalyst: NVDA is the AI computing leader with massive demand → BUY on any weakness
-- Fear-based dip: quality stock down 4%+ on broad market sell-off, no company-specific bad news → BUY
-
-WHEN TO SAY SELL:
-- Broken thesis: missed earnings AND cut guidance → SELL
-- Stop-loss: down 8%+ from entry with weak momentum → SELL
-
-WHEN TO SAY null (THE MOST COMMON ANSWER):
-- Stock is up or down 1-2% — that's normal noise, not a signal
-- Great company trading normally — the conviction score already shows quality
-- Stock is flat, no news, no catalyst — nothing to do
-- Stock moved but for no clear reason — don't guess, say null
-
-CRITICAL: If a stock is just "a good company" with no specific catalyst today, the answer is null. Being a good company is NOT a reason to BUY — the conviction score already captures that. BUY means "act NOW because something specific happened."
-
-Risk profile: ${riskProfile}
-
-MY PORTFOLIO:
-${stockLines}
-
-Return a JSON array with one object per stock, in the SAME order. No markdown, no backticks:
-[{"ticker":"AAPL","buyPriority":"BUY","reasoning":"1 sentence about what happened today"},{"ticker":"MSFT","buyPriority":null,"reasoning":"1 sentence"},...]`;
-
-  try {
-    console.log(`[AI Cards] Sending ${uncached.length} stocks to Gemini...`);
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: { temperature: 0.3, maxOutputTokens: 2000 },
-        }),
-      }
-    );
-
-    if (!response.ok) throw new Error(`Gemini API ${response.status}`);
-
-    const data = await response.json();
-    const text = data?.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
-    const jsonStr = text
-      .replace(/```json?\s*/g, '')
-      .replace(/```/g, '')
-      .trim();
-    const parsed = JSON.parse(jsonStr) as Array<{
-      ticker: string;
-      buyPriority: 'BUY' | 'SELL' | null;
-      reasoning: string;
-    }>;
-
-    console.log(`[AI Cards] Got ${parsed.length} decisions from Gemini`);
-
-    const now = new Date().toISOString();
-    for (const item of parsed) {
-      if (!item.ticker) continue;
-      const decision: CardDecision = {
-        buyPriority: item.buyPriority ?? null,
-        reasoning: item.reasoning ?? 'No reasoning.',
-        timestamp: now,
-      };
-      results.set(item.ticker, decision);
-      cacheCardDecision(item.ticker, decision);
-    }
-  } catch (err) {
-    console.error('[AI Cards] Batch Gemini call failed:', err);
-  }
-
-  return results;
-}
-
-/**
- * Generate AI insights for a stock using Google Gemini (FREE)
- * Gemini 1.5 Flash: 1,500 requests/day free tier
+ * Generate AI insights for a stock using Groq (Llama 3.3 70B)
+ * Free tier: 30 RPM, routed through Supabase Edge Function
  */
 export async function generateAIInsights(
   stock: Stock,
@@ -302,43 +180,160 @@ export async function generateAIInsights(
     return cached;
   }
 
-  const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
-
   // Calculate liquidity risk
   const liquidity = calculateLiquidityRisk(volume);
 
-  // If no API key, fall back to rule-based insights
-  if (!GEMINI_API_KEY) {
-    console.log(`[AI Insights] No Gemini API key, using rule-based insights`);
-    const ruleBased = generateRuleBased(
-      qualityScore,
-      earningsScore,
-      momentumScore,
-      portfolioWeight,
-      shares,
-      avgCost,
-      priceChangePercent,
-      stock.currentPrice,
-      riskProfile
+  // ── Risk-profile-adjusted thresholds (must match generateRuleBased) ──
+  const guardrails = {
+    aggressive: { stopLoss: -4, profitTake: 25, rebalanceAt: 30 },
+    moderate: { stopLoss: -7, profitTake: 20, rebalanceAt: 25 },
+    conservative: { stopLoss: -5, profitTake: 20, rebalanceAt: 20 },
+  }[riskProfile ?? 'moderate'];
+
+  // ── Client-side trigger detection ──
+  // Only call the 70B model when there's a reason to act. This keeps us
+  // well within Groq's free-tier 100K TPD limit for llama-3.3-70b-versatile.
+  const avgScore = Math.round((qualityScore + earningsScore + momentumScore + analystScore) / 4);
+  const triggers: string[] = [];
+
+  // Price move trigger: significant daily change
+  if (priceChangePercent !== undefined && Math.abs(priceChangePercent) >= 2.5) {
+    triggers.push(`price ${priceChangePercent >= 0 ? '+' : ''}${priceChangePercent.toFixed(1)}%`);
+  }
+
+  // Stop-loss trigger: from purchase price (risk-adjusted)
+  if (avgCost && stock.currentPrice && avgCost > 0) {
+    const gainLossPct = ((stock.currentPrice - avgCost) / avgCost) * 100;
+    if (gainLossPct <= guardrails.stopLoss)
+      triggers.push(`stop-loss zone (${gainLossPct.toFixed(1)}%)`);
+    if (gainLossPct >= guardrails.profitTake)
+      triggers.push(`profit-take zone (+${gainLossPct.toFixed(1)}%)`);
+  }
+
+  // Overconcentration trigger (risk-adjusted)
+  if (portfolioWeight && portfolioWeight > guardrails.rebalanceAt) {
+    triggers.push(`overconcentrated (${portfolioWeight.toFixed(1)}%)`);
+  }
+
+  // 52-week range trigger: 15%+ off high with quality scores
+  const high52 = stock.fiftyTwoWeekHigh ?? 0;
+  const curPrice = stock.currentPrice ?? 0;
+  if (high52 > 0 && curPrice > 0) {
+    const offHigh = ((high52 - curPrice) / high52) * 100;
+    if (offHigh >= 15 && avgScore >= 65) triggers.push(`${offHigh.toFixed(0)}% off 52W high`);
+  }
+
+  // Earnings/news trigger: detect earnings keywords in recent headlines
+  if (recentNews && recentNews.length > 0) {
+    const earningsKeywords = [
+      'earnings',
+      'results',
+      'revenue',
+      'quarter',
+      'q1',
+      'q2',
+      'q3',
+      'q4',
+      'beat',
+      'miss',
+      'eps',
+      'guidance',
+    ];
+    const hasEarnings = recentNews.some(n =>
+      earningsKeywords.some(kw => (n.headline || '').toLowerCase().includes(kw))
     );
-    const insight: AIInsight = {
-      summary: generateEnhancedSummary(stock, qualityScore, earningsScore, analystScore),
-      buyPriority: ruleBased.buyPriority,
-      reasoning: ruleBased.reasoning,
-      dataCompleteness: ruleBased.dataCompleteness,
-      missingData: ruleBased.missingData,
+    if (hasEarnings) triggers.push('earnings news');
+  }
+
+  // ── Mechanical SELL guardrails — these are definitive, no AI needed ──
+  // Uses the SAME risk-adjusted thresholds as generateRuleBased so main card
+  // and detail view always agree. No more discrepancies.
+  if (avgCost && stock.currentPrice && avgCost > 0) {
+    const gainLossPct = ((stock.currentPrice - avgCost) / avgCost) * 100;
+    if (gainLossPct <= guardrails.stopLoss) {
+      const sellInsight: AIInsight = {
+        summary: stock.name || stock.ticker,
+        buyPriority: 'SELL',
+        reasoning: `Down ${Math.abs(gainLossPct).toFixed(1)}% from your $${avgCost.toFixed(2)} entry — stop-loss triggered (${riskProfile ?? 'moderate'} profile: ${guardrails.stopLoss}%). Protect capital and reassess.`,
+        cardNote: `Stop-loss: ${gainLossPct.toFixed(1)}% from entry`,
+        dataCompleteness: 'FULL',
+        liquidityRisk: liquidity.risk,
+        liquidityWarning: liquidity.warning,
+        cached: false,
+        timestamp: new Date().toISOString(),
+      };
+      cacheInsight(stock.ticker, sellInsight);
+      return sellInsight;
+    }
+    if (gainLossPct >= guardrails.profitTake) {
+      const sellInsight: AIInsight = {
+        summary: stock.name || stock.ticker,
+        buyPriority: 'SELL',
+        reasoning: `Up ${gainLossPct.toFixed(1)}% from your $${avgCost.toFixed(2)} entry — profit-taking zone (${riskProfile ?? 'moderate'} profile: +${guardrails.profitTake}%). Lock in gains and trim position.`,
+        cardNote: `Profit-take: +${gainLossPct.toFixed(1)}% from entry`,
+        dataCompleteness: 'FULL',
+        liquidityRisk: liquidity.risk,
+        liquidityWarning: liquidity.warning,
+        cached: false,
+        timestamp: new Date().toISOString(),
+      };
+      cacheInsight(stock.ticker, sellInsight);
+      return sellInsight;
+    }
+  }
+  if (portfolioWeight && portfolioWeight > guardrails.rebalanceAt) {
+    const sellInsight: AIInsight = {
+      summary: stock.name || stock.ticker,
+      buyPriority: 'SELL',
+      reasoning: `Position is ${portfolioWeight.toFixed(1)}% of portfolio — overconcentrated (${riskProfile ?? 'moderate'} profile limit: ${guardrails.rebalanceAt}%). Trim to manage risk.`,
+      cardNote: `Overconcentrated: ${portfolioWeight.toFixed(1)}% of portfolio`,
+      dataCompleteness: 'FULL',
       liquidityRisk: liquidity.risk,
       liquidityWarning: liquidity.warning,
-      industryContext: generateIndustryContext(stock),
       cached: false,
       timestamp: new Date().toISOString(),
     };
-    cacheInsight(stock.ticker, insight);
-    return insight;
+    cacheInsight(stock.ticker, sellInsight);
+    return sellInsight;
+  }
+  if (avgScore < 35 && momentumScore < 35) {
+    const sellInsight: AIInsight = {
+      summary: stock.name || stock.ticker,
+      buyPriority: 'SELL',
+      reasoning: `Weak fundamentals (avg score ${avgScore}) and poor momentum (${momentumScore}) — review if the thesis still holds.`,
+      cardNote: `Weak fundamentals + momentum`,
+      dataCompleteness: 'FULL',
+      liquidityRisk: liquidity.risk,
+      liquidityWarning: liquidity.warning,
+      cached: false,
+      timestamp: new Date().toISOString(),
+    };
+    cacheInsight(stock.ticker, sellInsight);
+    return sellInsight;
   }
 
+  // No triggers → skip AI call, return null instantly
+  if (triggers.length === 0) {
+    console.log(`[AI Insights] No triggers for ${stock.ticker} — skipping AI call`);
+    const noActionInsight: AIInsight = {
+      summary: stock.name || stock.ticker,
+      buyPriority: null,
+      reasoning: 'No significant triggers today — no action needed.',
+      cardNote: 'No triggers, hold steady',
+      dataCompleteness: 'FULL',
+      liquidityRisk: liquidity.risk,
+      liquidityWarning: liquidity.warning,
+      cached: false,
+      timestamp: new Date().toISOString(),
+    };
+    cacheInsight(stock.ticker, noActionInsight);
+    return noActionInsight;
+  }
+
+  console.log(`[AI Insights] Triggers for ${stock.ticker}: ${triggers.join(', ')}`);
+
   try {
-    console.log(`[AI Insights] Generating AI insights for ${stock.ticker}...`);
+    console.log(`[AI Insights] Calling 70B for ${stock.ticker}...`);
 
     // Build context for LLM
     const metrics = [];
@@ -368,63 +363,36 @@ export async function generateAIInsights(
 
     const hasPositionData = shares !== undefined && shares > 0;
 
-    // 52-week range context
+    // 52-week range context (compact)
     let rangeContext = '';
     const high52 = stock.fiftyTwoWeekHigh ?? 0;
     const low52 = stock.fiftyTwoWeekLow ?? 0;
     const curPrice = stock.currentPrice ?? 0;
     if (high52 > 0 && low52 > 0 && curPrice > 0) {
-      const range = high52 - low52;
-      const positionInRange = range > 0 ? ((curPrice - low52) / range) * 100 : 50;
       const offHigh = ((high52 - curPrice) / high52) * 100;
-
-      if (offHigh >= 20) {
-        rangeContext = `\n🔥 DIP ALERT: Trading ${offHigh.toFixed(1)}% below 52-week high ($${high52.toFixed(2)}). Near bottom of range (${positionInRange.toFixed(0)}th percentile). 52W Low: $${low52.toFixed(2)}`;
-      } else if (offHigh >= 10) {
-        rangeContext = `\n📉 PULLBACK: ${offHigh.toFixed(1)}% off 52-week high ($${high52.toFixed(2)}). In lower half of range (${positionInRange.toFixed(0)}th percentile). 52W Low: $${low52.toFixed(2)}`;
-      } else if (positionInRange >= 90) {
-        rangeContext = `\n📈 NEAR HIGHS: Only ${offHigh.toFixed(1)}% from 52-week high ($${high52.toFixed(2)}). Trading at top of range.`;
-      } else {
-        rangeContext = `\n52W Range: $${low52.toFixed(2)} - $${high52.toFixed(2)} (currently ${positionInRange.toFixed(0)}th percentile)`;
-      }
+      rangeContext = ` | 52W: $${low52.toFixed(0)}-$${high52.toFixed(0)}, ${offHigh.toFixed(1)}% off high`;
     }
 
-    // Price change context for buy-the-dip opportunities
+    // Price change (compact)
     const priceChangeText =
       priceChangePercent !== undefined
-        ? priceChangePercent < 0
-          ? `📉 DOWN ${Math.abs(priceChangePercent).toFixed(2)}% today ${priceChangePercent <= -5 ? '(SIGNIFICANT DIP!)' : priceChangePercent <= -3 ? '(Notable dip)' : ''}`
-          : `📈 UP ${priceChangePercent.toFixed(2)}% today`
-        : '[Price change unavailable]';
+        ? `${priceChangePercent >= 0 ? '+' : ''}${priceChangePercent.toFixed(2)}% today`
+        : 'N/A';
 
-    // Calculate gain/loss from purchase price for trading rules
+    // Gain/loss from purchase (compact — triggers trading rules)
     let gainLossContext = '';
     if (avgCost && stock.currentPrice && avgCost > 0) {
       const gainLossPct = ((stock.currentPrice - avgCost) / avgCost) * 100;
-      const gainLossAbs = stock.currentPrice - avgCost;
-
       if (gainLossPct <= -7) {
-        gainLossContext = `\n⚠️ STOP-LOSS ALERT: Down ${Math.abs(gainLossPct).toFixed(1)}% from purchase ($${avgCost.toFixed(2)}) - 7% rule (or 3-4% in volatile markets)`;
-      } else if (gainLossPct <= -3 && momentumScore < 40) {
-        gainLossContext = `\n⚠️ VOLATILE MARKET: Down ${Math.abs(gainLossPct).toFixed(1)}% from purchase ($${avgCost.toFixed(2)}) + weak momentum (${momentumScore}) - Tighten stops?`;
+        gainLossContext = ` | STOP-LOSS: ${gainLossPct.toFixed(1)}% from cost $${avgCost.toFixed(2)}`;
       } else if (gainLossPct >= 20) {
-        gainLossContext = `\n💰 PROFIT-TAKING ZONE: Up ${gainLossPct.toFixed(1)}% from purchase ($${avgCost.toFixed(2)}) - 20-25% rule applies`;
-      } else if (gainLossPct >= 10 && momentumScore >= 80) {
-        gainLossContext = `\n🚀 RAPID GAINS: Up ${gainLossPct.toFixed(1)}%, momentum ${momentumScore} - Consider selling into strength (greed zone)`;
-      } else if (gainLossPct < 0) {
-        gainLossContext = `\nPosition P&L: ${gainLossPct.toFixed(1)}% (${gainLossAbs >= 0 ? '+' : ''}$${gainLossAbs.toFixed(2)})`;
+        gainLossContext = ` | PROFIT-TAKE: +${gainLossPct.toFixed(1)}% from cost $${avgCost.toFixed(2)}`;
       } else {
-        gainLossContext = `\nPosition P&L: +${gainLossPct.toFixed(1)}% (+$${gainLossAbs.toFixed(2)})`;
+        gainLossContext = ` | P&L: ${gainLossPct >= 0 ? '+' : ''}${gainLossPct.toFixed(1)}% from $${avgCost.toFixed(2)}`;
       }
     }
 
-    // Note on 2% Risk Rule (portfolio-level guidance)
-    const riskRuleNote =
-      portfolioWeight && portfolioWeight > 0
-        ? `\n📊 RISK RULE: Position is ${portfolioWeight.toFixed(1)}% of portfolio. Never risk >2% of total capital on any single trade.`
-        : '';
-
-    // Build Wall Street analyst context
+    // Wall Street consensus (compact)
     let analystContext = '';
     if (analystRating) {
       const total =
@@ -434,10 +402,7 @@ export async function generateAIInsights(
         analystRating.sell +
         analystRating.strongSell;
       const bullish = analystRating.strongBuy + analystRating.buy;
-      const bearish = analystRating.sell + analystRating.strongSell;
       const bullishPct = total > 0 ? ((bullish / total) * 100).toFixed(0) : '0';
-      const bearishPct = total > 0 ? ((bearish / total) * 100).toFixed(0) : '0';
-
       const upsidePct =
         stock.currentPrice && analystRating.targetMean > 0
           ? (((analystRating.targetMean - stock.currentPrice) / stock.currentPrice) * 100).toFixed(
@@ -445,136 +410,69 @@ export async function generateAIInsights(
             )
           : null;
 
-      analystContext = `
-WALL STREET CONSENSUS (${total} analysts):
-• Ratings: ${analystRating.strongBuy} Strong Buy, ${analystRating.buy} Buy, ${analystRating.hold} Hold, ${analystRating.sell} Sell, ${analystRating.strongSell} Strong Sell
-• Sentiment: ${bullishPct}% Bullish, ${bearishPct}% Bearish
-• Price Target: $${analystRating.targetMean.toFixed(2)} (Range: $${analystRating.targetLow.toFixed(2)} - $${analystRating.targetHigh.toFixed(2)})
-${upsidePct ? `• Implied Upside: ${upsidePct}%` : ''}`;
-    } else {
-      analystContext = '\nWALL STREET CONSENSUS: [Not available]';
+      analystContext = `\nAnalysts: ${bullishPct}% bullish (${total}), target $${analystRating.targetMean.toFixed(0)}${upsidePct ? ` (${upsidePct}% upside)` : ''}`;
     }
 
-    // Build recent news context (CRITICAL for context-aware decisions)
+    // Recent news (compact — headlines only, max 5)
     let newsContext = '';
     if (recentNews && recentNews.length > 0) {
       const newsItems = recentNews
-        .map((news, idx) => {
-          const date = new Date(news.datetime * 1000);
-          const hoursAgo = Math.floor((Date.now() - date.getTime()) / (1000 * 60 * 60));
+        .slice(0, 5)
+        .map(news => {
+          const hoursAgo = Math.floor((Date.now() - news.datetime * 1000) / (1000 * 60 * 60));
           const timeStr =
-            hoursAgo < 1
-              ? 'JUST NOW'
-              : hoursAgo < 24
-                ? `${hoursAgo}h ago`
-                : `${Math.floor(hoursAgo / 24)}d ago`;
-          const summary = news.summary ? ` — ${news.summary.substring(0, 120)}` : '';
-          return `${idx + 1}. [${timeStr}] ${news.headline}${summary} (${news.source})`;
+            hoursAgo < 1 ? 'now' : hoursAgo < 24 ? `${hoursAgo}h` : `${Math.floor(hoursAgo / 24)}d`;
+          return `[${timeStr}] ${news.headline}`;
         })
         .join('\n');
-
-      // Detect if earnings-related news is present
-      const hasEarningsNews = recentNews.some(n => {
-        const h = (n.headline || '').toLowerCase();
-        return [
-          'earnings',
-          'results',
-          'revenue',
-          'quarter',
-          'q1',
-          'q2',
-          'q3',
-          'q4',
-          'beat',
-          'miss',
-          'eps',
-          'guidance',
-          'capex',
-        ].some(kw => h.includes(kw));
-      });
-
-      newsContext = `
-
-RECENT NEWS & EVENTS:
-${newsItems}
-${
-  hasEarningsNews
-    ? `
-🔴 EARNINGS NEWS DETECTED — This is the MOST important context for your analysis.
-You MUST reference the earnings in your reasoning. Did they beat or miss? What was the market reaction? What does it mean for the stock going forward?`
-    : `
-⚠️ Analyze these headlines. They explain WHY the price moved. Connect the dots between news and price action in your reasoning.`
-}`;
-    } else {
-      newsContext = '\n\nRECENT NEWS: [No recent news available - rely on metrics only]';
+      newsContext = `\nNews:\n${newsItems}`;
     }
 
-    const prompt = `You manage my money. Your only job: tell me what to do with ${stock.ticker} TODAY. Not tomorrow, not long-term — TODAY.
+    const avgScore = Math.round((qualityScore + earningsScore + momentumScore + analystScore) / 4);
 
-Here's everything I know:
+    // Compact prompt — all rules/examples are in the system message (Edge Function)
+    const prompt = `${stock.ticker} (${stock.name || stock.ticker})
+Today: ${priceChangeText}${rangeContext}${gainLossContext}
+Position: ${positionContext}${!hasPositionData ? ' [not imported]' : ''}
+Scores: Q:${qualityScore} E:${earningsScore} M:${momentumScore} A:${analystScore} Avg:${avgScore}/100
+${metrics.length > 0 ? metrics.join(', ') : ''}${analystContext}${newsContext}
+Risk: ${riskProfile || 'moderate'}`;
 
-STOCK: ${stock.ticker} (${stock.name || stock.ticker})
-POSITION: ${positionContext}${!hasPositionData ? " [I haven't imported my position data yet]" : ''}
-TODAY: ${priceChangeText}${rangeContext}${gainLossContext}${riskRuleNote}
-SCORES: Quality ${qualityScore}/100, Earnings ${earningsScore}/100, Momentum ${momentumScore}/100, Analysts ${analystScore}/100
-FUNDAMENTALS: ${metrics.length > 0 ? metrics.join(', ') : '[Limited data]'}
-${analystContext}${newsContext}
-
-IMPORTANT CONTEXT:
-I already have a conviction score that tells me this is a good or bad company long-term. I don't need you to repeat that. I need you to tell me: is there a reason to ACT today? 
-
-Think like my personal analyst who makes me rich. Look at the news, the price move, the earnings. Connect the dots. Is today special or just another day?
-
-- If there's an opportunity (dip on a great company, earnings beat but stock dropped, market panic) → BUY
-- If there's danger (fundamentals broken, thesis changed, earnings disaster) → SELL  
-- If it's just a normal day with no clear catalyst → null (most common answer — don't force it)
-
-RESPOND WITH JSON ONLY (no markdown, no backticks):
-{"buyPriority": "BUY" or "SELL" or null, "reasoning": "1-2 sentences about TODAY — what happened, why it matters, what I should do", "summary": "One-line company description"}`;
-
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          contents: [
-            {
-              parts: [{ text: prompt }],
-            },
-          ],
-          generationConfig: {
-            temperature: 0.3, // Allow natural reasoning with news context
-            maxOutputTokens: 500, // More space for context-rich explanations
-          },
-        }),
-      }
+    const rawText = await callAI(prompt, 0.3, 500);
+    console.log(
+      `[AI Insights] Raw response for ${stock.ticker} (${rawText.length} chars):`,
+      rawText.slice(0, 200)
     );
 
-    if (!response.ok) {
-      throw new Error(`Gemini API error: ${response.status}`);
-    }
-
-    const data = await response.json();
-    const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
-
-    // Try to parse JSON response
+    // Try to parse JSON response — handle markdown wrapping, thinking artifacts, etc.
     let parsedResponse: {
       buyPriority?: string;
       reasoning?: string;
+      cardNote?: string;
       summary?: string;
     } = {};
 
     try {
-      // Extract JSON from markdown code blocks if present
-      const jsonMatch = rawText.match(/```json\n?([\s\S]*?)\n?```/) || rawText.match(/\{[\s\S]*\}/);
+      // Clean up: remove think tags, markdown fences, trim whitespace
+      const cleaned = rawText
+        .replace(/<think>[\s\S]*?<\/think>/g, '')
+        .replace(/```json?\s*/g, '')
+        .replace(/```/g, '')
+        .trim();
+      // Find the JSON object anywhere in the text
+      const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
-        parsedResponse = JSON.parse(jsonMatch[1] || jsonMatch[0]);
+        parsedResponse = JSON.parse(jsonMatch[0]);
+        console.log(
+          `[AI Insights] Parsed for ${stock.ticker}:`,
+          parsedResponse.buyPriority,
+          parsedResponse.reasoning?.slice(0, 80)
+        );
+      } else {
+        console.warn(`[AI Insights] No JSON found in response for ${stock.ticker}`);
       }
-    } catch {
-      console.warn(`[AI Insights] Could not parse JSON, using fallback`);
+    } catch (e) {
+      console.warn(`[AI Insights] Could not parse JSON for ${stock.ticker}:`, e);
     }
 
     // Get rule-based fallback for missing AI fields
@@ -590,12 +488,18 @@ RESPOND WITH JSON ONLY (no markdown, no backticks):
       riskProfile
     );
 
+    // Map buyPriority: accept "BUY", "SELL", or treat everything else as null
+    let aiBuyPriority: AIInsight['buyPriority'] = null;
+    if (parsedResponse.buyPriority === 'BUY') aiBuyPriority = 'BUY';
+    else if (parsedResponse.buyPriority === 'SELL') aiBuyPriority = 'SELL';
+
     const insight: AIInsight = {
       summary:
         parsedResponse.summary ||
         generateEnhancedSummary(stock, qualityScore, earningsScore, analystScore),
-      buyPriority: (parsedResponse.buyPriority as AIInsight['buyPriority']) || null,
+      buyPriority: aiBuyPriority,
       reasoning: parsedResponse.reasoning || ruleBased.reasoning,
+      cardNote: parsedResponse.cardNote || '',
       dataCompleteness: ruleBased.dataCompleteness,
       missingData: ruleBased.missingData,
       liquidityRisk: liquidity.risk,
@@ -629,6 +533,10 @@ RESPOND WITH JSON ONLY (no markdown, no backticks):
       summary: generateEnhancedSummary(stock, qualityScore, earningsScore, analystScore),
       buyPriority: ruleBased.buyPriority,
       reasoning: ruleBased.reasoning,
+      cardNote:
+        ruleBased.reasoning.length > 50
+          ? ruleBased.reasoning.slice(0, 47) + '...'
+          : ruleBased.reasoning,
       dataCompleteness: ruleBased.dataCompleteness,
       missingData: ruleBased.missingData,
       liquidityRisk: liquidity.risk,
@@ -660,8 +568,8 @@ export function generateRuleBased(
   priceChangePercent?: number,
   currentPrice?: number,
   riskProfile: RiskProfile = 'moderate',
-  recentNews?: Array<{ headline: string; datetime: number }>,
-  fiftyTwoWeekHigh?: number,
+  _recentNews?: Array<{ headline: string; datetime: number }>,
+  _fiftyTwoWeekHigh?: number,
   _fiftyTwoWeekLow?: number
 ): {
   buyPriority: AIInsight['buyPriority'];
@@ -698,23 +606,7 @@ export function generateRuleBased(
   // Full AI reasoning runs when user taps the card.
   // ─────────────────────────────────────────────────────────────────
 
-  // Helper: detect if today has earnings-related news
-  const hasEarningsNews =
-    recentNews?.some(n => {
-      const h = n.headline?.toLowerCase() ?? '';
-      return /earnings|beats|misses|revenue|guidance|eps|quarter|q[1-4]\b/.test(h);
-    }) ?? false;
-
-  // Helper: how far off 52-week high
-  const offHighPct =
-    fiftyTwoWeekHigh && fiftyTwoWeekHigh > 0 && currentPrice && currentPrice > 0
-      ? ((fiftyTwoWeekHigh - currentPrice) / fiftyTwoWeekHigh) * 100
-      : 0;
-
-  const isDown = priceChangePercent !== undefined && priceChangePercent < 0;
-  const dropPct = isDown ? Math.abs(priceChangePercent!) : 0;
-
-  // ── SELL SIGNALS (mechanical guardrails) ──
+  // ── SELL SIGNALS (mechanical guardrails only) ──
 
   // Stop-loss triggered
   if (hasCostData && avgCost && avgCost > 0 && currentPrice && currentPrice > 0) {
@@ -749,47 +641,9 @@ export function generateRuleBased(
     };
   }
 
-  // ── BUY SIGNALS (today-specific catalysts only) ──
-
-  // Earnings dip: stock dropped 4%+ today + earnings news = real overreaction
-  if (hasEarningsNews && dropPct >= 4 && avgScore >= 55) {
-    return {
-      buyPriority: 'BUY',
-      reasoning: `Down ${dropPct.toFixed(1)}% on earnings news — potential overreaction on solid company.`,
-      dataCompleteness,
-      missingData,
-    };
-  }
-
-  // Panic drop: 5%+ daily drop on a decent company
-  if (dropPct >= 5 && avgScore >= 50) {
-    return {
-      buyPriority: 'BUY',
-      reasoning: `Down ${dropPct.toFixed(1)}% today — fear selling on a fundamentally sound stock.`,
-      dataCompleteness,
-      missingData,
-    };
-  }
-
-  // Big dip: 3%+ daily drop on a quality company
-  if (dropPct >= 3 && avgScore >= 60) {
-    return {
-      buyPriority: 'BUY',
-      reasoning: `Quality company down ${dropPct.toFixed(1)}% today — buy the dip.`,
-      dataCompleteness,
-      missingData,
-    };
-  }
-
-  // Deep value: quality stock 20%+ below 52-week high AND red today
-  if (offHighPct >= 20 && isDown && avgScore >= 55) {
-    return {
-      buyPriority: 'BUY',
-      reasoning: `${offHighPct.toFixed(0)}% below 52-week high and still falling — deep value zone.`,
-      dataCompleteness,
-      missingData,
-    };
-  }
+  // ── NO BUY SIGNALS from rule-based ──
+  // BUY decisions are made ONLY by the AI (generateAIInsights).
+  // Rule-based only handles mechanical SELL guardrails above.
 
   // ── NO SIGNAL (most stocks most days) ──
   let context = '';
@@ -833,14 +687,7 @@ function generateEnhancedSummary(
   }
 }
 
-/**
- * Industry-specific context
- */
-function generateIndustryContext(_stock: Stock): string | undefined {
-  // TODO: Map Finnhub sectors to industry insights
-  // For now, return undefined - will be enhanced with LLM
-  return undefined;
-}
+// Industry context is handled by the AI prompt directly
 
 /**
  * Get LLM provider configuration

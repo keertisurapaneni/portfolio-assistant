@@ -76,7 +76,7 @@ export function ImportPortfolioModal({ onClose, onComplete }: ImportPortfolioMod
     }
   };
 
-  // Handle import
+  // Handle import — saves to storage, shows success, waits for user to click Done
   const handleImport = () => {
     try {
       const parsed = applyMapping(rows, mapping);
@@ -88,14 +88,7 @@ export function ImportPortfolioModal({ onClose, onComplete }: ImportPortfolioMod
       const importResult = importStocksWithPositions(validRows);
       setResult(importResult);
       setStep('done');
-
-      // Automatically trigger data fetch for newly added stocks
-      if (importResult.added.length > 0) {
-        // Close modal and trigger refresh with added tickers
-        setTimeout(() => {
-          onComplete(importResult.added);
-        }, 1500); // Give user 1.5s to see success message
-      }
+      // User clicks "Done" to trigger refresh — no auto-trigger
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Import failed');
     }
@@ -153,7 +146,8 @@ export function ImportPortfolioModal({ onClose, onComplete }: ImportPortfolioMod
           {step === 'mapping' && (
             <div className="space-y-4">
               <p className="text-sm text-[hsl(var(--muted-foreground))]">
-                Map your file columns to the required fields. Ticker is required. For optional fields, select "Not available" if your file doesn't have that data.
+                Map your file columns to the required fields. Ticker is required. For optional
+                fields, select "Not available" if your file doesn't have that data.
               </p>
 
               {/* Mapping dropdowns */}

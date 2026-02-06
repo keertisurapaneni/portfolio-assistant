@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Plus, ArrowUpDown, BarChart3, Trash2 } from 'lucide-react';
 import type { StockWithConviction } from '../types';
 import { StockCard } from './StockCard';
+import { cn } from '../lib/utils';
 
 interface DashboardProps {
   stocks: StockWithConviction[];
@@ -72,12 +73,52 @@ export function Dashboard({ stocks, onStockSelect, onAddTickers, onClearAll }: D
     );
   }
 
+  // Calculate total portfolio value (only when shares data exists)
+  const totalPortfolioValue = stocks.reduce((sum, s) => {
+    if (s.shares && s.shares > 0 && s.currentPrice) {
+      return sum + s.shares * s.currentPrice;
+    }
+    return sum;
+  }, 0);
+
+  const totalDayChange = stocks.reduce((sum, s) => {
+    if (s.shares && s.shares > 0 && s.priceChange) {
+      return sum + s.shares * s.priceChange;
+    }
+    return sum;
+  }, 0);
+
+  const hasPositionData = stocks.some(s => s.shares && s.shares > 0);
+
   return (
     <div>
       {/* Header */}
       <div className="flex items-end justify-between mb-8">
         <div>
-          <h2 className="text-xl font-bold text-[hsl(var(--foreground))] mb-1">Your Holdings</h2>
+          <div className="flex items-baseline gap-3">
+            <h2 className="text-xl font-bold text-[hsl(var(--foreground))] mb-1">Your Holdings</h2>
+            {hasPositionData && totalPortfolioValue > 0 && (
+              <div className="flex items-baseline gap-2">
+                <span className="text-lg font-semibold text-[hsl(var(--foreground))]">
+                  ${totalPortfolioValue.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                </span>
+                {totalDayChange !== 0 && (
+                  <span
+                    className={cn(
+                      'text-sm font-medium',
+                      totalDayChange > 0 ? 'text-green-600' : 'text-red-600'
+                    )}
+                  >
+                    {totalDayChange >= 0 ? '+' : '-'}$
+                    {Math.abs(totalDayChange).toLocaleString(undefined, {
+                      maximumFractionDigits: 0,
+                    })}{' '}
+                    today
+                  </span>
+                )}
+              </div>
+            )}
+          </div>
           <p className="text-[hsl(var(--muted-foreground))]">
             What do I believe right now, and has that belief changed?
           </p>

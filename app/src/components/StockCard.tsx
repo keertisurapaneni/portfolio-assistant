@@ -1,11 +1,4 @@
-import {
-  ChevronRight,
-  TrendingUp,
-  TrendingDown,
-  Minus,
-  ExternalLink,
-  AlertTriangle,
-} from 'lucide-react';
+import { ChevronRight, ExternalLink, AlertTriangle } from 'lucide-react';
 import type { StockWithConviction } from '../types';
 import { cn } from '../lib/utils';
 import { getWarnings, getMostSevereWarning } from '../lib/warnings';
@@ -54,13 +47,6 @@ export function StockCard({ stock, onClick }: StockCardProps) {
 
   const posture = postureConfig[conviction.posture];
 
-  // Delta indicator
-  const delta =
-    stock.previousScore !== undefined ? stock.conviction.score - stock.previousScore : 0;
-
-  const DeltaIcon = delta > 0 ? TrendingUp : delta < 0 ? TrendingDown : Minus;
-  const deltaColor = delta > 0 ? 'text-emerald-600' : delta < 0 ? 'text-red-600' : 'text-gray-400';
-
   return (
     <button
       onClick={onClick}
@@ -92,9 +78,11 @@ export function StockCard({ stock, onClick }: StockCardProps) {
               </span>
             )}
 
-            <span className="text-sm text-[hsl(var(--muted-foreground))] truncate">
-              {stock.name}
-            </span>
+            {stock.name && stock.name !== stock.ticker && (
+              <span className="text-sm text-[hsl(var(--muted-foreground))] truncate">
+                {stock.name}
+              </span>
+            )}
           </div>
 
           {/* Middle Row: Conviction Badge + Score + Delta (always together) */}
@@ -133,13 +121,16 @@ export function StockCard({ stock, onClick }: StockCardProps) {
                     <span className={cn('w-2 h-2 rounded-full', posture.dot)} />
                     {conviction.posture}
                     <span
-                      className={cn('font-normal', conviction.confidence === 'High' && 'font-medium')}
+                      className={cn(
+                        'font-normal',
+                        conviction.confidence === 'High' && 'font-medium'
+                      )}
                     >
                       ({conviction.confidence})
                     </span>
                   </span>
 
-                  {/* Score + Delta (always together) */}
+                  {/* Score */}
                   <div className="flex items-center gap-2">
                     <div className="flex items-baseline gap-1">
                       <span className="text-2xl font-bold text-[hsl(var(--foreground))]">
@@ -147,14 +138,6 @@ export function StockCard({ stock, onClick }: StockCardProps) {
                       </span>
                       <span className="text-sm text-[hsl(var(--muted-foreground))]">/100</span>
                     </div>
-
-                    {/* Delta */}
-                    {delta !== 0 && (
-                      <span className={cn('flex items-center gap-1 text-sm font-medium', deltaColor)}>
-                        <DeltaIcon className="w-4 h-4" />
-                        {delta > 0 ? `+${delta}` : delta}
-                      </span>
-                    )}
 
                     {/* Data Age (if > 5 minutes) */}
                     {stock.lastDataFetch &&
@@ -230,15 +213,15 @@ export function StockCard({ stock, onClick }: StockCardProps) {
               </>
             ) : (
               <>
-                <p className="text-sm text-[hsl(var(--muted-foreground))] leading-relaxed">
+                <p className="text-sm text-[hsl(var(--muted-foreground))] leading-relaxed line-clamp-1">
                   {stock.buyPriorityReasoning ||
                     conviction.rationale[0] ||
                     'Click refresh to fetch market data'}
                 </p>
 
-                {/* Current price with change */}
+                {/* Current price with change + position value */}
                 {stock.currentPrice && (
-                  <div className="flex items-center gap-2 text-xs">
+                  <div className="flex items-center gap-2 text-xs flex-wrap">
                     <span className="text-[hsl(var(--muted-foreground))] opacity-75">
                       ${stock.currentPrice.toFixed(2)}
                     </span>
@@ -260,6 +243,15 @@ export function StockCard({ stock, onClick }: StockCardProps) {
                           {stock.priceChangePercent.toFixed(2)}%)
                         </span>
                       )}
+                    {/* Position value: shares × current price */}
+                    {stock.shares && stock.shares > 0 && (
+                      <span className="text-[hsl(var(--muted-foreground))] opacity-60 border-l border-gray-300 pl-2">
+                        {stock.shares} shares · $
+                        {(stock.shares * stock.currentPrice).toLocaleString(undefined, {
+                          maximumFractionDigits: 0,
+                        })}
+                      </span>
+                    )}
                   </div>
                 )}
 

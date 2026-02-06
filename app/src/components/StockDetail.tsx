@@ -71,8 +71,10 @@ export function StockDetail({ stock, onClose, onUpdate }: StockDetailProps) {
     currentPrice: stock.currentPrice,
   });
 
-  // Fetch AI insights (only if Gemini API key is configured)
+  // Fetch AI insights — uses cache from the per-stock refresh flow (instant if already cached).
+  // Same insight drives both the main card and this detail view — no disagreement possible.
   useEffect(() => {
+    let cancelled = false;
     const fetchInsights = async () => {
       setIsLoadingInsight(true);
       const insight = await generateAIInsights(
@@ -90,12 +92,24 @@ export function StockDetail({ stock, onClose, onUpdate }: StockDetailProps) {
         stock.volume,
         stock.recentNews
       );
-      setAIInsight(insight);
-      setIsLoadingInsight(false);
+      if (!cancelled && insight) {
+        setAIInsight(insight);
+        setIsLoadingInsight(false);
+        // Sync main card: if AI returned a result that differs from what's on the card,
+        // trigger a reload so loadStocks picks up the cached AI result
+        if (!insight.cached) {
+          onUpdate();
+        }
+      } else if (!cancelled) {
+        setIsLoadingInsight(false);
+      }
     };
 
     fetchInsights();
-  }, [stock.ticker]); // Re-fetch if ticker changes
+    return () => {
+      cancelled = true;
+    };
+  }, [stock.ticker]); // Re-fetch only when a different stock is opened
 
   return (
     <>
@@ -170,43 +184,8 @@ export function StockDetail({ stock, onClose, onUpdate }: StockDetailProps) {
             </div>
           )}
 
-          {/* Risk Warnings */}
-          {warnings.length > 0 && (
-            <div className="space-y-2">
-              <h3 className="text-sm font-medium text-[hsl(var(--foreground))] flex items-center gap-2">
-                <AlertTriangle className="w-4 h-4 text-amber-500" />
-                Risk Alerts
-              </h3>
-              {warnings.map((warning, i) => (
-                <div
-                  key={i}
-                  className={cn(
-                    'p-3 rounded-lg border text-sm',
-                    warning.severity === 'critical' && 'bg-red-50 border-red-200',
-                    warning.severity === 'warning' && 'bg-amber-50 border-amber-200',
-                    warning.severity === 'info' && 'bg-blue-50 border-blue-200'
-                  )}
-                >
-                  <p
-                    className={cn(
-                      'font-medium',
-                      warning.severity === 'critical' && 'text-red-700',
-                      warning.severity === 'warning' && 'text-amber-700',
-                      warning.severity === 'info' && 'text-blue-700'
-                    )}
-                  >
-                    {warning.message}
-                  </p>
-                  {warning.action && (
-                    <p className="text-[hsl(var(--muted-foreground))] mt-1">{warning.action}</p>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
-
-          {/* AI Buy Priority Recommendation */}
-          {aiInsight && aiInsight.buyPriority && (
+          {/* AI Analysis — single unified signal (covers trading rules + AI decisions) */}
+          {aiInsight && (
             <div className="p-4 bg-gradient-to-r from-purple-50 to-blue-50 border border-purple-200 rounded-lg">
               <div className="flex items-start gap-2 mb-3">
                 <Sparkles className="w-4 h-4 text-purple-600 mt-0.5 flex-shrink-0" />

@@ -1,11 +1,11 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Briefcase, Lightbulb, Plus, RefreshCw, Settings, TrendingUp } from 'lucide-react';
+import { Briefcase, Brain, Lightbulb, Plus, RefreshCw, Settings, TrendingUp } from 'lucide-react';
 import type { ActiveTab, StockWithConviction, RiskProfile } from './types';
 import { getUserData, addStock, addTickers, updateStock, clearAllData } from './lib/storage';
 import { getConvictionResult } from './lib/convictionEngine';
 import { calculatePortfolioWeights } from './lib/portfolioCalc';
 import { getStockData, fetchMultipleStocks } from './lib/stockApiEdge';
-import { generateRuleBased, getAICardDecisions } from './lib/aiInsights';
+import { generateAIInsights } from './lib/aiInsights';
 import { getRiskProfile, setRiskProfile, calculateDrawdown } from './lib/settingsStorage';
 import { cn } from './lib/utils';
 
@@ -17,57 +17,45 @@ import { StockDetail } from './components/StockDetail';
 import { AddTickersModal } from './components/AddTickersModal';
 import SettingsModal from './components/SettingsModal';
 
-const FALLBACK_QUOTE =
-  '"Be fearful when others are greedy, and greedy when others are fearful." — Warren Buffett';
+// Zero API calls — rotate through legendary quotes by day-of-year
+const INVESTING_QUOTES = [
+  '"Be fearful when others are greedy, and greedy when others are fearful." — Warren Buffett',
+  '"The stock market is a device for transferring money from the impatient to the patient." — Warren Buffett',
+  '"In the short run, the market is a voting machine but in the long run, it is a weighing machine." — Benjamin Graham',
+  '"The individual investor should act consistently as an investor and not as a speculator." — Benjamin Graham',
+  '"Know what you own, and know why you own it." — Peter Lynch',
+  '"The best stock to buy is the one you already own." — Peter Lynch',
+  '"Go for a business that any idiot can run — because sooner or later, any idiot is going to run it." — Peter Lynch',
+  "\"It's not whether you're right or wrong that's important, but how much money you make when you're right and how much you lose when you're wrong.\" — George Soros",
+  '"The most important thing is to find the best investment and concentrate on that." — Charlie Munger',
+  '"All intelligent investing is value investing." — Charlie Munger',
+  '"The big money is not in the buying and selling, but in the waiting." — Charlie Munger',
+  '"An investment in knowledge pays the best interest." — Benjamin Franklin',
+  '"Risk comes from not knowing what you\'re doing." — Warren Buffett',
+  "\"The four most dangerous words in investing are: 'This time it's different.'\" — John Templeton",
+  '"Bull markets are born on pessimism, grow on skepticism, mature on optimism, and die on euphoria." — John Templeton',
+  '"The time of maximum pessimism is the best time to buy." — John Templeton',
+  '"Investing should be more like watching paint dry or watching grass grow. If you want excitement, take $800 and go to Las Vegas." — Paul Samuelson',
+  '"The secret to investing is to figure out the value of something — and then pay a lot less." — Joel Greenblatt',
+  '"You make most of your money in a bear market, you just don\'t realize it at the time." — Shelby Davis',
+  '"The stock market is filled with individuals who know the price of everything, but the value of nothing." — Philip Fisher',
+  '"I will tell you how to become rich. Close the doors. Be fearful when others are greedy. Be greedy when others are fearful." — Warren Buffett',
+  '"Compound interest is the eighth wonder of the world." — Albert Einstein',
+  '"The goal of a successful trader is to make the best trades. Money is secondary." — Alexander Elder',
+  '"Do not put all your eggs in one basket." — Andrew Carnegie',
+  '"Behind every stock is a company. Find out what it\'s doing." — Peter Lynch',
+  '"The key to making money in stocks is not to get scared out of them." — Peter Lynch',
+  '"If you don\'t study any companies, you have the same success buying stocks as you do in a poker game if you bet without looking at your cards." — Peter Lynch',
+  '"Wide diversification is only required when investors do not understand what they are doing." — Warren Buffett',
+  '"Price is what you pay. Value is what you get." — Warren Buffett',
+  '"The intelligent investor is a realist who sells to optimists and buys from pessimists." — Benjamin Graham',
+];
 
-async function getDailyQuote(): Promise<string> {
-  const today = new Date().toISOString().slice(0, 10);
-  const cacheKey = 'daily-investing-quote';
-  const cached = localStorage.getItem(cacheKey);
-
-  if (cached) {
-    try {
-      const { date, quote } = JSON.parse(cached);
-      if (date === today && quote) return quote;
-    } catch {
-      /* expired or corrupt */
-    }
-  }
-
-  const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
-  if (!apiKey) return FALLBACK_QUOTE;
-
-  try {
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [
-            {
-              parts: [
-                {
-                  text: `Give me one short, powerful investing or stock market quote from a famous investor, trader, or business leader. Include the person's name. Pick someone different each time — Warren Buffett, Charlie Munger, Peter Lynch, Benjamin Graham, Ray Dalio, George Soros, John Templeton, Philip Fisher, Howard Marks, Jesse Livermore, Mohnish Pabrai, Jack Bogle, or any other legend. Format exactly like: "Quote text." — Person Name. Nothing else, no extra text.`,
-                },
-              ],
-            },
-          ],
-          generationConfig: { temperature: 1.5, maxOutputTokens: 100 },
-        }),
-      }
-    );
-
-    if (!response.ok) return FALLBACK_QUOTE;
-    const data = await response.json();
-    const quote = data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
-    if (!quote) return FALLBACK_QUOTE;
-
-    localStorage.setItem(cacheKey, JSON.stringify({ date: today, quote }));
-    return quote;
-  } catch {
-    return FALLBACK_QUOTE;
-  }
+function getDailyQuote(): string {
+  const dayOfYear = Math.floor(
+    (Date.now() - new Date(new Date().getFullYear(), 0, 0).getTime()) / 86400000
+  );
+  return INVESTING_QUOTES[dayOfYear % INVESTING_QUOTES.length];
 }
 
 function App() {
@@ -79,14 +67,14 @@ function App() {
   const [riskProfile, setRiskProfileState] = useState<RiskProfile>(getRiskProfile());
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [refreshProgress, setRefreshProgress] = useState<string | null>(null);
+  const [aiProgress, setAiProgress] = useState<{
+    current: string;
+    done: number;
+    total: number;
+  } | null>(null);
   const [portfolioDrawdown, setPortfolioDrawdown] = useState<number | null>(null);
   const [hasAutoRefreshed, setHasAutoRefreshed] = useState(false);
-  const [investingQuote, setInvestingQuote] = useState(FALLBACK_QUOTE);
-
-  // Fetch AI-generated daily quote on mount
-  useEffect(() => {
-    getDailyQuote().then(setInvestingQuote);
-  }, []);
+  const investingQuote = getDailyQuote(); // Synchronous — zero API calls
 
   // Load and process stocks
   const loadStocks = useCallback(() => {
@@ -123,7 +111,8 @@ function App() {
     // Add portfolio weights
     const withWeights = calculatePortfolioWeights(stocksWithConviction);
 
-    // Recalculate conviction and buy priority with portfolio weight context
+    // Recalculate conviction with portfolio weight context
+    // BUY/SELL signals come ONLY from AI analysis (runs on refresh), not rule-based
     const withPortfolioContext = withWeights.map(stock => {
       const inputs = {
         qualityScore: stock.qualityScore ?? 50,
@@ -135,27 +124,10 @@ function App() {
         (stock.peRatio !== null && stock.peRatio !== undefined) ||
         (stock.eps !== null && stock.eps !== undefined);
 
-      // Use rule-based as instant placeholder (only fires on stop-loss / overconcentration)
-      const { buyPriority: rulePriority, reasoning: ruleReasoning } = generateRuleBased(
-        inputs.qualityScore,
-        inputs.earningsScore,
-        inputs.momentumScore,
-        stock.portfolioWeight,
-        stock.shares,
-        stock.avgCost,
-        stock.priceChangePercent,
-        stock.currentPrice,
-        riskProfile,
-        stock.recentNews,
-        stock.fiftyTwoWeekHigh,
-        stock.fiftyTwoWeekLow
-      );
-
       return {
         ...stock,
         conviction: getConvictionResult(inputs, hasMetricsData, stock.portfolioWeight),
-        buyPriority: rulePriority ?? undefined,
-        buyPriorityReasoning: ruleReasoning,
+        // No BUY/SELL signals on load — AI sets these after explicit refresh
       };
     });
 
@@ -169,42 +141,157 @@ function App() {
       setPortfolioDrawdown(drawdown);
     }
 
-    // Show rule-based results instantly while AI loads
+    // Show rule-based results instantly — AI runs separately after fresh data
     setStocks(withPortfolioContext);
-
-    // ONE Gemini call for ALL stocks (batch), then update cards
-    const stockInputs = withPortfolioContext.map(stock => ({
-      stock,
-      qualityScore: stock.qualityScore ?? 50,
-      earningsScore: stock.earningsScore ?? 50,
-      momentumScore: stock.momentumScore ?? 50,
-      analystScore: stock.analystScore ?? 50,
-      portfolioWeight: stock.portfolioWeight,
-      avgCost: stock.avgCost,
-    }));
-
-    getAICardDecisions(stockInputs, riskProfile).then(aiMap => {
-      if (aiMap.size === 0) return;
-      setStocks(prev =>
-        prev.map(stock => {
-          const ai = aiMap.get(stock.ticker);
-          if (!ai) return stock;
-          // AI overrides rule-based UNLESS rule-based triggered a SELL (safety guardrail)
-          if (stock.buyPriority === 'SELL') return stock;
-          return {
-            ...stock,
-            buyPriority: ai.buyPriority ?? undefined,
-            buyPriorityReasoning: ai.reasoning,
-          };
-        })
-      );
-    });
+    return withPortfolioContext;
   }, [riskProfile]);
 
-  // Initial load
+  // In-flight guard: prevent overlapping runAIAnalysis calls
+  // (initial load + auto-refresh + StrictMode can cause concurrent runs)
+  const aiInFlight = useState(false);
+  const isAIRunning = aiInFlight[0];
+  const setIsAIRunning = aiInFlight[1];
+
+  // Per-stock AI analysis — staggered 2s apart to stay within Groq free-tier limits.
+  // llama-3.1-8b-instant: 500K TPD, 131K TPM, 30 RPM — very generous.
+  // Each stock gets its own AI call (cached for 4h). Same insight is used
+  // on main card AND expanded card — no disagreement possible.
+  // Cached stocks return instantly (no delay needed).
+  const runAIAnalysis = useCallback(
+    async (stockList: StockWithConviction[]) => {
+      // Prevent overlapping runs
+      if (isAIRunning) {
+        console.log('[AI] Analysis already in progress, skipping');
+        return;
+      }
+      setIsAIRunning(true);
+
+      let uncachedCount = 0;
+      const failedStocks: StockWithConviction[] = [];
+      const total = stockList.length;
+
+      try {
+        for (let i = 0; i < stockList.length; i++) {
+          const stock = stockList[i];
+          setAiProgress({ current: stock.ticker, done: i, total });
+
+          try {
+            const insight = await generateAIInsights(
+              stock,
+              stock.qualityScore ?? 50,
+              stock.earningsScore ?? 50,
+              stock.analystScore ?? 50,
+              stock.momentumScore ?? 50,
+              stock.portfolioWeight,
+              stock.shares,
+              stock.avgCost,
+              stock.priceChangePercent,
+              stock.analystRating,
+              riskProfile,
+              stock.volume,
+              stock.recentNews
+            );
+
+            if (insight) {
+              if (!insight.cached) uncachedCount++;
+
+              // AI is the single source of truth — update card directly
+              setStocks(prev =>
+                prev.map(s => {
+                  if (s.ticker !== stock.ticker) return s;
+                  return {
+                    ...s,
+                    buyPriority: insight.buyPriority ?? undefined,
+                    buyPriorityReasoning: insight.cardNote || insight.reasoning,
+                  };
+                })
+              );
+
+              // 4s gap keeps us under 70B's 6K TPM; fallback handles overflow
+              if (!insight.cached && i < stockList.length - 1) {
+                await new Promise(resolve => setTimeout(resolve, 4000));
+              }
+            }
+          } catch (err) {
+            console.warn(`[AI] Failed for ${stock.ticker}:`, err);
+            failedStocks.push(stock);
+            if (i < stockList.length - 1) {
+              await new Promise(resolve => setTimeout(resolve, 3000));
+            }
+          }
+        }
+
+        // Retry any failed stocks after a cooldown
+        if (failedStocks.length > 0) {
+          console.log(`[AI] Retrying ${failedStocks.length} failed stock(s) after cooldown...`);
+          setAiProgress({
+            current: 'waiting to retry...',
+            done: total - failedStocks.length,
+            total,
+          });
+          await new Promise(resolve => setTimeout(resolve, 10000));
+
+          for (let i = 0; i < failedStocks.length; i++) {
+            const stock = failedStocks[i];
+            setAiProgress({
+              current: `retrying ${stock.ticker}`,
+              done: total - failedStocks.length + i,
+              total,
+            });
+            try {
+              const insight = await generateAIInsights(
+                stock,
+                stock.qualityScore ?? 50,
+                stock.earningsScore ?? 50,
+                stock.analystScore ?? 50,
+                stock.momentumScore ?? 50,
+                stock.portfolioWeight,
+                stock.shares,
+                stock.avgCost,
+                stock.priceChangePercent,
+                stock.analystRating,
+                riskProfile,
+                stock.volume,
+                stock.recentNews
+              );
+
+              if (insight) {
+                if (!insight.cached) uncachedCount++;
+                setStocks(prev =>
+                  prev.map(s => {
+                    if (s.ticker !== stock.ticker) return s;
+                    return {
+                      ...s,
+                      buyPriority: insight.buyPriority ?? undefined,
+                      buyPriorityReasoning: insight.cardNote || insight.reasoning,
+                    };
+                  })
+                );
+                if (!insight.cached && i < failedStocks.length - 1) {
+                  await new Promise(resolve => setTimeout(resolve, 4000));
+                }
+              }
+            } catch (retryErr) {
+              console.warn(`[AI] Retry also failed for ${stock.ticker}:`, retryErr);
+            }
+          }
+        }
+      } finally {
+        setIsAIRunning(false);
+        setAiProgress(null);
+        if (uncachedCount > 0) {
+          console.log(`[AI] Completed: ${uncachedCount} fresh API calls, rest from cache`);
+        }
+      }
+    },
+    [riskProfile, isAIRunning, setIsAIRunning]
+  );
+
+  // Initial load — show stocks with rule-based data; AI only runs on explicit refresh
   useEffect(() => {
     loadStocks();
-  }, [loadStocks]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Auto-refresh when stocks are loaded and have missing scores
   useEffect(() => {
@@ -275,7 +362,8 @@ function App() {
           });
         });
 
-        loadStocks();
+        const freshStocks = loadStocks();
+        if (freshStocks) runAIAnalysis(freshStocks);
         setRefreshProgress(`✓ Added ${stockData.size} stocks with data!`);
         setTimeout(() => setRefreshProgress(null), 2000);
       } catch (error) {
@@ -395,7 +483,10 @@ function App() {
         updated++;
       });
 
-      loadStocks();
+      const freshStocks = loadStocks();
+
+      // NOW fire AI with fresh data — the only place this runs
+      if (freshStocks) runAIAnalysis(freshStocks);
 
       if (failed > 0) {
         setRefreshProgress(`✓ Updated ${updated} stocks. ${failed} failed - using cached data.`);
@@ -424,7 +515,8 @@ function App() {
   const handleRiskProfileChange = (newProfile: RiskProfile) => {
     setRiskProfile(newProfile); // Save to localStorage
     setRiskProfileState(newProfile); // Update state
-    loadStocks(); // Recalculate with new profile
+    const freshStocks = loadStocks(); // Recalculate with new profile
+    if (freshStocks) runAIAnalysis(freshStocks); // Re-analyze with new risk profile
   };
 
   // Get existing tickers for suggested tab
@@ -440,8 +532,8 @@ function App() {
               <h1 className="text-2xl font-bold text-[hsl(var(--foreground))] tracking-tight">
                 Portfolio Assistant
               </h1>
-              <p className="text-sm text-[hsl(var(--muted-foreground))] mt-0.5 italic">
-                {investingQuote}
+              <p className="text-sm text-[hsl(var(--muted-foreground))] mt-0.5">
+                AI-powered stock signals — skip the noise, catch the plays
               </p>
             </div>
             <div className="flex items-center gap-3">
@@ -491,6 +583,27 @@ function App() {
           {refreshProgress && (
             <div className="mt-3 px-4 py-2 bg-blue-50 text-blue-700 rounded-lg text-sm">
               {refreshProgress}
+            </div>
+          )}
+
+          {/* AI Analysis progress */}
+          {aiProgress && (
+            <div className="mt-2 px-4 py-2.5 bg-purple-50 text-purple-700 rounded-lg text-sm">
+              <div className="flex items-center justify-between mb-1.5">
+                <div className="flex items-center gap-2">
+                  <Brain className="w-4 h-4 animate-pulse" />
+                  <span className="font-medium">AI analyzing {aiProgress.current}...</span>
+                </div>
+                <span className="text-purple-500 tabular-nums">
+                  {aiProgress.done}/{aiProgress.total}
+                </span>
+              </div>
+              <div className="w-full bg-purple-200 rounded-full h-1.5">
+                <div
+                  className="bg-purple-500 h-1.5 rounded-full transition-all duration-500 ease-out"
+                  style={{ width: `${Math.round((aiProgress.done / aiProgress.total) * 100)}%` }}
+                />
+              </div>
             </div>
           )}
 
@@ -579,6 +692,13 @@ function App() {
       {showAddModal && (
         <AddTickersModal onClose={() => setShowAddModal(false)} onAddTickers={handleAddTickers} />
       )}
+
+      {/* Footer with daily quote */}
+      <footer className="max-w-4xl mx-auto px-6 py-6 mt-4">
+        <p className="text-xs text-center text-[hsl(var(--muted-foreground))] italic opacity-60">
+          {investingQuote}
+        </p>
+      </footer>
 
       {/* Settings Modal */}
       <SettingsModal
