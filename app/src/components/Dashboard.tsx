@@ -210,7 +210,7 @@ export function Dashboard({ stocks, onStockSelect, onAddTickers, onClearAll, ris
             className="fixed inset-0 bg-black/50 z-50"
             onClick={() => setShowClearConfirm(false)}
           />
-          <div className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-full max-w-sm bg-white rounded-2xl shadow-xl z-50 p-6">
+          <div className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-full max-w-sm bg-white rounded-2xl shadow-2xl z-50 p-6">
             <div className="text-center">
               <div className="w-12 h-12 mx-auto mb-4 bg-red-100 rounded-full flex items-center justify-center">
                 <Trash2 className="w-6 h-6 text-red-600" />

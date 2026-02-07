@@ -1,5 +1,6 @@
 # Pending / Future Work
 
+- **Trading Signals (Day | Swing):** Day Trade | Swing Trade toggle; pipeline locks to mode. See `features/trading-signals/` (PRD + technical spec).
 - **Epic 5 (Cloud Sync):** User authentication, cloud storage, guest-to-auth migration
 - **Additional data for AI:** Volume vs average volume, DMA trend state, earnings date proximity
 - **File organization:** Move root-level docs to `docs/` folder

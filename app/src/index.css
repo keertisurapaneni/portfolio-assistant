@@ -53,7 +53,7 @@ a,
 input,
 select,
 textarea {
-  transition: all 0.15s ease;
+  transition: all 0.2s ease;
 }
 
 /* Better focus states */
@@ -64,8 +64,8 @@ textarea {
 
 /* Custom scrollbar */
 ::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 6px;
+  height: 6px;
 }
 
 ::-webkit-scrollbar-track {
@@ -74,23 +74,92 @@ textarea {
 
 ::-webkit-scrollbar-thumb {
   background: hsl(var(--border));
-  border-radius: 4px;
+  border-radius: 3px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
   background: hsl(var(--muted-foreground));
 }
 
-/* Card hover effect */
+/* Card hover effect — lifted with shadow */
 .card-hover {
   transition:
     transform 0.2s ease,
-    box-shadow 0.2s ease;
+    box-shadow 0.2s ease,
+    border-color 0.2s ease;
 }
 
 .card-hover:hover {
   transform: translateY(-2px);
   box-shadow:
-    0 8px 25px -5px rgba(0, 0, 0, 0.1),
-    0 4px 10px -5px rgba(0, 0, 0, 0.04);
+    0 10px 30px -8px rgba(0, 0, 0, 0.08),
+    0 4px 12px -4px rgba(0, 0, 0, 0.05);
+}
+
+/* Fade-in-up animation for loaded content */
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-fade-in-up {
+  animation: fadeInUp 0.4s ease-out;
+}
+
+/* Soft pulse ring for BUY signal badges */
+@keyframes softPulseBuy {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0); }
+  50% { box-shadow: 0 0 0 6px rgba(34, 197, 94, 0.15); }
+}
+
+.pulse-buy {
+  animation: softPulseBuy 2.5s ease-in-out infinite;
+}
+
+@keyframes softPulseSell {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
+  50% { box-shadow: 0 0 0 6px rgba(239, 68, 68, 0.15); }
+}
+
+.pulse-sell {
+  animation: softPulseSell 2.5s ease-in-out infinite;
+}
+
+/* Gradient text utility */
+.text-gradient {
+  background: linear-gradient(135deg, hsl(221 83% 53%), hsl(280 70% 55%));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* Shimmer loading effect */
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+.shimmer {
+  background: linear-gradient(90deg, hsl(220 14% 96%) 25%, hsl(220 14% 92%) 37%, hsl(220 14% 96%) 63%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s ease-in-out infinite;
+}
+
+/* Skeleton loading block */
+.skeleton {
+  border-radius: 0.5rem;
+  background: linear-gradient(90deg, hsl(220 14% 95%) 25%, hsl(220 14% 90%) 37%, hsl(220 14% 95%) 63%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s ease-in-out infinite;
+}
+
+/* Subtle scale on interactive elements */
+.interactive-scale:active {
+  transform: scale(0.98);
 }

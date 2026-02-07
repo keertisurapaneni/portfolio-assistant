@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { BrowserRouter, Routes, Route, NavLink, useLocation } from 'react-router-dom';
 import { SpeedInsights } from '@vercel/speed-insights/react';
 import { Analytics } from '@vercel/analytics/react';
-import { Briefcase, Brain, Lightbulb, Plus, RefreshCw, TrendingUp } from 'lucide-react';
+import { Activity, Briefcase, Brain, Lightbulb, Plus, RefreshCw, TrendingUp } from 'lucide-react';
 import type { StockWithConviction, RiskProfile } from './types';
 import { getUserData, addTickers, updateStock, clearAllData } from './lib/storage';
 import { getConvictionResult } from './lib/convictionEngine';
@@ -16,6 +16,7 @@ import { cn } from './lib/utils';
 import { Dashboard } from './components/Dashboard';
 import { SuggestedFinds } from './components/SuggestedFinds';
 import { MarketMovers } from './components/MarketMovers';
+import { TradingSignals } from './components/TradingSignals';
 import { StockDetail } from './components/StockDetail';
 import { AddTickersModal } from './components/AddTickersModal';
 
@@ -62,7 +63,7 @@ function getDailyQuote(): string {
 
 function AppContent() {
   const location = useLocation();
-  const activeTab = location.pathname === '/finds' ? 'suggested' : location.pathname === '/movers' ? 'movers' : 'portfolio';
+  const activeTab = location.pathname === '/finds' ? 'suggested' : location.pathname === '/movers' ? 'movers' : location.pathname === '/signals' ? 'signals' : 'portfolio';
   const [stocks, setStocks] = useState<StockWithConviction[]>([]);
   const [selectedStock, setSelectedStock] = useState<StockWithConviction | null>(null);
   const [showAddModal, setShowAddModal] = useState(false);
@@ -497,16 +498,38 @@ function AppContent() {
   return (
     <div className="min-h-screen bg-[hsl(var(--background))]">
       {/* Header */}
-      <header className="sticky top-0 z-30 bg-white/80 backdrop-blur-lg border-b border-[hsl(var(--border))]">
+      <header className="sticky top-0 z-30 bg-gradient-to-br from-slate-50 via-blue-50/60 to-indigo-50/40 backdrop-blur-xl border-b border-blue-100/60 shadow-sm">
         <div className="max-w-4xl mx-auto px-6 py-5">
           <div className="flex items-center justify-between">
-            <div>
-              <h1 className="text-2xl font-bold text-[hsl(var(--foreground))] tracking-tight">
-                Portfolio Assistant
-              </h1>
-              <p className="text-sm text-[hsl(var(--muted-foreground))] mt-0.5">
-                AI-powered stock signals — skip the noise, catch the plays
-              </p>
+            <div className="flex items-center gap-3.5">
+              {/* Logo — bull icon */}
+              <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-600 to-indigo-600 shadow-lg shadow-blue-500/25 flex items-center justify-center flex-shrink-0">
+                <svg width="24" height="24" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  {/* Left horn */}
+                  <path d="M6 6C5 3 3 2 2 2C4 4 5 7 7 10" stroke="white" strokeWidth="2" strokeLinecap="round" />
+                  {/* Right horn */}
+                  <path d="M26 6C27 3 29 2 30 2C28 4 27 7 25 10" stroke="white" strokeWidth="2" strokeLinecap="round" />
+                  {/* Head */}
+                  <path d="M7 10C7 10 6 14 8 17C9 18.5 11 20 12 22L14 25C14.5 26 15 26.5 16 26.5C17 26.5 17.5 26 18 25L20 22C21 20 23 18.5 24 17C26 14 25 10 25 10" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                  {/* Ears */}
+                  <path d="M8 10C9 9 10 9.5 11 10.5" stroke="white" strokeWidth="1.5" strokeLinecap="round" />
+                  <path d="M24 10C23 9 22 9.5 21 10.5" stroke="white" strokeWidth="1.5" strokeLinecap="round" />
+                  {/* Eyes */}
+                  <circle cx="12.5" cy="14" r="1.2" fill="white" />
+                  <circle cx="19.5" cy="14" r="1.2" fill="white" />
+                  {/* Nostrils */}
+                  <circle cx="14" cy="19.5" r="0.8" fill="white" opacity="0.6" />
+                  <circle cx="18" cy="19.5" r="0.8" fill="white" opacity="0.6" />
+                </svg>
+              </div>
+              <div>
+                <h1 className="text-2xl font-bold tracking-tight">
+                  <span className="text-gradient">Portfolio Assistant</span>
+                </h1>
+                <p className="text-sm text-slate-500 mt-0.5">
+                  AI-powered stock signals — skip the noise, catch the plays
+                </p>
+              </div>
             </div>
             <div className="flex items-center gap-3">
               {/* Refresh Button — only on portfolio tab */}
@@ -528,7 +551,7 @@ function AppContent() {
               {activeTab === 'portfolio' && (
                 <button
                   onClick={() => setShowAddModal(true)}
-                  className="flex items-center gap-2 px-5 py-2.5 bg-[hsl(var(--primary))] text-white rounded-xl hover:bg-[hsl(221,83%,48%)] shadow-lg shadow-blue-500/20 text-sm font-medium"
+                  className="flex items-center gap-2 px-5 py-2.5 bg-gradient-to-r from-blue-600 to-indigo-600 text-white rounded-xl hover:from-blue-700 hover:to-indigo-700 shadow-lg shadow-blue-500/25 text-sm font-semibold transition-all"
                 >
                   <Plus className="w-4 h-4" />
                   Add Stocks
@@ -566,15 +589,15 @@ function AppContent() {
           )}
 
           {/* Tabs — NavLinks for client-side routing */}
-          <div className="flex gap-2 mt-6">
+          <div className="flex gap-1 mt-6 bg-white/60 p-1 rounded-xl border border-blue-100/50">
             <NavLink
               to="/"
               end
               className={({ isActive }) => cn(
-                'flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-medium transition-all',
+                'flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all',
                 isActive
-                  ? 'bg-[hsl(var(--foreground))] text-white shadow-md'
-                  : 'text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--secondary))] hover:text-[hsl(var(--foreground))]'
+                  ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-md shadow-blue-500/25'
+                  : 'text-slate-500 hover:text-slate-700 hover:bg-white/80'
               )}
             >
               <Briefcase className="w-4 h-4" />
@@ -582,8 +605,8 @@ function AppContent() {
               {stocks.length > 0 && (
                 <span
                   className={cn(
-                    'ml-1 px-2 py-0.5 text-xs rounded-full',
-                    activeTab === 'portfolio' ? 'bg-white/20' : 'bg-[hsl(var(--muted))]'
+                    'ml-0.5 px-1.5 py-0.5 text-xs rounded-full font-semibold',
+                    activeTab === 'portfolio' ? 'bg-white/25 text-white' : 'bg-slate-100 text-slate-500'
                   )}
                 >
                   {stocks.length}
@@ -591,12 +614,24 @@ function AppContent() {
               )}
             </NavLink>
             <NavLink
+              to="/signals"
+              className={({ isActive }) => cn(
+                'flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all',
+                isActive
+                  ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-md shadow-blue-500/25'
+                  : 'text-slate-500 hover:text-slate-700 hover:bg-white/80'
+              )}
+            >
+              <Activity className="w-4 h-4" />
+              Signals
+            </NavLink>
+            <NavLink
               to="/finds"
               className={({ isActive }) => cn(
-                'flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-medium transition-all',
+                'flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all',
                 isActive
-                  ? 'bg-[hsl(var(--foreground))] text-white shadow-md'
-                  : 'text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--secondary))] hover:text-[hsl(var(--foreground))]'
+                  ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-md shadow-blue-500/25'
+                  : 'text-slate-500 hover:text-slate-700 hover:bg-white/80'
               )}
             >
               <Lightbulb className="w-4 h-4" />
@@ -605,14 +640,14 @@ function AppContent() {
             <NavLink
               to="/movers"
               className={({ isActive }) => cn(
-                'flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-medium transition-all',
+                'flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all',
                 isActive
-                  ? 'bg-[hsl(var(--foreground))] text-white shadow-md'
-                  : 'text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--secondary))] hover:text-[hsl(var(--foreground))]'
+                  ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-md shadow-blue-500/25'
+                  : 'text-slate-500 hover:text-slate-700 hover:bg-white/80'
               )}
             >
               <TrendingUp className="w-4 h-4" />
-              Market Movers
+              Movers
             </NavLink>
           </div>
         </div>
@@ -633,6 +668,7 @@ function AppContent() {
           } />
           <Route path="/finds" element={<SuggestedFinds existingTickers={existingTickers} />} />
           <Route path="/movers" element={<MarketMovers />} />
+          <Route path="/signals" element={<TradingSignals />} />
         </Routes>
       </main>
 

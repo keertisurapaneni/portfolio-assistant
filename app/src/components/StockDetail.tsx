@@ -105,12 +105,12 @@ export function StockDetail({ stock, onClose, onUpdate }: StockDetailProps) {
   return (
     <>
       {/* Backdrop */}
-      <div className="fixed inset-0 bg-black/30 z-40" onClick={onClose} />
+      <div className="fixed inset-0 bg-black/30 backdrop-blur-sm z-40" onClick={onClose} />
 
       {/* Slide-over Panel */}
-      <div className="fixed inset-y-0 right-0 w-full max-w-lg bg-white shadow-xl z-50 overflow-y-auto">
+      <div className="fixed inset-y-0 right-0 w-full max-w-lg bg-white shadow-2xl z-50 overflow-y-auto">
         {/* Header */}
-        <div className="sticky top-0 bg-white border-b border-[hsl(var(--border))] px-6 py-4 flex items-center justify-between">
+        <div className="sticky top-0 bg-white/95 backdrop-blur-sm border-b border-[hsl(var(--border))] px-6 py-4 flex items-center justify-between">
           <div>
             <div className="flex items-center gap-2">
               <h2 className="text-lg font-semibold text-[hsl(var(--foreground))]">
@@ -273,10 +273,14 @@ export function StockDetail({ stock, onClose, onUpdate }: StockDetailProps) {
 
           {/* Loading AI insights */}
           {isLoadingInsight && !aiInsight && (
-            <div className="p-4 bg-gray-50 border border-gray-200 rounded-lg">
+            <div className="p-4 bg-gradient-to-r from-purple-50 to-blue-50 border border-purple-100 rounded-lg">
               <div className="flex items-center gap-2">
-                <Sparkles className="w-4 h-4 text-gray-400 animate-pulse" />
-                <p className="text-sm text-gray-600">Generating AI insights...</p>
+                <Sparkles className="w-4 h-4 text-purple-500 animate-pulse" />
+                <p className="text-sm text-purple-700 font-medium">Analyzing with AI...</p>
+              </div>
+              <div className="mt-3 space-y-2">
+                <div className="h-3 w-full skeleton rounded" />
+                <div className="h-3 w-2/3 skeleton rounded" />
               </div>
             </div>
           )}
@@ -588,9 +592,9 @@ function ScoreBar({ label, value, tooltip }: { label: string; value: number; too
 
   const getBarColor = (val: number) => {
     // Aligned with conviction engine thresholds (Buy=60, Sell=35)
-    if (val >= 60) return 'bg-green-500';
-    if (val >= 35) return 'bg-amber-500';
-    return 'bg-red-500';
+    if (val >= 60) return 'bg-gradient-to-r from-green-400 to-emerald-500';
+    if (val >= 35) return 'bg-gradient-to-r from-amber-400 to-yellow-500';
+    return 'bg-gradient-to-r from-red-400 to-rose-500';
   };
 
   return (

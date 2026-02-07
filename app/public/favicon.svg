@@ -1,15 +1,29 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
-  <!-- Background circle -->
-  <circle cx="32" cy="32" r="32" fill="#10B981"/>
-  
-  <!-- Chart icon -->
-  <path d="M18 42V35C18 34.4477 18.4477 34 19 34H24C24.5523 34 25 34.4477 25 35V42" 
-        stroke="white" stroke-width="3" stroke-linecap="round"/>
-  <path d="M28.5 42V28C28.5 27.4477 28.9477 27 29.5 27H34.5C35.0523 27 35.5 27.4477 35.5 28V42" 
-        stroke="white" stroke-width="3" stroke-linecap="round"/>
-  <path d="M39 42V22C39 21.4477 39.4477 21 40 21H45C45.5523 21 46 21.4477 46 22V42" 
-        stroke="white" stroke-width="3" stroke-linecap="round"/>
-  
-  <!-- Base line -->
-  <line x1="16" y1="45" x2="48" y2="45" stroke="white" stroke-width="2.5" stroke-linecap="round"/>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="64" y2="64" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#2563EB"/>
+      <stop offset="100%" stop-color="#4F46E5"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="14" fill="url(#bg)"/>
+
+  <!-- Left horn -->
+  <path d="M14 16C12 10 9 7 7 6C10 9 12 14 15 20" stroke="white" stroke-width="3.5" stroke-linecap="round"/>
+  <!-- Right horn -->
+  <path d="M50 16C52 10 55 7 57 6C54 9 52 14 49 20" stroke="white" stroke-width="3.5" stroke-linecap="round"/>
+
+  <!-- Head -->
+  <path d="M15 20C15 20 13 28 17 34C19 37 22 39 24 43L27 48C28 50 30 51 32 51C34 51 36 50 37 48L40 43C42 39 45 37 47 34C51 28 49 20 49 20" stroke="white" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- Ears -->
+  <path d="M17 20C19 18 21 19 23 21" stroke="white" stroke-width="2.5" stroke-linecap="round"/>
+  <path d="M47 20C45 18 43 19 41 21" stroke="white" stroke-width="2.5" stroke-linecap="round"/>
+
+  <!-- Eyes -->
+  <circle cx="25" cy="28" r="2.5" fill="white"/>
+  <circle cx="39" cy="28" r="2.5" fill="white"/>
+
+  <!-- Nostrils -->
+  <circle cx="28" cy="38" r="1.5" fill="white" opacity="0.6"/>
+  <circle cx="36" cy="38" r="1.5" fill="white" opacity="0.6"/>
 </svg>

@@ -50,7 +50,7 @@ export function StockCard({ stock, onClick }: StockCardProps) {
   return (
     <button
       onClick={onClick}
-      className="card-hover w-full text-left bg-white rounded-2xl border border-[hsl(var(--border))] p-5 hover:border-[hsl(var(--primary))/50] shadow-sm group"
+      className="card-hover w-full text-left bg-white rounded-2xl border border-[hsl(var(--border))] p-5 hover:border-blue-200 shadow-sm group"
     >
       <div className="flex items-start justify-between gap-4">
         {/* Left: Stock Info */}
@@ -205,7 +205,7 @@ export function StockCard({ stock, onClick }: StockCardProps) {
           {/* Bottom Row: Rationale */}
           <div className="space-y-1">
             {stock.isLoading ? (
-              <>
+                      <>
                 <div className="h-4 bg-gray-200 animate-pulse rounded w-3/4" />
                 <div className="h-3 bg-gray-200 animate-pulse rounded w-1/4" />
               </>
@@ -288,8 +288,8 @@ export function StockCard({ stock, onClick }: StockCardProps) {
         </div>
 
         {/* Right: Chevron */}
-        <div className="flex-shrink-0 p-2 rounded-xl bg-[hsl(var(--secondary))] group-hover:bg-[hsl(var(--primary))] group-hover:text-white transition-colors">
-          <ChevronRight className="w-5 h-5" />
+        <div className="flex-shrink-0 p-2 rounded-xl bg-[hsl(var(--secondary))] group-hover:bg-blue-500 group-hover:text-white transition-all group-hover:shadow-md group-hover:shadow-blue-500/20">
+          <ChevronRight className="w-5 h-5 transition-transform group-hover:translate-x-0.5" />
         </div>
       </div>
     </button>

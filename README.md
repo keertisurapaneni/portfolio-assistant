@@ -46,12 +46,12 @@ A personal investing decision-support tool that combines automated conviction sc
 ┌──────────▼──────────────────┐   ┌───────────▼───────────────────────┐
 │  Supabase Edge Functions    │   │  Supabase Edge Functions          │
 │                             │   │                                   │
-│  ai-proxy                   │   │  gemini-proxy                     │
-│  └─ Groq API                │   │  └─ Google Gemini API             │
-│     ├─ llama-3.3-70b        │   │     ├─ gemini-2.5-flash           │
-│     └─ qwen3-32b (fallback) │   │     ├─ gemini-2.0-flash          │
-│                             │   │     └─ gemini-2.0-flash-lite      │
-│  fetch-stock-data           │   │     (3 API keys, auto-rotation)   │
+│  ai-proxy                   │   │  huggingface-proxy                │
+│  └─ Groq API                │   │  └─ HuggingFace Inference API     │
+│     ├─ llama-3.3-70b        │   │     ├─ Qwen2.5-72B               │
+│     └─ qwen3-32b (fallback) │   │     ├─ Mixtral-8x7B              │
+│                             │   │     └─ Llama-3.1-8B               │
+│  fetch-stock-data           │   │                                   │
 │  └─ Finnhub API             │   │                                   │
 │     (quotes, metrics,       │   │  daily-suggestions                │
 │      earnings, news)        │   │  └─ PostgreSQL (shared daily      │
@@ -78,7 +78,7 @@ A personal investing decision-support tool that combines automated conviction sc
 | Function | Purpose | External API |
 |---|---|---|
 | `ai-proxy` | Portfolio AI analysis with model fallback | Groq |
-| `gemini-proxy` | Suggested Finds AI with key rotation + model cascade | Google Gemini |
+| `huggingface-proxy` | Suggested Finds AI with model cascade | HuggingFace |
 | `daily-suggestions` | Shared daily cache (GET/POST/DELETE) | PostgreSQL |
 | `fetch-stock-data` | Stock data proxy with 15-min server cache | Finnhub |
 | `scrape-market-movers` | Gainers/losers screener with retry logic | Yahoo Finance |
@@ -124,6 +124,8 @@ supabase secrets set GROQ_API_KEY=your_key
 supabase secrets set GEMINI_API_KEY=your_key
 supabase secrets set GEMINI_API_KEY_2=your_second_key    # optional, for rate-limit rotation
 supabase secrets set GEMINI_API_KEY_3=your_third_key     # optional
+supabase secrets set TWELVE_DATA_API_KEY=your_key        # Trading Signals (candles)
+# Trading Signals uses Yahoo Finance for news (no key needed) and Gemini for Sentiment + Trade agents
 ```
 
 ### Run
@@ -139,10 +141,11 @@ npm run dev
 # Deploy Edge Functions
 supabase functions deploy fetch-stock-data --no-verify-jwt
 supabase functions deploy ai-proxy --no-verify-jwt
-supabase functions deploy gemini-proxy --no-verify-jwt
+supabase functions deploy huggingface-proxy --no-verify-jwt
 supabase functions deploy daily-suggestions --no-verify-jwt
 supabase functions deploy scrape-market-movers --no-verify-jwt
 supabase functions deploy fetch-yahoo-news --no-verify-jwt
+supabase functions deploy trading-signals --no-verify-jwt
 
 # Frontend auto-deploys to Vercel on git push to master
 # Commits prefixed with docs:, chore:, or ci: skip deployment
@@ -182,7 +185,7 @@ portfolio-assistant/
 ├── supabase/
 │   ├── functions/                  # Edge Functions (Deno)
 │   │   ├── ai-proxy/              # Groq proxy (portfolio analysis)
-│   │   ├── gemini-proxy/          # Gemini proxy (suggested finds)
+│   │   ├── huggingface-proxy/     # HuggingFace proxy (suggested finds)
 │   │   ├── daily-suggestions/     # Shared daily cache CRUD
 │   │   ├── fetch-stock-data/      # Finnhub proxy + 15-min cache
 │   │   ├── scrape-market-movers/  # Yahoo Finance screener

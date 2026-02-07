@@ -2,19 +2,19 @@
  * AI-Powered Stock Discovery — Grounded in Real Data
  *
  * Architecture:
- *   Quiet Compounders: Gemini (candidates) → Finnhub (real metrics) → Gemini (analysis on facts)
- *   Gold Mines:        Finnhub (market news) → Gemini (theme extraction + stock mapping)
+ *   Quiet Compounders: HuggingFace (candidates) → Finnhub (real metrics) → HuggingFace (analysis on facts)
+ *   Gold Mines:        Finnhub (market news) → HuggingFace (theme extraction + stock mapping)
  *
  * Data Source Rules:
  *   - Compounders: ONLY Finnhub structured data. No news, no inferred macro trends.
  *   - Gold Mines: Recent market news as primary signal. Facts only — no summaries, no hype.
  *
- * Separation: Groq = Portfolio AI Analysis | Gemini = Suggested Finds Discovery
+ * Separation: Groq = Portfolio AI Analysis | HuggingFace = Suggested Finds Discovery
  */
 
 import type { EnhancedSuggestedStock } from '../data/suggestedFinds';
 
-const GEMINI_PROXY_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/gemini-proxy`;
+const HUGGINGFACE_PROXY_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/huggingface-proxy`;
 const STOCK_DATA_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/fetch-stock-data`;
 const DAILY_SUGGESTIONS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/daily-suggestions`;
 const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
@@ -55,7 +55,7 @@ interface CachedDiscovery {
 // API callers
 // ──────────────────────────────────────────────────────────
 
-async function callGemini(
+async function callHuggingFace(
   prompt: string,
   type: 'discover_compounders' | 'discover_goldmines' | 'analyze_themes',
   temperature = 0.4,
@@ -63,7 +63,7 @@ async function callGemini(
   retries = 3
 ): Promise<string> {
   for (let attempt = 1; attempt <= retries; attempt++) {
-    const response = await fetch(GEMINI_PROXY_URL, {
+    const response = await fetch(HUGGINGFACE_PROXY_URL, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -83,13 +83,13 @@ async function callGemini(
 
     if (!response.ok) {
       const errData = await response.json().catch(() => ({ error: 'Unknown' }));
-      throw new Error(`Gemini error ${response.status}: ${errData.error || 'Unknown'}`);
+      throw new Error(`HuggingFace error ${response.status}: ${errData.error || 'Unknown'}`);
     }
 
     const data = await response.json();
     return data.text ?? '';
   }
-  throw new Error('Gemini rate-limited after all retries');
+  throw new Error('HuggingFace rate-limited after all retries');
 }
 
 async function fetchFinnhub(
@@ -114,7 +114,7 @@ async function fetchFinnhub(
 }
 
 // ──────────────────────────────────────────────────────────
-// Step 1a: Gemini suggests compounder candidates (tickers only)
+// Step 1a: HuggingFace suggests compounder candidates (tickers only)
 // ──────────────────────────────────────────────────────────
 
 function buildCandidatePrompt(excludeTickers: string[]): string {
@@ -194,7 +194,7 @@ async function fetchMetricsForTickers(tickers: string[]): Promise<FinnhubMetricD
 }
 
 // ──────────────────────────────────────────────────────────
-// Step 2a: Gemini analyzes compounders with REAL Finnhub data
+// Step 2a: HuggingFace analyzes compounders with REAL Finnhub data
 // ──────────────────────────────────────────────────────────
 
 function buildCompounderAnalysisPrompt(metrics: FinnhubMetricData[]): string {
@@ -308,10 +308,10 @@ async function fetchGeneralMarketNews(): Promise<MarketNewsItem[]> {
 }
 
 // ──────────────────────────────────────────────────────────
-// Step 2b: Gemini extracts themes + stocks from real news
+// Step 2b: HuggingFace extracts themes + stocks from real news
 // ──────────────────────────────────────────────────────────
 
-// Step A: Gemini extracts tickers + theme from headlines (lightweight — tickers only)
+// Step A: HuggingFace extracts tickers + theme from headlines (lightweight — tickers only)
 function buildGoldMineCandidatePrompt(news: MarketNewsItem[], excludeTickers: string[]): string {
   const exclude = excludeTickers.length > 0
     ? `\nEXCLUDE these tickers: ${excludeTickers.join(', ')}`
@@ -363,7 +363,7 @@ Return ONLY valid JSON:
 }`;
 }
 
-// Step B: Gemini analyzes Gold Mine picks with REAL Finnhub data + headline context (same format as Compounders)
+// Step B: HuggingFace analyzes Gold Mine picks with REAL Finnhub data + headline context (same format as Compounders)
 function buildGoldMineAnalysisPrompt(
   metrics: FinnhubMetricData[],
   news: MarketNewsItem[],
@@ -557,7 +557,7 @@ function parseCandidateTickers(raw: string): string[] {
     return tickers.slice(0, 12);
   }
 
-  throw new Error('Could not extract tickers from Gemini response');
+  throw new Error('Could not extract tickers from AI response');
 }
 
 // ──────────────────────────────────────────────────────────
@@ -670,16 +670,16 @@ export async function discoverStocks(
 
   // ── QUIET COMPOUNDERS PIPELINE ──
 
-  // Step 1: Gemini suggests candidate tickers
+  // Step 1: HuggingFace suggests candidate tickers
   onStep?.('finding_candidates');
-  console.log('[Discovery] Step 1: Asking Gemini for compounder candidates...');
-  const candidateRaw = await callGemini(
+  console.log('[Discovery] Step 1: Asking HuggingFace for compounder candidates...');
+  const candidateRaw = await callHuggingFace(
     buildCandidatePrompt([]), // No user-specific exclusions for shared cache
     'discover_compounders',
     0.5,
     1000 // Enough room for a JSON array of 10 tickers
   );
-  console.log('[Discovery] Gemini candidates raw length:', candidateRaw.length);
+  console.log('[Discovery] HuggingFace candidates raw length:', candidateRaw.length);
   const candidateTickers = parseCandidateTickers(candidateRaw);
   console.log(`[Discovery] Candidates: ${candidateTickers.join(', ')}`);
 
@@ -694,14 +694,14 @@ export async function discoverStocks(
     (m) => m.roe !== null || m.profitMargin !== null || m.eps !== null
   );
 
-  // Step 3: Gemini analyzes with real data
+  // Step 3: HuggingFace analyzes with real data
   onStep?.('analyzing_compounders');
-  console.log('[Discovery] Step 3: Gemini analyzing compounders with real Finnhub data...');
+  console.log('[Discovery] Step 3: HuggingFace analyzing compounders with real Finnhub data...');
 
-  // 2s pause between Gemini calls for rate limit safety
+  // 2s pause between HuggingFace calls for rate limit safety
   await new Promise((r) => setTimeout(r, 2000));
 
-  const compounderRaw = await callGemini(
+  const compounderRaw = await callHuggingFace(
     buildCompounderAnalysisPrompt(validMetrics),
     'discover_compounders',
     0.3,
@@ -717,13 +717,13 @@ export async function discoverStocks(
   const marketNews = await fetchGeneralMarketNews();
   console.log(`[Discovery] Got ${marketNews.length} market headlines`);
 
-  // Step 5a: Gemini picks tickers from headlines (lightweight — tickers + theme only)
+  // Step 5a: HuggingFace picks tickers from headlines (lightweight — tickers + theme only)
   onStep?.('analyzing_themes');
-  console.log('[Discovery] Step 5a: Gemini identifying stocks from headlines...');
+  console.log('[Discovery] Step 5a: HuggingFace identifying stocks from headlines...');
 
   await new Promise((r) => setTimeout(r, 2000));
 
-  const goldMineCandidateRaw = await callGemini(
+  const goldMineCandidateRaw = await callHuggingFace(
     buildGoldMineCandidatePrompt(marketNews, []), // No user-specific exclusions for shared cache
     'discover_goldmines',
     0.3,
@@ -741,12 +741,12 @@ export async function discoverStocks(
   );
   console.log(`[Discovery] Got metrics for ${validGoldMineMetrics.length}/${goldMineTickers.length} Gold Mine picks`);
 
-  // Step 5c: Gemini analyzes Gold Mines with real Finnhub data + headline context
-  console.log('[Discovery] Step 5c: Gemini analyzing Gold Mines with real data + headlines...');
+  // Step 5c: HuggingFace analyzes Gold Mines with real Finnhub data + headline context
+  console.log('[Discovery] Step 5c: HuggingFace analyzing Gold Mines with real data + headlines...');
 
   await new Promise((r) => setTimeout(r, 2000));
 
-  const goldMineAnalysisRaw = await callGemini(
+  const goldMineAnalysisRaw = await callHuggingFace(
     buildGoldMineAnalysisPrompt(validGoldMineMetrics, marketNews, goldMineCandidates, currentTheme),
     'discover_goldmines',
     0.3,

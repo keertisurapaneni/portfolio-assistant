@@ -110,3 +110,17 @@ Transform Suggested Finds from static curated lists into a dynamic AI-powered di
 - UI enhancements: loading skeletons, AI badges, refresh button, timestamps
 
 ---
+
+## Epic 13: Trading Signals — Day Trade | Swing Trade
+
+Users get a **Trading Signals** experience with explicit mode selection: **Day Trade | Swing Trade**. Once a mode is selected, the entire pipeline (prompts, timeframes, risk rules) locks to that mode so output is coherent and intentional.
+
+**User Value:** Clear separation between intraday (minutes–hours, 1m/15m/1h, high news, high frequency) and swing (days–weeks, 4h/1d/1w, trend alignment, HOLD most of the time). No mixed signals.
+
+**Mode definitions (explicit):**
+- **Day Trade:** Intent minutes–hours; timeframes 1m/15m/1h; R:R 1:1.5–1:2; news high; output frequency high; HOLD common during chop.
+- **Swing Trade:** Intent days–weeks; timeframes 4h/1d/1w; R:R 1:2–1:4; news moderate; trend alignment mandatory; HOLD expected most of the time.
+
+**Implementation Notes:** New tab/section + toggle; mode persisted; prompts and risk rules keyed off mode. Full product and technical spec: `features/trading-signals/` (PRD + technical spec).
+
+---
