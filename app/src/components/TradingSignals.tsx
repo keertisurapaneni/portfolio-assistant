@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { Activity, Loader2, TrendingUp, TrendingDown, Minus, RefreshCw } from 'lucide-react';
-import { createChart, CandlestickSeries, LineSeries } from 'lightweight-charts';
+import { createChart, CandlestickSeries, LineSeries, ColorType } from 'lightweight-charts';
 import { cn } from '../lib/utils';
 import {
   fetchTradingSignal,
@@ -45,7 +45,7 @@ function ChartPanel({ candles, overlays }: { candles: ChartCandle[]; overlays: {
     if (!chartRef.current || candles.length === 0) return;
 
     const chart = createChart(chartRef.current, {
-      layout: { background: { type: 'solid', color: '#ffffff' }, textColor: '#64748b' },
+      layout: { background: { type: ColorType.Solid, color: '#ffffff' }, textColor: '#64748b' },
       grid: { vertLines: { color: '#f1f5f9' }, horzLines: { color: '#f1f5f9' } },
       width: chartRef.current.clientWidth,
       height: 360,
@@ -61,10 +61,18 @@ function ChartPanel({ candles, overlays }: { candles: ChartCandle[]; overlays: {
       wickDownColor: '#ef5350',
     });
 
+    // For intraday candles (day trade), timestamps contain time info (length > 10).
+    // Lightweight Charts needs unique ascending times:
+    //   - Daily+ data: use 'YYYY-MM-DD' string
+    //   - Intraday data: use Unix timestamp (seconds)
+    const isIntraday = candles.some((c) => c.t.length > 10);
+
     const seriesData = [...candles]
       .sort((a, b) => (a.t < b.t ? -1 : a.t > b.t ? 1 : 0))
       .map((c) => ({
-        time: c.t.length > 10 ? c.t.slice(0, 10) : c.t,
+        time: isIntraday
+          ? (Math.floor(new Date(c.t).getTime() / 1000) as unknown as string)
+          : c.t.slice(0, 10),
         open: c.o,
         high: c.h,
         low: c.l,
@@ -99,6 +107,15 @@ export function TradingSignals() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<TradingSignalsResponse | null>(null);
+  const [elapsed, setElapsed] = useState(0);
+
+  // Live timer while loading
+  useEffect(() => {
+    if (!loading) { setElapsed(0); return; }
+    setElapsed(0);
+    const t = setInterval(() => setElapsed((s) => s + 1), 1000);
+    return () => clearInterval(t);
+  }, [loading]);
 
   const handleModeChange = (m: SignalsMode) => {
     setMode(m);
@@ -202,7 +219,7 @@ export function TradingSignals() {
         >
           {loading ? (
             <>
-              <Loader2 className="h-4 w-4 animate-spin" /> Getting signal…
+              <Loader2 className="h-4 w-4 animate-spin" /> Getting signal… <span className="tabular-nums text-white/70">{elapsed}s</span>
             </>
           ) : (
             <>

@@ -403,10 +403,22 @@ Deno.serve(async req => {
       });
     }
 
-    // ── Step 1: Fetch candles (all timeframes in parallel) ──
+    // ── Step 1 + 2: Fetch candles AND news in parallel ──
     const intervals = MODE_INTERVALS[mode];
-    const candlePromises = intervals.map(int => fetchCandles(ticker, int, TWELVE_DATA_API_KEY));
-    const [candles1, candles2, candles3] = await Promise.all(candlePromises);
+    // More candles for daily/weekly so swing charts show 2-3 years of history
+    const CANDLE_SIZES: Record<string, number> = {
+      '1min': 150, '15min': 150, '1h': 150,
+      '4h': 250, '1day': 600, '1week': 150,
+    };
+    const candlePromises = intervals.map(int =>
+      fetchCandles(ticker, int, TWELVE_DATA_API_KEY, CANDLE_SIZES[int] ?? 150)
+    );
+    const newsPromise = fetchYahooNews(ticker);
+
+    const [candles1, candles2, candles3, news] = await Promise.all([
+      ...candlePromises,
+      newsPromise,
+    ]);
 
     const timeframes: Record<string, { values: Candle[] }> = {};
     if (candles1?.values) timeframes[intervals[0]] = candles1;
@@ -419,9 +431,6 @@ Deno.serve(async req => {
         { status: 502, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
-
-    // ── Step 2: Fetch news ──
-    const news = await fetchYahooNews(ticker);
     const newsForPrompt = news.slice(0, 15).map(n => ({
       headline: n.headline,
       summary: n.summary ?? '',
