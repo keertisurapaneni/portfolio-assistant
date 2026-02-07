@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Portfolio Assistant — Tech Stack</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: #f8fafc;
+    color: #1e293b;
+    padding: 48px 24px;
+    min-height: 100vh;
+  }
+  .wrap {
+    max-width: 880px;
+    margin: 0 auto;
+  }
+  h1 {
+    font-size: 22px;
+    font-weight: 700;
+    color: #0f172a;
+    margin-bottom: 6px;
+    text-align: center;
+  }
+  .sub {
+    font-size: 13px;
+    color: #64748b;
+    text-align: center;
+    margin-bottom: 40px;
+  }
+
+  /* Diagram: classic arch style */
+  .diagram {
+    background: #fff;
+    border: 1px solid #e2e8f0;
+    border-radius: 12px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+    overflow: hidden;
+  }
+
+  .layer {
+    display: flex;
+    align-items: stretch;
+    border-bottom: 1px solid #e2e8f0;
+    min-height: 64px;
+  }
+  .layer:last-child { border-bottom: none; }
+
+  .layer-label {
+    width: 120px;
+    min-height: 64px;
+    padding: 16px 16px;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: #64748b;
+    background: #f1f5f9;
+    border-right: 1px solid #e2e8f0;
+    display: flex;
+    align-items: center;
+  }
+
+  .layer-items {
+    flex: 1;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    padding: 16px 20px;
+    align-items: center;
+  }
+
+  /* One rectangle per logical group — text stays together */
+  .tech {
+    display: inline-flex;
+    align-items: center;
+    flex-wrap: nowrap;
+    gap: 6px;
+    padding: 10px 16px;
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 600;
+    color: #1e293b;
+    border: 1px solid #e2e8f0;
+    background: #fff;
+    white-space: nowrap;
+  }
+  .tech.multiline {
+    white-space: normal;
+    max-width: 320px;
+    line-height: 1.4;
+  }
+  .tech .name { font-weight: 700; }
+  .tech .detail {
+    font-size: 12px;
+    font-weight: 500;
+    color: #64748b;
+    margin-left: 4px;
+  }
+  .tech.dns {
+    border-color: #a5b4fc;
+    background: #eef2ff;
+    color: #3730a3;
+  }
+  .tech.dns .detail { color: #4f46e5; }
+  .tech.host {
+    border-color: #94a3b8;
+    background: #f1f5f9;
+    color: #334155;
+  }
+  .tech.host .detail { color: #475569; }
+  .tech.front {
+    border-color: #7dd3fc;
+    background: #f0f9ff;
+    color: #0369a1;
+  }
+  .tech.back {
+    border-color: #86efac;
+    background: #f0fdf4;
+    color: #166534;
+  }
+  .tech.back .detail { color: #15803d; }
+  .tech.ai {
+    border-color: #fcd34d;
+    background: #fffbeb;
+    color: #b45309;
+  }
+  .tech.ai .detail { color: #92400e; }
+  .tech.data {
+    border-color: #c4b5fd;
+    background: #f5f3ff;
+    color: #5b21b6;
+  }
+  .tech.data .detail { color: #6d28d9; }
+  .tech.repo {
+    border-color: #1f2937;
+    background: #f3f4f6;
+    color: #111827;
+  }
+  .tech.repo .detail { color: #4b5563; }
+
+  .footer {
+    text-align: center;
+    margin-top: 24px;
+    font-size: 12px;
+    color: #94a3b8;
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Portfolio Assistant — Tech Stack</h1>
+  <p class="sub">portfolioassistant.org</p>
+
+  <div class="diagram">
+    <div class="layer">
+      <div class="layer-label">DNS</div>
+      <div class="layer-items">
+        <span class="tech dns"><span class="name">Squarespace</span><span class="detail">custom domain portfolioassistant.org → Vercel</span></span>
+      </div>
+    </div>
+
+    <div class="layer">
+      <div class="layer-label">Source</div>
+      <div class="layer-items">
+        <span class="tech repo"><span class="name">GitHub</span><span class="detail">repo, version control, CI: push to master → Vercel deploy</span></span>
+      </div>
+    </div>
+
+    <div class="layer">
+      <div class="layer-label">Hosting</div>
+      <div class="layer-items">
+        <span class="tech host"><span class="name">Vercel</span><span class="detail">frontend hosting, Analytics + Speed Insights</span></span>
+      </div>
+    </div>
+
+    <div class="layer">
+      <div class="layer-label">Frontend</div>
+      <div class="layer-items">
+        <span class="tech front"><span class="name">React 18</span> · <span class="name">TypeScript</span> · <span class="name">Vite</span> · <span class="name">Tailwind CSS 4</span> · <span class="name">React Router</span><span class="detail"> · Lucide icons, localStorage (portfolio + AI cache)</span></span>
+      </div>
+    </div>
+
+    <div class="layer">
+      <div class="layer-label">Backend</div>
+      <div class="layer-items">
+        <span class="tech back"><span class="name">Supabase</span><span class="detail">Edge Functions (Deno), PostgreSQL (daily_suggestions cache), Secrets, RLS</span></span>
+      </div>
+    </div>
+
+    <div class="layer">
+      <div class="layer-label">AI</div>
+      <div class="layer-items">
+        <span class="tech ai"><span class="name">Groq</span><span class="detail">Llama 3.3 70B, Qwen3 32B fallback — portfolio BUY/SELL signals</span></span>
+        <span class="tech ai"><span class="name">Google Gemini</span><span class="detail">2.5/2.0 Flash, 3 keys — Suggested Finds (Compounders + Gold Mines)</span></span>
+      </div>
+    </div>
+
+    <div class="layer">
+      <div class="layer-label">Data APIs</div>
+      <div class="layer-items">
+        <span class="tech data"><span class="name">Finnhub</span><span class="detail">quotes, fundamentals, earnings, analyst recs, company news</span></span>
+        <span class="tech data"><span class="name">Yahoo Finance</span><span class="detail">market movers screener, company news</span></span>
+      </div>
+    </div>
+  </div>
+
+  <p class="footer">Open in browser and screenshot, or print to PDF</p>
+</div>
+</body>
+</html>

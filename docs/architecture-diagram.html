@@ -1,0 +1,449 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Portfolio Assistant — Architecture</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: #0f172a;
+    color: #e2e8f0;
+    display: flex;
+    justify-content: center;
+    padding: 48px 24px;
+    min-height: 100vh;
+  }
+  .canvas {
+    width: 960px;
+    position: relative;
+  }
+  h1 {
+    text-align: center;
+    font-size: 28px;
+    font-weight: 700;
+    letter-spacing: -0.5px;
+    margin-bottom: 6px;
+  }
+  .subtitle {
+    text-align: center;
+    font-size: 14px;
+    color: #94a3b8;
+    margin-bottom: 40px;
+  }
+
+  /* ── Shared box styles ── */
+  .box {
+    border-radius: 14px;
+    padding: 20px 24px;
+    position: relative;
+  }
+  .box-label {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 1.2px;
+    text-transform: uppercase;
+    margin-bottom: 10px;
+    opacity: 0.7;
+  }
+  .box-title {
+    font-size: 18px;
+    font-weight: 700;
+    margin-bottom: 4px;
+  }
+  .box-desc {
+    font-size: 13px;
+    opacity: 0.8;
+    line-height: 1.5;
+  }
+  .tech-badge {
+    display: inline-block;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 3px 10px;
+    border-radius: 20px;
+    margin-right: 6px;
+    margin-top: 8px;
+  }
+
+  /* ── DNS Row ── */
+  .dns-row {
+    display: flex;
+    justify-content: center;
+    margin-bottom: 20px;
+  }
+  .dns {
+    background: linear-gradient(135deg, #312e81, #4338ca);
+    border: 1px solid #6366f1;
+    text-align: center;
+    width: 480px;
+  }
+  .dns .tech-badge { background: #6366f140; color: #a5b4fc; }
+
+  /* ── Arrow ── */
+  .arrow-down {
+    display: flex;
+    justify-content: center;
+    margin: 0 0 20px;
+  }
+  .arrow-down svg { display: block; }
+
+  /* ── Vercel Row ── */
+  .vercel-row {
+    display: flex;
+    justify-content: center;
+    margin-bottom: 20px;
+  }
+  .vercel {
+    background: linear-gradient(135deg, #18181b, #27272a);
+    border: 1px solid #52525b;
+    width: 100%;
+    text-align: center;
+  }
+  .vercel .tech-badge { background: #52525b60; color: #d4d4d8; }
+  .routes {
+    display: flex;
+    justify-content: center;
+    gap: 12px;
+    margin-top: 12px;
+  }
+  .route {
+    font-size: 13px;
+    font-weight: 600;
+    padding: 6px 16px;
+    border-radius: 8px;
+    background: #3f3f4640;
+    border: 1px solid #52525b;
+    color: #a1a1aa;
+  }
+  .route code { color: #fbbf24; font-family: 'SF Mono', 'Fira Code', monospace; }
+
+  /* ── Supabase Section ── */
+  .supabase-section {
+    margin-bottom: 20px;
+  }
+  .supabase-header {
+    background: linear-gradient(135deg, #064e3b, #065f46);
+    border: 1px solid #10b981;
+    border-bottom: none;
+    border-radius: 14px 14px 0 0;
+    padding: 16px 24px;
+    text-align: center;
+  }
+  .supabase-header .tech-badge { background: #10b98130; color: #6ee7b7; }
+  .supabase-body {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0;
+    border: 1px solid #10b981;
+    border-top: none;
+    border-radius: 0 0 14px 14px;
+    overflow: hidden;
+  }
+  .fn-group {
+    padding: 20px 24px;
+  }
+  .fn-group.left {
+    background: #0c2e22;
+    border-right: 1px solid #10b98140;
+  }
+  .fn-group.right {
+    background: #0c2e22;
+  }
+  .fn-group-title {
+    font-size: 13px;
+    font-weight: 700;
+    color: #6ee7b7;
+    margin-bottom: 14px;
+    letter-spacing: 0.5px;
+  }
+  .fn-item {
+    display: flex;
+    align-items: flex-start;
+    margin-bottom: 14px;
+  }
+  .fn-item:last-child { margin-bottom: 0; }
+  .fn-icon {
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+    flex-shrink: 0;
+    margin-right: 12px;
+    font-weight: 700;
+  }
+  .fn-name {
+    font-size: 13px;
+    font-weight: 600;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    color: #e2e8f0;
+    margin-bottom: 2px;
+  }
+  .fn-desc {
+    font-size: 11px;
+    color: #94a3b8;
+    line-height: 1.4;
+  }
+
+  /* ── External APIs Row ── */
+  .apis-row {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 12px;
+    margin-top: 20px;
+  }
+  .api-box {
+    border-radius: 12px;
+    padding: 16px;
+    text-align: center;
+  }
+  .api-box .api-icon {
+    font-size: 24px;
+    margin-bottom: 8px;
+  }
+  .api-box .api-name {
+    font-size: 14px;
+    font-weight: 700;
+    margin-bottom: 4px;
+  }
+  .api-box .api-desc {
+    font-size: 11px;
+    opacity: 0.75;
+    line-height: 1.4;
+  }
+
+  /* API box colors */
+  .api-groq {
+    background: linear-gradient(135deg, #7c2d12, #9a3412);
+    border: 1px solid #f97316;
+  }
+  .api-gemini {
+    background: linear-gradient(135deg, #1e3a5f, #1e40af);
+    border: 1px solid #3b82f6;
+  }
+  .api-finnhub {
+    background: linear-gradient(135deg, #581c87, #7e22ce);
+    border: 1px solid #a855f7;
+  }
+  .api-yahoo {
+    background: linear-gradient(135deg, #713f12, #854d0e);
+    border: 1px solid #eab308;
+  }
+
+  /* ── Connector arrows ── */
+  .connectors {
+    display: flex;
+    justify-content: center;
+    gap: 0;
+    margin: 0;
+  }
+  .connector-col {
+    flex: 1;
+    display: flex;
+    justify-content: center;
+  }
+
+  /* ── DB callout ── */
+  .db-callout {
+    display: flex;
+    justify-content: center;
+    margin-top: 20px;
+  }
+  .db-box {
+    background: linear-gradient(135deg, #1e293b, #334155);
+    border: 1px solid #64748b;
+    border-radius: 12px;
+    padding: 14px 28px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .db-box .db-icon {
+    font-size: 22px;
+  }
+  .db-box .db-text {
+    font-size: 13px;
+  }
+  .db-box .db-text strong {
+    color: #f8fafc;
+  }
+
+  /* ── Footer ── */
+  .footer-note {
+    text-align: center;
+    margin-top: 32px;
+    font-size: 12px;
+    color: #64748b;
+    padding: 12px;
+    border-top: 1px solid #1e293b;
+  }
+  .footer-note span { color: #94a3b8; }
+</style>
+</head>
+<body>
+<div class="canvas">
+
+  <h1>Portfolio Assistant</h1>
+  <p class="subtitle">AI-powered stock signals — skip the noise, catch the plays</p>
+
+  <!-- DNS -->
+  <div class="dns-row">
+    <div class="box dns">
+      <div class="box-label">DNS Provider</div>
+      <div class="box-title">Squarespace</div>
+      <div class="box-desc">portfolioassistant.org → Vercel nameservers</div>
+      <span class="tech-badge">NS1.VERCEL-DNS.COM</span>
+      <span class="tech-badge">NS2.VERCEL-DNS.COM</span>
+    </div>
+  </div>
+
+  <!-- Arrow -->
+  <div class="arrow-down">
+    <svg width="24" height="36" viewBox="0 0 24 36"><path d="M12 0v30m0 0l-7-7m7 7l7-7" stroke="#6366f1" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+  </div>
+
+  <!-- Vercel -->
+  <div class="vercel-row">
+    <div class="box vercel">
+      <div class="box-label">Frontend Hosting</div>
+      <div class="box-title">Vercel</div>
+      <div class="box-desc">Auto-deploys on <code style="color:#fbbf24">git push origin master</code> &nbsp;·&nbsp; Skips <code style="color:#fbbf24">docs:</code> / <code style="color:#fbbf24">chore:</code> commits</div>
+      <span class="tech-badge">React 18</span>
+      <span class="tech-badge">TypeScript</span>
+      <span class="tech-badge">Vite</span>
+      <span class="tech-badge">Tailwind CSS 4</span>
+      <span class="tech-badge">React Router</span>
+      <div class="routes">
+        <div class="route"><code>/</code> Portfolio</div>
+        <div class="route"><code>/finds</code> Suggested Finds</div>
+        <div class="route"><code>/movers</code> Market Movers</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Arrow -->
+  <div class="arrow-down">
+    <svg width="24" height="36" viewBox="0 0 24 36"><path d="M12 0v30m0 0l-7-7m7 7l7-7" stroke="#10b981" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+  </div>
+
+  <!-- Supabase -->
+  <div class="supabase-section">
+    <div class="supabase-header">
+      <div class="box-label">Backend</div>
+      <div class="box-title">Supabase</div>
+      <div class="box-desc">Edge Functions (Deno) + PostgreSQL &nbsp;·&nbsp; All API keys stored as secrets</div>
+      <span class="tech-badge">Edge Functions</span>
+      <span class="tech-badge">PostgreSQL</span>
+      <span class="tech-badge">Row Level Security</span>
+    </div>
+    <div class="supabase-body">
+      <div class="fn-group left">
+        <div class="fn-group-title">Portfolio Analysis</div>
+        <div class="fn-item">
+          <div class="fn-icon" style="background:#f9731630;color:#f97316;">AI</div>
+          <div>
+            <div class="fn-name">ai-proxy</div>
+            <div class="fn-desc">Groq LLM proxy · model fallback<br>70B → 32B · risk-aware prompts</div>
+          </div>
+        </div>
+        <div class="fn-item">
+          <div class="fn-icon" style="background:#a855f730;color:#a855f7;">FH</div>
+          <div>
+            <div class="fn-name">fetch-stock-data</div>
+            <div class="fn-desc">Finnhub proxy · 15-min cache<br>quotes, metrics, earnings, news</div>
+          </div>
+        </div>
+        <div class="fn-item">
+          <div class="fn-icon" style="background:#eab30830;color:#eab308;">YF</div>
+          <div>
+            <div class="fn-name">fetch-yahoo-news</div>
+            <div class="fn-desc">Company-specific news headlines</div>
+          </div>
+        </div>
+      </div>
+      <div class="fn-group right">
+        <div class="fn-group-title">Suggested Finds</div>
+        <div class="fn-item">
+          <div class="fn-icon" style="background:#3b82f630;color:#3b82f6;">G</div>
+          <div>
+            <div class="fn-name">gemini-proxy</div>
+            <div class="fn-desc">Google Gemini proxy · 3 API keys<br>auto-rotation · model cascade</div>
+          </div>
+        </div>
+        <div class="fn-item">
+          <div class="fn-icon" style="background:#10b98130;color:#10b981;">DB</div>
+          <div>
+            <div class="fn-name">daily-suggestions</div>
+            <div class="fn-desc">Shared daily cache · same picks<br>for everyone · saves tokens</div>
+          </div>
+        </div>
+        <div class="fn-item">
+          <div class="fn-icon" style="background:#eab30830;color:#eab308;">YF</div>
+          <div>
+            <div class="fn-name">scrape-market-movers</div>
+            <div class="fn-desc">Yahoo Finance screener<br>top 25 gainers & losers</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Arrows down to APIs -->
+  <div class="connectors">
+    <div class="connector-col">
+      <svg width="24" height="36" viewBox="0 0 24 36"><path d="M12 0v30m0 0l-7-7m7 7l7-7" stroke="#f97316" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </div>
+    <div class="connector-col">
+      <svg width="24" height="36" viewBox="0 0 24 36"><path d="M12 0v30m0 0l-7-7m7 7l7-7" stroke="#3b82f6" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </div>
+    <div class="connector-col">
+      <svg width="24" height="36" viewBox="0 0 24 36"><path d="M12 0v30m0 0l-7-7m7 7l7-7" stroke="#a855f7" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </div>
+    <div class="connector-col">
+      <svg width="24" height="36" viewBox="0 0 24 36"><path d="M12 0v30m0 0l-7-7m7 7l7-7" stroke="#eab308" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </div>
+  </div>
+
+  <!-- External APIs -->
+  <div class="apis-row">
+    <div class="api-box api-groq">
+      <div class="api-icon">🧠</div>
+      <div class="api-name">Groq</div>
+      <div class="api-desc">Portfolio AI signals<br>Llama 3.3 70B<br>Qwen3 32B fallback</div>
+    </div>
+    <div class="api-box api-gemini">
+      <div class="api-icon">✨</div>
+      <div class="api-name">Google Gemini</div>
+      <div class="api-desc">Suggested Finds AI<br>2.5 Flash → 2.0 Flash<br>→ 2.0 Flash-Lite</div>
+    </div>
+    <div class="api-box api-finnhub">
+      <div class="api-icon">📊</div>
+      <div class="api-name">Finnhub</div>
+      <div class="api-desc">Stock data & metrics<br>Earnings · Analyst recs<br>Company news</div>
+    </div>
+    <div class="api-box api-yahoo">
+      <div class="api-icon">📈</div>
+      <div class="api-name">Yahoo Finance</div>
+      <div class="api-desc">Market movers screener<br>Company-specific news<br>Gainers & losers</div>
+    </div>
+  </div>
+
+  <!-- Security callout -->
+  <div class="db-callout">
+    <div class="db-box">
+      <div class="db-icon">🔒</div>
+      <div class="db-text"><strong>Zero API keys in the browser</strong> — all secrets stored in Supabase, proxied via Edge Functions</div>
+    </div>
+  </div>
+
+  <div class="footer-note">
+    <span>Portfolio Assistant</span> · portfolioassistant.org · Built with React, Supabase, Groq, Gemini
+  </div>
+
+</div>
+</body>
+</html>

@@ -654,10 +654,20 @@ function AppContent() {
         <AddTickersModal onClose={() => setShowAddModal(false)} onAddTickers={handleAddTickers} />
       )}
 
-      {/* Footer with daily quote */}
+      {/* Footer with daily quote + tech stack link */}
       <footer className="max-w-4xl mx-auto px-6 py-6 mt-4">
         <p className="text-xs text-center text-[hsl(var(--muted-foreground))] italic opacity-60">
           {investingQuote}
+        </p>
+        <p className="text-xs text-center mt-3 text-[hsl(var(--muted-foreground))]">
+          <a
+            href="/tech-stack.html"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="underline hover:opacity-80"
+          >
+            Tech stack
+          </a>
         </p>
       </footer>
 
