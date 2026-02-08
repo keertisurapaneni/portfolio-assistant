@@ -1,10 +1,11 @@
 # Pending / Future Work
 
-- **Trading Signals (Day | Swing):** Day Trade | Swing Trade toggle; pipeline locks to mode. See `features/trading-signals/` (PRD + technical spec).
-- **Epic 5 (Cloud Sync):** User authentication, cloud storage, guest-to-auth migration
 - **Additional data for AI:** Volume vs average volume, DMA trend state, earnings date proximity
-- **File organization:** Move root-level docs to `docs/` folder
-- **Mobile optimization:** Responsive design for small screens
-- **Broker integration:** Auto-sync with Robinhood, Fidelity, etc.
+- **Mobile optimization:** Responsive design improvements for small screens
 - **Tax-loss harvesting:** Recommendations based on capital gains
 - **Sector exposure analysis:** Portfolio diversification view
+- **Watchlist:** Track stocks without adding to portfolio
+- **Price alerts:** Notification when a stock hits a target price
+- **Guest-to-auth migration:** Auto-merge localStorage portfolio into cloud on first signup
+- **Phone auth:** SMS/OTP login (requires SMS provider setup)
+- **Broker write access:** Place trades through connected brokerages (currently read-only)

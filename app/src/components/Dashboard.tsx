@@ -95,39 +95,41 @@ export function Dashboard({ stocks, onStockSelect, onAddTickers, onClearAll, ris
           </button>
 
           {/* Option 2: Broker integration */}
-          {isAuthed ? (
-            <div className="flex flex-col items-center gap-3 p-6 bg-white rounded-2xl border-2 border-[hsl(var(--border))]">
-              <div className="w-12 h-12 rounded-xl bg-green-50 flex items-center justify-center">
-                <Link2 className="w-6 h-6 text-green-600" />
+          {(() => {
+            const brokerContent = (
+              <>
+                <div className="w-12 h-12 rounded-xl bg-green-50 group-hover:bg-green-100 flex items-center justify-center transition-colors">
+                  <Link2 className="w-6 h-6 text-green-600" />
+                </div>
+                <div className="text-center">
+                  <p className="font-semibold text-[hsl(var(--foreground))]">Connect Brokerage</p>
+                  <p className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5">Schwab, IBKR, Robinhood & more</p>
+                  <a href="https://snaptrade.com/brokerage-integrations" target="_blank" rel="noopener noreferrer"
+                    className="text-[10px] text-blue-500 hover:text-blue-700 underline mt-0.5 mb-2 inline-block"
+                    onClick={e => e.stopPropagation()}>All supported brokerages</a>
+                </div>
+              </>
+            );
+
+            return isAuthed ? (
+              <div className="flex flex-col items-center gap-3 p-6 bg-white rounded-2xl border-2 border-[hsl(var(--border))]">
+                {brokerContent}
+                <div className="flex justify-center">
+                  {onBrokerSync && <BrokerConnect onSyncComplete={onBrokerSync} />}
+                </div>
               </div>
-              <div className="text-center flex flex-col items-center">
-                <p className="font-semibold text-[hsl(var(--foreground))]">Connect Brokerage</p>
-                <p className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5">Schwab, IBKR, Robinhood & more</p>
-                <a href="https://snaptrade.com/brokerage-integrations" target="_blank" rel="noopener noreferrer"
-                  className="text-[10px] text-blue-500 hover:text-blue-700 underline mt-0.5 mb-2 inline-block">All supported brokerages</a>
-                {onBrokerSync && <BrokerConnect onSyncComplete={onBrokerSync} />}
-              </div>
-            </div>
-          ) : (
-            <button
-              onClick={onLogin}
-              className="group flex flex-col items-center gap-3 p-6 bg-white rounded-2xl border-2 border-[hsl(var(--border))] hover:border-green-300 hover:shadow-lg hover:shadow-green-500/10 transition-all"
-            >
-              <div className="w-12 h-12 rounded-xl bg-green-50 group-hover:bg-green-100 flex items-center justify-center transition-colors">
-                <Link2 className="w-6 h-6 text-green-600" />
-              </div>
-              <div>
-                <p className="font-semibold text-[hsl(var(--foreground))]">Connect Brokerage</p>
-                <p className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5">Schwab, IBKR, Robinhood & more</p>
-                <a href="https://snaptrade.com/brokerage-integrations" target="_blank" rel="noopener noreferrer"
-                  className="text-[10px] text-blue-500 hover:text-blue-700 underline mt-0.5 mb-2 inline-block"
-                  onClick={e => e.stopPropagation()}>All supported brokerages</a>
-                <p className="text-[10px] text-blue-600 font-medium mt-1 flex items-center justify-center gap-1">
+            ) : (
+              <button
+                onClick={onLogin}
+                className="group flex flex-col items-center gap-3 p-6 bg-white rounded-2xl border-2 border-[hsl(var(--border))] hover:border-green-300 hover:shadow-lg hover:shadow-green-500/10 transition-all"
+              >
+                {brokerContent}
+                <p className="text-[10px] text-blue-600 font-medium flex items-center justify-center gap-1">
                   <User className="w-3 h-3" /> Login to connect
                 </p>
-              </div>
-            </button>
-          )}
+              </button>
+            );
+          })()}
         </div>
 
         <p className="text-center text-xs text-[hsl(var(--muted-foreground))] mt-6">

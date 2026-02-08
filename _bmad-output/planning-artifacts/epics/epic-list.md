@@ -53,21 +53,25 @@ Users discover high-quality stock ideas through curated "Quiet Compounders" and 
 
 ---
 
-## Epic 5: Cloud Sync & Multi-Device Access
+## Epic 5: Auth & Broker Integration
 
-Users can access their portfolio from any device via optional email/password authentication with seamless guest-to-auth migration.
+Users can optionally log in (email/password) to save their portfolio across devices, and connect brokerage accounts (Schwab, IBKR, Robinhood & more) via SnapTrade to auto-import holdings. Guest mode works without login.
 
 **FRs covered:** FR32, FR33, FR34, FR35, FR36, FR37, FR38, FR39, FR43, FR44, FR45, FR46, FR47, FR48
 
-**User Value:** Frictionless onboarding with guest mode, plus optional cloud sync for users who want multi-device access. No forced signup barrier.
+**User Value:** Frictionless onboarding with guest mode, optional cloud sync for multi-device access, and one-click brokerage connection to eliminate manual ticker entry. No forced signup barrier.
 
 **Implementation Notes:**
 
-- Implements Supabase Auth (email/password)
-- Hybrid storage strategy (localStorage for guests, PostgreSQL for auth users)
-- Guest portfolio migration on signup preserves user work
-- Row Level Security ensures data isolation
-- UI indicators show current mode (guest banner vs account menu)
+- Supabase Auth (email/password) with JWT session management
+- Hybrid storage strategy (localStorage for guests, PostgreSQL for auth users, both for market data cache)
+- Row Level Security ensures per-user data isolation
+- SnapTrade API integration via `broker-connect` and `broker-sync` Edge Functions
+- HMAC-SHA256 authentication using Web Crypto API (Deno-native)
+- `broker_connections` table stores SnapTrade credentials per user
+- Read-only position sync (ticker, shares, avg cost) into `portfolios` table
+- Popup-based SnapTrade connection portal flow
+- UI: login modal, user menu, guest save reminder banner, broker connect/sync/disconnect controls
 
 ---
 
@@ -92,9 +96,9 @@ Users can access Portfolio Assistant via public URL with enterprise-grade securi
 
 ---
 
-## Epic 12: AI-Powered Stock Discovery (Gemini Flash)
+## Epic 12: AI-Powered Stock Discovery (HuggingFace)
 
-Transform Suggested Finds from static curated lists into a dynamic AI-powered discovery engine using Google Gemini Flash. Clean separation: Groq handles Portfolio AI Analysis, Gemini handles Suggested Finds discovery.
+Transform Suggested Finds from static curated lists into a dynamic AI-powered discovery engine using HuggingFace Inference API. Clean separation: Groq handles Portfolio AI Analysis, HuggingFace handles Suggested Finds discovery, Gemini handles Trading Signals.
 
 **Builds on:** Epic 4 (Curated Stock Discovery — "V2 AI-powered discovery")
 
@@ -102,9 +106,10 @@ Transform Suggested Finds from static curated lists into a dynamic AI-powered di
 
 **Implementation Notes:**
 
-- New Supabase Edge Function (`gemini-proxy`) for server-side Gemini API access
+- Supabase Edge Function (`huggingface-proxy`) for server-side HuggingFace API access
+- Model cascade: Qwen2.5-72B → Mixtral-8x7B → Llama-3.1-8B (fallback on rate limits)
+- Server-side daily cache (`daily-suggestions` Edge Function + PostgreSQL) — same picks for all users each day
 - Client-side discovery service with structured prompts per archetype
-- React hook abstraction layer (`useSuggestedFinds`) for clean data flow
 - 24-hour localStorage cache with manual refresh capability
 - Fallback chain: AI fresh → AI cached → Clean empty state with message (no hardcoded data)
 - UI enhancements: loading skeletons, AI badges, refresh button, timestamps

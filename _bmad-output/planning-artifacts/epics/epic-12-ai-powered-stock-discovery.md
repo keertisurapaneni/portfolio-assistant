@@ -1,10 +1,10 @@
-# Epic 12: AI-Powered Stock Discovery (Gemini Flash)
+# Epic 12: AI-Powered Stock Discovery (HuggingFace)
 
-Transform the Suggested Finds tab from static, hardcoded stock lists into a dynamic, AI-powered discovery engine using Google Gemini Flash. Groq remains dedicated to Portfolio tab trade signals; Gemini Flash handles all Suggested Finds intelligence.
+Transform the Suggested Finds tab from static, hardcoded stock lists into a dynamic, AI-powered discovery engine using HuggingFace Inference API. Groq remains dedicated to Portfolio tab trade signals; HuggingFace handles Suggested Finds discovery; Gemini handles Trading Signals.
 
 **Builds on:** Epic 4 (Curated Stock Discovery) — "V2 AI-powered discovery"
-**AI Provider:** Google Gemini 2.0 Flash (free tier / low cost, fast inference)
-**Separation of Concerns:** Groq = Portfolio AI Analysis | Gemini = Suggested Finds Discovery
+**AI Provider:** HuggingFace Inference API (Qwen2.5-72B → Mixtral-8x7B → Llama-3.1-8B fallback cascade)
+**Separation of Concerns:** Groq = Portfolio AI Analysis | HuggingFace = Suggested Finds | Gemini = Trading Signals
 
 ---
 

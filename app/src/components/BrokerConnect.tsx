@@ -128,7 +128,7 @@ export function BrokerConnect({ onSyncComplete }: BrokerConnectProps) {
         <button onClick={handleConnect} disabled={loading}
           className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100 disabled:opacity-60 transition-colors">
           {loading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Link2 className="w-3.5 h-3.5" />}
-          Connect Broker
+          Connect
         </button>
       )}
     </div>

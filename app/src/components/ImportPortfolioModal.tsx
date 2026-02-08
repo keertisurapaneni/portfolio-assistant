@@ -1,6 +1,7 @@
 import { useState, useRef } from 'react';
-import { X, Upload, AlertCircle, Check } from 'lucide-react';
+import { Upload, AlertCircle, Check } from 'lucide-react';
 import { ErrorBanner } from './ErrorBanner';
+import { Modal } from './Modal';
 import {
   parseFile,
   detectColumns,
@@ -102,205 +103,196 @@ export function ImportPortfolioModal({ onClose, onComplete }: ImportPortfolioMod
   const hasSharesData = preview.some(row => row.shares !== undefined && row.shares !== null);
   const hasAvgCostData = preview.some(row => row.avgCost !== undefined && row.avgCost !== null);
 
-  return (
-    <>
-      {/* Backdrop */}
-      <div className="fixed inset-0 bg-black/50 z-50" onClick={onClose} />
+  const stepTitle = {
+    upload: 'Import Portfolio',
+    mapping: 'Map Columns',
+    preview: 'Preview Import',
+    done: 'Import Complete',
+  }[step];
 
-      {/* Modal */}
-      <div className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-full max-w-lg bg-white rounded-xl shadow-xl z-50 max-h-[80vh] overflow-y-auto">
-        {/* Header */}
-        <div className="sticky top-0 bg-white flex items-center justify-between px-6 py-4 border-b border-[hsl(var(--border))]">
-          <h2 className="text-lg font-semibold">Import Portfolio</h2>
-          <button onClick={onClose} className="p-2 hover:bg-[hsl(var(--secondary))] rounded-lg">
-            <X className="w-5 h-5" />
+  return (
+    <Modal title={stepTitle} onClose={onClose} size="lg">
+      {/* Error display */}
+      {error && <ErrorBanner message={error} className="mb-4" />}
+
+      {/* Step: Upload */}
+      {step === 'upload' && (
+        <div className="text-center py-8">
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".csv,.xlsx,.xls"
+            onChange={handleFileSelect}
+            className="hidden"
+          />
+          <Upload className="w-12 h-12 mx-auto text-[hsl(var(--muted-foreground))] mb-4" />
+          <h3 className="font-medium mb-2">Upload Brokerage Export</h3>
+          <p className="text-sm text-[hsl(var(--muted-foreground))] mb-4">
+            CSV or Excel file with your holdings
+          </p>
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            className="px-6 py-3 bg-[hsl(var(--primary))] text-white rounded-lg font-medium hover:opacity-90"
+          >
+            Choose File
           </button>
         </div>
+      )}
 
-        <div className="p-6">
-          {/* Error display */}
-          {error && <ErrorBanner message={error} className="mb-4" />}
+      {/* Step: Column Mapping */}
+      {step === 'mapping' && (
+        <div className="space-y-4">
+          <p className="text-sm text-[hsl(var(--muted-foreground))]">
+            Map your file columns to the required fields. Ticker is required. For optional
+            fields, select "Not available" if your file doesn't have that data.
+          </p>
 
-          {/* Step: Upload */}
-          {step === 'upload' && (
-            <div className="text-center py-8">
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept=".csv,.xlsx,.xls"
-                onChange={handleFileSelect}
-                className="hidden"
-              />
-              <Upload className="w-12 h-12 mx-auto text-[hsl(var(--muted-foreground))] mb-4" />
-              <h3 className="font-medium mb-2">Upload Brokerage Export</h3>
-              <p className="text-sm text-[hsl(var(--muted-foreground))] mb-4">
-                CSV or Excel file with your holdings
-              </p>
-              <button
-                onClick={() => fileInputRef.current?.click()}
-                className="px-6 py-3 bg-[hsl(var(--primary))] text-white rounded-lg font-medium hover:opacity-90"
+          {/* Mapping dropdowns */}
+          {(['ticker', 'shares', 'avgCost'] as const).map(field => (
+            <div key={field} className="flex items-center gap-4">
+              <span className="w-24 text-sm font-medium capitalize">
+                {field === 'avgCost' ? 'Avg Cost' : field}
+                {field === 'ticker' && <span className="text-red-500">*</span>}
+              </span>
+              <select
+                value={mapping[field] || ''}
+                onChange={e => setMapping({ ...mapping, [field]: e.target.value || null })}
+                className={cn(
+                  'flex-1 px-3 py-2 border rounded-lg text-sm',
+                  field === 'ticker' && !mapping.ticker
+                    ? 'border-red-300'
+                    : 'border-[hsl(var(--border))]'
+                )}
               >
-                Choose File
-              </button>
+                <option value="">
+                  {field === 'ticker' ? '-- Select column --' : '-- Not available in file --'}
+                </option>
+                {headers.map(h => (
+                  <option key={h} value={h}>
+                    {h}
+                  </option>
+                ))}
+              </select>
             </div>
-          )}
+          ))}
 
-          {/* Step: Column Mapping */}
-          {step === 'mapping' && (
-            <div className="space-y-4">
-              <p className="text-sm text-[hsl(var(--muted-foreground))]">
-                Map your file columns to the required fields. Ticker is required. For optional
-                fields, select "Not available" if your file doesn't have that data.
-              </p>
-
-              {/* Mapping dropdowns */}
-              {(['ticker', 'shares', 'avgCost'] as const).map(field => (
-                <div key={field} className="flex items-center gap-4">
-                  <span className="w-24 text-sm font-medium capitalize">
-                    {field === 'avgCost' ? 'Avg Cost' : field}
-                    {field === 'ticker' && <span className="text-red-500">*</span>}
-                  </span>
-                  <select
-                    value={mapping[field] || ''}
-                    onChange={e => setMapping({ ...mapping, [field]: e.target.value || null })}
-                    className={cn(
-                      'flex-1 px-3 py-2 border rounded-lg text-sm',
-                      field === 'ticker' && !mapping.ticker
-                        ? 'border-red-300'
-                        : 'border-[hsl(var(--border))]'
-                    )}
-                  >
-                    <option value="">
-                      {field === 'ticker' ? '-- Select column --' : '-- Not available in file --'}
-                    </option>
-                    {headers.map(h => (
-                      <option key={h} value={h}>
-                        {h}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              ))}
-
-              <div className="flex gap-3 pt-4">
-                <button
-                  onClick={() => setStep('upload')}
-                  className="flex-1 py-2 border border-[hsl(var(--border))] rounded-lg hover:bg-[hsl(var(--secondary))]"
-                >
-                  Back
-                </button>
-                <button
-                  onClick={handleConfirmMapping}
-                  className="flex-1 py-2 bg-[hsl(var(--primary))] text-white rounded-lg hover:opacity-90"
-                >
-                  Preview
-                </button>
-              </div>
-            </div>
-          )}
-
-          {/* Step: Preview */}
-          {step === 'preview' && (
-            <div className="space-y-4">
-              <p className="text-sm text-[hsl(var(--muted-foreground))]">
-                Preview of {rows.length} rows to import:
-              </p>
-
-              {/* Warning if no position data */}
-              {preview.every(row => !row.shares && !row.avgCost) && (
-                <div className="flex items-start gap-2 p-3 bg-amber-50 text-amber-800 rounded-lg text-sm">
-                  <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
-                  <div>
-                    <p className="font-medium">No position data found</p>
-                    <p className="text-xs mt-1">
-                      Portfolio weight and risk warnings won't be available without shares and avg
-                      cost data.
-                    </p>
-                  </div>
-                </div>
-              )}
-
-              <div className="border border-[hsl(var(--border))] rounded-lg overflow-hidden">
-                <table className="w-full text-sm">
-                  <thead className="bg-[hsl(var(--secondary))]">
-                    <tr>
-                      <th className="px-3 py-2 text-left font-medium">Ticker</th>
-                      {hasSharesData && (
-                        <th className="px-3 py-2 text-right font-medium">Shares</th>
-                      )}
-                      {hasAvgCostData && (
-                        <th className="px-3 py-2 text-right font-medium">Avg Cost</th>
-                      )}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {preview.map((row, i) => (
-                      <tr key={i} className="border-t border-[hsl(var(--border))]">
-                        <td className="px-3 py-2 font-medium">{row.ticker}</td>
-                        {hasSharesData && (
-                          <td className="px-3 py-2 text-right">
-                            {row.shares?.toLocaleString() || '—'}
-                          </td>
-                        )}
-                        {hasAvgCostData && (
-                          <td className="px-3 py-2 text-right">
-                            {row.avgCost ? `$${row.avgCost.toFixed(2)}` : '—'}
-                          </td>
-                        )}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-
-              {rows.length > 5 && (
-                <p className="text-xs text-[hsl(var(--muted-foreground))] text-center">
-                  ...and {rows.length - 5} more
-                </p>
-              )}
-
-              <div className="flex gap-3 pt-4">
-                <button
-                  onClick={() => setStep('mapping')}
-                  className="flex-1 py-2 border border-[hsl(var(--border))] rounded-lg hover:bg-[hsl(var(--secondary))]"
-                >
-                  Back
-                </button>
-                <button
-                  onClick={handleImport}
-                  className="flex-1 py-2 bg-[hsl(var(--primary))] text-white rounded-lg hover:opacity-90"
-                >
-                  Import {rows.length} Stocks
-                </button>
-              </div>
-            </div>
-          )}
-
-          {/* Step: Done — auto-closes after brief feedback */}
-          {step === 'done' && result && (
-            <div className="text-center py-6">
-              <div className="w-12 h-12 mx-auto mb-4 bg-green-100 rounded-full flex items-center justify-center">
-                <Check className="w-6 h-6 text-green-600" />
-              </div>
-              <h3 className="font-medium mb-3">Import Complete!</h3>
-
-              <div className="space-y-2 text-sm">
-                {result.added.length > 0 && (
-                  <p className="text-green-600">✓ {result.added.length} stocks added</p>
-                )}
-                {result.updated.length > 0 && (
-                  <p className="text-blue-600">↻ {result.updated.length} stocks updated</p>
-                )}
-                {result.skipped.length > 0 && (
-                  <p className="text-[hsl(var(--muted-foreground))]">
-                    — {result.skipped.length} skipped
-                  </p>
-                )}
-              </div>
-            </div>
-          )}
+          <div className="flex gap-3 pt-4">
+            <button
+              onClick={() => setStep('upload')}
+              className="flex-1 py-2 border border-[hsl(var(--border))] rounded-lg hover:bg-[hsl(var(--secondary))]"
+            >
+              Back
+            </button>
+            <button
+              onClick={handleConfirmMapping}
+              className="flex-1 py-2 bg-[hsl(var(--primary))] text-white rounded-lg hover:opacity-90"
+            >
+              Preview
+            </button>
+          </div>
         </div>
-      </div>
-    </>
+      )}
+
+      {/* Step: Preview */}
+      {step === 'preview' && (
+        <div className="space-y-4">
+          <p className="text-sm text-[hsl(var(--muted-foreground))]">
+            Preview of {rows.length} rows to import:
+          </p>
+
+          {/* Warning if no position data */}
+          {preview.every(row => !row.shares && !row.avgCost) && (
+            <div className="flex items-start gap-2 p-3 bg-amber-50 text-amber-800 rounded-lg text-sm">
+              <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+              <div>
+                <p className="font-medium">No position data found</p>
+                <p className="text-xs mt-1">
+                  Portfolio weight and risk warnings won't be available without shares and avg
+                  cost data.
+                </p>
+              </div>
+            </div>
+          )}
+
+          <div className="border border-[hsl(var(--border))] rounded-lg overflow-hidden">
+            <table className="w-full text-sm">
+              <thead className="bg-[hsl(var(--secondary))]">
+                <tr>
+                  <th className="px-3 py-2 text-left font-medium">Ticker</th>
+                  {hasSharesData && (
+                    <th className="px-3 py-2 text-right font-medium">Shares</th>
+                  )}
+                  {hasAvgCostData && (
+                    <th className="px-3 py-2 text-right font-medium">Avg Cost</th>
+                  )}
+                </tr>
+              </thead>
+              <tbody>
+                {preview.map((row, i) => (
+                  <tr key={i} className="border-t border-[hsl(var(--border))]">
+                    <td className="px-3 py-2 font-medium">{row.ticker}</td>
+                    {hasSharesData && (
+                      <td className="px-3 py-2 text-right">
+                        {row.shares?.toLocaleString() || '—'}
+                      </td>
+                    )}
+                    {hasAvgCostData && (
+                      <td className="px-3 py-2 text-right">
+                        {row.avgCost ? `$${row.avgCost.toFixed(2)}` : '—'}
+                      </td>
+                    )}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {rows.length > 5 && (
+            <p className="text-xs text-[hsl(var(--muted-foreground))] text-center">
+              ...and {rows.length - 5} more
+            </p>
+          )}
+
+          <div className="flex gap-3 pt-4">
+            <button
+              onClick={() => setStep('mapping')}
+              className="flex-1 py-2 border border-[hsl(var(--border))] rounded-lg hover:bg-[hsl(var(--secondary))]"
+            >
+              Back
+            </button>
+            <button
+              onClick={handleImport}
+              className="flex-1 py-2 bg-[hsl(var(--primary))] text-white rounded-lg hover:opacity-90"
+            >
+              Import {rows.length} Stocks
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Step: Done — auto-closes after brief feedback */}
+      {step === 'done' && result && (
+        <div className="text-center py-6">
+          <div className="w-12 h-12 mx-auto mb-4 bg-green-100 rounded-full flex items-center justify-center">
+            <Check className="w-6 h-6 text-green-600" />
+          </div>
+          <h3 className="font-medium mb-3">Import Complete!</h3>
+
+          <div className="space-y-2 text-sm">
+            {result.added.length > 0 && (
+              <p className="text-green-600">✓ {result.added.length} stocks added</p>
+            )}
+            {result.updated.length > 0 && (
+              <p className="text-blue-600">↻ {result.updated.length} stocks updated</p>
+            )}
+            {result.skipped.length > 0 && (
+              <p className="text-[hsl(var(--muted-foreground))]">
+                — {result.skipped.length} skipped
+              </p>
+            )}
+          </div>
+        </div>
+      )}
+    </Modal>
   );
 }

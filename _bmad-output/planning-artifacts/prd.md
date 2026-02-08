@@ -761,15 +761,18 @@ The following features were implemented during the initial build phase, exceedin
 - ✅ News Integration
 - ✅ Vercel + Supabase deployment
 
-**Still Pending (Original Epic 5):**
+**Implemented (since original PRD):**
 
-- ⏳ User authentication (Supabase Auth)
-- ⏳ Cloud storage for authenticated users
-- ⏳ Guest-to-auth data migration
-- ⏳ Multi-device access
+- ✅ User authentication (Supabase Auth — email/password)
+- ✅ Cloud storage for authenticated users (PostgreSQL + localStorage hybrid)
+- ✅ Multi-device access via auth
+- ✅ Trading Signals — Day/Swing trade (Gemini 4-key rotation + Twelve Data + Yahoo News)
+- ✅ Broker Integration — SnapTrade (Schwab, IBKR, Robinhood & more), read-only position sync
+- ✅ AI-Powered Suggested Finds (HuggingFace model cascade, server-side daily cache)
 
-**Still Pending (Other):**
+**Still Pending:**
 
+- ⏳ Guest-to-auth data migration (auto-merge on signup)
 - ⏳ Mobile-responsive design
 - ⏳ Historical conviction score tracking
 - ⏳ Additional AI data: volume vs average, DMA trends, earnings proximity

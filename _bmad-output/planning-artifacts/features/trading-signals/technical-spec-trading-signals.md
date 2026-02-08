@@ -27,7 +27,7 @@ Trading Signals is built **on top of** the same stack as the rest of Portfolio A
 | Function | Purpose | External API |
 |----------|---------|--------------|
 | `ai-proxy` | Portfolio BUY/SELL signals; model fallback | **Groq** (Llama 3.3 70B, Qwen3 32B fallback) |
-| `gemini-proxy` | Suggested Finds (Compounders, Gold Mines); key rotation + model cascade | **Google Gemini** (2.5 Flash, 2.0 Flash, 2.0 Flash Lite) |
+| `huggingface-proxy` | Suggested Finds (Compounders, Gold Mines); model cascade | **HuggingFace** (Qwen2.5-72B, Mixtral-8x7B, Llama-3.1-8B) |
 | `fetch-stock-data` | Stock data proxy; 15-min server cache in `stock_cache` | **Finnhub** (quote, metrics, recommendations, earnings, **news**, general_news) |
 | `daily-suggestions` | Shared daily cache for Suggested Finds | PostgreSQL |
 | `scrape-market-movers` | Gainers/losers screener | Yahoo Finance |
@@ -37,7 +37,7 @@ Trading Signals is built **on top of** the same stack as the rest of Portfolio A
 
 - **Finnhub** (via `fetch-stock-data`): quotes, fundamentals, earnings, analyst recommendations, **company news** (7-day window), **general news**. Cached per ticker/endpoint; TTL 15 min. Used by Portfolio (conviction, news) and Suggested Finds (metrics + general_news).
 - **Groq**: Portfolio AI analysis only.
-- **Google Gemini**: Suggested Finds discovery only.
+- **HuggingFace**: Suggested Finds discovery only (replaced Gemini; Gemini now used for Trading Signals).
 - **Yahoo Finance**: Market Movers list and company news (separate from Finnhub).
 
 ### How Trading Signals fits in
