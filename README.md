@@ -29,15 +29,22 @@ A personal investing decision-support tool that combines automated conviction sc
 - **Market Context** — SPY trend + VIX volatility snapshot included in every analysis
 - **Scenario Analysis** — Bullish/neutral/bearish scenarios with probability estimates
 - **Confidence Score** — 0-10 visual confidence rating with dual price targets
+- **Long Term Outlook** — Fundamental analysis section (ROE, P/E, margins, earnings, analyst recs) that appears in all modes — powered by Finnhub + Gemini running in parallel with zero added latency
 - **Interactive Charts** — Candlestick charts with entry/stop/target overlays (2-3 years of history for swing)
-- Powered by Gemini (multi-key rotation) + Twelve Data (candles + indicators) + Yahoo Finance (news)
+- Powered by Gemini (multi-key rotation) + Twelve Data (candles + indicators) + Yahoo Finance (news) + Finnhub (fundamentals)
 
 ### Suggested Finds (`/finds`)
 
-- **Quiet Compounders** — AI-discovered under-the-radar quality stocks backed by Finnhub fundamentals
+- **Quiet Compounders** — AI-discovered quality stocks ranked by buy conviction, with valuation and AI-impact assessment
+  - **Conviction Score** (1-10) — How strongly the AI recommends buying NOW, based on business quality + valuation
+  - **Valuation Tags** — "Deep Value", "Undervalued", "Fair Value", "Fully Valued" based on P/E-to-growth
+  - **AI Impact** — "Strong Tailwind", "Tailwind", "Neutral" — how AI affects the business
+  - **Industry Categories** — Each stock tagged with its industry (HVAC, Distribution, Waste Management, etc.)
+  - **Category Dropdown** — Filter by industry or discover new stocks in a specific category
+  - **Top Pick** — Highest conviction stock highlighted with special badge
 - **Gold Mines** — Macro-theme-driven opportunities diversified across the value chain
 - Powered by HuggingFace Inference API with model cascade (Qwen2.5-72B → Mixtral-8x7B → Llama-3.1-8B)
-- Server-side daily cache — same picks for everyone each day, saves AI tokens
+- Server-side daily cache per category — same picks for everyone each day, saves AI tokens
 
 ### Market Movers (`/movers`)
 
@@ -104,8 +111,8 @@ A personal investing decision-support tool that combines automated conviction sc
 |---|---|---|---|
 | **Conviction Scoring** | Automated 0-100 score per stock | None (rule-based) | Finnhub metrics, earnings, recommendations |
 | **Portfolio Trade Signals** | BUY / SELL / no-action per stock | Groq (Llama 3.3 70B) | Finnhub data + market news + risk profile |
-| **Trade Signals** | Auto/Day/Swing trade with indicators, scenarios, dual targets | Gemini (multi-key rotation) | Twelve Data candles → Indicator Engine (RSI, MACD, EMA, ATR, ADX) + Yahoo Finance news + SPY/VIX market context |
-| **Quiet Compounders** | Discover quality under-the-radar stocks | HuggingFace (Qwen2.5-72B) | Finnhub metrics + general market news |
+| **Trade Signals** | Auto/Day/Swing trade with indicators, scenarios, dual targets + Long Term Outlook | Gemini (multi-key rotation) | Twelve Data candles → Indicator Engine (RSI, MACD, EMA, ATR, ADX) + Yahoo Finance news + SPY/VIX market context + Finnhub fundamentals |
+| **Quiet Compounders** | Discover quality stocks ranked by conviction, with valuation/AI tags and category filtering | HuggingFace (Qwen2.5-72B) | Finnhub metrics |
 | **Gold Mines** | Macro-theme-driven opportunities | HuggingFace (Qwen2.5-72B) | Market news + Finnhub fundamentals |
 
 ### Edge Functions
@@ -116,7 +123,7 @@ A personal investing decision-support tool that combines automated conviction sc
 | `trading-signals` | Day/Swing signals with parallel AI agents | Twelve Data + Yahoo Finance + Gemini |
 | `huggingface-proxy` | Suggested Finds AI with model cascade | HuggingFace |
 | `gemini-proxy` | Gemini proxy for client-side AI calls | Google Gemini |
-| `daily-suggestions` | Shared daily cache (GET/POST/DELETE) | PostgreSQL |
+| `daily-suggestions` | Shared daily cache per category (GET/POST/DELETE) | PostgreSQL |
 | `fetch-stock-data` | Stock data proxy with server-side cache | Finnhub |
 | `scrape-market-movers` | Gainers/losers screener with retry logic | Yahoo Finance |
 | `fetch-yahoo-news` | Company-specific news | Yahoo Finance |

@@ -1,20 +1,25 @@
 /**
  * useSuggestedFinds — React hook for AI-powered grounded stock discovery
  *
- * Pipeline: Gemini candidates → Finnhub real data → Gemini analysis
+ * Pipeline: HuggingFace candidates → Finnhub real data → HuggingFace analysis
+ * Supports category-focused discovery for Quiet Compounders
  * Exposes step-by-step progress for UX transparency
  */
 
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import type { EnhancedSuggestedStock } from '../data/suggestedFinds';
 import {
   discoverStocks,
+  discoverCategoryStocks,
   clearDiscoveryCache,
   getCachedTimestamp,
+  COMPOUNDER_CATEGORIES,
   type ThemeData,
   type DiscoveryResult,
   type DiscoveryStep,
 } from '../lib/aiSuggestedFinds';
+
+export { COMPOUNDER_CATEGORIES };
 
 const STEP_LABELS: Record<DiscoveryStep, string> = {
   idle: '',
@@ -28,6 +33,7 @@ const STEP_LABELS: Record<DiscoveryStep, string> = {
 
 export interface UseSuggestedFindsResult {
   compounders: EnhancedSuggestedStock[];
+  displayedCompounders: EnhancedSuggestedStock[];
   goldMines: EnhancedSuggestedStock[];
   currentTheme: ThemeData | null;
   isLoading: boolean;
@@ -36,6 +42,14 @@ export interface UseSuggestedFindsResult {
   step: DiscoveryStep;
   stepLabel: string;
   refresh: () => void;
+  // Category support
+  selectedCategory: string | null;
+  setSelectedCategory: (cat: string | null) => void;
+  isCategoryLoading: boolean;
+  categoryStep: DiscoveryStep;
+  categoryStepLabel: string;
+  categoryError: string | null;
+  discoverCategory: (cat: string) => void;
 }
 
 export function useSuggestedFinds(existingTickers: string[]): UseSuggestedFindsResult {
@@ -46,6 +60,13 @@ export function useSuggestedFinds(existingTickers: string[]): UseSuggestedFindsR
   const [error, setError] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<string | null>(null);
   const [step, setStep] = useState<DiscoveryStep>('idle');
+
+  // Category-focused discovery state
+  const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
+  const [categoryCompounders, setCategoryCompounders] = useState<EnhancedSuggestedStock[]>([]);
+  const [isCategoryLoading, setIsCategoryLoading] = useState(false);
+  const [categoryStep, setCategoryStep] = useState<DiscoveryStep>('idle');
+  const [categoryError, setCategoryError] = useState<string | null>(null);
 
   const hasLoadedRef = useRef(false);
   const tickersRef = useRef<string[]>(existingTickers);
@@ -91,6 +112,56 @@ export function useSuggestedFinds(existingTickers: string[]): UseSuggestedFindsR
     [applyResult] // eslint-disable-line react-hooks/exhaustive-deps
   );
 
+  // Category-focused discovery
+  const discoverCategory = useCallback(
+    async (cat: string) => {
+      setIsCategoryLoading(true);
+      setCategoryStep('idle');
+      setCategoryError(null);
+
+      try {
+        const results = await discoverCategoryStocks(
+          cat,
+          tickersRef.current,
+          (newStep) => setCategoryStep(newStep)
+        );
+        setCategoryCompounders(results);
+      } catch (err) {
+        console.error(`[useSuggestedFinds] Category discovery failed for ${cat}:`, err);
+        setCategoryCompounders([]);
+        setCategoryError('Discovery failed — try again in a moment.');
+      } finally {
+        setIsCategoryLoading(false);
+        setCategoryStep('done');
+      }
+    },
+    []
+  );
+
+  // Reset category results when category changes
+  const handleSetSelectedCategory = useCallback((cat: string | null) => {
+    setSelectedCategory(cat);
+    setCategoryCompounders([]);
+    setCategoryStep('idle');
+    setCategoryError(null);
+  }, []);
+
+  // Compute displayed compounders:
+  // - null/Auto: show all compounders from main discovery
+  // - Category selected + focused results exist: show focused results
+  // - Category selected + no focused results: filter main compounders by category
+  const displayedCompounders = useMemo(() => {
+    if (!selectedCategory) return compounders;
+    if (categoryCompounders.length > 0) return categoryCompounders;
+
+    // Filter existing compounders by category (fuzzy match)
+    const catLower = selectedCategory.toLowerCase();
+    return compounders.filter((s) =>
+      s.category?.toLowerCase().includes(catLower) ||
+      catLower.includes(s.category?.toLowerCase() ?? '')
+    );
+  }, [selectedCategory, compounders, categoryCompounders]);
+
   // Initial load
   useEffect(() => {
     if (hasLoadedRef.current) return;
@@ -104,11 +175,14 @@ export function useSuggestedFinds(existingTickers: string[]): UseSuggestedFindsR
 
   const refresh = useCallback(() => {
     clearDiscoveryCache();
+    setSelectedCategory(null);
+    setCategoryCompounders([]);
     fetchSuggestions(true);
   }, [fetchSuggestions]);
 
   return {
     compounders,
+    displayedCompounders,
     goldMines,
     currentTheme,
     isLoading,
@@ -117,5 +191,13 @@ export function useSuggestedFinds(existingTickers: string[]): UseSuggestedFindsR
     step,
     stepLabel: STEP_LABELS[step] || '',
     refresh,
+    // Category support
+    selectedCategory,
+    setSelectedCategory: handleSetSelectedCategory,
+    isCategoryLoading,
+    categoryStep,
+    categoryStepLabel: STEP_LABELS[categoryStep] || '',
+    categoryError,
+    discoverCategory,
   };
 }

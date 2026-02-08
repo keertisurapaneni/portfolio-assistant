@@ -20,7 +20,7 @@ const DAILY_SUGGESTIONS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1
 const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
 // Cache config
-const PROMPT_VERSION = 7; // v7: Gold Mines — theme-first approach, quality beneficiaries not headline mentions
+const PROMPT_VERSION = 8; // v8: Compounders — conviction ranking, valuation/AI impact, category support, flexible count (3-8)
 const CACHE_KEY = `gemini-discovery-v${PROMPT_VERSION}`;
 const CACHE_DURATION = 1000 * 60 * 60 * 24; // 24 hours
 
@@ -117,16 +117,52 @@ async function fetchFinnhub(
 // Step 1a: HuggingFace suggests compounder candidates (tickers only)
 // ──────────────────────────────────────────────────────────
 
+// Industry categories for Quiet Compounders — used by dropdown + prompts
+export const COMPOUNDER_CATEGORIES = [
+  'Industrial Services',
+  'Distribution & Logistics',
+  'Waste Management',
+  'Utilities',
+  'Insurance',
+  'HVAC & Building Services',
+  'Food Distribution',
+  'Specialty Chemicals',
+  'Water & Environmental',
+] as const;
+
+export type CompounderCategory = (typeof COMPOUNDER_CATEGORIES)[number];
+
 function buildCandidatePrompt(excludeTickers: string[]): string {
   const exclude = excludeTickers.length > 0
     ? `\nEXCLUDE these tickers (user already owns them): ${excludeTickers.join(', ')}`
     : '';
 
-  return `You are a stock screener. Identify 10 US-listed tickers that could be "Quiet Compounders."
+  return `You are a stock screener. Identify 12 US-listed tickers that could be "Quiet Compounders."
 
 Criteria for candidates:
-- Boring, unglamorous industries: logistics, waste, utilities, insurance, distribution, industrial services, food distribution, HVAC, pest control, water treatment
+- Boring, unglamorous industries: logistics, waste, utilities, insurance, distribution, industrial services, food distribution, HVAC, pest control, water treatment, specialty chemicals
 - Known for consistent profitability and stable operations
+- Must NOT be a business at risk of AI disruption (e.g., call centers, manual data entry, commoditized content). AI should be neutral-to-positive for the business.
+- NOT mega-caps: exclude AAPL, MSFT, GOOGL, AMZN, META, NVDA, TSLA, BRK
+- NOT banks, REITs, or ETFs
+- Must be liquid US-listed stocks
+${exclude}
+
+Return ONLY a JSON array of 12 ticker symbols. No explanations, no other text.
+Example: ["ODFL", "POOL", "WSO", "TJX", "WM", "ROL", "FAST"]`;
+}
+
+function buildCategoryCandidatePrompt(category: string, excludeTickers: string[]): string {
+  const exclude = excludeTickers.length > 0
+    ? `\nEXCLUDE these tickers: ${excludeTickers.join(', ')}`
+    : '';
+
+  return `You are a stock screener. Identify 10 US-listed tickers in the "${category}" industry that could be "Quiet Compounders."
+
+Criteria for candidates:
+- Must be in or closely related to the "${category}" sector
+- Known for consistent profitability and stable operations
+- Must NOT be a business at risk of AI disruption. AI should be neutral-to-positive for the business.
 - NOT mega-caps: exclude AAPL, MSFT, GOOGL, AMZN, META, NVDA, TSLA, BRK
 - NOT banks, REITs, or ETFs
 - Must be liquid US-listed stocks
@@ -223,6 +259,8 @@ RULES:
 - Do not reference news, macro trends, or market sentiment.
 - Be concise and factual. No narratives, hype, or storytelling.
 - If a metric is missing, note it — do not guess.
+- A great business at a bad price is NOT a great buy. Consider P/E relative to growth rate. PEG < 1.5 is attractive. P/E below sector average is a plus.
+- Always include P/E as one of the 3 visible metrics.
 
 QUALIFYING CRITERIA for Quiet Compounders:
 - ROE > 12% (proxy for ROIC durability)
@@ -230,11 +268,20 @@ QUALIFYING CRITERIA for Quiet Compounders:
 - Beta < 1.3 (low volatility, stable business)
 - Positive EPS (profitable)
 - Consistent revenue or EPS growth is a plus
+- Reasonable valuation (P/E not stretched relative to growth)
 
 FINNHUB DATA:
 ${stockDataBlock}
 
-TASK: Select the 6 strongest Quiet Compounders from the data above. For each, explain WHY using only the numbers provided.
+TASK: Select only the stocks you'd genuinely recommend buying TODAY. Be selective — quality over quantity. Return 3-8 stocks maximum. Only include stocks where BOTH the business quality AND the current valuation make it a genuine buy.
+
+For each stock, assign:
+- "conviction" (1-10): How strongly you'd recommend buying NOW, considering both business quality and current valuation
+- "valuationTag": One of "Deep Value", "Undervalued", "Fair Value", "Fully Valued" — based on P/E relative to growth (PEG concept) and sector norms
+- "aiImpact": One of "Strong Tailwind", "Tailwind", "Neutral" — how AI affects this business
+- "category": The industry category (e.g., "Industrial Services", "Distribution & Logistics", "Waste Management", "Utilities", "Insurance", "HVAC & Building Services", "Food Distribution", "Specialty Chemicals", "Water & Environmental")
+
+Return stocks sorted by conviction (highest first).
 
 Return ONLY valid JSON:
 {
@@ -244,21 +291,25 @@ Return ONLY valid JSON:
       "name": "Company Name",
       "tag": "Quiet Compounder",
       "reason": "One factual sentence citing specific metrics from the data above",
+      "category": "Industry Category",
+      "conviction": 9,
+      "valuationTag": "Undervalued",
+      "aiImpact": "Neutral",
       "whyGreat": [
         "Specific metric-backed point (e.g. 'ROE of 22% indicates durable capital efficiency')",
         "Second metric-backed point",
         "Third metric-backed point"
       ],
       "metrics": [
+        { "label": "P/E", "value": "18.5" },
         { "label": "ROE", "value": "22%" },
-        { "label": "Profit Margin", "value": "15%" },
-        { "label": "Beta", "value": "0.85" }
+        { "label": "Profit Margin", "value": "15%" }
       ]
     }
   ]
 }
 
-Return exactly 6 stocks. Each must have 3 whyGreat points and 3 metrics — all sourced from the data above. Do NOT fabricate numbers.`;
+Return 3-8 stocks. Each must have 3 whyGreat points and 3 metrics (P/E must be one of them) — all sourced from the data above. Do NOT fabricate numbers.`;
 }
 
 // ──────────────────────────────────────────────────────────
@@ -463,11 +514,15 @@ function parseCompounderResponse(raw: string): EnhancedSuggestedStock[] {
   const stocks = parsed.stocks || parsed;
   if (!Array.isArray(stocks)) throw new Error('Expected stocks array');
 
-  return stocks.map((s: Record<string, unknown>) => ({
+  const results = stocks.map((s: Record<string, unknown>) => ({
     ticker: String(s.ticker || '').toUpperCase(),
     name: String(s.name || ''),
     tag: 'Quiet Compounder' as const,
     reason: String(s.reason || ''),
+    category: s.category ? String(s.category) : undefined,
+    conviction: typeof s.conviction === 'number' ? s.conviction : undefined,
+    valuationTag: s.valuationTag ? String(s.valuationTag) : undefined,
+    aiImpact: s.aiImpact ? String(s.aiImpact) : undefined,
     whyGreat: Array.isArray(s.whyGreat) ? s.whyGreat.map(String) : [],
     metrics: Array.isArray(s.metrics)
       ? (s.metrics as Array<{ label: string; value: string }>).map((m) => ({
@@ -476,6 +531,9 @@ function parseCompounderResponse(raw: string): EnhancedSuggestedStock[] {
         }))
       : [],
   }));
+
+  // Sort by conviction (highest first)
+  return results.sort((a, b) => (b.conviction ?? 0) - (a.conviction ?? 0));
 }
 
 // Parse step A: Gold Mine candidate tickers + theme
@@ -565,9 +623,11 @@ function parseCandidateTickers(raw: string): string[] {
 // ──────────────────────────────────────────────────────────
 
 // Server-side cache: shared across ALL users for the day
-async function getServerCachedDiscovery(): Promise<DiscoveryResult | null> {
+// category param: 'auto' for main discovery, or a slugified category name
+async function getServerCachedDiscovery(category = 'auto'): Promise<DiscoveryResult | null> {
   try {
-    const response = await fetch(DAILY_SUGGESTIONS_URL, {
+    const url = `${DAILY_SUGGESTIONS_URL}?category=${encodeURIComponent(category)}`;
+    const response = await fetch(url, {
       method: 'GET',
       headers: {
         Authorization: `Bearer ${SUPABASE_KEY}`,
@@ -578,7 +638,7 @@ async function getServerCachedDiscovery(): Promise<DiscoveryResult | null> {
 
     const result = await response.json();
     if (result.cached && result.data) {
-      console.log(`[Discovery] Server cache HIT for ${result.date}`);
+      console.log(`[Discovery] Server cache HIT for ${result.date} category=${category}`);
       return result.data as DiscoveryResult;
     }
   } catch (err) {
@@ -587,7 +647,7 @@ async function getServerCachedDiscovery(): Promise<DiscoveryResult | null> {
   return null;
 }
 
-async function storeServerCache(data: DiscoveryResult): Promise<void> {
+async function storeServerCache(data: DiscoveryResult | EnhancedSuggestedStock[], category = 'auto'): Promise<void> {
   try {
     await fetch(DAILY_SUGGESTIONS_URL, {
       method: 'POST',
@@ -596,12 +656,36 @@ async function storeServerCache(data: DiscoveryResult): Promise<void> {
         Authorization: `Bearer ${SUPABASE_KEY}`,
         apikey: SUPABASE_KEY,
       },
-      body: JSON.stringify({ data }),
+      body: JSON.stringify({ data, category }),
     });
-    console.log('[Discovery] Stored results in server cache');
+    console.log(`[Discovery] Stored results in server cache category=${category}`);
   } catch (err) {
     console.warn('[Discovery] Failed to store server cache:', err);
   }
+}
+
+// Server cache for category-specific compounder results
+async function getServerCachedCategory(categorySlug: string): Promise<EnhancedSuggestedStock[] | null> {
+  try {
+    const url = `${DAILY_SUGGESTIONS_URL}?category=${encodeURIComponent(categorySlug)}`;
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${SUPABASE_KEY}`,
+        apikey: SUPABASE_KEY,
+      },
+    });
+    if (!response.ok) return null;
+
+    const result = await response.json();
+    if (result.cached && result.data) {
+      console.log(`[Discovery] Server cache HIT for category=${categorySlug}`);
+      return result.data as EnhancedSuggestedStock[];
+    }
+  } catch (err) {
+    console.warn('[Discovery] Category server cache check failed:', err);
+  }
+  return null;
 }
 
 // Local cache: fast fallback for same user within the day
@@ -619,6 +703,34 @@ function getLocalCachedDiscovery(): CachedDiscovery | null {
 function cacheLocalDiscovery(data: DiscoveryResult): void {
   try {
     localStorage.setItem(CACHE_KEY, JSON.stringify({ data, timestamp: new Date().toISOString() }));
+  } catch { /* storage full */ }
+}
+
+// Category-specific local cache
+function getCategoryLocalCacheKey(slug: string): string {
+  return `${CACHE_KEY}-cat-${slug}`;
+}
+
+function getLocalCachedCategory(slug: string): EnhancedSuggestedStock[] | null {
+  try {
+    const raw = localStorage.getItem(getCategoryLocalCacheKey(slug));
+    if (!raw) return null;
+    const cached = JSON.parse(raw);
+    const age = Date.now() - new Date(cached.timestamp).getTime();
+    if (age < CACHE_DURATION) {
+      const data = cached.data as EnhancedSuggestedStock[];
+      return data.length > 0 ? data : null; // Treat cached empty results as a miss
+    }
+  } catch { /* invalid cache */ }
+  return null;
+}
+
+function cacheLocalCategory(slug: string, data: EnhancedSuggestedStock[]): void {
+  try {
+    localStorage.setItem(
+      getCategoryLocalCacheKey(slug),
+      JSON.stringify({ data, timestamp: new Date().toISOString() })
+    );
   } catch { /* storage full */ }
 }
 
@@ -772,11 +884,88 @@ export async function discoverStocks(
   return result;
 }
 
+// ──────────────────────────────────────────────────────────
+// Category-focused discovery — compounders only, single industry
+// ──────────────────────────────────────────────────────────
+
+function slugifyCategory(category: string): string {
+  return category.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+}
+
+export async function discoverCategoryStocks(
+  category: string,
+  excludeTickers: string[],
+  onStep?: (step: DiscoveryStep) => void
+): Promise<EnhancedSuggestedStock[]> {
+  const slug = slugifyCategory(category);
+
+  // Cache check: local → server
+  const localCached = getLocalCachedCategory(slug);
+  if (localCached) {
+    console.log(`[Discovery] Category local cache HIT for ${slug}`);
+    onStep?.('done');
+    return localCached;
+  }
+
+  const serverCached = await getServerCachedCategory(slug);
+  if (serverCached) {
+    console.log(`[Discovery] Category server cache HIT for ${slug}`);
+    cacheLocalCategory(slug, serverCached);
+    onStep?.('done');
+    return serverCached;
+  }
+
+  // No cache — run compounder pipeline for this category
+  console.log(`[Discovery] No cache for category=${slug} — generating...`);
+
+  // Step 1: Category-focused candidate tickers
+  onStep?.('finding_candidates');
+  const candidateRaw = await callHuggingFace(
+    buildCategoryCandidatePrompt(category, excludeTickers),
+    'discover_compounders',
+    0.5,
+    1000
+  );
+  const candidateTickers = parseCandidateTickers(candidateRaw);
+  console.log(`[Discovery] Category candidates (${slug}): ${candidateTickers.join(', ')}`);
+
+  // Step 2: Fetch Finnhub metrics
+  onStep?.('fetching_metrics');
+  const metricsData = await fetchMetricsForTickers(candidateTickers);
+  const validMetrics = metricsData.filter(
+    (m) => m.roe !== null || m.profitMargin !== null || m.eps !== null
+  );
+  console.log(`[Discovery] Got metrics for ${validMetrics.length}/${candidateTickers.length} (${slug})`);
+
+  // Step 3: Analyze with real data
+  onStep?.('analyzing_compounders');
+  await new Promise((r) => setTimeout(r, 2000));
+
+  const compounderRaw = await callHuggingFace(
+    buildCompounderAnalysisPrompt(validMetrics),
+    'discover_compounders',
+    0.3,
+    4000
+  );
+  const compounders = parseCompounderResponse(compounderRaw);
+
+  console.log(`[Discovery] Category ${slug} done: ${compounders.length} compounders`);
+
+  // Store in both caches (skip if empty — let the user retry)
+  if (compounders.length > 0) {
+    cacheLocalCategory(slug, compounders);
+    storeServerCache(compounders, slug); // Fire-and-forget
+  }
+
+  onStep?.('done');
+  return compounders;
+}
+
 // Auto-clear stale cache from old versions
 try {
   for (let i = 0; i < localStorage.length; i++) {
     const key = localStorage.key(i);
-    if (key && key.startsWith('gemini-') && key !== CACHE_KEY) {
+    if (key && key.startsWith('gemini-') && key !== CACHE_KEY && !key.startsWith(`${CACHE_KEY}-cat-`)) {
       localStorage.removeItem(key);
     }
   }

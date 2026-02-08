@@ -16,7 +16,10 @@ export interface ThemeCategory {
 
 export interface EnhancedSuggestedStock extends SuggestedStock {
   whyGreat: string[]; // Bullet points explaining why this is a great find
-  category?: string; // For Gold Mine: which part of the value chain
+  category?: string; // Industry category (Compounders) or value chain position (Gold Mines)
+  conviction?: number; // 1-10 buy conviction score
+  valuationTag?: string; // "Deep Value" | "Undervalued" | "Fair Value" | "Fully Valued"
+  aiImpact?: string; // "Strong Tailwind" | "Tailwind" | "Neutral"
   metrics?: {
     label: string;
     value: string;

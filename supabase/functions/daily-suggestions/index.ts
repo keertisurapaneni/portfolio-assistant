@@ -1,6 +1,7 @@
 // Daily Suggestions Cache Edge Function
-// GET: Return today's cached suggestions (or 404 if none)
-// POST: Store suggestions for today (first visitor generates, others read)
+// GET: Return today's cached suggestions for a given category (default: 'auto')
+// POST: Store suggestions for today+category (first visitor generates, others read)
+// Supports per-category caching via ?category= query param (GET) or body.category (POST)
 
 import { createClient } from 'jsr:@supabase/supabase-js@2';
 
@@ -25,34 +26,39 @@ Deno.serve(async (req) => {
   );
 
   const today = getTodayDate();
+  const url = new URL(req.url);
 
   try {
-    // ── GET: Return today's cached suggestions ──
+    // ── GET: Return today's cached suggestions for a category ──
     if (req.method === 'GET') {
+      const category = url.searchParams.get('category') || 'auto';
+
       const { data, error } = await supabase
         .from('daily_suggestions')
         .select('data, created_at')
         .eq('suggestion_date', today)
+        .eq('category', category)
         .single();
 
       if (error || !data) {
         // Return 200 with cached:false instead of 404 to avoid noisy browser console errors
         return new Response(
-          JSON.stringify({ cached: false, date: today }),
+          JSON.stringify({ cached: false, date: today, category }),
           { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
         );
       }
 
-      console.log(`[Daily Suggestions] Cache HIT for ${today}`);
+      console.log(`[Daily Suggestions] Cache HIT for ${today} category=${category}`);
       return new Response(
-        JSON.stringify({ cached: true, date: today, data: data.data, created_at: data.created_at }),
+        JSON.stringify({ cached: true, date: today, category, data: data.data, created_at: data.created_at }),
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
-    // ── POST: Store today's suggestions ──
+    // ── POST: Store today's suggestions for a category ──
     if (req.method === 'POST') {
       const body = await req.json();
+      const category = body.category || 'auto';
 
       if (!body.data) {
         return new Response(
@@ -61,17 +67,18 @@ Deno.serve(async (req) => {
         );
       }
 
-      // Check if today's data already exists (race condition guard)
+      // Check if today's data already exists for this category (race condition guard)
       const { data: existing } = await supabase
         .from('daily_suggestions')
         .select('id')
         .eq('suggestion_date', today)
+        .eq('category', category)
         .single();
 
       if (existing) {
-        console.log(`[Daily Suggestions] Data for ${today} already exists, skipping write`);
+        console.log(`[Daily Suggestions] Data for ${today} category=${category} already exists, skipping write`);
         return new Response(
-          JSON.stringify({ stored: false, reason: 'already_exists', date: today }),
+          JSON.stringify({ stored: false, reason: 'already_exists', date: today, category }),
           { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
         );
       }
@@ -81,15 +88,16 @@ Deno.serve(async (req) => {
         .from('daily_suggestions')
         .insert({
           suggestion_date: today,
+          category,
           data: body.data,
         });
 
       if (insertError) {
         // Could be a race condition (another request inserted first)
         if (insertError.code === '23505') {
-          console.log(`[Daily Suggestions] Race condition — data already stored for ${today}`);
+          console.log(`[Daily Suggestions] Race condition — data already stored for ${today} category=${category}`);
           return new Response(
-            JSON.stringify({ stored: false, reason: 'already_exists', date: today }),
+            JSON.stringify({ stored: false, reason: 'already_exists', date: today, category }),
             { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
           );
         }
@@ -101,7 +109,7 @@ Deno.serve(async (req) => {
         );
       }
 
-      // Clean up old entries (keep last 7 days)
+      // Clean up old entries (keep last 7 days — all categories)
       const cutoffDate = new Date();
       cutoffDate.setDate(cutoffDate.getDate() - 7);
       const cutoff = cutoffDate.toISOString().split('T')[0];
@@ -111,19 +119,28 @@ Deno.serve(async (req) => {
         .delete()
         .lt('suggestion_date', cutoff);
 
-      console.log(`[Daily Suggestions] Stored data for ${today}`);
+      console.log(`[Daily Suggestions] Stored data for ${today} category=${category}`);
       return new Response(
-        JSON.stringify({ stored: true, date: today }),
+        JSON.stringify({ stored: true, date: today, category }),
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
-    // ── DELETE: Clear today's cache (for regenration after bug fixes) ──
+    // ── DELETE: Clear today's cache (for regeneration after bug fixes) ──
     if (req.method === 'DELETE') {
-      const { error: deleteError } = await supabase
+      const category = url.searchParams.get('category');
+
+      // If category specified, only clear that category; otherwise clear all for today
+      let query = supabase
         .from('daily_suggestions')
         .delete()
         .eq('suggestion_date', today);
+
+      if (category) {
+        query = query.eq('category', category);
+      }
+
+      const { error: deleteError } = await query;
 
       if (deleteError) {
         console.error(`[Daily Suggestions] Delete error:`, deleteError);
@@ -133,9 +150,9 @@ Deno.serve(async (req) => {
         );
       }
 
-      console.log(`[Daily Suggestions] Cleared cache for ${today}`);
+      console.log(`[Daily Suggestions] Cleared cache for ${today}${category ? ` category=${category}` : ' (all categories)'}`);
       return new Response(
-        JSON.stringify({ cleared: true, date: today }),
+        JSON.stringify({ cleared: true, date: today, category: category || 'all' }),
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }

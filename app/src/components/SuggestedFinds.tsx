@@ -7,11 +7,12 @@ import {
   Sparkles,
   RefreshCw,
   AlertCircle,
+  Award,
 } from 'lucide-react';
 import { TickerLabel } from './TickerLabel';
 import { ErrorBanner } from './ErrorBanner';
 import type { EnhancedSuggestedStock } from '../data/suggestedFinds';
-import { useSuggestedFinds } from '../hooks/useSuggestedFinds';
+import { useSuggestedFinds, COMPOUNDER_CATEGORIES } from '../hooks/useSuggestedFinds';
 import { cn } from '../lib/utils';
 
 interface SuggestedFindsProps {
@@ -21,6 +22,7 @@ interface SuggestedFindsProps {
 export function SuggestedFinds({ existingTickers }: SuggestedFindsProps) {
   const {
     compounders,
+    displayedCompounders,
     goldMines,
     currentTheme,
     isLoading,
@@ -29,6 +31,13 @@ export function SuggestedFinds({ existingTickers }: SuggestedFindsProps) {
     step,
     stepLabel,
     refresh,
+    selectedCategory,
+    setSelectedCategory,
+    isCategoryLoading,
+    categoryStep,
+    categoryStepLabel,
+    categoryError,
+    discoverCategory,
   } = useSuggestedFinds(existingTickers);
 
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -140,7 +149,7 @@ export function SuggestedFinds({ existingTickers }: SuggestedFindsProps) {
 
       {/* Quiet Compounders */}
       <section>
-        <div className="flex items-center gap-3 mb-4">
+        <div className="flex items-center gap-3 mb-3">
           <div className="p-2 rounded-lg bg-blue-50">
             <TrendingUp className="w-4 h-4 text-blue-600" />
           </div>
@@ -150,22 +159,71 @@ export function SuggestedFinds({ existingTickers }: SuggestedFindsProps) {
               <AIBadge />
             </div>
             <p className="text-sm text-[hsl(var(--muted-foreground))]">
-              Steady ROIC, low volatility, boring businesses that compound
+              Quality compounders at attractive valuations — ranked by conviction
             </p>
           </div>
         </div>
+
+        {/* Category dropdown */}
+        <div className="mb-4">
+          <select
+            value={selectedCategory ?? ''}
+            onChange={(e) => setSelectedCategory(e.target.value || null)}
+            className="text-sm px-3 py-1.5 rounded-lg border border-[hsl(var(--border))] bg-white text-[hsl(var(--foreground))] focus:outline-none focus:ring-2 focus:ring-blue-200 transition-colors"
+          >
+            <option value="">All Industries</option>
+            {COMPOUNDER_CATEGORIES.map((cat) => (
+              <option key={cat} value={cat}>{cat}</option>
+            ))}
+          </select>
+        </div>
+
         {isLoading && compounders.length === 0 ? (
           <SkeletonCards count={3} />
-        ) : (
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            {compounders.map((stock) => (
-              <StockCard
-                key={stock.ticker}
-                stock={stock}
-                accentColor="blue"
-              />
-            ))}
+        ) : isCategoryLoading ? (
+          <CategoryLoadingState stepLabel={categoryStepLabel} step={categoryStep} />
+        ) : categoryError && selectedCategory ? (
+          <div className="flex flex-col items-center justify-center py-10 text-center">
+            <div className="p-2.5 rounded-full bg-red-50 mb-3">
+              <AlertCircle className="w-5 h-5 text-red-500" />
+            </div>
+            <p className="text-sm text-[hsl(var(--muted-foreground))] mb-3">{categoryError}</p>
+            <button
+              onClick={() => discoverCategory(selectedCategory)}
+              className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-blue-600 text-white hover:bg-blue-700 transition-colors text-sm font-medium"
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+              Retry
+            </button>
           </div>
+        ) : displayedCompounders.length === 0 && selectedCategory ? (
+          <CategoryEmptyState
+            category={selectedCategory}
+            onDiscover={() => discoverCategory(selectedCategory)}
+          />
+        ) : (
+          <>
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              {displayedCompounders.map((stock, idx) => (
+                <StockCard
+                  key={stock.ticker}
+                  stock={stock}
+                  accentColor="blue"
+                  isTopPick={idx === 0 && (stock.conviction ?? 0) >= 8}
+                />
+              ))}
+            </div>
+            {/* Show "Find more" when filtered results are sparse */}
+            {selectedCategory && displayedCompounders.length <= 2 && displayedCompounders.length > 0 && (
+              <button
+                onClick={() => discoverCategory(selectedCategory)}
+                className="mt-4 inline-flex items-center gap-1.5 text-sm text-blue-600 hover:text-blue-700 font-medium transition-colors"
+              >
+                <Sparkles className="w-3.5 h-3.5" />
+                Discover more {selectedCategory} stocks
+              </button>
+            )}
+          </>
         )}
       </section>
 
@@ -315,15 +373,110 @@ function SkeletonCards({ count }: { count: number }) {
 }
 
 // ──────────────────────────────────────────────────────────
-// Stock card — clean card layout, no add button
+// Category loading + empty states
+// ──────────────────────────────────────────────────────────
+
+function CategoryLoadingState({ stepLabel, step }: { stepLabel: string; step: string }) {
+  return (
+    <div className="flex flex-col items-center justify-center py-12 text-center">
+      <div className="p-3 rounded-full bg-blue-50 mb-3">
+        <Sparkles className="w-6 h-6 text-blue-500 animate-pulse" />
+      </div>
+      <p className="text-[hsl(var(--foreground))] font-medium mb-1">Discovering stocks...</p>
+      {stepLabel && (
+        <p className="text-sm text-[hsl(var(--muted-foreground))] animate-pulse">{stepLabel}</p>
+      )}
+      <div className="flex gap-1.5 mt-3">
+        {(['finding_candidates', 'fetching_metrics', 'analyzing_compounders'] as const).map((s) => (
+          <div
+            key={s}
+            className={cn(
+              'w-2 h-2 rounded-full transition-colors duration-300',
+              step === s
+                ? 'bg-blue-500 animate-pulse'
+                : ['finding_candidates', 'fetching_metrics', 'analyzing_compounders'].indexOf(s) <
+                  ['finding_candidates', 'fetching_metrics', 'analyzing_compounders'].indexOf(step as typeof s)
+                  ? 'bg-blue-400'
+                  : 'bg-[hsl(var(--secondary))]'
+            )}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function CategoryEmptyState({ category, onDiscover }: { category: string; onDiscover: () => void }) {
+  return (
+    <div className="flex flex-col items-center justify-center py-12 text-center">
+      <p className="text-[hsl(var(--muted-foreground))] mb-3">
+        No compounders found in <span className="font-medium text-[hsl(var(--foreground))]">{category}</span> from the current batch.
+      </p>
+      <button
+        onClick={onDiscover}
+        className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-blue-600 text-white hover:bg-blue-700 transition-colors text-sm font-medium"
+      >
+        <Sparkles className="w-4 h-4" />
+        Discover {category} Stocks
+      </button>
+    </div>
+  );
+}
+
+// ──────────────────────────────────────────────────────────
+// Conviction badge (reusable)
+// ──────────────────────────────────────────────────────────
+
+function ConvictionBadge({ score }: { score: number }) {
+  const bg = score >= 7 ? 'bg-emerald-100 text-emerald-700' : score >= 4 ? 'bg-amber-100 text-amber-700' : 'bg-red-100 text-red-700';
+  return (
+    <span className={cn('inline-flex items-center justify-center w-7 h-7 rounded-full text-xs font-bold', bg)}>
+      {score}
+    </span>
+  );
+}
+
+// ──────────────────────────────────────────────────────────
+// Valuation + AI impact pills (reusable)
+// ──────────────────────────────────────────────────────────
+
+function ValuationPill({ tag }: { tag: string }) {
+  const style =
+    tag === 'Deep Value' || tag === 'Undervalued'
+      ? 'bg-emerald-50 text-emerald-700'
+      : tag === 'Fair Value'
+        ? 'bg-gray-100 text-gray-600'
+        : 'bg-orange-50 text-orange-700';
+  return (
+    <span className={cn('text-[10px] px-2 py-0.5 rounded-full font-medium', style)}>
+      {tag}
+    </span>
+  );
+}
+
+function AIImpactPill({ impact }: { impact: string }) {
+  const style =
+    impact === 'Strong Tailwind' || impact === 'Tailwind'
+      ? 'bg-sky-50 text-sky-700'
+      : 'bg-gray-100 text-gray-600';
+  return (
+    <span className={cn('text-[10px] px-2 py-0.5 rounded-full font-medium', style)}>
+      AI: {impact}
+    </span>
+  );
+}
+
+// ──────────────────────────────────────────────────────────
+// Stock card — clean card layout with conviction + badges
 // ──────────────────────────────────────────────────────────
 
 interface StockCardProps {
   stock: EnhancedSuggestedStock;
   accentColor: 'blue' | 'amber';
+  isTopPick?: boolean;
 }
 
-function StockCard({ stock, accentColor }: StockCardProps) {
+function StockCard({ stock, accentColor, isTopPick }: StockCardProps) {
   const [isExpanded, setIsExpanded] = useState(false);
 
   const borderHover = accentColor === 'blue' ? 'hover:border-blue-200' : 'hover:border-amber-200';
@@ -333,21 +486,41 @@ function StockCard({ stock, accentColor }: StockCardProps) {
   return (
     <div
       className={cn(
-        'bg-white rounded-2xl border border-[hsl(var(--border))] p-5 transition-all shadow-sm',
+        'bg-white rounded-2xl border border-[hsl(var(--border))] p-5 transition-all shadow-sm relative',
         borderHover,
-        isExpanded && 'shadow-md'
+        isExpanded && 'shadow-md',
+        isTopPick && 'ring-2 ring-emerald-200 border-emerald-200'
       )}
     >
-      {/* Header: Ticker + Name + Yahoo link */}
-      <div className="mb-2">
+      {/* Top Pick label */}
+      {isTopPick && (
+        <div className="absolute -top-2.5 left-4 inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-500 text-white text-[10px] font-semibold shadow-sm">
+          <Award className="w-3 h-3" />
+          Top Pick
+        </div>
+      )}
+
+      {/* Header: Ticker + Name + Conviction */}
+      <div className="flex items-start justify-between mb-2">
         <TickerLabel ticker={stock.ticker} name={stock.name} />
+        {stock.conviction != null && (
+          <ConvictionBadge score={stock.conviction} />
+        )}
       </div>
 
-      {/* Category badge for Gold Mines */}
+      {/* Category badge */}
       {stock.category && (
-        <span className={cn('inline-block text-[10px] px-2 py-0.5 rounded-full font-medium mb-2', tagBg)}>
+        <span className={cn('inline-block text-[10px] px-2 py-0.5 rounded-full font-medium mb-1.5', tagBg)}>
           {stock.category}
         </span>
+      )}
+
+      {/* Valuation + AI Impact pills */}
+      {(stock.valuationTag || stock.aiImpact) && (
+        <div className="flex flex-wrap gap-1 mb-2">
+          {stock.valuationTag && <ValuationPill tag={stock.valuationTag} />}
+          {stock.aiImpact && <AIImpactPill impact={stock.aiImpact} />}
+        </div>
       )}
 
       {/* Reason / one-liner */}
