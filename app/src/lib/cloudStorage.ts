@@ -133,3 +133,41 @@ export async function cloudImportStocksWithPositions(
 
   return { added, updated, skipped };
 }
+
+/**
+ * Migrate guest (localStorage) stocks to cloud for a newly authenticated user.
+ * Only runs if the cloud portfolio is empty and localStorage has stocks.
+ * Returns the number of stocks migrated, or 0 if nothing to migrate.
+ */
+export async function migrateGuestToCloud(): Promise<number> {
+  const cloudStocks = await getCloudPortfolio();
+  if (cloudStocks.length > 0) return 0; // Cloud already has data — no migration needed
+
+  // Read localStorage stocks
+  const STORAGE_KEY = 'portfolio-assistant-data';
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return 0;
+    const localData = JSON.parse(raw);
+    const localStocks: Array<{ ticker: string; name?: string; shares?: number; avgCost?: number }> =
+      (localData?.stocks ?? []);
+    if (localStocks.length === 0) return 0;
+
+    console.log(`[CloudStorage] Migrating ${localStocks.length} guest stocks to cloud...`);
+
+    const result = await cloudImportStocksWithPositions(
+      localStocks.map(s => ({
+        ticker: s.ticker,
+        name: s.name,
+        shares: s.shares,
+        avgCost: s.avgCost,
+      }))
+    );
+
+    console.log(`[CloudStorage] Migration complete: ${result.added.length} added, ${result.updated.length} updated`);
+    return result.added.length + result.updated.length;
+  } catch (err) {
+    console.error('[CloudStorage] Guest migration failed:', err);
+    return 0;
+  }
+}

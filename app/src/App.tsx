@@ -5,7 +5,7 @@ import { Analytics } from '@vercel/analytics/react';
 import { Activity, Briefcase, Brain, Lightbulb, RefreshCw, TrendingUp, User, LogOut, ChevronDown } from 'lucide-react';
 import type { StockWithConviction, RiskProfile } from './types';
 import { getUserData, addTickers, updateStock, removeStock, clearAllData, importStocksWithPositions } from './lib/storage';
-import { getCloudUserData, cloudAddTickers, cloudRemoveTicker, cloudClearAll } from './lib/cloudStorage';
+import { getCloudUserData, cloudAddTickers, cloudRemoveTicker, cloudClearAll, migrateGuestToCloud } from './lib/cloudStorage';
 import { getConvictionResult } from './lib/convictionEngine';
 import { calculatePortfolioWeights } from './lib/portfolioCalc';
 import { fetchMultipleStocks } from './lib/stockApiEdge';
@@ -96,6 +96,8 @@ function AppContent() {
     const localData = getUserData(); // Always read — has cached market data
     let data;
     if (isAuthed) {
+      // Migrate guest portfolio to cloud on first login (if cloud is empty)
+      await migrateGuestToCloud();
       const cloudData = await getCloudUserData();
       // Merge: cloud positions + localStorage cached market data
       data = {
