@@ -5,7 +5,7 @@ import type { SuggestedStock } from '../types';
  * Updated periodically by the power user.
  *
  * Tag Definitions:
- * - Quiet Compounder: Steady ROIC > 15%, low volatility, boring business that compounds quietly
+ * - Steady Compounder: AI-proof, steady ROIC > 15%, low volatility, boring business that compounds quietly
  * - Gold Mine: Theme-driven opportunities — stocks positioned to benefit from dominant market themes
  */
 
@@ -44,7 +44,7 @@ export const quietCompounders: EnhancedSuggestedStock[] = [
   {
     ticker: 'ODFL',
     name: 'Old Dominion Freight Line',
-    tag: 'Quiet Compounder',
+    tag: 'Steady Compounder',
     reason: 'Best-in-class LTL trucking, 20%+ ROIC, disciplined growth',
     whyGreat: [
       'Industry-leading operating ratio (~70%) vs competitors at 80%+',
@@ -61,7 +61,7 @@ export const quietCompounders: EnhancedSuggestedStock[] = [
   {
     ticker: 'POOL',
     name: 'Pool Corporation',
-    tag: 'Quiet Compounder',
+    tag: 'Steady Compounder',
     reason: 'Swimming pool supplies monopoly, recurring revenue, 25+ year dividend growth',
     whyGreat: [
       'Dominant distributor with 40%+ market share in fragmented industry',
@@ -78,7 +78,7 @@ export const quietCompounders: EnhancedSuggestedStock[] = [
   {
     ticker: 'WSO',
     name: 'Watsco Inc',
-    tag: 'Quiet Compounder',
+    tag: 'Steady Compounder',
     reason: 'HVAC distribution leader, essential service, steady cash flows',
     whyGreat: [
       'Largest HVAC distributor in North America — essential infrastructure',
@@ -95,7 +95,7 @@ export const quietCompounders: EnhancedSuggestedStock[] = [
   {
     ticker: 'TJX',
     name: 'TJX Companies',
-    tag: 'Quiet Compounder',
+    tag: 'Steady Compounder',
     reason: 'Off-price retail king, recession-resistant, expanding margins',
     whyGreat: [
       'Off-price model thrives in both good times (treasure hunt) and bad (value seeking)',

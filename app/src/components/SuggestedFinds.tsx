@@ -12,7 +12,7 @@ import {
 import { TickerLabel } from './TickerLabel';
 import { ErrorBanner } from './ErrorBanner';
 import type { EnhancedSuggestedStock } from '../data/suggestedFinds';
-import { useSuggestedFinds, COMPOUNDER_CATEGORIES } from '../hooks/useSuggestedFinds';
+import { useSuggestedFinds, COMPOUNDER_CATEGORIES, GOLD_MINE_CATEGORIES } from '../hooks/useSuggestedFinds';
 import { cn } from '../lib/utils';
 
 interface SuggestedFindsProps {
@@ -24,6 +24,7 @@ export function SuggestedFinds({ existingTickers }: SuggestedFindsProps) {
     compounders,
     displayedCompounders,
     goldMines,
+    displayedGoldMines,
     currentTheme,
     isLoading,
     error,
@@ -38,6 +39,13 @@ export function SuggestedFinds({ existingTickers }: SuggestedFindsProps) {
     categoryStepLabel,
     categoryError,
     discoverCategory,
+    selectedGoldMineCategory,
+    setSelectedGoldMineCategory,
+    isGoldMineCategoryLoading,
+    goldMineCategoryStep,
+    goldMineCategoryStepLabel,
+    goldMineCategoryError,
+    discoverGoldMineCategory,
   } = useSuggestedFinds(existingTickers);
 
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -147,7 +155,7 @@ export function SuggestedFinds({ existingTickers }: SuggestedFindsProps) {
         onRefresh={handleRefresh}
       />
 
-      {/* Quiet Compounders */}
+      {/* Steady Compounders */}
       <section>
         <div className="flex items-center gap-3 mb-3">
           <div className="p-2 rounded-lg bg-blue-50">
@@ -155,11 +163,10 @@ export function SuggestedFinds({ existingTickers }: SuggestedFindsProps) {
           </div>
           <div className="flex-1">
             <div className="flex items-center gap-2">
-              <h3 className="font-semibold text-[hsl(var(--foreground))]">Quiet Compounders</h3>
-              <AIBadge />
+              <h3 className="font-semibold text-[hsl(var(--foreground))]">Steady Compounders</h3>
             </div>
             <p className="text-sm text-[hsl(var(--muted-foreground))]">
-              Quality compounders at attractive valuations — ranked by conviction
+              AI-proof businesses in boring industries — built to compound, not to hype
             </p>
           </div>
         </div>
@@ -229,23 +236,36 @@ export function SuggestedFinds({ existingTickers }: SuggestedFindsProps) {
 
       {/* Gold Mines */}
       <section>
-        <div className="flex items-center gap-3 mb-2">
+        <div className="flex items-center gap-3 mb-3">
           <div className="p-2 rounded-lg bg-amber-50">
             <Gem className="w-4 h-4 text-amber-600" />
           </div>
           <div className="flex-1">
             <div className="flex items-center gap-2">
               <h3 className="font-semibold text-[hsl(var(--foreground))]">Gold Mines</h3>
-              <AIBadge />
             </div>
             <p className="text-sm text-[hsl(var(--muted-foreground))]">
-              Theme-driven opportunities
+              High-conviction picks across all sectors
             </p>
           </div>
         </div>
 
-        {/* Dynamic theme context */}
-        {currentTheme && (
+        {/* Category dropdown */}
+        <div className="mb-4">
+          <select
+            value={selectedGoldMineCategory ?? ''}
+            onChange={(e) => setSelectedGoldMineCategory(e.target.value || null)}
+            className="text-sm px-3 py-1.5 rounded-lg border border-[hsl(var(--border))] bg-white text-[hsl(var(--foreground))] focus:outline-none focus:ring-2 focus:ring-amber-200 transition-colors"
+          >
+            <option value="">Today&apos;s Theme</option>
+            {GOLD_MINE_CATEGORIES.map((cat) => (
+              <option key={cat} value={cat}>{cat}</option>
+            ))}
+          </select>
+        </div>
+
+        {/* Dynamic theme context — only in Auto/Theme mode */}
+        {!selectedGoldMineCategory && currentTheme && (
           <div className="text-sm text-amber-700 bg-amber-50 px-4 py-2.5 rounded-lg mb-4 border border-amber-100">
             <div className="flex items-center gap-1.5 mb-0.5">
               <span className="font-medium">Current theme:</span>
@@ -258,16 +278,50 @@ export function SuggestedFinds({ existingTickers }: SuggestedFindsProps) {
 
         {isLoading && goldMines.length === 0 ? (
           <SkeletonCards count={3} />
-        ) : (
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            {goldMines.map((stock) => (
-              <StockCard
-                key={stock.ticker}
-                stock={stock}
-                accentColor="amber"
-              />
-            ))}
+        ) : isGoldMineCategoryLoading ? (
+          <CategoryLoadingState stepLabel={goldMineCategoryStepLabel} step={goldMineCategoryStep} accentColor="amber" />
+        ) : goldMineCategoryError && selectedGoldMineCategory ? (
+          <div className="flex flex-col items-center justify-center py-10 text-center">
+            <div className="p-2.5 rounded-full bg-red-50 mb-3">
+              <AlertCircle className="w-5 h-5 text-red-500" />
+            </div>
+            <p className="text-sm text-[hsl(var(--muted-foreground))] mb-3">{goldMineCategoryError}</p>
+            <button
+              onClick={() => discoverGoldMineCategory(selectedGoldMineCategory)}
+              className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-amber-600 text-white hover:bg-amber-700 transition-colors text-sm font-medium"
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+              Retry
+            </button>
           </div>
+        ) : displayedGoldMines.length === 0 && selectedGoldMineCategory ? (
+          <CategoryEmptyState
+            category={selectedGoldMineCategory}
+            onDiscover={() => discoverGoldMineCategory(selectedGoldMineCategory)}
+            accentColor="amber"
+          />
+        ) : (
+          <>
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              {displayedGoldMines.map((stock, idx) => (
+                <StockCard
+                  key={stock.ticker}
+                  stock={stock}
+                  accentColor="amber"
+                  isTopPick={idx === 0 && (stock.conviction ?? 0) >= 8}
+                />
+              ))}
+            </div>
+            {selectedGoldMineCategory && displayedGoldMines.length <= 2 && displayedGoldMines.length > 0 && (
+              <button
+                onClick={() => discoverGoldMineCategory(selectedGoldMineCategory)}
+                className="mt-4 inline-flex items-center gap-1.5 text-sm text-amber-600 hover:text-amber-700 font-medium transition-colors"
+              >
+                <Sparkles className="w-3.5 h-3.5" />
+                Discover more {selectedGoldMineCategory} stocks
+              </button>
+            )}
+          </>
         )}
       </section>
 
@@ -332,19 +386,6 @@ function Header({
 }
 
 // ──────────────────────────────────────────────────────────
-// AI-powered badge
-// ──────────────────────────────────────────────────────────
-
-function AIBadge() {
-  return (
-    <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-medium bg-violet-50 text-violet-500">
-      <Sparkles className="w-2.5 h-2.5" />
-      AI
-    </span>
-  );
-}
-
-// ──────────────────────────────────────────────────────────
 // Loading skeleton cards
 // ──────────────────────────────────────────────────────────
 
@@ -376,11 +417,16 @@ function SkeletonCards({ count }: { count: number }) {
 // Category loading + empty states
 // ──────────────────────────────────────────────────────────
 
-function CategoryLoadingState({ stepLabel, step }: { stepLabel: string; step: string }) {
+function CategoryLoadingState({ stepLabel, step, accentColor = 'blue' }: { stepLabel: string; step: string; accentColor?: 'blue' | 'amber' }) {
+  const bg = accentColor === 'amber' ? 'bg-amber-50' : 'bg-blue-50';
+  const iconColor = accentColor === 'amber' ? 'text-amber-500' : 'text-blue-500';
+  const dotActive = accentColor === 'amber' ? 'bg-amber-500' : 'bg-blue-500';
+  const dotDone = accentColor === 'amber' ? 'bg-amber-400' : 'bg-blue-400';
+
   return (
     <div className="flex flex-col items-center justify-center py-12 text-center">
-      <div className="p-3 rounded-full bg-blue-50 mb-3">
-        <Sparkles className="w-6 h-6 text-blue-500 animate-pulse" />
+      <div className={cn('p-3 rounded-full mb-3', bg)}>
+        <Sparkles className={cn('w-6 h-6 animate-pulse', iconColor)} />
       </div>
       <p className="text-[hsl(var(--foreground))] font-medium mb-1">Discovering stocks...</p>
       {stepLabel && (
@@ -393,10 +439,10 @@ function CategoryLoadingState({ stepLabel, step }: { stepLabel: string; step: st
             className={cn(
               'w-2 h-2 rounded-full transition-colors duration-300',
               step === s
-                ? 'bg-blue-500 animate-pulse'
+                ? cn(dotActive, 'animate-pulse')
                 : ['finding_candidates', 'fetching_metrics', 'analyzing_compounders'].indexOf(s) <
                   ['finding_candidates', 'fetching_metrics', 'analyzing_compounders'].indexOf(step as typeof s)
-                  ? 'bg-blue-400'
+                  ? dotDone
                   : 'bg-[hsl(var(--secondary))]'
             )}
           />
@@ -406,15 +452,17 @@ function CategoryLoadingState({ stepLabel, step }: { stepLabel: string; step: st
   );
 }
 
-function CategoryEmptyState({ category, onDiscover }: { category: string; onDiscover: () => void }) {
+function CategoryEmptyState({ category, onDiscover, accentColor = 'blue' }: { category: string; onDiscover: () => void; accentColor?: 'blue' | 'amber' }) {
+  const btnBg = accentColor === 'amber' ? 'bg-amber-600 hover:bg-amber-700' : 'bg-blue-600 hover:bg-blue-700';
+
   return (
     <div className="flex flex-col items-center justify-center py-12 text-center">
       <p className="text-[hsl(var(--muted-foreground))] mb-3">
-        No compounders found in <span className="font-medium text-[hsl(var(--foreground))]">{category}</span> from the current batch.
+        No stocks found in <span className="font-medium text-[hsl(var(--foreground))]">{category}</span> from the current batch.
       </p>
       <button
         onClick={onDiscover}
-        className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-blue-600 text-white hover:bg-blue-700 transition-colors text-sm font-medium"
+        className={cn('inline-flex items-center gap-2 px-4 py-2 rounded-lg text-white transition-colors text-sm font-medium', btnBg)}
       >
         <Sparkles className="w-4 h-4" />
         Discover {category} Stocks

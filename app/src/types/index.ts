@@ -79,7 +79,7 @@ export interface ConvictionResult {
 export interface SuggestedStock {
   ticker: string;
   name: string;
-  tag: 'Quiet Compounder' | 'Gold Mine';
+  tag: 'Steady Compounder' | 'Gold Mine';
   reason: string;
 }
 

@@ -2,7 +2,7 @@
  * AI-Powered Stock Discovery — Grounded in Real Data
  *
  * Architecture:
- *   Quiet Compounders: HuggingFace (candidates) → Finnhub (real metrics) → HuggingFace (analysis on facts)
+ *   Steady Compounders: HuggingFace (candidates) → Finnhub (real metrics) → HuggingFace (analysis on facts)
  *   Gold Mines:        Finnhub (market news) → HuggingFace (theme extraction + stock mapping)
  *
  * Data Source Rules:
@@ -117,7 +117,7 @@ async function fetchFinnhub(
 // Step 1a: HuggingFace suggests compounder candidates (tickers only)
 // ──────────────────────────────────────────────────────────
 
-// Industry categories for Quiet Compounders — used by dropdown + prompts
+// Industry categories for Steady Compounders — used by dropdown + prompts
 export const COMPOUNDER_CATEGORIES = [
   'Industrial Services',
   'Distribution & Logistics',
@@ -132,12 +132,26 @@ export const COMPOUNDER_CATEGORIES = [
 
 export type CompounderCategory = (typeof COMPOUNDER_CATEGORIES)[number];
 
+// Sector categories for Gold Mines — growth / catalyst-oriented
+export const GOLD_MINE_CATEGORIES = [
+  'Tech & Software',
+  'AI & Semiconductors',
+  'Healthcare & Biotech',
+  'Clean Energy',
+  'Consumer Brands',
+  'Financials',
+  'Cybersecurity',
+  'Defense & Aerospace',
+] as const;
+
+export type GoldMineCategory = (typeof GOLD_MINE_CATEGORIES)[number];
+
 function buildCandidatePrompt(excludeTickers: string[]): string {
   const exclude = excludeTickers.length > 0
     ? `\nEXCLUDE these tickers (user already owns them): ${excludeTickers.join(', ')}`
     : '';
 
-  return `You are a stock screener. Identify 12 US-listed tickers that could be "Quiet Compounders."
+  return `You are a stock screener. Identify 12 US-listed tickers that could be "Steady Compounders" — AI-proof businesses in boring industries.
 
 Criteria for candidates:
 - Boring, unglamorous industries: logistics, waste, utilities, insurance, distribution, industrial services, food distribution, HVAC, pest control, water treatment, specialty chemicals
@@ -157,7 +171,7 @@ function buildCategoryCandidatePrompt(category: string, excludeTickers: string[]
     ? `\nEXCLUDE these tickers: ${excludeTickers.join(', ')}`
     : '';
 
-  return `You are a stock screener. Identify 10 US-listed tickers in the "${category}" industry that could be "Quiet Compounders."
+  return `You are a stock screener. Identify 10 US-listed tickers in the "${category}" industry that could be "Steady Compounders" — AI-proof businesses.
 
 Criteria for candidates:
 - Must be in or closely related to the "${category}" sector
@@ -262,7 +276,7 @@ RULES:
 - A great business at a bad price is NOT a great buy. Consider P/E relative to growth rate. PEG < 1.5 is attractive. P/E below sector average is a plus.
 - Always include P/E as one of the 3 visible metrics.
 
-QUALIFYING CRITERIA for Quiet Compounders:
+QUALIFYING CRITERIA for Steady Compounders:
 - ROE > 12% (proxy for ROIC durability)
 - Positive profit margins (net or operating)
 - Beta < 1.3 (low volatility, stable business)
@@ -289,7 +303,7 @@ Return ONLY valid JSON:
     {
       "ticker": "SYM",
       "name": "Company Name",
-      "tag": "Quiet Compounder",
+      "tag": "Steady Compounder",
       "reason": "One factual sentence citing specific metrics from the data above",
       "category": "Industry Category",
       "conviction": 9,
@@ -499,6 +513,92 @@ Analyze all stocks provided. Each must have 3 whyGreat points and 3 metrics — 
 }
 
 // ──────────────────────────────────────────────────────────
+// Gold Mine category-focused prompts (no news dependency)
+// ──────────────────────────────────────────────────────────
+
+function buildGoldMineCategoryCandidatePrompt(category: string, excludeTickers: string[]): string {
+  const exclude = excludeTickers.length > 0
+    ? `\nEXCLUDE these tickers: ${excludeTickers.join(', ')}`
+    : '';
+
+  return `You are a growth stock screener. Identify 10 US-listed tickers in the "${category}" sector that are high-conviction buys with strong near-term catalysts.
+
+Criteria for candidates:
+- Must be in or closely related to the "${category}" sector
+- Strong revenue growth, expanding market, or clear near-term catalyst (product launch, regulatory tailwind, sector momentum)
+- Fundamentally sound: profitable or near-profitable, real revenue, competitive moat
+- NOT mega-caps: exclude AAPL, MSFT, GOOGL, AMZN, META, NVDA, TSLA, BRK
+- NOT penny stocks, SPACs, meme stocks, or speculative turnarounds
+- NOT banks, REITs, or ETFs
+- Must be liquid US-listed stocks
+${exclude}
+
+Return ONLY a JSON array of 10 ticker symbols. No explanations, no other text.
+Example: ["CRWD", "PANW", "ZS", "FTNT"]`;
+}
+
+function buildGoldMineCategoryAnalysisPrompt(metrics: FinnhubMetricData[], category: string): string {
+  const stockDataBlock = metrics
+    .map((m) => {
+      const lines = [`Ticker: ${m.ticker}`];
+      if (m.roe !== null) lines.push(`  ROE: ${m.roe.toFixed(1)}%`);
+      if (m.profitMargin !== null) lines.push(`  Profit Margin: ${m.profitMargin.toFixed(1)}%`);
+      if (m.operatingMargin !== null) lines.push(`  Operating Margin: ${m.operatingMargin.toFixed(1)}%`);
+      if (m.grossMargin !== null) lines.push(`  Gross Margin: ${m.grossMargin.toFixed(1)}%`);
+      if (m.eps !== null) lines.push(`  EPS (TTM): $${m.eps.toFixed(2)}`);
+      if (m.pe !== null) lines.push(`  P/E: ${m.pe.toFixed(1)}`);
+      if (m.beta !== null) lines.push(`  Beta: ${m.beta.toFixed(2)}`);
+      if (m.revenueGrowth !== null) lines.push(`  Revenue Growth YoY: ${m.revenueGrowth.toFixed(1)}%`);
+      if (m.epsGrowth !== null) lines.push(`  EPS Growth YoY: ${m.epsGrowth.toFixed(1)}%`);
+      if (m.marketCap !== null) lines.push(`  Market Cap: $${(m.marketCap / 1000).toFixed(1)}B`);
+      return lines.join('\n');
+    })
+    .join('\n\n');
+
+  return `You are a disciplined growth stock analyst. Analyze the Finnhub data below for "${category}" sector stocks.
+
+RULES:
+- Use ONLY the Finnhub metrics given. Do not fabricate numbers.
+- You MAY fill in company names from your knowledge.
+- Focus on GROWTH catalysts: revenue growth, TAM expansion, sector tailwinds, product momentum.
+- Each whyGreat point should cite a specific metric from the data.
+- Be HONEST about weak metrics — mention them as risks.
+- Select 3-6 stocks you'd genuinely recommend. Quality over quantity.
+- Sort by conviction (highest first).
+
+FINNHUB DATA:
+${stockDataBlock}
+
+TASK: Analyze each stock for the "${category}" sector. Explain why it's a compelling growth pick using real financial data.
+
+Return ONLY valid JSON:
+{
+  "stocks": [
+    {
+      "ticker": "SYM",
+      "name": "Company Name",
+      "tag": "Gold Mine",
+      "reason": "One sentence with the growth catalyst and a key metric",
+      "category": "${category}",
+      "conviction": 8,
+      "whyGreat": [
+        "Specific metric-backed growth point",
+        "Second metric-backed point about the catalyst",
+        "Third factual point citing data"
+      ],
+      "metrics": [
+        { "label": "Rev Growth", "value": "35%" },
+        { "label": "Gross Margin", "value": "72%" },
+        { "label": "Market Cap", "value": "$15B" }
+      ]
+    }
+  ]
+}
+
+Each stock must have 3 whyGreat points and 3 metrics from the Finnhub data above. Include "conviction" (1-10).`;
+}
+
+// ──────────────────────────────────────────────────────────
 // Response parsers
 // ──────────────────────────────────────────────────────────
 
@@ -517,7 +617,7 @@ function parseCompounderResponse(raw: string): EnhancedSuggestedStock[] {
   const results = stocks.map((s: Record<string, unknown>) => ({
     ticker: String(s.ticker || '').toUpperCase(),
     name: String(s.name || ''),
-    tag: 'Quiet Compounder' as const,
+    tag: 'Steady Compounder' as const,
     reason: String(s.reason || ''),
     category: s.category ? String(s.category) : undefined,
     conviction: typeof s.conviction === 'number' ? s.conviction : undefined,
@@ -571,12 +671,13 @@ function parseGoldMineAnalysis(raw: string): EnhancedSuggestedStock[] {
   const stocks = parsed.stocks || parsed;
   if (!Array.isArray(stocks)) throw new Error('Expected stocks array');
 
-  return stocks.map((s: Record<string, unknown>) => ({
+  const results = stocks.map((s: Record<string, unknown>) => ({
     ticker: String(s.ticker || '').toUpperCase(),
     name: String(s.name || ''),
     tag: 'Gold Mine' as const,
     reason: String(s.reason || ''),
     category: String(s.category || ''),
+    conviction: typeof s.conviction === 'number' ? s.conviction : undefined,
     whyGreat: Array.isArray(s.whyGreat) ? s.whyGreat.map(String) : [],
     metrics: Array.isArray(s.metrics)
       ? (s.metrics as Array<{ label: string; value: string }>).map((m) => ({
@@ -585,6 +686,9 @@ function parseGoldMineAnalysis(raw: string): EnhancedSuggestedStock[] {
         }))
       : [],
   }));
+
+  // Sort by conviction when available (category discovery)
+  return results.sort((a, b) => (b.conviction ?? 0) - (a.conviction ?? 0));
 }
 
 function parseCandidateTickers(raw: string): string[] {
@@ -959,6 +1063,79 @@ export async function discoverCategoryStocks(
 
   onStep?.('done');
   return compounders;
+}
+
+// ──────────────────────────────────────────────────────────
+// Gold Mine category-focused discovery — single sector, catalyst-driven
+// ──────────────────────────────────────────────────────────
+
+export async function discoverGoldMineCategoryStocks(
+  category: string,
+  excludeTickers: string[],
+  onStep?: (step: DiscoveryStep) => void
+): Promise<EnhancedSuggestedStock[]> {
+  const slug = `gm-${slugifyCategory(category)}`;
+
+  // Cache check: local → server
+  const localCached = getLocalCachedCategory(slug);
+  if (localCached) {
+    console.log(`[Discovery] Gold Mine category local cache HIT for ${slug}`);
+    onStep?.('done');
+    return localCached;
+  }
+
+  const serverCached = await getServerCachedCategory(slug);
+  if (serverCached) {
+    console.log(`[Discovery] Gold Mine category server cache HIT for ${slug}`);
+    cacheLocalCategory(slug, serverCached);
+    onStep?.('done');
+    return serverCached;
+  }
+
+  // No cache — run Gold Mine pipeline for this category
+  console.log(`[Discovery] No cache for gold mine category=${slug} — generating...`);
+
+  // Step 1: Category-focused candidate tickers
+  onStep?.('finding_candidates');
+  const candidateRaw = await callHuggingFace(
+    buildGoldMineCategoryCandidatePrompt(category, excludeTickers),
+    'discover_goldmines',
+    0.5,
+    1000
+  );
+  const candidateTickers = parseCandidateTickers(candidateRaw);
+  console.log(`[Discovery] Gold Mine category candidates (${slug}): ${candidateTickers.join(', ')}`);
+
+  // Step 2: Fetch Finnhub metrics
+  onStep?.('fetching_metrics');
+  const metricsData = await fetchMetricsForTickers(candidateTickers);
+  const validMetrics = metricsData.filter(
+    (m) => m.roe !== null || m.profitMargin !== null || m.eps !== null
+  );
+  console.log(`[Discovery] Got metrics for ${validMetrics.length}/${candidateTickers.length} (${slug})`);
+
+  // Step 3: Analyze with real data
+  onStep?.('analyzing_compounders');
+  await new Promise((r) => setTimeout(r, 2000));
+
+  const analysisRaw = await callHuggingFace(
+    buildGoldMineCategoryAnalysisPrompt(validMetrics, category),
+    'discover_goldmines',
+    0.3,
+    4000
+  );
+  const goldMines = parseGoldMineAnalysis(analysisRaw);
+
+  console.log(`[Discovery] Gold Mine category ${slug} done: ${goldMines.length} picks`);
+
+  // Store in both caches (skip if empty — let the user retry)
+  if (goldMines.length > 0) {
+    cacheLocalCategory(slug, goldMines);
+    storeServerCache(goldMines, slug); // Fire-and-forget
+  }
+
+  onStep?.('done');
+  return goldMines;
 }
 
 // Auto-clear stale cache from old versions

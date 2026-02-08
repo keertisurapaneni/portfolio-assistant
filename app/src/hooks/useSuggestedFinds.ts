@@ -2,7 +2,7 @@
  * useSuggestedFinds — React hook for AI-powered grounded stock discovery
  *
  * Pipeline: HuggingFace candidates → Finnhub real data → HuggingFace analysis
- * Supports category-focused discovery for Quiet Compounders
+ * Supports category-focused discovery for Steady Compounders and Gold Mines
  * Exposes step-by-step progress for UX transparency
  */
 
@@ -11,15 +11,17 @@ import type { EnhancedSuggestedStock } from '../data/suggestedFinds';
 import {
   discoverStocks,
   discoverCategoryStocks,
+  discoverGoldMineCategoryStocks,
   clearDiscoveryCache,
   getCachedTimestamp,
   COMPOUNDER_CATEGORIES,
+  GOLD_MINE_CATEGORIES,
   type ThemeData,
   type DiscoveryResult,
   type DiscoveryStep,
 } from '../lib/aiSuggestedFinds';
 
-export { COMPOUNDER_CATEGORIES };
+export { COMPOUNDER_CATEGORIES, GOLD_MINE_CATEGORIES };
 
 const STEP_LABELS: Record<DiscoveryStep, string> = {
   idle: '',
@@ -35,6 +37,7 @@ export interface UseSuggestedFindsResult {
   compounders: EnhancedSuggestedStock[];
   displayedCompounders: EnhancedSuggestedStock[];
   goldMines: EnhancedSuggestedStock[];
+  displayedGoldMines: EnhancedSuggestedStock[];
   currentTheme: ThemeData | null;
   isLoading: boolean;
   error: string | null;
@@ -42,7 +45,7 @@ export interface UseSuggestedFindsResult {
   step: DiscoveryStep;
   stepLabel: string;
   refresh: () => void;
-  // Category support
+  // Steady Compounders category support
   selectedCategory: string | null;
   setSelectedCategory: (cat: string | null) => void;
   isCategoryLoading: boolean;
@@ -50,6 +53,14 @@ export interface UseSuggestedFindsResult {
   categoryStepLabel: string;
   categoryError: string | null;
   discoverCategory: (cat: string) => void;
+  // Gold Mine category support
+  selectedGoldMineCategory: string | null;
+  setSelectedGoldMineCategory: (cat: string | null) => void;
+  isGoldMineCategoryLoading: boolean;
+  goldMineCategoryStep: DiscoveryStep;
+  goldMineCategoryStepLabel: string;
+  goldMineCategoryError: string | null;
+  discoverGoldMineCategory: (cat: string) => void;
 }
 
 export function useSuggestedFinds(existingTickers: string[]): UseSuggestedFindsResult {
@@ -61,12 +72,19 @@ export function useSuggestedFinds(existingTickers: string[]): UseSuggestedFindsR
   const [lastUpdated, setLastUpdated] = useState<string | null>(null);
   const [step, setStep] = useState<DiscoveryStep>('idle');
 
-  // Category-focused discovery state
+  // Steady Compounders category state
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [categoryCompounders, setCategoryCompounders] = useState<EnhancedSuggestedStock[]>([]);
   const [isCategoryLoading, setIsCategoryLoading] = useState(false);
   const [categoryStep, setCategoryStep] = useState<DiscoveryStep>('idle');
   const [categoryError, setCategoryError] = useState<string | null>(null);
+
+  // Gold Mine category state
+  const [selectedGoldMineCategory, setSelectedGoldMineCategory] = useState<string | null>(null);
+  const [goldMineCategoryStocks, setGoldMineCategoryStocks] = useState<EnhancedSuggestedStock[]>([]);
+  const [isGoldMineCategoryLoading, setIsGoldMineCategoryLoading] = useState(false);
+  const [goldMineCategoryStep, setGoldMineCategoryStep] = useState<DiscoveryStep>('idle');
+  const [goldMineCategoryError, setGoldMineCategoryError] = useState<string | null>(null);
 
   const hasLoadedRef = useRef(false);
   const tickersRef = useRef<string[]>(existingTickers);
@@ -146,6 +164,54 @@ export function useSuggestedFinds(existingTickers: string[]): UseSuggestedFindsR
     setCategoryError(null);
   }, []);
 
+  // Gold Mine category-focused discovery
+  const discoverGoldMineCategory = useCallback(
+    async (cat: string) => {
+      setIsGoldMineCategoryLoading(true);
+      setGoldMineCategoryStep('idle');
+      setGoldMineCategoryError(null);
+
+      try {
+        const results = await discoverGoldMineCategoryStocks(
+          cat,
+          tickersRef.current,
+          (newStep) => setGoldMineCategoryStep(newStep)
+        );
+        setGoldMineCategoryStocks(results);
+      } catch (err) {
+        console.error(`[useSuggestedFinds] Gold Mine category discovery failed for ${cat}:`, err);
+        setGoldMineCategoryStocks([]);
+        setGoldMineCategoryError('Discovery failed — try again in a moment.');
+      } finally {
+        setIsGoldMineCategoryLoading(false);
+        setGoldMineCategoryStep('done');
+      }
+    },
+    []
+  );
+
+  const handleSetSelectedGoldMineCategory = useCallback((cat: string | null) => {
+    setSelectedGoldMineCategory(cat);
+    setGoldMineCategoryStocks([]);
+    setGoldMineCategoryStep('idle');
+    setGoldMineCategoryError(null);
+  }, []);
+
+  // Compute displayed gold mines:
+  // - null/Auto: show all gold mines from main discovery (theme-driven)
+  // - Category selected + focused results exist: show focused results
+  // - Category selected + no focused results: filter main gold mines by category
+  const displayedGoldMines = useMemo(() => {
+    if (!selectedGoldMineCategory) return goldMines;
+    if (goldMineCategoryStocks.length > 0) return goldMineCategoryStocks;
+
+    const catLower = selectedGoldMineCategory.toLowerCase();
+    return goldMines.filter((s) =>
+      s.category?.toLowerCase().includes(catLower) ||
+      catLower.includes(s.category?.toLowerCase() ?? '')
+    );
+  }, [selectedGoldMineCategory, goldMines, goldMineCategoryStocks]);
+
   // Compute displayed compounders:
   // - null/Auto: show all compounders from main discovery
   // - Category selected + focused results exist: show focused results
@@ -177,6 +243,8 @@ export function useSuggestedFinds(existingTickers: string[]): UseSuggestedFindsR
     clearDiscoveryCache();
     setSelectedCategory(null);
     setCategoryCompounders([]);
+    setSelectedGoldMineCategory(null);
+    setGoldMineCategoryStocks([]);
     fetchSuggestions(true);
   }, [fetchSuggestions]);
 
@@ -184,6 +252,7 @@ export function useSuggestedFinds(existingTickers: string[]): UseSuggestedFindsR
     compounders,
     displayedCompounders,
     goldMines,
+    displayedGoldMines,
     currentTheme,
     isLoading,
     error,
@@ -191,7 +260,7 @@ export function useSuggestedFinds(existingTickers: string[]): UseSuggestedFindsR
     step,
     stepLabel: STEP_LABELS[step] || '',
     refresh,
-    // Category support
+    // Steady Compounders category support
     selectedCategory,
     setSelectedCategory: handleSetSelectedCategory,
     isCategoryLoading,
@@ -199,5 +268,13 @@ export function useSuggestedFinds(existingTickers: string[]): UseSuggestedFindsR
     categoryStepLabel: STEP_LABELS[categoryStep] || '',
     categoryError,
     discoverCategory,
+    // Gold Mine category support
+    selectedGoldMineCategory,
+    setSelectedGoldMineCategory: handleSetSelectedGoldMineCategory,
+    isGoldMineCategoryLoading,
+    goldMineCategoryStep,
+    goldMineCategoryStepLabel: STEP_LABELS[goldMineCategoryStep] || '',
+    goldMineCategoryError,
+    discoverGoldMineCategory,
   };
 }
