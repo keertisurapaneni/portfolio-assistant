@@ -14,7 +14,7 @@
     min-height: 100vh;
   }
   .wrap {
-    max-width: 880px;
+    max-width: 960px;
     margin: 0 auto;
   }
   h1 {
@@ -31,7 +31,7 @@
     margin-bottom: 40px;
   }
 
-  /* Diagram: classic arch style */
+  /* Shared layer rows */
   .diagram {
     background: #fff;
     border: 1px solid #e2e8f0;
@@ -39,20 +39,18 @@
     box-shadow: 0 1px 3px rgba(0,0,0,0.06);
     overflow: hidden;
   }
-
   .layer {
     display: flex;
     align-items: stretch;
     border-bottom: 1px solid #e2e8f0;
-    min-height: 64px;
+    min-height: 56px;
   }
   .layer:last-child { border-bottom: none; }
-
   .layer-label {
-    width: 120px;
-    min-height: 64px;
-    padding: 16px 16px;
-    font-size: 11px;
+    width: 110px;
+    min-height: 56px;
+    padding: 14px 14px;
+    font-size: 10px;
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.5px;
@@ -62,99 +60,160 @@
     display: flex;
     align-items: center;
   }
-
   .layer-items {
     flex: 1;
     display: flex;
     flex-wrap: wrap;
-    gap: 12px;
-    padding: 16px 20px;
+    gap: 10px;
+    padding: 14px 18px;
     align-items: center;
   }
-
-  /* One rectangle per logical group — text stays together */
   .tech {
     display: inline-flex;
     align-items: center;
-    flex-wrap: nowrap;
-    gap: 6px;
-    padding: 10px 16px;
-    border-radius: 8px;
-    font-size: 13px;
+    gap: 5px;
+    padding: 8px 14px;
+    border-radius: 7px;
+    font-size: 12px;
     font-weight: 600;
-    color: #1e293b;
     border: 1px solid #e2e8f0;
     background: #fff;
     white-space: nowrap;
   }
-  .tech.multiline {
-    white-space: normal;
-    max-width: 320px;
-    line-height: 1.4;
-  }
   .tech .name { font-weight: 700; }
-  .tech .detail {
-    font-size: 12px;
-    font-weight: 500;
-    color: #64748b;
-    margin-left: 4px;
-  }
-  .tech.dns {
-    border-color: #a5b4fc;
-    background: #eef2ff;
-    color: #3730a3;
-  }
+  .tech .detail { font-size: 11px; font-weight: 500; color: #64748b; margin-left: 3px; }
+  .tech.dns { border-color: #a5b4fc; background: #eef2ff; color: #3730a3; }
   .tech.dns .detail { color: #4f46e5; }
-  .tech.host {
-    border-color: #94a3b8;
-    background: #f1f5f9;
-    color: #334155;
-  }
-  .tech.host .detail { color: #475569; }
-  .tech.front {
-    border-color: #7dd3fc;
-    background: #f0f9ff;
-    color: #0369a1;
-  }
-  .tech.back {
-    border-color: #86efac;
-    background: #f0fdf4;
-    color: #166534;
-  }
-  .tech.back .detail { color: #15803d; }
-  .tech.ai {
-    border-color: #fcd34d;
-    background: #fffbeb;
-    color: #b45309;
-  }
-  .tech.ai .detail { color: #92400e; }
-  .tech.data {
-    border-color: #c4b5fd;
-    background: #f5f3ff;
-    color: #5b21b6;
-  }
-  .tech.data .detail { color: #6d28d9; }
-  .tech.repo {
-    border-color: #1f2937;
-    background: #f3f4f6;
-    color: #111827;
-  }
+  .tech.repo { border-color: #1f2937; background: #f3f4f6; color: #111827; }
   .tech.repo .detail { color: #4b5563; }
+  .tech.host { border-color: #94a3b8; background: #f1f5f9; color: #334155; }
+  .tech.host .detail { color: #475569; }
+  .tech.front { border-color: #7dd3fc; background: #f0f9ff; color: #0369a1; }
+  .tech.back { border-color: #86efac; background: #f0fdf4; color: #166534; }
+  .tech.back .detail { color: #15803d; }
 
-  .footer {
+  /* Section heading between diagrams */
+  .section-heading {
+    font-size: 13px;
+    font-weight: 700;
+    color: #475569;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    margin: 32px 0 14px;
+    text-align: center;
+  }
+
+  /* 4-page grid */
+  .pages-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 14px;
+  }
+  @media (max-width: 640px) {
+    .pages-grid { grid-template-columns: 1fr; }
+  }
+
+  .page-card {
+    border: 1px solid #e2e8f0;
+    border-radius: 12px;
+    background: #fff;
+    overflow: hidden;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+  }
+  .page-header {
+    padding: 14px 16px 10px;
+    border-bottom: 1px solid #f1f5f9;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .page-icon {
+    width: 36px;
+    height: 36px;
+    border-radius: 9px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 16px;
+    flex-shrink: 0;
+  }
+  .page-icon.portfolio { background: #dbeafe; color: #2563eb; }
+  .page-icon.signals { background: #dcfce7; color: #16a34a; }
+  .page-icon.finds { background: #fef3c7; color: #d97706; }
+  .page-icon.movers { background: #f3e8ff; color: #7c3aed; }
+
+  .page-title {
+    font-size: 14px;
+    font-weight: 700;
+    color: #0f172a;
+  }
+  .page-route {
+    font-size: 11px;
+    font-weight: 500;
+    color: #94a3b8;
+    font-family: 'SF Mono', Monaco, monospace;
+  }
+
+  .page-body {
+    padding: 12px 16px 14px;
+  }
+  .page-body .stack-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    margin-bottom: 8px;
+  }
+  .page-body .stack-row:last-child { margin-bottom: 0; }
+  .stack-label {
+    font-size: 9px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    color: #94a3b8;
+    min-width: 32px;
+    padding-top: 3px;
+    flex-shrink: 0;
+  }
+  .stack-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+  }
+  .tag {
+    display: inline-block;
+    padding: 4px 9px;
+    border-radius: 5px;
+    font-size: 11px;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  .tag.ai { background: #fffbeb; color: #b45309; border: 1px solid #fcd34d; }
+  .tag.data { background: #f5f3ff; color: #5b21b6; border: 1px solid #c4b5fd; }
+  .tag.ui { background: #f0f9ff; color: #0369a1; border: 1px solid #7dd3fc; }
+  .tag.edge { background: #f0fdf4; color: #166534; border: 1px solid #86efac; }
+  .tag.store { background: #f1f5f9; color: #475569; border: 1px solid #cbd5e1; }
+
+  .page-features {
+    padding: 0 16px 14px;
+    font-size: 11px;
+    color: #64748b;
+    line-height: 1.5;
+  }
+
+  .footer-area {
     text-align: center;
     margin-top: 24px;
     font-size: 12px;
     color: #94a3b8;
   }
-  .back {
+  .back-link {
     display: inline-block;
-    margin-top: 16px;
+    margin-top: 12px;
     font-size: 13px;
     color: #6366f1;
     text-decoration: none;
   }
-  .back:hover { text-decoration: underline; }
+  .back-link:hover { text-decoration: underline; }
 </style>
 </head>
 <body>
@@ -162,61 +221,224 @@
   <h1>Portfolio Assistant — Tech Stack</h1>
   <p class="sub">portfolioassistant.org</p>
 
+  <!-- Infrastructure layers -->
   <div class="diagram">
     <div class="layer">
       <div class="layer-label">DNS</div>
       <div class="layer-items">
-        <span class="tech dns"><span class="name">Squarespace</span><span class="detail">custom domain portfolioassistant.org → Vercel</span></span>
+        <span class="tech dns"><span class="name">Squarespace</span><span class="detail">portfolioassistant.org → Vercel</span></span>
       </div>
     </div>
-
     <div class="layer">
       <div class="layer-label">Source</div>
       <div class="layer-items">
-        <span class="tech repo"><span class="name">GitHub</span><span class="detail">repo, version control, CI: push to master → Vercel deploy</span></span>
+        <span class="tech repo"><span class="name">GitHub</span><span class="detail">push to master → Vercel auto-deploy</span></span>
       </div>
     </div>
-
     <div class="layer">
       <div class="layer-label">Hosting</div>
       <div class="layer-items">
-        <span class="tech host"><span class="name">Vercel</span><span class="detail">frontend hosting, Analytics + Speed Insights</span></span>
+        <span class="tech host"><span class="name">Vercel</span><span class="detail">SPA hosting, Analytics + Speed Insights</span></span>
       </div>
     </div>
-
     <div class="layer">
       <div class="layer-label">Frontend</div>
       <div class="layer-items">
-        <span class="tech front"><span class="name">React 18</span> · <span class="name">TypeScript</span> · <span class="name">Vite</span> · <span class="name">Tailwind CSS 4</span> · <span class="name">React Router</span><span class="detail"> · Lucide icons, localStorage (portfolio + AI cache)</span></span>
+        <span class="tech front"><span class="name">React 18</span></span>
+        <span class="tech front"><span class="name">TypeScript</span></span>
+        <span class="tech front"><span class="name">Vite</span></span>
+        <span class="tech front"><span class="name">Tailwind CSS 4</span></span>
+        <span class="tech front"><span class="name">React Router</span></span>
+        <span class="tech front"><span class="name">Lucide</span></span>
       </div>
     </div>
-
     <div class="layer">
       <div class="layer-label">Backend</div>
       <div class="layer-items">
-        <span class="tech back"><span class="name">Supabase</span><span class="detail">Edge Functions (Deno), PostgreSQL (daily_suggestions cache), Secrets, RLS</span></span>
-      </div>
-    </div>
-
-    <div class="layer">
-      <div class="layer-label">AI</div>
-      <div class="layer-items">
-        <span class="tech ai"><span class="name">Groq</span><span class="detail">Llama 3.3 70B, Qwen3 32B fallback — portfolio BUY/SELL signals</span></span>
-        <span class="tech ai"><span class="name">Google Gemini</span><span class="detail">2.5/2.0 Flash, 3 keys — Suggested Finds (Compounders + Gold Mines)</span></span>
-      </div>
-    </div>
-
-    <div class="layer">
-      <div class="layer-label">Data APIs</div>
-      <div class="layer-items">
-        <span class="tech data"><span class="name">Finnhub</span><span class="detail">quotes, fundamentals, earnings, analyst recs, company news</span></span>
-        <span class="tech data"><span class="name">Yahoo Finance</span><span class="detail">market movers screener, company news</span></span>
+        <span class="tech back"><span class="name">Supabase</span><span class="detail">Edge Functions (Deno) · PostgreSQL · Secrets · RLS</span></span>
       </div>
     </div>
   </div>
 
-  <p class="footer">
-    <a href="/" class="back">← Back to app</a>
+  <!-- Pages breakdown -->
+  <p class="section-heading">Pages & Feature Stack</p>
+
+  <div class="pages-grid">
+    <!-- My Portfolio -->
+    <div class="page-card">
+      <div class="page-header">
+        <div class="page-icon portfolio">📊</div>
+        <div>
+          <div class="page-title">My Portfolio</div>
+          <div class="page-route">/</div>
+        </div>
+      </div>
+      <div class="page-body">
+        <div class="stack-row">
+          <span class="stack-label">AI</span>
+          <div class="stack-tags">
+            <span class="tag ai">Groq — Llama 3.3 70B</span>
+            <span class="tag ai">Qwen3 32B fallback</span>
+          </div>
+        </div>
+        <div class="stack-row">
+          <span class="stack-label">Data</span>
+          <div class="stack-tags">
+            <span class="tag data">Finnhub</span>
+            <span class="tag data">Yahoo News</span>
+          </div>
+        </div>
+        <div class="stack-row">
+          <span class="stack-label">Store</span>
+          <div class="stack-tags">
+            <span class="tag store">localStorage</span>
+          </div>
+        </div>
+      </div>
+      <div class="page-features">
+        Conviction scoring (4-factor) · AI BUY/SELL signals · Risk profiles · CSV/Excel import · Portfolio value + P&L · News headlines
+      </div>
+    </div>
+
+    <!-- Trading Signals -->
+    <div class="page-card">
+      <div class="page-header">
+        <div class="page-icon signals">⚡</div>
+        <div>
+          <div class="page-title">Trading Signals</div>
+          <div class="page-route">/signals</div>
+        </div>
+      </div>
+      <div class="page-body">
+        <div class="stack-row">
+          <span class="stack-label">AI</span>
+          <div class="stack-tags">
+            <span class="tag ai">Gemini 2.5 Flash</span>
+            <span class="tag ai">4-key rotation</span>
+          </div>
+        </div>
+        <div class="stack-row">
+          <span class="stack-label">Data</span>
+          <div class="stack-tags">
+            <span class="tag data">Twelve Data</span>
+            <span class="tag data">Yahoo News</span>
+          </div>
+        </div>
+        <div class="stack-row">
+          <span class="stack-label">UI</span>
+          <div class="stack-tags">
+            <span class="tag ui">Lightweight Charts v5</span>
+          </div>
+        </div>
+      </div>
+      <div class="page-features">
+        Day / Swing toggle · Entry, stop, target · Candlestick charts (2-3yr history) · Sentiment + Trade agents · Live timer
+      </div>
+    </div>
+
+    <!-- Suggested Finds -->
+    <div class="page-card">
+      <div class="page-header">
+        <div class="page-icon finds">💡</div>
+        <div>
+          <div class="page-title">Suggested Finds</div>
+          <div class="page-route">/finds</div>
+        </div>
+      </div>
+      <div class="page-body">
+        <div class="stack-row">
+          <span class="stack-label">AI</span>
+          <div class="stack-tags">
+            <span class="tag ai">HuggingFace</span>
+            <span class="tag ai">Qwen2.5-72B</span>
+          </div>
+        </div>
+        <div class="stack-row">
+          <span class="stack-label">Data</span>
+          <div class="stack-tags">
+            <span class="tag data">Finnhub</span>
+          </div>
+        </div>
+        <div class="stack-row">
+          <span class="stack-label">Store</span>
+          <div class="stack-tags">
+            <span class="tag edge">PostgreSQL cache</span>
+            <span class="tag store">localStorage</span>
+          </div>
+        </div>
+      </div>
+      <div class="page-features">
+        Quiet Compounders · Gold Mines · Model cascade (72B → 8x7B → 8B) · Server-side daily cache · One-click add to portfolio
+      </div>
+    </div>
+
+    <!-- Market Movers -->
+    <div class="page-card">
+      <div class="page-header">
+        <div class="page-icon movers">🔥</div>
+        <div>
+          <div class="page-title">Market Movers</div>
+          <div class="page-route">/movers</div>
+        </div>
+      </div>
+      <div class="page-body">
+        <div class="stack-row">
+          <span class="stack-label">Data</span>
+          <div class="stack-tags">
+            <span class="tag data">Yahoo Finance</span>
+          </div>
+        </div>
+        <div class="stack-row">
+          <span class="stack-label">Edge</span>
+          <div class="stack-tags">
+            <span class="tag edge">scrape-market-movers</span>
+          </div>
+        </div>
+      </div>
+      <div class="page-features">
+        Top 25 gainers + losers · Sortable columns (price, change, %) · Retry logic with fallback
+      </div>
+    </div>
+  </div>
+
+  <!-- Edge Functions -->
+  <p class="section-heading">Edge Functions (Supabase · Deno)</p>
+
+  <div class="diagram">
+    <div class="layer">
+      <div class="layer-label">Portfolio</div>
+      <div class="layer-items">
+        <span class="tech back"><span class="name">ai-proxy</span><span class="detail">Groq LLM proxy with model fallback</span></span>
+        <span class="tech back"><span class="name">fetch-stock-data</span><span class="detail">Finnhub proxy + 15-min server cache</span></span>
+        <span class="tech back"><span class="name">fetch-yahoo-news</span><span class="detail">company-specific news</span></span>
+      </div>
+    </div>
+    <div class="layer">
+      <div class="layer-label">Signals</div>
+      <div class="layer-items">
+        <span class="tech back"><span class="name">trading-signals</span><span class="detail">Twelve Data + Yahoo News + Gemini pipeline</span></span>
+      </div>
+    </div>
+    <div class="layer">
+      <div class="layer-label">Finds</div>
+      <div class="layer-items">
+        <span class="tech back"><span class="name">huggingface-proxy</span><span class="detail">HuggingFace Inference API with model cascade</span></span>
+        <span class="tech back"><span class="name">gemini-proxy</span><span class="detail">Gemini API proxy for client-side calls</span></span>
+        <span class="tech back"><span class="name">daily-suggestions</span><span class="detail">shared daily cache (PostgreSQL CRUD)</span></span>
+      </div>
+    </div>
+    <div class="layer">
+      <div class="layer-label">Movers</div>
+      <div class="layer-items">
+        <span class="tech back"><span class="name">scrape-market-movers</span><span class="detail">Yahoo Finance screener with retry logic</span></span>
+      </div>
+    </div>
+  </div>
+
+  <p class="footer-area">
+    All API keys stored as Supabase secrets — never exposed to the browser.
+    <br>
+    <a href="/" class="back-link">← Back to app</a>
   </p>
 </div>
 </body>
