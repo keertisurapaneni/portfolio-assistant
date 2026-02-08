@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Link2, RefreshCw, Unlink, Loader2, Check, AlertCircle } from 'lucide-react';
+import { Link2, RefreshCw, Unlink, Loader2, Check } from 'lucide-react';
+import { ErrorBanner } from './ErrorBanner';
 import { useAuth } from '../lib/auth';
 import {
   getBrokerStatus, connectBroker, getBrokerPortalUrl,
@@ -86,11 +87,7 @@ export function BrokerConnect({ onSyncComplete }: BrokerConnectProps) {
 
   return (
     <div className="flex items-center gap-2">
-      {error && (
-        <div className="flex items-center gap-1 text-xs text-red-600 bg-red-50 px-2 py-1 rounded-lg">
-          <AlertCircle className="w-3 h-3 flex-shrink-0" /><span className="max-w-[280px] truncate">{error}</span>
-        </div>
-      )}
+      {error && <ErrorBanner message={error} size="sm" />}
       {successMsg && (
         <div className="flex items-center gap-1 text-xs text-green-700 bg-green-50 px-2 py-1 rounded-lg">
           <Check className="w-3 h-3" /><span>{successMsg}</span>

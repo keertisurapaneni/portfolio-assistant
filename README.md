@@ -13,20 +13,22 @@ A personal investing decision-support tool that combines automated conviction sc
 - **Conviction Scoring** — Automated 0-100 score based on 4 factors: Quality (30%), Earnings (30%), Analyst (25%), Momentum (15%)
 - **AI Trade Signals** — BUY/SELL recommendations powered by Groq LLMs with risk-adjusted guardrails
 - **Risk Appetite** — Aggressive / Moderate / Conservative profiles that shape AI buy/sell logic
-- **Brokerage Integration** — Connect Schwab, IBKR, or Robinhood via SnapTrade to auto-import holdings
+- **Brokerage Integration** — Connect Schwab, IBKR, Robinhood & [more](https://snaptrade.com/brokerage-integrations) via SnapTrade to auto-import holdings
 - **Authentication** — Optional email/password login (Supabase Auth) to save portfolio across devices
 - **Portfolio Import** — CSV/Excel upload with smart column detection (ticker, shares, avg cost)
+- **Company Profiles** — Full company names displayed alongside tickers (via Finnhub profile API)
 - **News Headlines** — Latest company-specific news on each card with clickable links
 - **Portfolio Value** — Per-stock + total portfolio with daily P&L
 - **Guest Mode** — Works without login; portfolio saved in browser localStorage
 
-### Trading Signals (`/signals`)
+### Trade Signals (`/signals`)
 
 - **Day Trade** — Intraday signals (1m/15m/1h timeframes), R:R 1:1.5–1:2, high news weight
-- **Swing Trade** — Multi-day/week signals (4h/1d/1w timeframes), R:R 1:2–1:4, trend alignment mandatory
+- **Swing Trade** — Multi-day/week signals (4h/1d/1w timeframes), R:R 1:1.5–1:2.5, trend alignment preferred
 - **Interactive Charts** — Candlestick charts with entry/stop/target overlays (2-3 years of history for swing)
 - **Live Timer** — Elapsed seconds counter while signal is being generated
-- Powered by Gemini (4-key rotation for rate limits) + Twelve Data (candles) + Yahoo Finance (news)
+- **Parallel Pipeline** — Sentiment + trade agents run in parallel (~10s vs ~50s sequential)
+- Powered by Gemini (4-key rotation, 500ms retry) + Twelve Data (candles) + Yahoo Finance (news)
 
 ### Suggested Finds (`/finds`)
 
@@ -100,7 +102,7 @@ A personal investing decision-support tool that combines automated conviction sc
 |---|---|---|---|
 | **Conviction Scoring** | Automated 0-100 score per stock | None (rule-based) | Finnhub metrics, earnings, recommendations |
 | **Portfolio Trade Signals** | BUY / SELL / no-action per stock | Groq (Llama 3.3 70B) | Finnhub data + market news + risk profile |
-| **Trading Signals** | Day/Swing trade with entry, stop, target | Gemini (4-key rotation) | Twelve Data candles + Yahoo Finance news |
+| **Trade Signals** | Day/Swing trade with entry, stop, target | Gemini (4-key rotation) | Twelve Data candles + Yahoo Finance news |
 | **Quiet Compounders** | Discover quality under-the-radar stocks | HuggingFace (Qwen2.5-72B) | Finnhub metrics + general market news |
 | **Gold Mines** | Macro-theme-driven opportunities | HuggingFace (Qwen2.5-72B) | Market news + Finnhub fundamentals |
 
@@ -109,11 +111,11 @@ A personal investing decision-support tool that combines automated conviction sc
 | Function | Purpose | External API |
 |---|---|---|
 | `ai-proxy` | Portfolio AI analysis with model fallback | Groq |
-| `trading-signals` | Day/Swing signals with parallel data fetch | Twelve Data + Yahoo Finance + Gemini |
+| `trading-signals` | Day/Swing signals with parallel AI agents | Twelve Data + Yahoo Finance + Gemini |
 | `huggingface-proxy` | Suggested Finds AI with model cascade | HuggingFace |
 | `gemini-proxy` | Gemini proxy for client-side AI calls | Google Gemini |
 | `daily-suggestions` | Shared daily cache (GET/POST/DELETE) | PostgreSQL |
-| `fetch-stock-data` | Stock data proxy with 15-min server cache | Finnhub |
+| `fetch-stock-data` | Stock data + company profile proxy with 15-min cache | Finnhub |
 | `scrape-market-movers` | Gainers/losers screener with retry logic | Yahoo Finance |
 | `fetch-yahoo-news` | Company-specific news | Yahoo Finance |
 | `broker-connect` | SnapTrade registration, login portal, disconnect | SnapTrade |

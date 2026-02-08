@@ -94,7 +94,7 @@ async function rateLimitedFetch(url: string, options: RequestInit): Promise<Resp
 
 async function fetchFromEdge<T>(
   ticker: string,
-  endpoint: 'quote' | 'metrics' | 'recommendations' | 'earnings' | 'news',
+  endpoint: 'quote' | 'metrics' | 'recommendations' | 'earnings' | 'news' | 'profile',
   cacheKey: string
 ): Promise<T | null> {
   // Check client-side cache first
@@ -515,12 +515,13 @@ export async function getStockData(ticker: string): Promise<StockData | null> {
 
   try {
     // Fetch all data in parallel through Edge Function
-    const [quote, metricsData, recommendations, earnings, news] = await Promise.all([
+    const [quote, metricsData, recommendations, earnings, news, profile] = await Promise.all([
       fetchFromEdge<FinnhubQuote>(symbol, 'quote', `quote-${symbol}`),
       fetchFromEdge<FinnhubMetrics>(symbol, 'metrics', `metrics-${symbol}`),
       fetchFromEdge<FinnhubRecommendation[]>(symbol, 'recommendations', `recs-${symbol}`),
       fetchFromEdge<FinnhubEarnings[]>(symbol, 'earnings', `earnings-${symbol}`),
       fetchFromEdge<FinnhubNews[]>(symbol, 'news', `news-${symbol}`),
+      fetchFromEdge<{ name?: string; finnhubIndustry?: string }>(symbol, 'profile', `profile-${symbol}`),
     ]);
 
     if (!quote || quote.c === 0) {
@@ -718,9 +719,12 @@ export async function getStockData(ticker: string): Promise<StockData | null> {
     }
     console.log(`[Stock API] ${symbol} - Displaying ${recentNews.length} news items on card`);
 
+    // Use company name from profile, fall back to ticker
+    const companyName = profile?.name || symbol;
+
     const result: StockData = {
       ticker: symbol,
-      name: symbol, // Edge Function doesn't fetch profile, use ticker as name
+      name: companyName,
       currentPrice: quote.c,
       change: quote.d,
       changePercent: quote.dp,

@@ -14,7 +14,7 @@ const corsHeaders = {
 
 interface RequestPayload {
   ticker: string;
-  endpoint: 'quote' | 'metrics' | 'recommendations' | 'earnings' | 'news' | 'general_news';
+  endpoint: 'quote' | 'metrics' | 'recommendations' | 'earnings' | 'news' | 'general_news' | 'profile';
 }
 
 interface CacheEntry {
@@ -42,7 +42,7 @@ Deno.serve(async req => {
       );
     }
 
-    const validEndpoints = ['quote', 'metrics', 'recommendations', 'earnings', 'news', 'general_news'];
+    const validEndpoints = ['quote', 'metrics', 'recommendations', 'earnings', 'news', 'general_news', 'profile'];
     if (!validEndpoints.includes(endpoint)) {
       return new Response(
         JSON.stringify({ error: `Invalid endpoint. Must be one of: ${validEndpoints.join(', ')}` }),
@@ -126,6 +126,10 @@ Deno.serve(async req => {
       case 'general_news':
         // Broad market news for macro theme detection (Gold Mines)
         apiUrl = `${FINNHUB_BASE}/news?category=general&token=${finnhubApiKey}`;
+        break;
+      case 'profile':
+        // Company profile (name, logo, industry, etc.)
+        apiUrl = `${FINNHUB_BASE}/stock/profile2?symbol=${symbol}&token=${finnhubApiKey}`;
         break;
     }
 

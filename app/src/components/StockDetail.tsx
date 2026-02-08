@@ -7,6 +7,7 @@ import { formatPositionValue, formatShares, formatAvgCost } from '../lib/portfol
 import { generateAIInsights, type AIInsight } from '../lib/aiInsights';
 import { getRiskProfile } from '../lib/settingsStorage';
 import { cn } from '../lib/utils';
+import { SignalBadge } from './SignalBadge';
 
 // URL helpers
 const getYahooFinanceUrl = (ticker: string) => `https://finance.yahoo.com/quote/${ticker}/`;
@@ -190,20 +191,7 @@ export function StockDetail({ stock, onClose, onUpdate }: StockDetailProps) {
                     )}
                   </div>
                   <div className="flex items-center gap-2 mt-2">
-                    <span
-                      className={cn(
-                        'px-3 py-1 rounded-full text-sm font-semibold border',
-                        aiInsight.buyPriority === 'BUY' &&
-                          'bg-green-100 text-green-800 border-green-300',
-                        aiInsight.buyPriority === 'SELL' &&
-                          'bg-red-100 text-red-700 border-red-300',
-                        !aiInsight.buyPriority && 'bg-gray-100 text-gray-700 border-gray-300'
-                      )}
-                    >
-                      {aiInsight.buyPriority === 'BUY' && '🎯 BUY'}
-                      {aiInsight.buyPriority === 'SELL' && '🔻 SELL'}
-                      {!aiInsight.buyPriority && '— No Action'}
-                    </span>
+                    <SignalBadge signal={aiInsight.buyPriority} size="md" />
                   </div>
                 </div>
               </div>

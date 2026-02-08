@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { TrendingUp, TrendingDown, RefreshCw, ChevronUp, ChevronDown } from 'lucide-react';
 import { cn } from '../lib/utils';
+import { ErrorBanner } from './ErrorBanner';
 
 interface MarketMover {
   symbol: string;
@@ -259,11 +260,7 @@ export function MarketMovers() {
       )}
 
       {/* Error State */}
-      {data.error && (
-        <div className="bg-red-50 border border-red-200 rounded-lg p-4">
-          <p className="text-sm text-red-700">⚠️ {data.error}</p>
-        </div>
-      )}
+      {data.error && <ErrorBanner message={data.error} />}
 
       {/* Loading State */}
       {data.isLoading && (

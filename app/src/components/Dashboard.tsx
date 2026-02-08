@@ -89,8 +89,8 @@ export function Dashboard({ stocks, onStockSelect, onAddTickers, onClearAll, ris
               <Plus className="w-6 h-6 text-blue-600" />
             </div>
             <div>
-              <p className="font-semibold text-[hsl(var(--foreground))]">Enter Tickers</p>
-              <p className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5">Type AAPL, MSFT, etc.</p>
+              <p className="font-semibold text-[hsl(var(--foreground))]">Add Manually</p>
+              <p className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5">Type tickers or import CSV/Excel</p>
             </div>
           </button>
 
@@ -102,7 +102,9 @@ export function Dashboard({ stocks, onStockSelect, onAddTickers, onClearAll, ris
               </div>
               <div className="text-center">
                 <p className="font-semibold text-[hsl(var(--foreground))]">Connect Brokerage</p>
-                <p className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5 mb-3">Schwab, IBKR, Robinhood</p>
+                <p className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5">Schwab, IBKR, Robinhood & more</p>
+                <a href="https://snaptrade.com/brokerage-integrations" target="_blank" rel="noopener noreferrer"
+                  className="text-[10px] text-blue-500 hover:text-blue-700 underline mt-0.5 mb-2 inline-block">All supported brokerages</a>
                 {onBrokerSync && <BrokerConnect onSyncComplete={onBrokerSync} />}
               </div>
             </div>
@@ -116,8 +118,11 @@ export function Dashboard({ stocks, onStockSelect, onAddTickers, onClearAll, ris
               </div>
               <div>
                 <p className="font-semibold text-[hsl(var(--foreground))]">Connect Brokerage</p>
-                <p className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5">Schwab, IBKR, Robinhood</p>
-                <p className="text-[10px] text-blue-600 font-medium mt-1.5 flex items-center justify-center gap-1">
+                <p className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5">Schwab, IBKR, Robinhood & more</p>
+                <a href="https://snaptrade.com/brokerage-integrations" target="_blank" rel="noopener noreferrer"
+                  className="text-[10px] text-blue-500 hover:text-blue-700 underline mt-0.5 mb-2 inline-block"
+                  onClick={e => e.stopPropagation()}>All supported brokerages</a>
+                <p className="text-[10px] text-blue-600 font-medium mt-1 flex items-center justify-center gap-1">
                   <User className="w-3 h-3" /> Login to connect
                 </p>
               </div>
@@ -278,7 +283,10 @@ export function Dashboard({ stocks, onStockSelect, onAddTickers, onClearAll, ris
             <span className="font-medium">Auto-import your holdings</span>
             {' — '}
             {isAuthed ? (
-              <>Connect your brokerage (Schwab, IBKR, Robinhood) to sync positions automatically.</>
+              <>Connect your brokerage to sync positions automatically. Supports Schwab, IBKR, Robinhood &{' '}
+                <a href="https://snaptrade.com/brokerage-integrations" target="_blank" rel="noopener noreferrer"
+                  className="underline font-medium hover:text-green-900">more</a>.
+              </>
             ) : (
               <>
                 <button onClick={onLogin} className="underline font-medium hover:text-green-900 transition-colors">

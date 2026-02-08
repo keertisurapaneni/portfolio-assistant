@@ -1,40 +1,22 @@
 import { useState, useRef, useEffect } from 'react';
-import { Activity, Loader2, TrendingUp, TrendingDown, Minus, RefreshCw } from 'lucide-react';
+import { Activity, Loader2, RefreshCw } from 'lucide-react';
 import { createChart, CandlestickSeries, LineSeries, ColorType } from 'lightweight-charts';
 import { cn } from '../lib/utils';
+import { SignalBadge } from './SignalBadge';
+import { StatCard } from './StatCard';
+import { ErrorBanner } from './ErrorBanner';
 import {
   fetchTradingSignal,
   getStoredMode,
   setStoredMode,
   type TradingSignalsResponse,
   type SignalsMode,
-  type TradeSignal,
   type ChartCandle,
 } from '../lib/tradingSignalsApi';
 
 function formatPrice(n: number | null): string {
   if (n == null) return '—';
   return n.toFixed(2);
-}
-
-function SignalBadge({ recommendation }: { recommendation: TradeSignal['recommendation'] }) {
-  if (recommendation === 'BUY')
-    return (
-      <span className="pulse-buy inline-flex items-center gap-1.5 rounded-full bg-emerald-500 px-4 py-1.5 text-sm font-bold tracking-wide text-white uppercase shadow-md shadow-emerald-500/20">
-        <TrendingUp className="h-4 w-4" /> BUY
-      </span>
-    );
-  if (recommendation === 'SELL')
-    return (
-      <span className="pulse-sell inline-flex items-center gap-1.5 rounded-full bg-red-500 px-4 py-1.5 text-sm font-bold tracking-wide text-white uppercase shadow-md shadow-red-500/20">
-        <TrendingDown className="h-4 w-4" /> SELL
-      </span>
-    );
-  return (
-    <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-400 px-4 py-1.5 text-sm font-bold tracking-wide text-white uppercase shadow-sm">
-      <Minus className="h-4 w-4" /> HOLD
-    </span>
-  );
 }
 
 function ChartPanel({ candles, overlays }: { candles: ChartCandle[]; overlays: { label: string; price: number }[] }) {
@@ -157,7 +139,7 @@ export function TradingSignals() {
     <div className="space-y-8">
       <div>
         <div className="flex items-center gap-2">
-          <h1 className="text-2xl font-bold text-[hsl(var(--foreground))]">Trading Signals</h1>
+          <h1 className="text-2xl font-bold text-[hsl(var(--foreground))]">Trade Signals</h1>
           <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-blue-50 text-blue-600 text-xs font-medium">
             <Activity className="w-3 h-3" />
             Live
@@ -229,11 +211,7 @@ export function TradingSignals() {
         </button>
       </form>
 
-      {error && (
-        <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-          {error}
-        </div>
-      )}
+      {error && <ErrorBanner message={error} />}
 
       {result && (
         <div className="space-y-6 animate-fade-in-up">
@@ -245,7 +223,7 @@ export function TradingSignals() {
           )}>
             <div className="flex flex-wrap items-center justify-between gap-4">
               <div className="flex items-center gap-3">
-                <SignalBadge recommendation={result.trade.recommendation} />
+                <SignalBadge signal={result.trade.recommendation} size="lg" pulse />
                 <span className="text-sm text-[hsl(var(--muted-foreground))]">
                   {result.trade.mode.replace('_', ' ')} · {result.trade.confidence} confidence
                 </span>
@@ -266,22 +244,10 @@ export function TradingSignals() {
               </div>
             ) : (
               <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
-                <div className="p-3 rounded-lg bg-blue-50 border border-blue-100">
-                  <p className="text-xs font-medium text-blue-600 mb-0.5">Entry</p>
-                  <p className="text-lg font-bold text-[hsl(var(--foreground))]">{formatPrice(result.trade.entryPrice)}</p>
-                </div>
-                <div className="p-3 rounded-lg bg-red-50 border border-red-100">
-                  <p className="text-xs font-medium text-red-600 mb-0.5">Stop</p>
-                  <p className="text-lg font-bold text-[hsl(var(--foreground))]">{formatPrice(result.trade.stopLoss)}</p>
-                </div>
-                <div className="p-3 rounded-lg bg-green-50 border border-green-100">
-                  <p className="text-xs font-medium text-green-600 mb-0.5">Target</p>
-                  <p className="text-lg font-bold text-[hsl(var(--foreground))]">{formatPrice(result.trade.targetPrice)}</p>
-                </div>
-                <div className="p-3 rounded-lg bg-purple-50 border border-purple-100">
-                  <p className="text-xs font-medium text-purple-600 mb-0.5">R:R</p>
-                  <p className="text-lg font-bold text-[hsl(var(--foreground))]">{result.trade.riskReward ?? '—'}</p>
-                </div>
+                <StatCard label="Entry" value={formatPrice(result.trade.entryPrice)} color="blue" />
+                <StatCard label="Stop" value={formatPrice(result.trade.stopLoss)} color="red" />
+                <StatCard label="Target" value={formatPrice(result.trade.targetPrice)} color="green" />
+                <StatCard label="R:R" value={result.trade.riskReward ?? '—'} color="purple" />
               </div>
             )}
             {result.trade.rationale && (result.trade.rationale.technical || result.trade.rationale.sentiment || result.trade.rationale.risk) && (

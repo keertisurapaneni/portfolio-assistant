@@ -1,10 +1,10 @@
-import { ChevronRight, ExternalLink, AlertTriangle } from 'lucide-react';
+import { ChevronRight, AlertTriangle } from 'lucide-react';
 import type { StockWithConviction } from '../types';
 import { cn } from '../lib/utils';
 import { getWarnings, getMostSevereWarning } from '../lib/warnings';
-
-// Yahoo Finance URL helper
-const getYahooFinanceUrl = (ticker: string) => `https://finance.yahoo.com/quote/${ticker}/`;
+import { TickerLabel } from './TickerLabel';
+import { SignalBadge } from './SignalBadge';
+import { PriceChange } from './PriceChange';
 
 interface StockCardProps {
   stock: StockWithConviction;
@@ -55,32 +55,14 @@ export function StockCard({ stock, onClick }: StockCardProps) {
       <div className="flex items-start justify-between gap-4">
         {/* Left: Stock Info */}
         <div className="flex-1 min-w-0">
-          {/* Top Row: Ticker + Yahoo Link + Weight + Name */}
+          {/* Top Row: Ticker + Name + Yahoo Link + Weight */}
           <div className="flex items-center gap-3 mb-3">
-            <span className="text-lg font-bold text-[hsl(var(--foreground))]">{stock.ticker}</span>
-
-            {/* Yahoo Finance link */}
-            <a
-              href={getYahooFinanceUrl(stock.ticker)}
-              target="_blank"
-              rel="noopener noreferrer"
-              onClick={e => e.stopPropagation()}
-              className="p-1 rounded-md hover:bg-[hsl(var(--secondary))] text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--primary))] transition-colors"
-              title="View on Yahoo Finance"
-            >
-              <ExternalLink className="w-3.5 h-3.5" />
-            </a>
+            <TickerLabel ticker={stock.ticker} name={stock.name} stopPropagation />
 
             {/* Portfolio weight badge */}
             {stock.portfolioWeight !== undefined && (
-              <span className="text-xs font-semibold px-2 py-1 bg-[hsl(var(--secondary))] text-[hsl(var(--muted-foreground))] rounded-lg">
+              <span className="text-xs font-semibold px-2 py-1 bg-[hsl(var(--secondary))] text-[hsl(var(--muted-foreground))] rounded-lg flex-shrink-0">
                 {stock.portfolioWeight}%
-              </span>
-            )}
-
-            {stock.name && stock.name !== stock.ticker && (
-              <span className="text-sm text-[hsl(var(--muted-foreground))] truncate">
-                {stock.name}
               </span>
             )}
           </div>
@@ -159,27 +141,11 @@ export function StockCard({ stock, onClick }: StockCardProps) {
             <div className="flex items-center gap-2">
               {/* Trade Signal Badge - Only show BUY or SELL */}
               {!stock.isLoading && stock.buyPriority && (
-                <span
-                  className={cn(
-                    'inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-bold border',
-                    stock.buyPriority === 'BUY' &&
-                      'bg-green-100 text-green-800 border-green-300 shadow-sm',
-                    stock.buyPriority === 'SELL' && 'bg-red-100 text-red-700 border-red-300',
-                    // Add subtle dashed border if missing position data
-                    !stock.shares && 'border-dashed opacity-75'
-                  )}
-                  title={
-                    !stock.shares
-                      ? 'Limited data - add position info for accurate signals'
-                      : stock.buyPriority === 'BUY'
-                        ? 'Strong opportunity - deploy capital'
-                        : 'Trim position - reduce risk'
-                  }
-                >
-                  {stock.buyPriority === 'BUY' && '🎯 BUY'}
-                  {stock.buyPriority === 'SELL' && '🔻 SELL'}
-                  {!stock.shares && <span className="text-[0.6rem]">*</span>}
-                </span>
+                <SignalBadge
+                  signal={stock.buyPriority}
+                  size="sm"
+                  dashed={!stock.shares}
+                />
               )}
 
               {/* Warning Badge — only show concentration/rebalance, not gain/loss */}
@@ -220,27 +186,11 @@ export function StockCard({ stock, onClick }: StockCardProps) {
                 {/* Current price with change + position value */}
                 {stock.currentPrice && (
                   <div className="flex items-center gap-2 text-xs flex-wrap">
-                    <span className="text-[hsl(var(--muted-foreground))] opacity-75">
-                      ${stock.currentPrice.toFixed(2)}
-                    </span>
-                    {stock.priceChange !== undefined &&
-                      stock.priceChangePercent !== undefined &&
-                      stock.priceChange !== null &&
-                      stock.priceChangePercent !== null && (
-                        <span
-                          className={cn(
-                            'font-medium',
-                            stock.priceChange > 0 && 'text-green-600',
-                            stock.priceChange < 0 && 'text-red-600',
-                            stock.priceChange === 0 && 'text-gray-500'
-                          )}
-                        >
-                          {stock.priceChange >= 0 ? '+' : '-'}$
-                          {Math.abs(stock.priceChange).toFixed(2)} (
-                          {stock.priceChange >= 0 ? '+' : ''}
-                          {stock.priceChangePercent.toFixed(2)}%)
-                        </span>
-                      )}
+                    <PriceChange
+                      price={stock.currentPrice}
+                      change={stock.priceChange}
+                      changePercent={stock.priceChangePercent}
+                    />
                     {/* Position value: shares × current price */}
                     {stock.shares && stock.shares > 0 && (
                       <span className="text-[hsl(var(--muted-foreground))] opacity-60 border-l border-gray-300 pl-2">

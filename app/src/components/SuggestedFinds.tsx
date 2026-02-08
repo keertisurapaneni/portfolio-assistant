@@ -4,11 +4,12 @@ import {
   Gem,
   ChevronDown,
   ChevronUp,
-  ExternalLink,
   Sparkles,
   RefreshCw,
   AlertCircle,
 } from 'lucide-react';
+import { TickerLabel } from './TickerLabel';
+import { ErrorBanner } from './ErrorBanner';
 import type { EnhancedSuggestedStock } from '../data/suggestedFinds';
 import { useSuggestedFinds } from '../hooks/useSuggestedFinds';
 import { cn } from '../lib/utils';
@@ -214,10 +215,7 @@ export function SuggestedFinds({ existingTickers }: SuggestedFindsProps) {
 
       {/* Error banner (non-fatal — showing cached data) */}
       {error && (compounders.length > 0 || goldMines.length > 0) && (
-        <div className="text-sm text-amber-700 bg-amber-50 px-4 py-3 rounded-lg border border-amber-200 flex items-center gap-2">
-          <AlertCircle className="w-4 h-4 flex-shrink-0" />
-          {error}
-        </div>
+        <ErrorBanner message={error} variant="warning" />
       )}
     </div>
   );
@@ -341,20 +339,8 @@ function StockCard({ stock, accentColor }: StockCardProps) {
       )}
     >
       {/* Header: Ticker + Name + Yahoo link */}
-      <div className="flex items-center gap-2 mb-2">
-        <span className="text-lg font-bold text-[hsl(var(--foreground))]">{stock.ticker}</span>
-        <a
-          href={`https://finance.yahoo.com/quote/${stock.ticker}/`}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--primary))] transition-colors"
-          title="View on Yahoo Finance"
-        >
-          <ExternalLink className="w-3.5 h-3.5" />
-        </a>
-        {stock.name && stock.name !== stock.ticker && (
-          <span className="text-sm text-[hsl(var(--muted-foreground))] truncate">{stock.name}</span>
-        )}
+      <div className="mb-2">
+        <TickerLabel ticker={stock.ticker} name={stock.name} />
       </div>
 
       {/* Category badge for Gold Mines */}

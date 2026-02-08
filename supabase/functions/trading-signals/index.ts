@@ -177,8 +177,8 @@ async function callGemini(
 
       lastResponse = res;
       if (res.status === 429) {
-        console.warn(`[Trading Signals] ${model} key#${(startIdx + i) % apiKeys.length} rate-limited, waiting 2s...`);
-        await new Promise(r => setTimeout(r, 2000));
+        console.warn(`[Trading Signals] ${model} key#${(startIdx + i) % apiKeys.length} rate-limited, waiting 500ms...`);
+        await new Promise(r => setTimeout(r, 500));
         continue;
       }
       // Non-429 error on this model — try next model
@@ -208,13 +208,7 @@ Respond ONLY with valid JSON (no markdown, no backticks):
 
 // ── Day Trade Agent ─────────────────────────────────────
 
-const DAY_TRADE_SYSTEM = `You are a professional intraday trader. You MUST pick a side.
-
-Rules:
-- If the 1-hour trend is UP → recommend BUY with a dip entry near 15-min support.
-- If the 1-hour trend is DOWN → recommend SELL with a bounce entry near 15-min resistance.
-- HOLD is only allowed when the 1-hour chart shows no direction (flat EMAs, <0.5% range in last 2 hours).
-- You must ALWAYS provide entry, stop, target, and risk/reward numbers.`;
+const DAY_TRADE_SYSTEM = `You are a professional intraday trader. Your job is to find actionable trade setups. Lean toward giving a directional call (BUY or SELL) when the data supports it, but recommend HOLD when there is genuinely no edge.`;
 
 const DAY_TRADE_USER = `You are provided with:
 
@@ -225,10 +219,9 @@ const DAY_TRADE_USER = `You are provided with:
 
 Each candle includes: time, open, high, low, close, volume.
 
-2) A 24-hour news sentiment analysis containing:
-   - sentiment category (Positive / Neutral / Negative)
-   - numerical score (-1 to +1)
-   - rationale summarizing recent news impact
+2) Recent news headlines for the stock. Assess the sentiment yourself:
+   - Determine if news is Positive, Neutral, or Negative for the stock price
+   - Use sentiment only as confirmation or caution, not the primary driver
 
 ---
 
@@ -236,14 +229,14 @@ Analysis rules:
 - Use the 1-hour timeframe to determine intraday trend bias.
 - Use the 15-minute timeframe to assess momentum and structure.
 - Use the 1-minute timeframe to refine entries and stops.
-- Use sentiment only as confirmation or caution, not the primary driver.
-- If price action is choppy or extended, lower your confidence but still look for the best directional lean.
+- If the 1-hour trend is clear, lean into it — even if the setup isn't perfect, provide a directional call with lower confidence.
+- Only recommend HOLD when price action is truly directionless (flat, no momentum, tight range).
 
 Risk management:
 - Entry must be near current price.
 - Stop-loss must be placed beyond a recent intraday swing.
 - Target must provide at least 1.5× reward relative to risk.
-- Widen stops if needed rather than defaulting to HOLD.
+- If the setup is marginal, widen the stop and lower confidence rather than defaulting to HOLD.
 
 Use the most recent 1-minute close as the proxy for current market price.
 
@@ -276,15 +269,7 @@ Sentiment Data:
 
 // ── Swing Trade Agent ───────────────────────────────────
 
-const SWING_TRADE_SYSTEM = `You are a professional swing trader. You MUST pick a side.
-
-Rules:
-- If the dominant trend is UP → recommend BUY with a pullback entry.
-- If the dominant trend is DOWN → recommend SELL with a rally entry.
-- HOLD is only allowed when price has been in a tight sideways range (<3% range) for 2+ weeks.
-- A stock that just dropped hard is a SELL candidate, not a HOLD.
-- A stock that just rallied hard is a BUY candidate on a pullback, not a HOLD.
-- You must ALWAYS provide entry, stop, target, and risk/reward numbers.`;
+const SWING_TRADE_SYSTEM = `You are a professional swing trader. Your job is to find actionable multi-day trade setups. Lean toward giving a directional call (BUY or SELL) when the data supports it, but recommend HOLD when there is genuinely no edge.`;
 
 const SWING_TRADE_USER = `You are provided with:
 
@@ -295,10 +280,9 @@ const SWING_TRADE_USER = `You are provided with:
 
 Each candle includes: time, open, high, low, close, volume.
 
-2) A 24-hour to multi-day news sentiment analysis containing:
-   - sentiment category (Positive / Neutral / Negative)
-   - numerical score (-1 to +1)
-   - rationale summarizing the dominant market narrative
+2) Recent news headlines for the stock. Assess the sentiment yourself:
+   - Determine if news is Positive, Neutral, or Negative for the stock price
+   - Sentiment must support or at least not contradict the technical trend
 
 ---
 
@@ -306,14 +290,14 @@ Analysis rules:
 - Identify the dominant trend using the weekly timeframe.
 - Confirm trend strength using the daily timeframe.
 - Use the 4-hour timeframe to define a precise entry zone.
-- Sentiment must support or at least not contradict the technical trend.
-- If higher timeframes conflict, trade the dominant timeframe's direction with lower confidence and a wider stop.
+- If at least two of three timeframes agree on direction, give a directional call. Use lower confidence if the third conflicts.
+- Only recommend HOLD when all timeframes genuinely conflict or price is in a tight sideways range with no momentum.
 
 Risk management:
-- Entry should be near a recent support (BUY) or resistance (SELL) level.
-- Stop-loss beyond the nearest swing high/low.
-- Target at least 1.5× reward relative to risk.
-- Counter-trend trades are allowed if reward exceeds 2× risk.
+- Entry should be near a key support (BUY) or resistance (SELL) level.
+- Stop-loss must be beyond a significant swing high/low.
+- Target must provide at least 1.5× reward relative to risk.
+- Counter-trend trades are allowed only if reward exceeds 2.5× risk.
 
 Use the most recent 4-hour close as the proxy for current market price.
 
@@ -439,35 +423,12 @@ Deno.serve(async req => {
       url: n.url,
     }));
 
-    // ── Step 3: Sentiment Agent (Gemini) ──
-    let sentiment = {
-      category: 'Neutral',
-      score: 0,
-      summary: 'No news available.',
-      keyDrivers: [] as string[],
-    };
-    if (newsForPrompt.length > 0) {
-      const sentimentText = await callGemini(
-        GEMINI_KEYS,
-        SENTIMENT_SYSTEM,
-        `News for ${ticker}:\n${JSON.stringify(newsForPrompt)}`
-      );
-      try {
-        const parsed = JSON.parse(cleanJson(sentimentText));
-        sentiment = {
-          category: parsed.category ?? 'Neutral',
-          score: typeof parsed.score === 'number' ? parsed.score : 0,
-          summary: parsed.summary ?? '',
-          keyDrivers: Array.isArray(parsed.keyDrivers) ? parsed.keyDrivers : [],
-        };
-      } catch {
-        // keep default sentiment
-      }
-    }
+    // ── Step 3 + 4: Sentiment Agent + Trade Agent IN PARALLEL ──
+    // Both agents receive the same raw news. The trade agent's prompt now instructs
+    // it to interpret sentiment directly from headlines (no pre-digested score needed).
+    // The sentiment agent runs alongside purely for structured metadata in the response.
 
-    // ── Step 4: Trade Agent (Gemini) ──
-    // Twelve Data returns candles newest-first. Use the first candle of the
-    // shortest interval as "current price" (most recent data point).
+    // Prepare trade agent inputs
     const technicalData = { timeframes, currentPrice: null as number | null };
     const primaryInterval = intervals[0]; // 4h for swing, 1min for day
     const primaryCandles = timeframes[primaryInterval]?.values;
@@ -477,12 +438,48 @@ Deno.serve(async req => {
       if (!Number.isNaN(c)) technicalData.currentPrice = c;
     }
 
+    // Give the trade agent the actual news headlines so it can assess sentiment itself
+    const newsForTrade = newsForPrompt.length > 0
+      ? newsForPrompt.map(n => ({ headline: n.headline, source: n.source }))
+      : [{ headline: 'No recent news available', source: '' }];
+
     const tradeSystemPrompt = mode === 'DAY_TRADE' ? DAY_TRADE_SYSTEM : SWING_TRADE_SYSTEM;
     const tradeUserTemplate = mode === 'DAY_TRADE' ? DAY_TRADE_USER : SWING_TRADE_USER;
     const tradeUserPrompt = tradeUserTemplate
       .replace('{{TECHNICAL_DATA}}', JSON.stringify(technicalData))
-      .replace('{{SENTIMENT_DATA}}', JSON.stringify(sentiment));
-    const tradeRaw = await callGemini(GEMINI_KEYS, tradeSystemPrompt, tradeUserPrompt);
+      .replace('{{SENTIMENT_DATA}}', JSON.stringify(newsForTrade));
+
+    // Launch both in parallel
+    const sentimentPromise = (async () => {
+      const defaultSentiment = {
+        category: 'Neutral',
+        score: 0,
+        summary: 'No news available.',
+        keyDrivers: [] as string[],
+      };
+      if (newsForPrompt.length === 0) return defaultSentiment;
+      try {
+        const sentimentText = await callGemini(
+          GEMINI_KEYS,
+          SENTIMENT_SYSTEM,
+          `News for ${ticker}:\n${JSON.stringify(newsForPrompt)}`
+        );
+        const parsed = JSON.parse(cleanJson(sentimentText));
+        return {
+          category: parsed.category ?? 'Neutral',
+          score: typeof parsed.score === 'number' ? parsed.score : 0,
+          summary: parsed.summary ?? '',
+          keyDrivers: Array.isArray(parsed.keyDrivers) ? parsed.keyDrivers : [],
+        };
+      } catch {
+        return defaultSentiment;
+      }
+    })();
+
+    const tradePromise = callGemini(GEMINI_KEYS, tradeSystemPrompt, tradeUserPrompt);
+
+    const [sentiment, tradeRaw] = await Promise.all([sentimentPromise, tradePromise]);
+
     let trade: Record<string, unknown>;
     try {
       trade = JSON.parse(cleanJson(tradeRaw));

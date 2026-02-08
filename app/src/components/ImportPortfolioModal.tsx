@@ -1,5 +1,6 @@
 import { useState, useRef } from 'react';
 import { X, Upload, AlertCircle, Check } from 'lucide-react';
+import { ErrorBanner } from './ErrorBanner';
 import {
   parseFile,
   detectColumns,
@@ -118,12 +119,7 @@ export function ImportPortfolioModal({ onClose, onComplete }: ImportPortfolioMod
 
         <div className="p-6">
           {/* Error display */}
-          {error && (
-            <div className="flex items-center gap-2 p-3 mb-4 bg-red-50 text-red-700 rounded-lg text-sm">
-              <AlertCircle className="w-4 h-4 flex-shrink-0" />
-              {error}
-            </div>
-          )}
+          {error && <ErrorBanner message={error} className="mb-4" />}
 
           {/* Step: Upload */}
           {step === 'upload' && (

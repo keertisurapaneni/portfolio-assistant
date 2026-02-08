@@ -86,6 +86,11 @@ export async function cloudUpdateStock(ticker: string, updates: Partial<Stock>):
   if (error) console.error('[CloudStorage] update failed:', error.message);
 }
 
+export async function cloudRemoveTicker(ticker: string): Promise<void> {
+  const { error } = await supabase.from('portfolios').delete().eq('ticker', ticker.toUpperCase());
+  if (error) console.error('[CloudStorage] remove failed:', error.message);
+}
+
 export async function cloudClearAll(): Promise<void> {
   const { error } = await supabase.from('portfolios').delete().neq('ticker', '');
   if (error) console.error('[CloudStorage] clear failed:', error.message);

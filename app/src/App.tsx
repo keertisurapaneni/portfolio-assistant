@@ -4,8 +4,8 @@ import { SpeedInsights } from '@vercel/speed-insights/react';
 import { Analytics } from '@vercel/analytics/react';
 import { Activity, Briefcase, Brain, Lightbulb, RefreshCw, TrendingUp, User, LogOut, ChevronDown } from 'lucide-react';
 import type { StockWithConviction, RiskProfile } from './types';
-import { getUserData, addTickers, updateStock, clearAllData, importStocksWithPositions } from './lib/storage';
-import { getCloudUserData, cloudAddTickers, cloudClearAll } from './lib/cloudStorage';
+import { getUserData, addTickers, updateStock, removeStock, clearAllData, importStocksWithPositions } from './lib/storage';
+import { getCloudUserData, cloudAddTickers, cloudRemoveTicker, cloudClearAll } from './lib/cloudStorage';
 import { getConvictionResult } from './lib/convictionEngine';
 import { calculatePortfolioWeights } from './lib/portfolioCalc';
 import { fetchMultipleStocks } from './lib/stockApiEdge';
@@ -102,8 +102,12 @@ function AppContent() {
         ...cloudData,
         stocks: cloudData.stocks.map(cs => {
           const cached = localData.stocks.find(s => s.ticker === cs.ticker);
+          // Prefer the enriched name (from Finnhub via localStorage) over the stub name (ticker) from cloud
+          const enrichedName = (cached?.name && cached.name !== cs.ticker) ? cached.name
+            : (cs.name && cs.name !== cs.ticker) ? cs.name
+            : cached?.name || cs.name;
           return cached
-            ? { ...cached, shares: cs.shares, avgCost: cs.avgCost, name: cs.name || cached.name }
+            ? { ...cached, shares: cs.shares, avgCost: cs.avgCost, name: enrichedName }
             : cs;
         }),
       };
@@ -355,13 +359,14 @@ function AppContent() {
     // For authed users, also persist to cloud DB (source of truth for positions).
     const localResult = addTickers(tickers);
     const result = isAuthed ? await cloudAddTickers(tickers) : localResult;
-    setHasAutoRefreshed(false); // Allow auto-refresh for new stocks
-    await loadStocks();
 
     // Fetch data from Finnhub
     if (result.added.length > 0) {
+      // Set refreshing BEFORE loadStocks to prevent auto-refresh from interfering
       setIsRefreshing(true);
+      setHasAutoRefreshed(true); // Block auto-refresh during add flow
       setRefreshProgress(`Fetching data for ${result.added.length} stocks...`);
+      await loadStocks();
 
       try {
         const stockData = await fetchMultipleStocks(result.added, (completed, total, current) => {
@@ -396,10 +401,29 @@ function AppContent() {
           });
         });
 
+        // Detect invalid tickers (not found on Finnhub)
+        const invalidTickers = result.added.filter(t => !stockData.has(t));
+        if (invalidTickers.length > 0) {
+          // Remove invalid tickers from both storages
+          for (const t of invalidTickers) {
+            removeStock(t);
+            if (isAuthed) await cloudRemoveTicker(t);
+          }
+        }
+
         const freshStocks = await loadStocks();
         if (freshStocks) runAIAnalysis(freshStocks);
-        setRefreshProgress(`✓ Added ${stockData.size} stocks with data!`);
-        setTimeout(() => setRefreshProgress(null), 2000);
+
+        if (invalidTickers.length > 0 && stockData.size > 0) {
+          setRefreshProgress(`✓ Added ${stockData.size} stock${stockData.size > 1 ? 's' : ''}. Invalid: ${invalidTickers.join(', ')}`);
+          setTimeout(() => setRefreshProgress(null), 4000);
+        } else if (invalidTickers.length > 0 && stockData.size === 0) {
+          setRefreshProgress(`⚠️ Ticker${invalidTickers.length > 1 ? 's' : ''} not found: ${invalidTickers.join(', ')}`);
+          setTimeout(() => setRefreshProgress(null), 4000);
+        } else {
+          setRefreshProgress(`✓ Added ${stockData.size} stock${stockData.size > 1 ? 's' : ''} with data!`);
+          setTimeout(() => setRefreshProgress(null), 2000);
+        }
       } catch (error) {
         console.error('Failed to fetch stock data:', error);
         setRefreshProgress('⚠️ Some data may be incomplete');
@@ -407,6 +431,9 @@ function AppContent() {
       } finally {
         setIsRefreshing(false);
       }
+    } else {
+      // All tickers were duplicates — just reload
+      await loadStocks();
     }
   };
 
@@ -713,7 +740,7 @@ function AppContent() {
               )}
             >
               <Activity className="w-4 h-4" />
-              Signals
+              Trade Signals
             </NavLink>
             <NavLink
               to="/finds"
@@ -743,8 +770,15 @@ function AppContent() {
         </div>
       </header>
 
+      {/* Daily investing quote — below tabs, above content */}
+      <div className="max-w-4xl mx-auto px-6 pt-5 pb-0">
+        <p className="text-[13px] text-center text-[hsl(var(--primary))]/50 italic leading-relaxed">
+          {investingQuote}
+        </p>
+      </div>
+
       {/* Main Content — Routed */}
-      <main className="max-w-4xl mx-auto px-6 py-8">
+      <main className="max-w-4xl mx-auto px-6 py-6">
         <Routes>
           <Route path="/" element={
             <Dashboard
@@ -788,12 +822,22 @@ function AppContent() {
         <AuthModal onClose={() => setShowAuthModal(false)} />
       )}
 
-      {/* Footer with daily quote + tech stack link */}
+      {/* Footer with disclaimer + tech stack link */}
       <footer className="max-w-4xl mx-auto px-6 py-6 mt-4">
-        <p className="text-xs text-center text-[hsl(var(--muted-foreground))] italic opacity-60">
-          {investingQuote}
+        <p className="text-[10px] text-center text-[hsl(var(--muted-foreground))] opacity-50 max-w-2xl mx-auto">
+          Not financial advice. AI-generated signals are for informational purposes only and should not be relied upon for investment decisions. Always do your own research and consult a qualified financial advisor. Past performance does not guarantee future results.
         </p>
         <p className="text-xs text-center mt-3 text-[hsl(var(--muted-foreground))]">
+          Built by{' '}
+          <a
+            href="https://www.linkedin.com/in/keerti-s-17629b74"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="font-medium hover:text-blue-600 transition-colors"
+          >
+            Keerti Surapaneni
+          </a>
+          {' · '}
           <a
             href="/tech-stack.html"
             target="_blank"
