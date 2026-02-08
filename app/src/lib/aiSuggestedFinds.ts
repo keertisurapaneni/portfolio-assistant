@@ -20,7 +20,7 @@ const DAILY_SUGGESTIONS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1
 const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
 // Cache config
-const PROMPT_VERSION = 8; // v8: Compounders — conviction ranking, valuation/AI impact, category support, flexible count (3-8)
+const PROMPT_VERSION = 9; // v9: Gold Mine conviction scores, Steady Compounders rename, Gold Mine categories
 const CACHE_KEY = `gemini-discovery-v${PROMPT_VERSION}`;
 const CACHE_DURATION = 1000 * 60 * 60 * 24; // 24 hours
 
@@ -477,6 +477,7 @@ RULES:
 - Be concise and factual. No hype.
 - Be HONEST about weak metrics — mention them as risks, don't spin them as positives.
 - Include ALL stocks provided — let the user decide. Flag risks clearly in whyGreat.
+- Sort by conviction (highest first). conviction = 1-10 buy conviction score based on both the catalyst strength AND financial quality.
 
 RECENT HEADLINES (for context):
 ${headlinesSummary}
@@ -495,6 +496,7 @@ Return ONLY valid JSON:
       "tag": "Gold Mine",
       "reason": "One sentence combining the headline catalyst with a key financial metric",
       "category": "Value chain category",
+      "conviction": 8,
       "whyGreat": [
         "Specific metric-backed point (e.g. 'ROE of 22% shows strong capital efficiency')",
         "Second metric-backed point tied to the headline catalyst",
@@ -509,7 +511,7 @@ Return ONLY valid JSON:
   ]
 }
 
-Analyze all stocks provided. Each must have 3 whyGreat points and 3 metrics — all from the Finnhub data above.`;
+Analyze all stocks provided. Each must have conviction (1-10), 3 whyGreat points, and 3 metrics — all from the Finnhub data above.`;
 }
 
 // ──────────────────────────────────────────────────────────
