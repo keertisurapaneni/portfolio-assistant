@@ -2,15 +2,17 @@ import { useState, useEffect, useCallback } from 'react';
 import { BrowserRouter, Routes, Route, NavLink, useLocation } from 'react-router-dom';
 import { SpeedInsights } from '@vercel/speed-insights/react';
 import { Analytics } from '@vercel/analytics/react';
-import { Activity, Briefcase, Brain, Lightbulb, Plus, RefreshCw, TrendingUp } from 'lucide-react';
+import { Activity, Briefcase, Brain, Lightbulb, Plus, RefreshCw, TrendingUp, User, LogOut, ChevronDown } from 'lucide-react';
 import type { StockWithConviction, RiskProfile } from './types';
-import { getUserData, addTickers, updateStock, clearAllData } from './lib/storage';
+import { getUserData, addTickers, updateStock, clearAllData, importStocksWithPositions } from './lib/storage';
+import { getCloudUserData, cloudAddTickers, cloudUpdateStock, cloudClearAll, cloudImportStocksWithPositions } from './lib/cloudStorage';
 import { getConvictionResult } from './lib/convictionEngine';
 import { calculatePortfolioWeights } from './lib/portfolioCalc';
 import { fetchMultipleStocks } from './lib/stockApiEdge';
 import { generateAIInsights } from './lib/aiInsights';
 import { getRiskProfile, setRiskProfile } from './lib/settingsStorage';
 import { cn } from './lib/utils';
+import { AuthProvider, useAuth } from './lib/auth';
 
 // Components
 import { Dashboard } from './components/Dashboard';
@@ -19,6 +21,9 @@ import { MarketMovers } from './components/MarketMovers';
 import { TradingSignals } from './components/TradingSignals';
 import { StockDetail } from './components/StockDetail';
 import { AddTickersModal } from './components/AddTickersModal';
+import { AuthModal } from './components/AuthModal';
+import { BrokerConnect } from './components/BrokerConnect';
+import type { SyncResult } from './lib/brokerApi';
 
 // Zero API calls — rotate through legendary quotes by day-of-year
 const INVESTING_QUOTES = [
@@ -63,10 +68,14 @@ function getDailyQuote(): string {
 
 function AppContent() {
   const location = useLocation();
+  const { user, loading: authLoading, signOut } = useAuth();
+  const isAuthed = !!user;
   const activeTab = location.pathname === '/finds' ? 'suggested' : location.pathname === '/movers' ? 'movers' : location.pathname === '/signals' ? 'signals' : 'portfolio';
   const [stocks, setStocks] = useState<StockWithConviction[]>([]);
   const [selectedStock, setSelectedStock] = useState<StockWithConviction | null>(null);
   const [showAddModal, setShowAddModal] = useState(false);
+  const [showAuthModal, setShowAuthModal] = useState(false);
+  const [showUserMenu, setShowUserMenu] = useState(false);
 
   const [riskProfile, setRiskProfileState] = useState<RiskProfile>(getRiskProfile());
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -79,9 +88,28 @@ function AppContent() {
   const [hasAutoRefreshed, setHasAutoRefreshed] = useState(false);
   const investingQuote = getDailyQuote(); // Synchronous — zero API calls
 
-  // Load and process stocks
-  const loadStocks = useCallback(() => {
-    const data = getUserData();
+  // Load and process stocks — async to support cloud storage.
+  // Cloud stores portfolio composition (tickers + positions).
+  // localStorage always caches market data (prices, scores, etc.).
+  // For authed users we merge: cloud ticker list + localStorage market data cache.
+  const loadStocks = useCallback(async () => {
+    const localData = getUserData(); // Always read — has cached market data
+    let data;
+    if (isAuthed) {
+      const cloudData = await getCloudUserData();
+      // Merge: cloud positions + localStorage cached market data
+      data = {
+        ...cloudData,
+        stocks: cloudData.stocks.map(cs => {
+          const cached = localData.stocks.find(s => s.ticker === cs.ticker);
+          return cached
+            ? { ...cached, shares: cs.shares, avgCost: cs.avgCost, name: cs.name || cached.name }
+            : cs;
+        }),
+      };
+    } else {
+      data = localData;
+    }
 
     // Calculate conviction for each stock (100% automated)
     const stocksWithConviction: StockWithConviction[] = data.stocks.map(stock => {
@@ -138,7 +166,7 @@ function AppContent() {
     // Show rule-based results instantly — AI runs separately after fresh data
     setStocks(withPortfolioContext);
     return withPortfolioContext;
-  }, [riskProfile]);
+  }, [riskProfile, isAuthed]);
 
   // In-flight guard: prevent overlapping runAIAnalysis calls
   // (initial load + auto-refresh + StrictMode can cause concurrent runs)
@@ -287,10 +315,12 @@ function AppContent() {
   );
 
   // Initial load — show stocks with rule-based data; AI only runs on explicit refresh
+  // Re-runs when auth state changes (login/logout) to switch storage source
   useEffect(() => {
+    if (authLoading) return; // Wait for auth to resolve
     loadStocks();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [isAuthed, authLoading]);
 
   // Auto-refresh when stocks are loaded and have missing scores
   useEffect(() => {
@@ -319,9 +349,9 @@ function AppContent() {
   // Handle adding tickers with Yahoo Finance fetch
   const handleAddTickers = async (tickers: string[]) => {
     // First add tickers to storage
-    const result = addTickers(tickers);
+    const result = isAuthed ? await cloudAddTickers(tickers) : addTickers(tickers);
     setHasAutoRefreshed(false); // Allow auto-refresh for new stocks
-    loadStocks();
+    await loadStocks();
 
     // Fetch data from Finnhub
     if (result.added.length > 0) {
@@ -361,7 +391,7 @@ function AppContent() {
           });
         });
 
-        const freshStocks = loadStocks();
+        const freshStocks = await loadStocks();
         if (freshStocks) runAIAnalysis(freshStocks);
         setRefreshProgress(`✓ Added ${stockData.size} stocks with data!`);
         setTimeout(() => setRefreshProgress(null), 2000);
@@ -444,7 +474,7 @@ function AppContent() {
         updated++;
       });
 
-      const freshStocks = loadStocks();
+      const freshStocks = await loadStocks();
 
       // NOW fire AI with fresh data — the only place this runs
       if (freshStocks) runAIAnalysis(freshStocks);
@@ -466,14 +496,15 @@ function AppContent() {
   };
 
   // Clear all portfolio data
-  const handleClearAll = () => {
+  const handleClearAll = async () => {
+    if (isAuthed) await cloudClearAll();
     clearAllData();
     setStocks([]);
     setSelectedStock(null);
   };
 
   // Handle risk profile change — pass new profile directly to avoid stale closure
-  const handleRiskProfileChange = (newProfile: RiskProfile) => {
+  const handleRiskProfileChange = async (newProfile: RiskProfile) => {
     setRiskProfile(newProfile); // Save to localStorage
     setRiskProfileState(newProfile); // Update state
 
@@ -481,7 +512,7 @@ function AppContent() {
     const profileLabel = newProfile.charAt(0).toUpperCase() + newProfile.slice(1);
     setRefreshProgress(`Re-analyzing with ${profileLabel} risk profile...`);
 
-    const freshStocks = loadStocks(); // Recalculate with new profile
+    const freshStocks = await loadStocks(); // Recalculate with new profile
     if (freshStocks) {
       // Pass profile directly — React state hasn't updated yet (async)
       runAIAnalysis(freshStocks, newProfile, () => {
@@ -489,6 +520,17 @@ function AppContent() {
         setRefreshProgress(`✓ Done — updated signals for ${profileLabel} profile`);
         setTimeout(() => setRefreshProgress(null), 2500);
       });
+    }
+  };
+
+  // Handle broker sync — import synced positions and reload
+  const handleBrokerSync = async (result: SyncResult) => {
+    if (result.positions.length > 0) {
+      // Also update localStorage cache with position data
+      importStocksWithPositions(result.positions);
+      await loadStocks();
+      setRefreshProgress(`✓ Synced ${result.stats.total} positions from broker`);
+      setTimeout(() => setRefreshProgress(null), 3000);
     }
   };
 
@@ -532,6 +574,11 @@ function AppContent() {
               </div>
             </div>
             <div className="flex items-center gap-3">
+              {/* Broker Connect — only for authed users on portfolio tab */}
+              {isAuthed && activeTab === 'portfolio' && (
+                <BrokerConnect onSyncComplete={handleBrokerSync} />
+              )}
+
               {/* Refresh Button — only on portfolio tab */}
               {activeTab === 'portfolio' && stocks.length > 0 && (
                 <button
@@ -556,6 +603,46 @@ function AppContent() {
                   <Plus className="w-4 h-4" />
                   Add Stocks
                 </button>
+              )}
+
+              {/* Auth: Login button or User menu */}
+              {!authLoading && (
+                isAuthed ? (
+                  <div className="relative">
+                    <button
+                      onClick={() => setShowUserMenu(v => !v)}
+                      className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-[hsl(var(--secondary))] hover:bg-[hsl(var(--border))] transition-colors text-sm"
+                    >
+                      <User className="w-4 h-4" />
+                      <span className="max-w-[100px] truncate text-xs">{user?.email?.split('@')[0]}</span>
+                      <ChevronDown className="w-3 h-3" />
+                    </button>
+                    {showUserMenu && (
+                      <>
+                        <div className="fixed inset-0 z-40" onClick={() => setShowUserMenu(false)} />
+                        <div className="absolute right-0 top-full mt-1 bg-white rounded-lg shadow-lg border p-1 z-50 w-40">
+                          <p className="px-3 py-1.5 text-xs text-[hsl(var(--muted-foreground))] truncate">{user?.email}</p>
+                          <hr className="my-1" />
+                          <button
+                            onClick={() => { signOut(); setShowUserMenu(false); }}
+                            className="flex items-center gap-2 w-full px-3 py-2 text-sm text-red-600 hover:bg-red-50 rounded"
+                          >
+                            <LogOut className="w-3.5 h-3.5" />
+                            Sign Out
+                          </button>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                ) : (
+                  <button
+                    onClick={() => setShowAuthModal(true)}
+                    className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-[hsl(var(--secondary))] hover:bg-[hsl(var(--border))] transition-colors text-sm font-medium"
+                  >
+                    <User className="w-4 h-4" />
+                    Login
+                  </button>
+                )
               )}
             </div>
           </div>
@@ -690,6 +777,11 @@ function AppContent() {
         <AddTickersModal onClose={() => setShowAddModal(false)} onAddTickers={handleAddTickers} />
       )}
 
+      {/* Auth Modal */}
+      {showAuthModal && (
+        <AuthModal onClose={() => setShowAuthModal(false)} />
+      )}
+
       {/* Footer with daily quote + tech stack link */}
       <footer className="max-w-4xl mx-auto px-6 py-6 mt-4">
         <p className="text-xs text-center text-[hsl(var(--muted-foreground))] italic opacity-60">
@@ -715,9 +807,11 @@ function AppContent() {
 
 function App() {
   return (
-    <BrowserRouter>
-      <AppContent />
-    </BrowserRouter>
+    <AuthProvider>
+      <BrowserRouter>
+        <AppContent />
+      </BrowserRouter>
+    </AuthProvider>
   );
 }
 
