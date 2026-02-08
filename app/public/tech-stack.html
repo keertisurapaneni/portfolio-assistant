@@ -401,40 +401,6 @@
     </div>
   </div>
 
-  <!-- Edge Functions -->
-  <p class="section-heading">Edge Functions (Supabase · Deno)</p>
-
-  <div class="diagram">
-    <div class="layer">
-      <div class="layer-label">Portfolio</div>
-      <div class="layer-items">
-        <span class="tech back"><span class="name">ai-proxy</span><span class="detail">Groq LLM proxy with model fallback</span></span>
-        <span class="tech back"><span class="name">fetch-stock-data</span><span class="detail">Finnhub proxy + 15-min server cache</span></span>
-        <span class="tech back"><span class="name">fetch-yahoo-news</span><span class="detail">company-specific news</span></span>
-      </div>
-    </div>
-    <div class="layer">
-      <div class="layer-label">Signals</div>
-      <div class="layer-items">
-        <span class="tech back"><span class="name">trading-signals</span><span class="detail">Twelve Data + Yahoo News + Gemini pipeline</span></span>
-      </div>
-    </div>
-    <div class="layer">
-      <div class="layer-label">Finds</div>
-      <div class="layer-items">
-        <span class="tech back"><span class="name">huggingface-proxy</span><span class="detail">HuggingFace Inference API with model cascade</span></span>
-        <span class="tech back"><span class="name">gemini-proxy</span><span class="detail">Gemini API proxy for client-side calls</span></span>
-        <span class="tech back"><span class="name">daily-suggestions</span><span class="detail">shared daily cache (PostgreSQL CRUD)</span></span>
-      </div>
-    </div>
-    <div class="layer">
-      <div class="layer-label">Movers</div>
-      <div class="layer-items">
-        <span class="tech back"><span class="name">scrape-market-movers</span><span class="detail">Yahoo Finance screener with retry logic</span></span>
-      </div>
-    </div>
-  </div>
-
   <p class="footer-area">
     All API keys stored as Supabase secrets — never exposed to the browser.
     <br>
