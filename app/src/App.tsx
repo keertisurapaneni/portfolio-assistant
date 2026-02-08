@@ -22,7 +22,8 @@ import { TradingSignals } from './components/TradingSignals';
 import { StockDetail } from './components/StockDetail';
 import { AddTickersModal } from './components/AddTickersModal';
 import { AuthModal } from './components/AuthModal';
-import { BrokerConnect } from './components/BrokerConnect';
+// BrokerConnect UI disabled — SnapTrade requires paid plan. Code preserved for future use.
+// import { BrokerConnect } from './components/BrokerConnect';
 import type { SyncResult } from './lib/brokerApi';
 
 // Zero API calls — rotate through legendary quotes by day-of-year
@@ -617,10 +618,7 @@ function AppContent() {
               </div>
             </div>
             <div className="flex items-center gap-3">
-              {/* Broker Connect — only for authed users on portfolio tab */}
-              {isAuthed && activeTab === 'portfolio' && (
-                <BrokerConnect onSyncComplete={handleBrokerSync} />
-              )}
+              {/* Broker Connect — disabled until production API keys available */}
 
               {/* Refresh Button — only on portfolio tab */}
               {activeTab === 'portfolio' && stocks.length > 0 && (
