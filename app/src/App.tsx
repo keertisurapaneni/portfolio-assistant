@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { BrowserRouter, Routes, Route, NavLink, useLocation } from 'react-router-dom';
 import { SpeedInsights } from '@vercel/speed-insights/react';
 import { Analytics } from '@vercel/analytics/react';
-import { Activity, Briefcase, Brain, Lightbulb, Plus, RefreshCw, TrendingUp, User, LogOut, ChevronDown } from 'lucide-react';
+import { Activity, Briefcase, Brain, Lightbulb, RefreshCw, TrendingUp, User, LogOut, ChevronDown } from 'lucide-react';
 import type { StockWithConviction, RiskProfile } from './types';
 import { getUserData, addTickers, updateStock, clearAllData, importStocksWithPositions } from './lib/storage';
 import { getCloudUserData, cloudAddTickers, cloudClearAll } from './lib/cloudStorage';

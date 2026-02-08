@@ -99,7 +99,7 @@ export function BrokerConnect({ onSyncComplete }: BrokerConnectProps) {
 
       {status?.connected ? (
         <>
-          <button onClick={handleSync} disabled={syncing || loading}
+          <button onClick={() => handleSync()} disabled={syncing || loading}
             className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border border-green-200 bg-green-50 text-green-700 hover:bg-green-100 disabled:opacity-60 transition-colors"
             title={status.lastSyncedAt ? `Last synced: ${new Date(status.lastSyncedAt).toLocaleString()}` : 'Sync positions'}>
             {syncing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
