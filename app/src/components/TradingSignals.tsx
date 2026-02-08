@@ -623,9 +623,6 @@ export function TradingSignals() {
                   )}
                   <span className="text-xs text-[hsl(var(--muted-foreground))]">
                     {result.trade.mode.replace('_', ' ')}
-                    {result.trade.detectedMode && (
-                      <span className="ml-1 text-blue-500">(Auto-detected)</span>
-                    )}
                   </span>
                 </div>
               </div>
