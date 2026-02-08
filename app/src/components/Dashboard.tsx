@@ -1,8 +1,10 @@
 import { useState } from 'react';
-import { Plus, ArrowUpDown, BarChart3, Trash2, Shield } from 'lucide-react';
+import { Plus, ArrowUpDown, BarChart3, Trash2, Shield, Link2, User, X } from 'lucide-react';
 import type { StockWithConviction, RiskProfile } from '../types';
 import { StockCard } from './StockCard';
+import { BrokerConnect } from './BrokerConnect';
 import { cn } from '../lib/utils';
+import type { SyncResult } from '../lib/brokerApi';
 
 interface DashboardProps {
   stocks: StockWithConviction[];
@@ -11,6 +13,9 @@ interface DashboardProps {
   onClearAll: () => void;
   riskProfile: RiskProfile;
   onRiskProfileChange: (profile: RiskProfile) => void;
+  isAuthed?: boolean;
+  onLogin?: () => void;
+  onBrokerSync?: (result: SyncResult) => void;
 }
 
 type SortOption =
@@ -22,9 +27,16 @@ type SortOption =
   | 'change-pct'
   | 'change-dollar';
 
-export function Dashboard({ stocks, onStockSelect, onAddTickers, onClearAll, riskProfile, onRiskProfileChange }: DashboardProps) {
+export function Dashboard({ stocks, onStockSelect, onAddTickers, onClearAll, riskProfile, onRiskProfileChange, isAuthed, onLogin, onBrokerSync }: DashboardProps) {
   const [sortBy, setSortBy] = useState<SortOption>('score-desc');
   const [showClearConfirm, setShowClearConfirm] = useState(false);
+  const [brokerBannerDismissed, setBrokerBannerDismissed] = useState(
+    () => sessionStorage.getItem('broker-banner-dismissed') === '1'
+  );
+  const dismissBrokerBanner = () => {
+    setBrokerBannerDismissed(true);
+    sessionStorage.setItem('broker-banner-dismissed', '1');
+  };
 
   // Sort stocks based on selected option
   const sortedStocks = [...stocks].sort((a, b) => {
@@ -56,21 +68,73 @@ export function Dashboard({ stocks, onStockSelect, onAddTickers, onClearAll, ris
   // Empty state when no stocks
   if (stocks.length === 0) {
     return (
-      <div className="text-center py-20">
-        <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-[hsl(var(--secondary))] mb-6">
-          <BarChart3 className="w-8 h-8 text-[hsl(var(--muted-foreground))]" />
+      <div className="py-16 animate-fade-in-up">
+        <div className="text-center mb-10">
+          <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-gradient-to-br from-blue-100 to-indigo-100 mb-5">
+            <BarChart3 className="w-8 h-8 text-blue-600" />
+          </div>
+          <h3 className="text-2xl font-bold text-[hsl(var(--foreground))] mb-2">Build Your Portfolio</h3>
+          <p className="text-[hsl(var(--muted-foreground))] max-w-md mx-auto">
+            Add your holdings to get AI-powered conviction scores, buy/sell signals, and actionable insights
+          </p>
         </div>
-        <h3 className="text-xl font-semibold text-[hsl(var(--foreground))] mb-2">No stocks yet</h3>
-        <p className="text-[hsl(var(--muted-foreground))] mb-8 max-w-sm mx-auto">
-          Add your holdings to start tracking conviction and making clearer decisions
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 max-w-lg mx-auto">
+          {/* Option 1: Manual entry */}
+          <button
+            onClick={onAddTickers}
+            className="group flex flex-col items-center gap-3 p-6 bg-white rounded-2xl border-2 border-[hsl(var(--border))] hover:border-blue-300 hover:shadow-lg hover:shadow-blue-500/10 transition-all"
+          >
+            <div className="w-12 h-12 rounded-xl bg-blue-50 group-hover:bg-blue-100 flex items-center justify-center transition-colors">
+              <Plus className="w-6 h-6 text-blue-600" />
+            </div>
+            <div>
+              <p className="font-semibold text-[hsl(var(--foreground))]">Enter Tickers</p>
+              <p className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5">Type AAPL, MSFT, etc.</p>
+            </div>
+          </button>
+
+          {/* Option 2: Broker integration */}
+          {isAuthed ? (
+            <div className="flex flex-col items-center gap-3 p-6 bg-white rounded-2xl border-2 border-[hsl(var(--border))]">
+              <div className="w-12 h-12 rounded-xl bg-green-50 flex items-center justify-center">
+                <Link2 className="w-6 h-6 text-green-600" />
+              </div>
+              <div className="text-center">
+                <p className="font-semibold text-[hsl(var(--foreground))]">Connect Brokerage</p>
+                <p className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5 mb-3">Schwab, IBKR, Robinhood</p>
+                {onBrokerSync && <BrokerConnect onSyncComplete={onBrokerSync} />}
+              </div>
+            </div>
+          ) : (
+            <button
+              onClick={onLogin}
+              className="group flex flex-col items-center gap-3 p-6 bg-white rounded-2xl border-2 border-[hsl(var(--border))] hover:border-green-300 hover:shadow-lg hover:shadow-green-500/10 transition-all"
+            >
+              <div className="w-12 h-12 rounded-xl bg-green-50 group-hover:bg-green-100 flex items-center justify-center transition-colors">
+                <Link2 className="w-6 h-6 text-green-600" />
+              </div>
+              <div>
+                <p className="font-semibold text-[hsl(var(--foreground))]">Connect Brokerage</p>
+                <p className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5">Schwab, IBKR, Robinhood</p>
+                <p className="text-[10px] text-blue-600 font-medium mt-1.5 flex items-center justify-center gap-1">
+                  <User className="w-3 h-3" /> Login to connect
+                </p>
+              </div>
+            </button>
+          )}
+        </div>
+
+        <p className="text-center text-xs text-[hsl(var(--muted-foreground))] mt-6">
+          You can always do both — add tickers manually and sync from your broker
         </p>
-        <button
-          onClick={onAddTickers}
-          className="inline-flex items-center gap-2 px-6 py-3 bg-[hsl(var(--primary))] text-white rounded-xl hover:bg-[hsl(221,83%,48%)] shadow-lg shadow-blue-500/20 font-medium transition-all"
-        >
-          <Plus className="w-5 h-5" />
-          Add Your First Stocks
-        </button>
+        {!isAuthed && (
+          <p className="text-center text-[11px] text-[hsl(var(--muted-foreground))] mt-2">
+            Guest portfolios are saved in this browser only.{' '}
+            <button onClick={onLogin} className="text-blue-600 font-medium hover:underline">Log in</button>
+            {' '}to save across devices and connect a brokerage.
+          </p>
+        )}
       </div>
     );
   }
@@ -126,14 +190,24 @@ export function Dashboard({ stocks, onStockSelect, onAddTickers, onClearAll, ris
           </p>
         </div>
 
-        {/* Clear All Button */}
-        <button
-          onClick={() => setShowClearConfirm(true)}
-          className="p-2 rounded-lg text-[hsl(var(--muted-foreground))] hover:text-red-600 hover:bg-red-50 transition-colors"
-          title="Clear all stocks"
-        >
-          <Trash2 className="w-5 h-5" />
-        </button>
+        <div className="flex items-center gap-2">
+          {/* Add Stocks Button */}
+          <button
+            onClick={onAddTickers}
+            className="flex items-center gap-1.5 px-4 py-2 bg-gradient-to-r from-blue-600 to-indigo-600 text-white rounded-xl hover:from-blue-700 hover:to-indigo-700 shadow-md shadow-blue-500/20 text-sm font-semibold transition-all"
+          >
+            <Plus className="w-4 h-4" />
+            Add Stocks
+          </button>
+          {/* Clear All Button */}
+          <button
+            onClick={() => setShowClearConfirm(true)}
+            className="p-2 rounded-lg text-[hsl(var(--muted-foreground))] hover:text-red-600 hover:bg-red-50 transition-colors"
+            title="Clear all stocks"
+          >
+            <Trash2 className="w-5 h-5" />
+          </button>
+        </div>
       </div>
 
       {/* Controls Row — Risk Appetite + Sort */}
@@ -195,6 +269,48 @@ export function Dashboard({ stocks, onStockSelect, onAddTickers, onClearAll, ris
           </select>
         </div>
       </div>
+
+      {/* Broker integration banner — shown when user has stocks but no broker connected */}
+      {!brokerBannerDismissed && !hasPositionData && (
+        <div className="mb-5 flex items-center gap-3 px-4 py-3 bg-gradient-to-r from-green-50 to-emerald-50 border border-green-200 rounded-xl">
+          <Link2 className="w-4 h-4 text-green-600 flex-shrink-0" />
+          <p className="text-sm text-green-800 flex-1">
+            <span className="font-medium">Auto-import your holdings</span>
+            {' — '}
+            {isAuthed ? (
+              <>Connect your brokerage (Schwab, IBKR, Robinhood) to sync positions automatically.</>
+            ) : (
+              <>
+                <button onClick={onLogin} className="underline font-medium hover:text-green-900 transition-colors">
+                  Log in
+                </button>
+                {' '}to connect your brokerage and sync positions automatically.
+              </>
+            )}
+          </p>
+          {isAuthed && onBrokerSync && (
+            <BrokerConnect onSyncComplete={onBrokerSync} />
+          )}
+          <button onClick={dismissBrokerBanner} className="p-1 text-green-400 hover:text-green-600 rounded transition-colors" title="Dismiss">
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
+
+      {/* Guest save reminder — subtle nudge for unauthenticated users with stocks */}
+      {!isAuthed && !brokerBannerDismissed && (
+        <div className="mb-5 flex items-center gap-2 px-4 py-2.5 bg-amber-50 border border-amber-200 rounded-xl">
+          <User className="w-3.5 h-3.5 text-amber-600 flex-shrink-0" />
+          <p className="text-xs text-amber-800 flex-1">
+            Your portfolio is saved in this browser only.{' '}
+            <button onClick={onLogin} className="underline font-semibold hover:text-amber-900 transition-colors">Log in</button>
+            {' '}to save across devices and connect a brokerage.
+          </p>
+          <button onClick={dismissBrokerBanner} className="p-1 text-amber-400 hover:text-amber-600 rounded transition-colors" title="Dismiss">
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
 
       {/* Stock Cards */}
       <div className="space-y-4">

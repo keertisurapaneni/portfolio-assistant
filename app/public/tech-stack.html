@@ -255,7 +255,19 @@
     <div class="layer">
       <div class="layer-label">Backend</div>
       <div class="layer-items">
-        <span class="tech back"><span class="name">Supabase</span><span class="detail">Edge Functions (Deno) · PostgreSQL · Secrets · RLS</span></span>
+        <span class="tech back"><span class="name">Supabase</span><span class="detail">Edge Functions (Deno) · PostgreSQL · Auth · RLS · Secrets</span></span>
+      </div>
+    </div>
+    <div class="layer">
+      <div class="layer-label">Auth</div>
+      <div class="layer-items">
+        <span class="tech dns"><span class="name">Supabase Auth</span><span class="detail">Email/password · JWT · Optional (guest mode works)</span></span>
+      </div>
+    </div>
+    <div class="layer">
+      <div class="layer-label">Broker</div>
+      <div class="layer-items">
+        <span class="tech back"><span class="name">SnapTrade</span><span class="detail">Schwab · IBKR · Robinhood — read-only position sync</span></span>
       </div>
     </div>
   </div>
@@ -286,17 +298,19 @@
           <div class="stack-tags">
             <span class="tag data">Finnhub</span>
             <span class="tag data">Yahoo News</span>
+            <span class="tag data">SnapTrade</span>
           </div>
         </div>
         <div class="stack-row">
           <span class="stack-label">Store</span>
           <div class="stack-tags">
-            <span class="tag store">localStorage</span>
+            <span class="tag edge">PostgreSQL (authed)</span>
+            <span class="tag store">localStorage (guest)</span>
           </div>
         </div>
       </div>
       <div class="page-features">
-        Conviction scoring (4-factor) · AI BUY/SELL signals · Risk profiles · CSV/Excel import · Portfolio value + P&L · News headlines
+        Conviction scoring · AI BUY/SELL signals · Risk profiles · Broker integration (Schwab, IBKR, Robinhood) · Auth (optional) · CSV import · Portfolio value + P&L
       </div>
     </div>
 

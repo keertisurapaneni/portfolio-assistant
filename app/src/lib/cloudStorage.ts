@@ -1,9 +1,19 @@
 /**
  * Cloud Storage — Supabase-backed portfolio CRUD for authenticated users.
  * Same logical interface as storage.ts but reads/writes PostgreSQL via RLS.
+ *
+ * NOTE: Supabase RLS uses auth.uid() for row-level checks, but the actual
+ * user_id column value must be explicitly set in INSERTs.
  */
 import { supabase } from './supabaseClient';
 import type { Stock, UserData } from '../types';
+
+/** Get the current authenticated user's ID, or throw. */
+async function requireUserId(): Promise<string> {
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) throw new Error('Not authenticated');
+  return user.id;
+}
 
 // ── Read ──
 
@@ -38,17 +48,18 @@ export async function getCloudUserData(): Promise<UserData> {
 export async function cloudAddTickers(
   tickers: string[]
 ): Promise<{ added: string[]; skipped: string[] }> {
+  const userId = await requireUserId();
   const existing = await getCloudPortfolio();
   const existingSet = new Set(existing.map(s => s.ticker));
   const added: string[] = [];
   const skipped: string[] = [];
-  const toInsert: { ticker: string; name: string }[] = [];
+  const toInsert: { user_id: string; ticker: string; name: string }[] = [];
 
   for (const t of tickers) {
     const normalized = t.trim().toUpperCase();
     if (!normalized) continue;
     if (existingSet.has(normalized)) { skipped.push(normalized); continue; }
-    toInsert.push({ ticker: normalized, name: normalized });
+    toInsert.push({ user_id: userId, ticker: normalized, name: normalized });
     added.push(normalized);
   }
 
@@ -83,6 +94,7 @@ export async function cloudClearAll(): Promise<void> {
 export async function cloudImportStocksWithPositions(
   stocks: Array<{ ticker: string; name?: string; shares?: number; avgCost?: number }>
 ): Promise<{ added: string[]; updated: string[]; skipped: string[] }> {
+  const userId = await requireUserId();
   const existing = await getCloudPortfolio();
   const existingMap = new Map(existing.map(s => [s.ticker, s]));
   const added: string[] = [];
@@ -104,6 +116,7 @@ export async function cloudImportStocksWithPositions(
       updated.push(normalized);
     } else {
       await supabase.from('portfolios').insert({
+        user_id: userId,
         ticker: normalized,
         name: stock.name || normalized,
         shares: stock.shares ?? null,

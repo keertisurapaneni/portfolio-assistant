@@ -13,9 +13,12 @@ A personal investing decision-support tool that combines automated conviction sc
 - **Conviction Scoring** — Automated 0-100 score based on 4 factors: Quality (30%), Earnings (30%), Analyst (25%), Momentum (15%)
 - **AI Trade Signals** — BUY/SELL recommendations powered by Groq LLMs with risk-adjusted guardrails
 - **Risk Appetite** — Aggressive / Moderate / Conservative profiles that shape AI buy/sell logic
+- **Brokerage Integration** — Connect Schwab, IBKR, or Robinhood via SnapTrade to auto-import holdings
+- **Authentication** — Optional email/password login (Supabase Auth) to save portfolio across devices
 - **Portfolio Import** — CSV/Excel upload with smart column detection (ticker, shares, avg cost)
 - **News Headlines** — Latest company-specific news on each card with clickable links
 - **Portfolio Value** — Per-stock + total portfolio with daily P&L
+- **Guest Mode** — Works without login; portfolio saved in browser localStorage
 
 ### Trading Signals (`/signals`)
 
@@ -49,6 +52,7 @@ A personal investing decision-support tool that combines automated conviction sc
 │                     Vercel (Frontend)                                │
 │          React 18 · TypeScript · Vite · Tailwind CSS 4              │
 │          Client-side routing: / , /signals , /finds , /movers       │
+│          Supabase Auth (optional email/password login)              │
 └──────┬────────────┬────────────────────┬────────────────────────────┘
        │            │                    │
        │ Portfolio  │ Trading Signals    │  Suggested Finds
@@ -68,12 +72,22 @@ A personal investing decision-support tool that combines automated conviction sc
 │ data           │ │    4-key rotation │ │    daily cache)           │
 │ └─ Finnhub API │ │                   │ │                           │
 │                │ └───────────────────┘ └───────────────────────────┘
-│ scrape-market- │
-│ movers         │
-│ └─ Yahoo       │
-│    Finance     │
+│ broker-connect │
+│ └─ SnapTrade   │   ┌─────────────────────────────────────────────┐
+│    (register,  │   │  Supabase PostgreSQL (RLS)                  │
+│    login, dis- │   │  ├─ portfolios (user tickers + positions)   │
+│    connect)    │   │  ├─ broker_connections (SnapTrade creds)    │
+│                │   │  ├─ user_settings (risk profile)            │
+│ broker-sync    │   │  └─ daily_suggestions (shared AI cache)     │
+│ └─ SnapTrade   │   └─────────────────────────────────────────────┘
+│    (positions) │
 │                │
-│ fetch-yahoo-   │
+│ scrape-market- │   ┌─────────────────────────────────────────────┐
+│ movers         │   │  Storage Strategy                           │
+│ └─ Yahoo       │   │  Guest: localStorage (browser-only)         │
+│    Finance     │   │  Authed: Supabase PostgreSQL (cloud)        │
+│                │   │         + localStorage (market data cache)  │
+│ fetch-yahoo-   │   └─────────────────────────────────────────────┘
 │ news           │
 │ └─ Yahoo       │
 │    Finance     │
@@ -102,6 +116,8 @@ A personal investing decision-support tool that combines automated conviction sc
 | `fetch-stock-data` | Stock data proxy with 15-min server cache | Finnhub |
 | `scrape-market-movers` | Gainers/losers screener with retry logic | Yahoo Finance |
 | `fetch-yahoo-news` | Company-specific news | Yahoo Finance |
+| `broker-connect` | SnapTrade registration, login portal, disconnect | SnapTrade |
+| `broker-sync` | Fetch and normalize brokerage positions | SnapTrade |
 
 **API keys never touch the browser** — all sensitive keys stored as Supabase secrets.
 
@@ -110,12 +126,13 @@ A personal investing decision-support tool that combines automated conviction sc
 ### Prerequisites
 
 - Node.js 18+ (LTS recommended)
-- Supabase account + CLI
+- Supabase account + CLI (with Auth enabled — email provider, confirm email OFF)
 - Finnhub API key (free: [finnhub.io](https://finnhub.io/register))
 - Groq API key (free: [console.groq.com](https://console.groq.com))
 - Google Gemini API key (free: [aistudio.google.com](https://aistudio.google.com/apikey))
 - HuggingFace API key (free: [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens))
 - Twelve Data API key (free: [twelvedata.com](https://twelvedata.com/account/api-keys))
+- SnapTrade API credentials (optional, for broker integration: [snaptrade.com](https://snaptrade.com))
 
 ### Setup
 
@@ -148,6 +165,8 @@ supabase secrets set GEMINI_API_KEY_3=your_third_key     # optional
 supabase secrets set GEMINI_API_KEY_4=your_fourth_key    # optional
 supabase secrets set TWELVE_DATA_API_KEY=your_key
 supabase secrets set HUGGINGFACE_API_KEY=your_key
+supabase secrets set SNAPTRADE_CLIENT_ID=your_client_id  # optional, for broker integration
+supabase secrets set SNAPTRADE_CONSUMER_KEY=your_key     # optional
 ```
 
 ### Run
@@ -169,6 +188,11 @@ supabase functions deploy daily-suggestions --no-verify-jwt
 supabase functions deploy scrape-market-movers --no-verify-jwt
 supabase functions deploy fetch-yahoo-news --no-verify-jwt
 supabase functions deploy trading-signals --no-verify-jwt
+supabase functions deploy broker-connect --no-verify-jwt
+supabase functions deploy broker-sync --no-verify-jwt
+
+# Run database migrations (auth + broker tables)
+supabase db push
 
 # Frontend auto-deploys to Vercel on git push to master
 # Commits prefixed with docs:, chore:, or ci: skip deployment

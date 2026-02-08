@@ -33,7 +33,14 @@ export function BrokerConnect({ onSyncComplete }: BrokerConnectProps) {
       const url = status?.connected ? await getBrokerPortalUrl() : await connectBroker();
       const popup = window.open(url, 'snaptrade', 'width=600,height=700');
       const poll = setInterval(async () => {
-        if (popup?.closed) { clearInterval(poll); setLoading(false); await loadStatus(); handleSync(); }
+        if (popup?.closed) {
+          clearInterval(poll);
+          setLoading(false);
+          // Try to sync after popup closes — silently ignore "no accounts" errors
+          // (user may have browsed but not linked a brokerage)
+          await handleSync(true);
+          await loadStatus();
+        }
       }, 1000);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to connect');
@@ -41,7 +48,7 @@ export function BrokerConnect({ onSyncComplete }: BrokerConnectProps) {
     }
   };
 
-  const handleSync = async () => {
+  const handleSync = async (silent = false) => {
     setError(null); setSuccessMsg(null); setSyncing(true);
     try {
       const result = await syncBrokerPositions();
@@ -49,7 +56,10 @@ export function BrokerConnect({ onSyncComplete }: BrokerConnectProps) {
       await loadStatus();
       setSuccessMsg(`Synced ${result.stats.total} positions (${result.stats.added} added, ${result.stats.updated} updated)`);
       setTimeout(() => setSuccessMsg(null), 4000);
-    } catch (err) { setError(err instanceof Error ? err.message : 'Sync failed'); }
+    } catch (err) {
+      // In silent mode, don't show the error (e.g. user closed popup without linking a broker)
+      if (!silent) setError(err instanceof Error ? err.message : 'Sync failed');
+    }
     finally { setSyncing(false); }
   };
 
@@ -78,7 +88,7 @@ export function BrokerConnect({ onSyncComplete }: BrokerConnectProps) {
     <div className="flex items-center gap-2">
       {error && (
         <div className="flex items-center gap-1 text-xs text-red-600 bg-red-50 px-2 py-1 rounded-lg">
-          <AlertCircle className="w-3 h-3" /><span className="max-w-[160px] truncate">{error}</span>
+          <AlertCircle className="w-3 h-3 flex-shrink-0" /><span className="max-w-[280px] truncate">{error}</span>
         </div>
       )}
       {successMsg && (

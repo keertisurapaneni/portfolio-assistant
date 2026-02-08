@@ -318,6 +318,7 @@ function AppContent() {
   // Re-runs when auth state changes (login/logout) to switch storage source
   useEffect(() => {
     if (authLoading) return; // Wait for auth to resolve
+    setHasAutoRefreshed(false); // Reset auto-refresh flag on auth change
     loadStocks();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthed, authLoading]);
@@ -329,9 +330,10 @@ function AppContent() {
       return;
     }
 
-    // Check if any stock has default/missing scores
-    const data = getUserData();
-    const needsRefresh = data.stocks.some(
+    // Check if any displayed stock is missing market data (scores/prices)
+    // Use the actual stocks state — not localStorage — to support authed users
+    // whose cloud stocks may not have a localStorage cache yet
+    const needsRefresh = stocks.some(
       stock =>
         !stock.qualityScore || !stock.momentumScore || !stock.earningsScore || !stock.analystScore
     );
@@ -349,7 +351,10 @@ function AppContent() {
   // Handle adding tickers with Yahoo Finance fetch
   const handleAddTickers = async (tickers: string[]) => {
     // First add tickers to storage
-    const result = isAuthed ? await cloudAddTickers(tickers) : addTickers(tickers);
+    // Always add to localStorage (cache for market data).
+    // For authed users, also persist to cloud DB (source of truth for positions).
+    const localResult = addTickers(tickers);
+    const result = isAuthed ? await cloudAddTickers(tickers) : localResult;
     setHasAutoRefreshed(false); // Allow auto-refresh for new stocks
     await loadStocks();
 
@@ -412,6 +417,15 @@ function AppContent() {
   const handleRefreshAll = async () => {
     const tickers = stocks.map(s => s.ticker);
     if (tickers.length === 0) return;
+
+    // Ensure all displayed tickers exist in localStorage (cache)
+    // For authed users, cloud may have tickers not yet in localStorage
+    const localData = getUserData();
+    const localTickers = new Set(localData.stocks.map(s => s.ticker));
+    const missingLocally = tickers.filter(t => !localTickers.has(t));
+    if (missingLocally.length > 0) {
+      addTickers(missingLocally); // Create stubs so updateStock can write to them
+    }
 
     setIsRefreshing(true);
     setRefreshProgress('Refreshing from Finnhub...');
@@ -594,17 +608,6 @@ function AppContent() {
                 </button>
               )}
 
-              {/* Add Stocks Button — only on portfolio tab */}
-              {activeTab === 'portfolio' && (
-                <button
-                  onClick={() => setShowAddModal(true)}
-                  className="flex items-center gap-2 px-5 py-2.5 bg-gradient-to-r from-blue-600 to-indigo-600 text-white rounded-xl hover:from-blue-700 hover:to-indigo-700 shadow-lg shadow-blue-500/25 text-sm font-semibold transition-all"
-                >
-                  <Plus className="w-4 h-4" />
-                  Add Stocks
-                </button>
-              )}
-
               {/* Auth: Login button or User menu */}
               {!authLoading && (
                 isAuthed ? (
@@ -751,6 +754,9 @@ function AppContent() {
               onClearAll={handleClearAll}
               riskProfile={riskProfile}
               onRiskProfileChange={handleRiskProfileChange}
+              isAuthed={isAuthed}
+              onLogin={() => setShowAuthModal(true)}
+              onBrokerSync={handleBrokerSync}
             />
           } />
           <Route path="/finds" element={<SuggestedFinds existingTickers={existingTickers} />} />

@@ -123,8 +123,10 @@ Deno.serve(async (req) => {
         .eq('user_id', user.id)
         .single();
 
+      // A user is "connected" only if they've actually synced at least once
+      // (having a broker_connections row just means SnapTrade registration, not an actual linked brokerage)
       return new Response(
-        JSON.stringify({ connected: !!conn, lastSyncedAt: conn?.last_synced_at, createdAt: conn?.created_at }),
+        JSON.stringify({ connected: !!conn?.last_synced_at, lastSyncedAt: conn?.last_synced_at, createdAt: conn?.created_at }),
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
