@@ -4,7 +4,7 @@ import { SpeedInsights } from '@vercel/speed-insights/react';
 import { Analytics } from '@vercel/analytics/react';
 import { Activity, Briefcase, Brain, Lightbulb, RefreshCw, TrendingUp, User, LogOut, ChevronDown } from 'lucide-react';
 import type { StockWithConviction, RiskProfile } from './types';
-import { getUserData, addTickers, updateStock, removeStock, clearAllData, importStocksWithPositions } from './lib/storage';
+import { getUserData, saveUserData, addTickers, updateStock, removeStock, clearAllData, importStocksWithPositions } from './lib/storage';
 import { getCloudUserData, cloudAddTickers, cloudRemoveTicker, cloudClearAll, migrateGuestToCloud } from './lib/cloudStorage';
 import { getConvictionResult } from './lib/convictionEngine';
 import { calculatePortfolioWeights } from './lib/portfolioCalc';
@@ -114,6 +114,13 @@ function AppContent() {
             : cs;
         }),
       };
+
+      // Clear guest stocks from localStorage — cloud is the source of truth.
+      // This prevents stale stocks from showing when the user logs out.
+      if (localData.stocks.length > 0) {
+        localData.stocks = [];
+        saveUserData(localData);
+      }
     } else {
       data = localData;
     }

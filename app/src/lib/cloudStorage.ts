@@ -165,7 +165,17 @@ export async function migrateGuestToCloud(): Promise<number> {
     );
 
     console.log(`[CloudStorage] Migration complete: ${result.added.length} added, ${result.updated.length} updated`);
-    return result.added.length + result.updated.length;
+
+    // Clear guest stocks from localStorage so logged-out mode shows empty
+    // (data is now safely in the cloud)
+    const migrated = result.added.length + result.updated.length;
+    if (migrated > 0) {
+      localData.stocks = [];
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(localData));
+      console.log('[CloudStorage] Cleared guest localStorage stocks after migration');
+    }
+
+    return migrated;
   } catch (err) {
     console.error('[CloudStorage] Guest migration failed:', err);
     return 0;
