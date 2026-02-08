@@ -193,6 +193,11 @@ export function TradingSignals() {
               Day
             </button>
           </div>
+          <p className="mt-1.5 text-[11px] text-[hsl(var(--muted-foreground))]">
+            {mode === 'DAY_TRADE'
+              ? '1m · 15m · 1h candles + live news sentiment'
+              : '4h · daily · weekly candles + news sentiment'}
+          </p>
         </div>
         <button
           type="submit"

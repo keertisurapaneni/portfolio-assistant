@@ -100,7 +100,7 @@ export function Dashboard({ stocks, onStockSelect, onAddTickers, onClearAll, ris
               <div className="w-12 h-12 rounded-xl bg-green-50 flex items-center justify-center">
                 <Link2 className="w-6 h-6 text-green-600" />
               </div>
-              <div className="text-center">
+              <div className="text-center flex flex-col items-center">
                 <p className="font-semibold text-[hsl(var(--foreground))]">Connect Brokerage</p>
                 <p className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5">Schwab, IBKR, Robinhood & more</p>
                 <a href="https://snaptrade.com/brokerage-integrations" target="_blank" rel="noopener noreferrer"
