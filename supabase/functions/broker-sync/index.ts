@@ -23,23 +23,16 @@ async function hmacSha256Base64(key: string, data: string): Promise<string> {
   return btoa(String.fromCharCode(...new Uint8Array(sig)));
 }
 
-async function getSnapTradeHeaders(
-  clientId: string,
-  consumerKey: string,
-  path: string,
-  body?: string
-): Promise<Record<string, string>> {
-  const timestamp = Math.floor(Date.now() / 1000).toString();
-  const content = body ?? '';
-  const sigData = `/api/v1${path}&${timestamp}&${content}`;
-  const signature = await hmacSha256Base64(consumerKey, sigData);
-
-  return {
-    'Content-Type': 'application/json',
-    clientId,
-    timestamp,
-    Signature: signature,
-  };
+// Deterministic JSON stringify with sorted keys (matches SnapTrade SDK)
+function jsonSorted(obj: unknown): string {
+  const allKeys: string[] = [];
+  const seen: Record<string, boolean> = {};
+  JSON.stringify(obj, (key, value) => {
+    if (!(key in seen)) { allKeys.push(key); seen[key] = true; }
+    return value;
+  });
+  allKeys.sort();
+  return JSON.stringify(obj, allKeys);
 }
 
 async function snapTradeGet(
@@ -48,9 +41,22 @@ async function snapTradeGet(
   consumerKey: string,
   query: Record<string, string>
 ) {
-  const params = new URLSearchParams(query);
+  // clientId + timestamp go as query params (per SnapTrade SDK)
+  const timestamp = Math.round(Date.now() / 1000).toString();
+  const allQuery: Record<string, string> = { clientId, timestamp, ...query };
+  const params = new URLSearchParams(allQuery);
   const url = `${SNAPTRADE_BASE}${path}?${params}`;
-  const headers = await getSnapTradeHeaders(clientId, consumerKey, path);
+
+  // Signature = HMAC-SHA256( JSON({content, path, query}), consumerKey )
+  const requestPath = `/api/v1${path}`;
+  const requestQuery = params.toString();
+  const sigContent = jsonSorted({ content: null, path: requestPath, query: requestQuery });
+  const signature = await hmacSha256Base64(encodeURI(consumerKey), sigContent);
+
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    Signature: signature,
+  };
 
   const res = await fetch(url, { method: 'GET', headers });
   if (!res.ok) {
