@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { Link2, RefreshCw, Unlink, Check } from 'lucide-react';
 import { Spinner } from './Spinner';
 import { ErrorBanner } from './ErrorBanner';
@@ -22,6 +22,10 @@ export function BrokerConnect({ onSyncComplete }: BrokerConnectProps) {
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [showDisconnectConfirm, setShowDisconnectConfirm] = useState(false);
 
+  // Track popup state so focus/visibility listeners can help detect close
+  const popupRef = useRef<Window | null>(null);
+  const handledRef = useRef(false);
+
   const loadStatus = useCallback(async () => {
     if (!user) return;
     try { setStatus(await getBrokerStatus()); } catch { /* silent */ }
@@ -29,8 +33,46 @@ export function BrokerConnect({ onSyncComplete }: BrokerConnectProps) {
 
   useEffect(() => { loadStatus(); }, [loadStatus]);
 
+  // When the user returns to our window, check if the popup closed
+  useEffect(() => {
+    const onFocus = () => {
+      if (popupRef.current && (popupRef.current.closed) && !handledRef.current) {
+        handlePopupClosed();
+      }
+    };
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') onFocus();
+    });
+    return () => {
+      window.removeEventListener('focus', onFocus);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const handlePopupClosed = async () => {
+    // Guard: only run once per connect attempt
+    if (handledRef.current) return;
+    handledRef.current = true;
+    popupRef.current = null;
+    setLoading(false);
+
+    // Try to sync — if it works, the connection succeeded
+    try {
+      const result = await syncBrokerPositions();
+      onSyncComplete(result);
+      await loadStatus();
+      setSuccessMsg(`Synced ${result.stats.total} positions (${result.stats.added} added, ${result.stats.updated} updated)`);
+      setTimeout(() => setSuccessMsg(null), 4000);
+    } catch {
+      // Sync failed — connection wasn't completed
+      await loadStatus();
+      setError('Connection not completed — if your broker login failed, try again.');
+    }
+  };
+
   const handleConnect = async () => {
-    setError(null); setLoading(true);
+    setError(null); setLoading(true); handledRef.current = false;
     try {
       const url = status?.connected ? await getBrokerPortalUrl() : await connectBroker();
       const popup = window.open(url, 'snaptrade', 'width=600,height=700');
@@ -42,32 +84,32 @@ export function BrokerConnect({ onSyncComplete }: BrokerConnectProps) {
         return;
       }
 
-      const MAX_WAIT_MS = 5 * 60 * 1000; // 5 min safety timeout
+      popupRef.current = popup;
+
+      // Poll for popup close (primary detection) + 5 min safety timeout
+      const MAX_WAIT_MS = 5 * 60 * 1000;
       const started = Date.now();
 
-      const poll = setInterval(async () => {
-        if (popup.closed || Date.now() - started > MAX_WAIT_MS) {
-          clearInterval(poll);
-          setLoading(false);
+      const poll = setInterval(() => {
+        try {
+          const closed = popup.closed;
+          const timedOut = Date.now() - started > MAX_WAIT_MS;
 
-          if (Date.now() - started > MAX_WAIT_MS) {
-            popup.close();
-            setError('Connection timed out. Please try again.');
-            return;
+          if (closed || timedOut) {
+            clearInterval(poll);
+            if (timedOut && !closed) {
+              try { popup.close(); } catch { /* cross-origin */ }
+              popupRef.current = null;
+              handledRef.current = true;
+              setLoading(false);
+              setError('Connection timed out. Please try again.');
+              return;
+            }
+            handlePopupClosed();
           }
-
-          // Try to sync after popup closes
-          try {
-            const result = await syncBrokerPositions();
-            onSyncComplete(result);
-            await loadStatus();
-            setSuccessMsg(`Synced ${result.stats.total} positions (${result.stats.added} added, ${result.stats.updated} updated)`);
-            setTimeout(() => setSuccessMsg(null), 4000);
-          } catch {
-            // Sync failed — user likely didn't complete the connection
-            await loadStatus();
-            setError('Connection not completed — please try again. If your broker login failed, try a fresh connection.');
-          }
+        } catch {
+          // Cross-origin access error — popup likely navigated away; stop polling
+          // The focus/visibility listener will pick it up when user returns
         }
       }, 1000);
     } catch (err) {
