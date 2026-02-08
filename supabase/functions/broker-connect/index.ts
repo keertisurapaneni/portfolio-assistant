@@ -8,7 +8,6 @@
  *   status    — Check if user has a broker connection
  */
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { createHmac } from 'https://deno.land/std@0.177.0/node/crypto.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -17,16 +16,26 @@ const corsHeaders = {
 
 const SNAPTRADE_BASE = 'https://api.snaptrade.com/api/v1';
 
-function getSnapTradeHeaders(
+// HMAC-SHA256 using Web Crypto API (native in Deno / Edge Functions)
+async function hmacSha256Base64(key: string, data: string): Promise<string> {
+  const enc = new TextEncoder();
+  const cryptoKey = await crypto.subtle.importKey(
+    'raw', enc.encode(key), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']
+  );
+  const sig = await crypto.subtle.sign('HMAC', cryptoKey, enc.encode(data));
+  return btoa(String.fromCharCode(...new Uint8Array(sig)));
+}
+
+async function getSnapTradeHeaders(
   clientId: string,
   consumerKey: string,
   path: string,
   body?: string
-): Record<string, string> {
+): Promise<Record<string, string>> {
   const timestamp = Math.floor(Date.now() / 1000).toString();
   const content = body ?? '';
   const sigData = `/api/v1${path}&${timestamp}&${content}`;
-  const signature = createHmac('sha256', consumerKey).update(sigData).digest('base64');
+  const signature = await hmacSha256Base64(consumerKey, sigData);
 
   return {
     'Content-Type': 'application/json',
@@ -51,7 +60,7 @@ async function snapTradeRequest(
   }
 
   const bodyStr = body ? JSON.stringify(body) : undefined;
-  const headers = getSnapTradeHeaders(clientId, consumerKey, path, bodyStr);
+  const headers = await getSnapTradeHeaders(clientId, consumerKey, path, bodyStr);
 
   const res = await fetch(url, { method, headers, body: bodyStr });
   const data = await res.json();
