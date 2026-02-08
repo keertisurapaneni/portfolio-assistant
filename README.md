@@ -175,55 +175,6 @@ supabase functions deploy trading-signals --no-verify-jwt
 git push origin master
 ```
 
-## Project Structure
-
-```
-portfolio-assistant/
-├── app/                            # React frontend (Vite)
-│   ├── src/
-│   │   ├── components/             # UI components
-│   │   │   ├── Dashboard.tsx       # Portfolio overview + risk appetite
-│   │   │   ├── StockCard.tsx       # Individual stock card
-│   │   │   ├── StockDetail.tsx     # Slide-over detail panel
-│   │   │   ├── TradingSignals.tsx  # Day/Swing signals + chart
-│   │   │   ├── MarketMovers.tsx    # Gainers/losers tables
-│   │   │   ├── SuggestedFinds.tsx  # Quiet Compounders + Gold Mines
-│   │   │   ├── SettingsModal.tsx   # Risk profile settings
-│   │   │   ├── AddTickersModal.tsx
-│   │   │   └── ImportPortfolioModal.tsx
-│   │   ├── lib/                    # Business logic
-│   │   │   ├── aiInsights.ts       # AI trade signals (Groq) + caching
-│   │   │   ├── aiSuggestedFinds.ts # AI discovery (HuggingFace) + server cache
-│   │   │   ├── tradingSignalsApi.ts # Trading Signals API client
-│   │   │   ├── convictionEngine.ts # 4-factor scoring engine
-│   │   │   ├── stockApiEdge.ts     # Finnhub API integration
-│   │   │   ├── stockApi.ts         # Stock API helpers
-│   │   │   ├── portfolioCalc.ts    # Portfolio weight calculations
-│   │   │   ├── settingsStorage.ts  # Risk profile persistence
-│   │   │   ├── storage.ts          # localStorage CRUD
-│   │   │   ├── importParser.ts     # CSV/Excel parsing
-│   │   │   ├── warnings.ts         # Risk warning logic
-│   │   │   └── utils.ts            # Tailwind helpers
-│   │   ├── hooks/
-│   │   │   └── useSuggestedFinds.ts # Discovery hook with cache logic
-│   │   ├── types/index.ts          # TypeScript types
-│   │   └── App.tsx                 # Routing + layout + AI orchestration
-│   └── vercel.json                 # SPA rewrites
-├── vercel.json                     # Build config + ignoreCommand
-├── supabase/
-│   ├── functions/                  # Edge Functions (Deno)
-│   │   ├── ai-proxy/              # Groq proxy (portfolio analysis)
-│   │   ├── trading-signals/       # Day/Swing signal pipeline
-│   │   ├── huggingface-proxy/     # HuggingFace proxy (suggested finds)
-│   │   ├── gemini-proxy/          # Gemini proxy (client AI calls)
-│   │   ├── daily-suggestions/     # Shared daily cache CRUD
-│   │   ├── fetch-stock-data/      # Finnhub proxy + 15-min cache
-│   │   ├── scrape-market-movers/  # Yahoo Finance screener
-│   │   └── fetch-yahoo-news/      # Yahoo Finance news
-│   └── migrations/                # Database migrations
-└── _bmad-output/                  # BMAD planning artifacts
-```
-
 ## Available Scripts
 
 ```bash
