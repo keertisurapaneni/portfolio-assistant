@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
-import { Activity, Loader2, RefreshCw } from 'lucide-react';
+import { Activity, RefreshCw } from 'lucide-react';
+import { Spinner } from './Spinner';
 import { createChart, CandlestickSeries, LineSeries, ColorType } from 'lightweight-charts';
 import { cn } from '../lib/utils';
 import { SignalBadge } from './SignalBadge';
@@ -206,7 +207,7 @@ export function TradingSignals() {
         >
           {loading ? (
             <>
-              <Loader2 className="h-4 w-4 animate-spin" /> Getting signal… <span className="tabular-nums text-white/70">{elapsed}s</span>
+              <Spinner size="md" /> Getting signal… <span className="tabular-nums text-white/70">{elapsed}s</span>
             </>
           ) : (
             <>

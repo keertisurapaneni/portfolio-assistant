@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import { Loader2, Mail, Lock } from 'lucide-react';
+import { Mail, Lock } from 'lucide-react';
+import { Spinner } from './Spinner';
 import { useAuth } from '../lib/auth';
 import { ErrorBanner } from './ErrorBanner';
 import { Modal } from './Modal';
@@ -76,7 +77,7 @@ export function AuthModal({ onClose }: AuthModalProps) {
         <button type="submit" disabled={loading}
           className="w-full flex items-center justify-center gap-2 py-2.5 rounded-lg bg-gradient-to-r from-blue-600 to-indigo-600 text-white font-semibold hover:from-blue-700 hover:to-indigo-700 shadow-md shadow-blue-500/25 disabled:opacity-60 transition-all">
           {loading
-            ? <><Loader2 className="w-4 h-4 animate-spin" />{mode === 'login' ? 'Logging in...' : 'Creating account...'}</>
+            ? <><Spinner size="md" />{mode === 'login' ? 'Logging in...' : 'Creating account...'}</>
             : mode === 'login' ? 'Log In' : 'Create Account'}
         </button>
 

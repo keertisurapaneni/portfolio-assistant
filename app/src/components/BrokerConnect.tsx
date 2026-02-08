@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Link2, RefreshCw, Unlink, Loader2, Check } from 'lucide-react';
+import { Link2, RefreshCw, Unlink, Check } from 'lucide-react';
+import { Spinner } from './Spinner';
 import { ErrorBanner } from './ErrorBanner';
 import { useAuth } from '../lib/auth';
 import {
@@ -99,14 +100,14 @@ export function BrokerConnect({ onSyncComplete }: BrokerConnectProps) {
           <button onClick={() => handleSync()} disabled={syncing || loading}
             className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border border-green-200 bg-green-50 text-green-700 hover:bg-green-100 disabled:opacity-60 transition-colors"
             title={status.lastSyncedAt ? `Last synced: ${new Date(status.lastSyncedAt).toLocaleString()}` : 'Sync positions'}>
-            {syncing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+            {syncing ? <Spinner size="sm" /> : <RefreshCw className="w-3.5 h-3.5" />}
             {syncing ? 'Syncing...' : 'Sync'}
             {status.lastSyncedAt && !syncing && <span className="text-green-500 ml-0.5">{relTime(status.lastSyncedAt)}</span>}
           </button>
           <button onClick={handleConnect} disabled={loading}
             className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium rounded-lg border border-[hsl(var(--input))] text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--secondary))] disabled:opacity-60 transition-colors"
             title="Connect another broker">
-            {loading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Link2 className="w-3.5 h-3.5" />}
+            {loading ? <Spinner size="sm" /> : <Link2 className="w-3.5 h-3.5" />}
           </button>
           <div className="relative">
             <button onClick={() => setShowDisconnectConfirm(true)}
@@ -127,7 +128,7 @@ export function BrokerConnect({ onSyncComplete }: BrokerConnectProps) {
       ) : (
         <button onClick={handleConnect} disabled={loading}
           className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100 disabled:opacity-60 transition-colors">
-          {loading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Link2 className="w-3.5 h-3.5" />}
+          {loading ? <Spinner size="sm" /> : <Link2 className="w-3.5 h-3.5" />}
           Connect
         </button>
       )}

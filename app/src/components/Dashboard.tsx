@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import { Plus, ArrowUpDown, BarChart3, Trash2, Shield, Link2, User, X } from 'lucide-react';
+import { Plus, ArrowUpDown, BarChart3, Trash2, Shield, Link2, User } from 'lucide-react';
+import { DismissibleBanner } from './DismissibleBanner';
 import type { StockWithConviction, RiskProfile } from '../types';
 import { StockCard } from './StockCard';
 import { BrokerConnect } from './BrokerConnect';
@@ -279,7 +280,7 @@ export function Dashboard({ stocks, onStockSelect, onAddTickers, onClearAll, ris
 
       {/* Broker integration banner — shown when user has stocks but no broker connected */}
       {!brokerBannerDismissed && !hasPositionData && (
-        <div className="mb-5 flex items-center gap-3 px-4 py-3 bg-gradient-to-r from-green-50 to-emerald-50 border border-green-200 rounded-xl">
+        <DismissibleBanner variant="green" onDismiss={dismissBrokerBanner} className="mb-5">
           <Link2 className="w-4 h-4 text-green-600 flex-shrink-0" />
           <p className="text-sm text-green-800 flex-1">
             <span className="font-medium">Auto-import your holdings</span>
@@ -301,25 +302,19 @@ export function Dashboard({ stocks, onStockSelect, onAddTickers, onClearAll, ris
           {isAuthed && onBrokerSync && (
             <BrokerConnect onSyncComplete={onBrokerSync} />
           )}
-          <button onClick={dismissBrokerBanner} className="p-1 text-green-400 hover:text-green-600 rounded transition-colors" title="Dismiss">
-            <X className="w-3.5 h-3.5" />
-          </button>
-        </div>
+        </DismissibleBanner>
       )}
 
       {/* Guest save reminder — subtle nudge for unauthenticated users with stocks */}
       {!isAuthed && !brokerBannerDismissed && (
-        <div className="mb-5 flex items-center gap-2 px-4 py-2.5 bg-amber-50 border border-amber-200 rounded-xl">
+        <DismissibleBanner variant="amber" onDismiss={dismissBrokerBanner} className="mb-5 py-2.5">
           <User className="w-3.5 h-3.5 text-amber-600 flex-shrink-0" />
           <p className="text-xs text-amber-800 flex-1">
             Your portfolio is saved in this browser only.{' '}
             <button onClick={onLogin} className="underline font-semibold hover:text-amber-900 transition-colors">Log in</button>
             {' '}to save across devices and connect a brokerage.
           </p>
-          <button onClick={dismissBrokerBanner} className="p-1 text-amber-400 hover:text-amber-600 rounded transition-colors" title="Dismiss">
-            <X className="w-3.5 h-3.5" />
-          </button>
-        </div>
+        </DismissibleBanner>
       )}
 
       {/* Stock Cards */}
