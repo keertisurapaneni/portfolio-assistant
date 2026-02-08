@@ -5,7 +5,7 @@ import { Analytics } from '@vercel/analytics/react';
 import { Activity, Briefcase, Brain, Lightbulb, Plus, RefreshCw, TrendingUp, User, LogOut, ChevronDown } from 'lucide-react';
 import type { StockWithConviction, RiskProfile } from './types';
 import { getUserData, addTickers, updateStock, clearAllData, importStocksWithPositions } from './lib/storage';
-import { getCloudUserData, cloudAddTickers, cloudUpdateStock, cloudClearAll, cloudImportStocksWithPositions } from './lib/cloudStorage';
+import { getCloudUserData, cloudAddTickers, cloudClearAll } from './lib/cloudStorage';
 import { getConvictionResult } from './lib/convictionEngine';
 import { calculatePortfolioWeights } from './lib/portfolioCalc';
 import { fetchMultipleStocks } from './lib/stockApiEdge';
@@ -527,7 +527,7 @@ function AppContent() {
   const handleBrokerSync = async (result: SyncResult) => {
     if (result.positions.length > 0) {
       // Also update localStorage cache with position data
-      importStocksWithPositions(result.positions);
+      importStocksWithPositions(result.positions.map(p => ({ ...p, avgCost: p.avgCost ?? undefined })));
       await loadStocks();
       setRefreshProgress(`✓ Synced ${result.stats.total} positions from broker`);
       setTimeout(() => setRefreshProgress(null), 3000);
