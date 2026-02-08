@@ -149,12 +149,14 @@ function CollapsibleSection({
   icon,
   defaultOpen = false,
   accentColor,
+  preview,
   children,
 }: {
   title: string;
   icon: React.ReactNode;
   defaultOpen?: boolean;
   accentColor?: 'blue' | 'amber' | 'green' | 'purple';
+  preview?: React.ReactNode;
   children: React.ReactNode;
 }) {
   const [open, setOpen] = useState(defaultOpen);
@@ -174,15 +176,19 @@ function CollapsibleSection({
         type="button"
         onClick={() => setOpen(!open)}
         className={cn(
-          'w-full flex items-center justify-between px-4 py-3 text-sm font-semibold text-[hsl(var(--foreground))] transition-colors',
+          'w-full flex flex-col px-4 py-3 text-left transition-colors',
           accent ? accent.header : 'hover:bg-[hsl(var(--accent))]'
         )}
       >
-        <span className="flex items-center gap-2">
-          {icon}
-          {title}
+        <span className="flex items-center justify-between w-full">
+          <span className="flex items-center gap-2 text-sm font-semibold text-[hsl(var(--foreground))]">
+            {icon}
+            {title}
+          </span>
+          {open ? <ChevronUp className="w-4 h-4 text-[hsl(var(--muted-foreground))]" /> : <ChevronDown className="w-4 h-4 text-[hsl(var(--muted-foreground))]" />}
         </span>
-        {open ? <ChevronUp className="w-4 h-4 text-[hsl(var(--muted-foreground))]" /> : <ChevronDown className="w-4 h-4 text-[hsl(var(--muted-foreground))]" />}
+        {/* Inline preview — visible when collapsed */}
+        {!open && preview && <div className="mt-2 w-full">{preview}</div>}
       </button>
       {open && <div className="px-4 pb-4 pt-1 bg-white">{children}</div>}
     </div>
@@ -686,26 +692,13 @@ export function TradingSignals() {
             )}
           </div>
 
-          {/* Technical Indicators — shown FIRST for visibility */}
-          {result.indicators && (
-            <CollapsibleSection
-              title="Technical Indicators"
-              icon={<BarChart3 className="w-4 h-4 text-blue-600" />}
-              defaultOpen
-              accentColor="blue"
-            >
-              <IndicatorsPanel indicators={result.indicators} />
-            </CollapsibleSection>
-          )}
-
-          {/* Scenarios */}
+          {/* Scenario Analysis — always visible, core to the signal */}
           {result.trade.scenarios && (
-            <CollapsibleSection
-              title="Scenario Analysis"
-              icon={<Zap className="w-4 h-4 text-amber-600" />}
-              defaultOpen
-              accentColor="amber"
-            >
+            <div>
+              <div className="flex items-center gap-2 mb-3">
+                <Zap className="w-4 h-4 text-amber-600" />
+                <h3 className="text-sm font-semibold text-[hsl(var(--foreground))]">Scenario Analysis</h3>
+              </div>
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <ScenarioCard
                   label="Bullish"
@@ -726,6 +719,78 @@ export function TradingSignals() {
                   color="red"
                 />
               </div>
+            </div>
+          )}
+
+          {/* Technical Indicators — collapsed with inline preview */}
+          {result.indicators && (
+            <CollapsibleSection
+              title="Technical Indicators"
+              icon={<BarChart3 className="w-4 h-4 text-blue-600" />}
+              accentColor="blue"
+              preview={
+                <div className="flex flex-wrap gap-2">
+                  {result.indicators.rsi != null && (
+                    <span className={cn(
+                      'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium border',
+                      result.indicators.rsi > 70 ? 'bg-red-50 text-red-700 border-red-200' :
+                      result.indicators.rsi < 30 ? 'bg-green-50 text-green-700 border-green-200' :
+                      result.indicators.rsi > 50 ? 'bg-blue-50 text-blue-700 border-blue-200' :
+                      'bg-orange-50 text-orange-700 border-orange-200'
+                    )}>
+                      RSI {result.indicators.rsi.toFixed(0)}
+                    </span>
+                  )}
+                  {result.indicators.macd && (
+                    <span className={cn(
+                      'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium border',
+                      result.indicators.macd.histogram > 0
+                        ? 'bg-green-50 text-green-700 border-green-200'
+                        : 'bg-red-50 text-red-700 border-red-200'
+                    )}>
+                      MACD {result.indicators.macd.histogram > 0 ? 'Bullish' : 'Bearish'}
+                    </span>
+                  )}
+                  {result.indicators.trend && (
+                    <span className={cn(
+                      'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium border',
+                      result.indicators.trend.includes('uptrend') ? 'bg-green-50 text-green-700 border-green-200' :
+                      result.indicators.trend.includes('downtrend') ? 'bg-red-50 text-red-700 border-red-200' :
+                      'bg-gray-50 text-gray-600 border-gray-200'
+                    )}>
+                      {{
+                        strong_uptrend: 'Strong Uptrend',
+                        uptrend: 'Uptrend',
+                        sideways: 'Sideways',
+                        downtrend: 'Downtrend',
+                        strong_downtrend: 'Strong Downtrend',
+                      }[result.indicators.trend] ?? result.indicators.trend}
+                    </span>
+                  )}
+                  {result.indicators.adx != null && (
+                    <span className={cn(
+                      'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium border',
+                      result.indicators.adx >= 25
+                        ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                        : 'bg-gray-50 text-gray-600 border-gray-200'
+                    )}>
+                      ADX {result.indicators.adx.toFixed(0)} {result.indicators.adx >= 25 ? 'Trending' : 'Weak'}
+                    </span>
+                  )}
+                  {result.indicators.volumeRatio != null && (
+                    <span className={cn(
+                      'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium border',
+                      result.indicators.volumeRatio > 1.2
+                        ? 'bg-blue-50 text-blue-700 border-blue-200'
+                        : 'bg-gray-50 text-gray-600 border-gray-200'
+                    )}>
+                      Vol {result.indicators.volumeRatio.toFixed(1)}x
+                    </span>
+                  )}
+                </div>
+              }
+            >
+              <IndicatorsPanel indicators={result.indicators} />
             </CollapsibleSection>
           )}
 
