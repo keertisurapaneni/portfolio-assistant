@@ -3,7 +3,6 @@ import { Plus, ArrowUpDown, BarChart3, Trash2, Shield, Link2, User } from 'lucid
 import { DismissibleBanner } from './DismissibleBanner';
 import type { StockWithConviction, RiskProfile } from '../types';
 import { StockCard } from './StockCard';
-import { BrokerConnect } from './BrokerConnect';
 import { cn } from '../lib/utils';
 import type { SyncResult } from '../lib/brokerApi';
 
@@ -28,7 +27,7 @@ type SortOption =
   | 'change-pct'
   | 'change-dollar';
 
-export function Dashboard({ stocks, onStockSelect, onAddTickers, onClearAll, riskProfile, onRiskProfileChange, isAuthed, onLogin, onBrokerSync }: DashboardProps) {
+export function Dashboard({ stocks, onStockSelect, onAddTickers, onClearAll, riskProfile, onRiskProfileChange, isAuthed, onLogin, onBrokerSync: _onBrokerSync }: DashboardProps) {
   const [sortBy, setSortBy] = useState<SortOption>('score-desc');
   const [showClearConfirm, setShowClearConfirm] = useState(false);
   const [brokerBannerDismissed, setBrokerBannerDismissed] = useState(
@@ -95,52 +94,27 @@ export function Dashboard({ stocks, onStockSelect, onAddTickers, onClearAll, ris
             </div>
           </button>
 
-          {/* Option 2: Broker integration */}
-          {(() => {
-            const brokerContent = (
-              <>
-                <div className="w-12 h-12 rounded-xl bg-green-50 group-hover:bg-green-100 flex items-center justify-center transition-colors">
-                  <Link2 className="w-6 h-6 text-green-600" />
-                </div>
-                <div className="text-center">
-                  <p className="font-semibold text-[hsl(var(--foreground))]">Connect Brokerage</p>
-                  <p className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5">Schwab, IBKR, Robinhood & more</p>
-                  <a href="https://snaptrade.com/brokerage-integrations" target="_blank" rel="noopener noreferrer"
-                    className="text-[10px] text-blue-500 hover:text-blue-700 underline mt-0.5 mb-2 inline-block"
-                    onClick={e => e.stopPropagation()}>All supported brokerages</a>
-                </div>
-              </>
-            );
-
-            return isAuthed ? (
-              <div className="flex flex-col items-center gap-3 p-6 bg-white rounded-2xl border-2 border-[hsl(var(--border))]">
-                {brokerContent}
-                <div className="flex justify-center">
-                  {onBrokerSync && <BrokerConnect onSyncComplete={onBrokerSync} />}
-                </div>
-              </div>
-            ) : (
-              <button
-                onClick={onLogin}
-                className="group flex flex-col items-center gap-3 p-6 bg-white rounded-2xl border-2 border-[hsl(var(--border))] hover:border-green-300 hover:shadow-lg hover:shadow-green-500/10 transition-all"
-              >
-                {brokerContent}
-                <p className="text-[10px] text-blue-600 font-medium flex items-center justify-center gap-1">
-                  <User className="w-3 h-3" /> Login to connect
-                </p>
-              </button>
-            );
-          })()}
+          {/* Option 2: Broker integration (coming soon) */}
+          <div className="relative flex flex-col items-center gap-3 p-6 bg-white rounded-2xl border-2 border-dashed border-[hsl(var(--border))] opacity-60">
+            <span className="absolute top-2.5 right-2.5 text-[10px] font-semibold text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-full">
+              Coming soon
+            </span>
+            <div className="w-12 h-12 rounded-xl bg-green-50 flex items-center justify-center">
+              <Link2 className="w-6 h-6 text-green-600" />
+            </div>
+            <div className="text-center">
+              <p className="font-semibold text-[hsl(var(--foreground))]">Connect Brokerage</p>
+              <p className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5">Schwab, IBKR, Robinhood & more</p>
+              <p className="text-[10px] text-[hsl(var(--muted-foreground))] mt-1.5">Auto-sync is not available yet</p>
+            </div>
+          </div>
         </div>
 
-        <p className="text-center text-xs text-[hsl(var(--muted-foreground))] mt-6">
-          You can always do both — add tickers manually and sync from your broker
-        </p>
         {!isAuthed && (
-          <p className="text-center text-[11px] text-[hsl(var(--muted-foreground))] mt-2">
+          <p className="text-center text-[11px] text-[hsl(var(--muted-foreground))] mt-6">
             Guest portfolios are saved in this browser only.{' '}
             <button onClick={onLogin} className="text-blue-600 font-medium hover:underline">Log in</button>
-            {' '}to save across devices and connect a brokerage.
+            {' '}to save across devices.
           </p>
         )}
       </div>
@@ -278,32 +252,7 @@ export function Dashboard({ stocks, onStockSelect, onAddTickers, onClearAll, ris
         </div>
       </div>
 
-      {/* Broker integration banner — shown when user has stocks but no broker connected */}
-      {!brokerBannerDismissed && !hasPositionData && (
-        <DismissibleBanner variant="green" onDismiss={dismissBrokerBanner} className="mb-5">
-          <Link2 className="w-4 h-4 text-green-600 flex-shrink-0" />
-          <p className="text-sm text-green-800 flex-1">
-            <span className="font-medium">Auto-import your holdings</span>
-            {' — '}
-            {isAuthed ? (
-              <>Connect your brokerage to sync positions automatically. Supports Schwab, IBKR, Robinhood &{' '}
-                <a href="https://snaptrade.com/brokerage-integrations" target="_blank" rel="noopener noreferrer"
-                  className="underline font-medium hover:text-green-900">more</a>.
-              </>
-            ) : (
-              <>
-                <button onClick={onLogin} className="underline font-medium hover:text-green-900 transition-colors">
-                  Log in
-                </button>
-                {' '}to connect your brokerage and sync positions automatically.
-              </>
-            )}
-          </p>
-          {isAuthed && onBrokerSync && (
-            <BrokerConnect onSyncComplete={onBrokerSync} />
-          )}
-        </DismissibleBanner>
-      )}
+      {/* Broker integration banner — currently disabled (SnapTrade requires paid plan) */}
 
       {/* Guest save reminder — subtle nudge for unauthenticated users with stocks */}
       {!isAuthed && !brokerBannerDismissed && (
