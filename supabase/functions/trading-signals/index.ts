@@ -5,7 +5,7 @@
 //   Yahoo Finance → articles → sentiment agent (Gemini)
 //   Twelve Data → SPY + VIX → market context → AI prompt
 //
-// Returns { trade, chart, indicators, marketSnapshot } for Day, Swing, or Auto mode.
+// Returns { trade, chart, indicators, marketSnapshot, longTermOutlook } for Day, Swing, or Auto mode.
 //
 // LLM split across the app:
 //   Groq   = Portfolio AI (ai-proxy)
@@ -20,6 +20,8 @@
 //   AUTO       — fetches daily candles first to decide Day vs Swing via ATR% + ADX
 //   DAY_TRADE  — 1m, 15m, 1h candles + news
 //   SWING_TRADE — 4h, 1d, 1w candles + news
+//
+// Every mode also gets a "Long Term Outlook" section powered by Finnhub fundamentals.
 //
 // Rule: Whatever data the AI sees must be exactly what the chart shows.
 
@@ -141,6 +143,135 @@ async function fetchYahooNews(symbol: string): Promise<NewsItem[]> {
       datetime: item.providerPublishTime ? item.providerPublishTime * 1000 : 0,
     })
   );
+}
+
+// ── Finnhub fundamentals (Long Term Outlook) ───────────
+
+interface FundamentalData {
+  pe: number | null;
+  eps: number | null;
+  roe: number | null;
+  profitMargin: number | null;
+  revenueGrowth: number | null;
+  epsGrowth: number | null;
+  marketCap: number | null;
+  beta: number | null;
+  week52High: number | null;
+  week52Low: number | null;
+  analystConsensus: { strongBuy: number; buy: number; hold: number; sell: number; strongSell: number } | null;
+  earnings: { quarter: string; actual: number | null; estimate: number | null; surprise: number | null }[];
+}
+
+async function fetchFundamentals(ticker: string, finnhubKey: string): Promise<FundamentalData | null> {
+  try {
+    const base = 'https://finnhub.io/api/v1';
+    const [metricsRes, recsRes, earningsRes] = await Promise.all([
+      fetchWithTimeout(`${base}/stock/metric?symbol=${encodeURIComponent(ticker)}&metric=all&token=${finnhubKey}`, { timeout: 10_000 }),
+      fetchWithTimeout(`${base}/stock/recommendation?symbol=${encodeURIComponent(ticker)}&token=${finnhubKey}`, { timeout: 10_000 }),
+      fetchWithTimeout(`${base}/stock/earnings?symbol=${encodeURIComponent(ticker)}&token=${finnhubKey}`, { timeout: 10_000 }),
+    ]);
+
+    const metrics = metricsRes.ok ? await metricsRes.json() : null;
+    const recs = recsRes.ok ? await recsRes.json() : [];
+    const earnings = earningsRes.ok ? await earningsRes.json() : [];
+
+    const m = metrics?.metric ?? {};
+
+    // Latest analyst consensus (most recent period)
+    let analystConsensus = null;
+    if (Array.isArray(recs) && recs.length > 0) {
+      const latest = recs[0]; // newest first
+      analystConsensus = {
+        strongBuy: latest.strongBuy ?? 0,
+        buy: latest.buy ?? 0,
+        hold: latest.hold ?? 0,
+        sell: latest.sell ?? 0,
+        strongSell: latest.strongSell ?? 0,
+      };
+    }
+
+    // Last 4 quarterly earnings
+    const earningsData = (Array.isArray(earnings) ? earnings.slice(0, 4) : []).map(
+      (e: { period?: string; actual?: number; estimate?: number; surprise?: number }) => ({
+        quarter: e.period ?? '',
+        actual: e.actual ?? null,
+        estimate: e.estimate ?? null,
+        surprise: e.surprise ?? null,
+      })
+    );
+
+    return {
+      pe: m['peTTM'] ?? m['peAnnual'] ?? null,
+      eps: m['epsTTM'] ?? m['epsAnnual'] ?? null,
+      roe: m['roeTTM'] ?? m['roeAnnual'] ?? null,
+      profitMargin: m['netProfitMarginTTM'] ?? m['netProfitMarginAnnual'] ?? null,
+      revenueGrowth: m['revenueGrowthTTMYoy'] ?? m['revenueGrowthQuarterlyYoy'] ?? null,
+      epsGrowth: m['epsGrowthTTMYoy'] ?? m['epsGrowthQuarterlyYoy'] ?? null,
+      marketCap: m['marketCapitalization'] ?? null,
+      beta: m['beta'] ?? null,
+      week52High: m['52WeekHigh'] ?? null,
+      week52Low: m['52WeekLow'] ?? null,
+      analystConsensus,
+      earnings: earningsData,
+    };
+  } catch (e) {
+    console.warn('[Trading Signals] Fundamentals fetch failed:', e);
+    return null;
+  }
+}
+
+function formatFundamentalsForPrompt(f: FundamentalData, currentPrice: number | null): string {
+  const lines: string[] = ['FUNDAMENTAL DATA (from Finnhub):'];
+  lines.push('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+
+  lines.push('Valuation & Profitability:');
+  if (f.pe != null) lines.push(`  P/E (TTM): ${f.pe.toFixed(1)}`);
+  if (f.eps != null) lines.push(`  EPS (TTM): $${f.eps.toFixed(2)}`);
+  if (f.roe != null) lines.push(`  ROE: ${f.roe.toFixed(1)}%`);
+  if (f.profitMargin != null) lines.push(`  Profit Margin: ${f.profitMargin.toFixed(1)}%`);
+  if (f.marketCap != null) {
+    const cap = f.marketCap >= 1000 ? `$${(f.marketCap / 1000).toFixed(0)}B` : `$${f.marketCap.toFixed(0)}M`;
+    lines.push(`  Market Cap: ${cap}`);
+  }
+  if (f.beta != null) lines.push(`  Beta: ${f.beta.toFixed(2)}`);
+
+  lines.push('');
+  lines.push('Growth:');
+  if (f.revenueGrowth != null) lines.push(`  Revenue Growth (YoY): ${f.revenueGrowth.toFixed(1)}%`);
+  if (f.epsGrowth != null) lines.push(`  EPS Growth (YoY): ${f.epsGrowth.toFixed(1)}%`);
+
+  if (currentPrice != null && f.week52High != null && f.week52Low != null) {
+    const range = f.week52High - f.week52Low;
+    const pctFromHigh = range > 0 ? ((f.week52High - currentPrice) / range * 100).toFixed(0) : '?';
+    lines.push('');
+    lines.push(`52-Week Range: $${f.week52Low.toFixed(2)} – $${f.week52High.toFixed(2)} (${pctFromHigh}% below high)`);
+  }
+
+  if (f.analystConsensus) {
+    const a = f.analystConsensus;
+    const total = a.strongBuy + a.buy + a.hold + a.sell + a.strongSell;
+    lines.push('');
+    lines.push('Analyst Consensus:');
+    lines.push(`  Strong Buy: ${a.strongBuy}, Buy: ${a.buy}, Hold: ${a.hold}, Sell: ${a.sell}, Strong Sell: ${a.strongSell} (total: ${total})`);
+    if (total > 0) {
+      const bullish = ((a.strongBuy + a.buy) / total * 100).toFixed(0);
+      lines.push(`  Bullish: ${bullish}%`);
+    }
+  }
+
+  if (f.earnings.length > 0) {
+    lines.push('');
+    lines.push('Recent Earnings (last 4 quarters):');
+    for (const e of f.earnings) {
+      if (e.actual != null && e.estimate != null) {
+        const beat = e.actual >= e.estimate ? 'BEAT' : 'MISS';
+        const surprise = e.surprise != null ? ` (${e.surprise > 0 ? '+' : ''}${(e.surprise * 100).toFixed(1)}%)` : '';
+        lines.push(`  ${e.quarter}: Actual $${e.actual.toFixed(2)} vs Est $${e.estimate.toFixed(2)} — ${beat}${surprise}`);
+      }
+    }
+  }
+
+  return lines.join('\n');
 }
 
 // ── Market snapshot (SPY + VIX) ─────────────────────────
@@ -453,6 +584,30 @@ Recent Candles (for validation):
 News Headlines:
 {{SENTIMENT_DATA}}`;
 
+// ── Long Term Outlook Agent ─────────────────────────────
+
+const OUTLOOK_SYSTEM = `You are a fundamental equity analyst. Given a stock's financial metrics, analyst ratings, and recent earnings results, rate whether this stock is a good long-term hold. Be concise and decisive.`;
+
+const OUTLOOK_USER = `Rate this stock as a long-term investment (months to years) based on the fundamental data below.
+
+Rules:
+- Focus on earnings quality, growth trajectory, valuation, and analyst consensus.
+- Earnings beat/miss consistency shows execution reliability.
+- P/E relative to growth rate (PEG concept) matters more than P/E alone.
+- Strong revenue + EPS growth with improving margins = bullish.
+- Declining growth, high P/E, shrinking margins = bearish.
+- If data is insufficient, default to Neutral with low confidence.
+
+Output ONLY valid JSON (no markdown, no backticks):
+{
+  "rating": "Strong Buy" | "Buy" | "Neutral" | "Sell" | "Strong Sell",
+  "score": number 1-10 (1 = strong sell, 10 = strong buy),
+  "summary": "2-3 sentences explaining why",
+  "keyFactors": ["factor 1", "factor 2", "factor 3"]
+}
+
+{{FUNDAMENTAL_DATA}}`;
+
 // ── JSON cleaner ────────────────────────────────────────
 
 function cleanJson(text: string): string {
@@ -539,10 +694,17 @@ Deno.serve(async req => {
     const newsPromise = fetchYahooNews(ticker);
     const marketPromise = fetchMarketSnapshot(TWELVE_DATA_API_KEY);
 
-    const [candles1, candles2, candles3, news, marketSnapshot] = await Promise.all([
+    // Fetch Finnhub fundamentals in parallel (for Long Term Outlook section)
+    const finnhubKey = Deno.env.get('FINNHUB_API_KEY');
+    const fundamentalsPromise = finnhubKey
+      ? fetchFundamentals(ticker, finnhubKey)
+      : Promise.resolve(null);
+
+    const [candles1, candles2, candles3, news, marketSnapshot, fundamentals] = await Promise.all([
       ...candlePromises,
       newsPromise,
       marketPromise,
+      fundamentalsPromise,
     ]);
 
     const timeframes: Record<string, { values: Candle[] }> = {};
@@ -622,7 +784,7 @@ Deno.serve(async req => {
       .replace('{{TECHNICAL_DATA}}', JSON.stringify(technicalData))
       .replace('{{SENTIMENT_DATA}}', JSON.stringify(newsForTrade));
 
-    // ── Step 4: Sentiment Agent + Trade Agent IN PARALLEL ──
+    // ── Step 4: Sentiment + Trade + Outlook Agents IN PARALLEL ──
     const sentimentPromise = (async () => {
       const defaultSentiment = {
         category: 'Neutral',
@@ -651,7 +813,36 @@ Deno.serve(async req => {
 
     const tradePromise = callGemini(GEMINI_KEYS, tradeSystemPrompt, tradeUserPrompt);
 
-    const [sentiment, tradeRaw] = await Promise.all([sentimentPromise, tradePromise]);
+    // Long Term Outlook — lightweight fundamental assessment (runs in parallel, ~300 tokens)
+    const outlookPromise = (async (): Promise<{
+      rating: string;
+      score: number;
+      summary: string;
+      keyFactors: string[];
+    } | null> => {
+      if (!fundamentals) return null;
+      try {
+        const fundamentalText = formatFundamentalsForPrompt(fundamentals, currentPrice);
+        const outlookUserPrompt = OUTLOOK_USER.replace('{{FUNDAMENTAL_DATA}}', fundamentalText);
+        const raw = await callGemini(GEMINI_KEYS, OUTLOOK_SYSTEM, outlookUserPrompt, 0.1, 400);
+        const parsed = JSON.parse(cleanJson(raw));
+        return {
+          rating: parsed.rating ?? 'Neutral',
+          score: typeof parsed.score === 'number' ? Math.max(1, Math.min(10, parsed.score)) : 5,
+          summary: parsed.summary ?? '',
+          keyFactors: Array.isArray(parsed.keyFactors) ? parsed.keyFactors.slice(0, 5) : [],
+        };
+      } catch (e) {
+        console.warn('[Trading Signals] Outlook agent failed:', e);
+        return null;
+      }
+    })();
+
+    const [sentiment, tradeRaw, longTermOutlook] = await Promise.all([
+      sentimentPromise,
+      tradePromise,
+      outlookPromise,
+    ]);
 
     let trade: Record<string, unknown>;
     try {
@@ -738,6 +929,7 @@ Deno.serve(async req => {
         emaCrossover: indicators.emaCrossover,
         trend: indicators.trend,
       },
+      longTermOutlook: longTermOutlook ?? null,
       marketSnapshot: marketSnapshot ?? null,
       chart: {
         timeframe: chartInterval,

@@ -25,6 +25,7 @@ import {
   type ChartCandle,
   type IndicatorValues,
   type MarketSnapshot,
+  type LongTermOutlook,
 } from '../lib/tradingSignalsApi';
 
 function formatPrice(n: number | null): string {
@@ -255,6 +256,62 @@ function IndicatorsPanel({ indicators }: { indicators: IndicatorValues }) {
           strong_downtrend: 'Strong Downtrend',
         }[indicators.trend] : null, indicators.trend === 'strong_uptrend' ? '(price > SMA50 > SMA200)' : indicators.trend === 'strong_downtrend' ? '(price < SMA50 < SMA200)' : undefined)}
       </div>
+    </div>
+  );
+}
+
+// ── Long Term Outlook ───────────────────────────────────
+
+function OutlookSection({ outlook }: { outlook: LongTermOutlook }) {
+  const ratingColors: Record<string, { bg: string; text: string; border: string }> = {
+    'Strong Buy': { bg: 'bg-emerald-50', text: 'text-emerald-700', border: 'border-emerald-200' },
+    Buy: { bg: 'bg-green-50', text: 'text-green-700', border: 'border-green-200' },
+    Neutral: { bg: 'bg-gray-50', text: 'text-gray-600', border: 'border-gray-200' },
+    Sell: { bg: 'bg-orange-50', text: 'text-orange-700', border: 'border-orange-200' },
+    'Strong Sell': { bg: 'bg-red-50', text: 'text-red-700', border: 'border-red-200' },
+  };
+  const colors = ratingColors[outlook.rating] ?? ratingColors.Neutral;
+
+  // Score color
+  let scoreColor: string;
+  if (outlook.score >= 7) scoreColor = '#22c55e';
+  else if (outlook.score >= 4) scoreColor = '#f59e0b';
+  else scoreColor = '#ef4444';
+
+  return (
+    <div className={cn('rounded-xl border p-4', colors.border, colors.bg)}>
+      <div className="flex items-center justify-between mb-3">
+        <div className="flex items-center gap-2.5">
+          <TrendingUp className="w-4 h-4 text-[hsl(var(--muted-foreground))]" />
+          <h3 className="text-sm font-semibold text-[hsl(var(--foreground))]">Long Term Outlook</h3>
+        </div>
+        <div className="flex items-center gap-2.5">
+          <span className="text-xs font-bold tabular-nums" style={{ color: scoreColor }}>
+            {outlook.score}/10
+          </span>
+          <span className={cn(
+            'inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-bold border',
+            colors.bg, colors.text, colors.border,
+          )}>
+            {outlook.rating}
+          </span>
+        </div>
+      </div>
+      {outlook.summary && (
+        <p className="text-sm text-[hsl(var(--muted-foreground))] leading-relaxed mb-3">{outlook.summary}</p>
+      )}
+      {outlook.keyFactors.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {outlook.keyFactors.map((factor, i) => (
+            <span
+              key={i}
+              className="inline-flex items-center rounded-full bg-white/70 border border-[hsl(var(--border))] px-2 py-0.5 text-[11px] text-[hsl(var(--muted-foreground))]"
+            >
+              {factor}
+            </span>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -716,6 +773,11 @@ export function TradingSignals() {
                 />
               </div>
             </div>
+          )}
+
+          {/* Long Term Outlook — fundamentals-powered assessment */}
+          {result.longTermOutlook && (
+            <OutlookSection outlook={result.longTermOutlook} />
           )}
 
           {/* Technical Indicators — collapsed with inline preview */}

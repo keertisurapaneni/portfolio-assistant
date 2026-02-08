@@ -1,7 +1,7 @@
 /**
  * Trading Signals API — calls the trading-signals Supabase Edge Function.
  * Request: ticker + mode (AUTO | DAY_TRADE | SWING_TRADE).
- * Response: { trade, indicators, marketSnapshot, chart }.
+ * Response: { trade, indicators, marketSnapshot, chart, longTermOutlook }.
  */
 
 const TRADING_SIGNALS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/trading-signals`;
@@ -66,9 +66,17 @@ export interface ChartOverlay {
   price: number;
 }
 
+export interface LongTermOutlook {
+  rating: string;    // "Strong Buy" | "Buy" | "Neutral" | "Sell" | "Strong Sell"
+  score: number;     // 1-10
+  summary: string;   // 2-3 sentence explanation
+  keyFactors: string[];
+}
+
 export interface TradingSignalsResponse {
   trade: TradeSignal;
   indicators: IndicatorValues;
+  longTermOutlook: LongTermOutlook | null;
   marketSnapshot: MarketSnapshot | null;
   chart: {
     timeframe: string;
