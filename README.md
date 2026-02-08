@@ -16,7 +16,6 @@ A personal investing decision-support tool that combines automated conviction sc
 - **Brokerage Integration** — Connect Schwab, IBKR, Robinhood & [more](https://snaptrade.com/brokerage-integrations) via SnapTrade to auto-import holdings
 - **Authentication** — Optional email/password login (Supabase Auth) to save portfolio across devices
 - **Portfolio Import** — CSV/Excel upload with smart column detection (ticker, shares, avg cost)
-- **Company Profiles** — Full company names displayed alongside tickers (via Finnhub profile API)
 - **News Headlines** — Latest company-specific news on each card with clickable links
 - **Portfolio Value** — Per-stock + total portfolio with daily P&L
 - **Guest Mode** — Works without login; portfolio saved in browser localStorage
@@ -26,9 +25,7 @@ A personal investing decision-support tool that combines automated conviction sc
 - **Day Trade** — Intraday signals (1m/15m/1h timeframes), R:R 1:1.5–1:2, high news weight
 - **Swing Trade** — Multi-day/week signals (4h/1d/1w timeframes), R:R 1:1.5–1:2.5, trend alignment preferred
 - **Interactive Charts** — Candlestick charts with entry/stop/target overlays (2-3 years of history for swing)
-- **Live Timer** — Elapsed seconds counter while signal is being generated
-- **Parallel Pipeline** — Sentiment + trade agents run in parallel (~10s vs ~50s sequential)
-- Powered by Gemini (4-key rotation, 500ms retry) + Twelve Data (candles) + Yahoo Finance (news)
+- Powered by Gemini (4-key rotation) + Twelve Data (candles) + Yahoo Finance (news)
 
 ### Suggested Finds (`/finds`)
 
@@ -115,7 +112,7 @@ A personal investing decision-support tool that combines automated conviction sc
 | `huggingface-proxy` | Suggested Finds AI with model cascade | HuggingFace |
 | `gemini-proxy` | Gemini proxy for client-side AI calls | Google Gemini |
 | `daily-suggestions` | Shared daily cache (GET/POST/DELETE) | PostgreSQL |
-| `fetch-stock-data` | Stock data + company profile proxy with 15-min cache | Finnhub |
+| `fetch-stock-data` | Stock data proxy with server-side cache | Finnhub |
 | `scrape-market-movers` | Gainers/losers screener with retry logic | Yahoo Finance |
 | `fetch-yahoo-news` | Company-specific news | Yahoo Finance |
 | `broker-connect` | SnapTrade registration, login portal, disconnect | SnapTrade |
@@ -162,12 +159,12 @@ cp .env.example .env
 supabase secrets set FINNHUB_API_KEY=your_key
 supabase secrets set GROQ_API_KEY=your_key
 supabase secrets set GEMINI_API_KEY=your_key
-supabase secrets set GEMINI_API_KEY_2=your_second_key    # optional, for rate-limit rotation
-supabase secrets set GEMINI_API_KEY_3=your_third_key     # optional
-supabase secrets set GEMINI_API_KEY_4=your_fourth_key    # optional
+supabase secrets set GEMINI_API_KEY_2=your_key           # optional, rate-limit rotation
+supabase secrets set GEMINI_API_KEY_3=your_key           # optional
+supabase secrets set GEMINI_API_KEY_4=your_key           # optional
 supabase secrets set TWELVE_DATA_API_KEY=your_key
 supabase secrets set HUGGINGFACE_API_KEY=your_key
-supabase secrets set SNAPTRADE_CLIENT_ID=your_client_id  # optional, for broker integration
+supabase secrets set SNAPTRADE_CLIENT_ID=your_client_id  # optional, broker integration
 supabase secrets set SNAPTRADE_CONSUMER_KEY=your_key     # optional
 ```
 
@@ -181,19 +178,10 @@ npm run dev
 ### Deploy
 
 ```bash
-# Deploy Edge Functions
-supabase functions deploy fetch-stock-data --no-verify-jwt
-supabase functions deploy ai-proxy --no-verify-jwt
-supabase functions deploy huggingface-proxy --no-verify-jwt
-supabase functions deploy gemini-proxy --no-verify-jwt
-supabase functions deploy daily-suggestions --no-verify-jwt
-supabase functions deploy scrape-market-movers --no-verify-jwt
-supabase functions deploy fetch-yahoo-news --no-verify-jwt
-supabase functions deploy trading-signals --no-verify-jwt
-supabase functions deploy broker-connect --no-verify-jwt
-supabase functions deploy broker-sync --no-verify-jwt
+# Deploy all Edge Functions
+supabase functions deploy --no-verify-jwt
 
-# Run database migrations (auth + broker tables)
+# Run database migrations
 supabase db push
 
 # Frontend auto-deploys to Vercel on git push to master
