@@ -766,7 +766,7 @@ The following features were implemented during the initial build phase, exceedin
 - ✅ User authentication (Supabase Auth — email/password)
 - ✅ Cloud storage for authenticated users (PostgreSQL + localStorage hybrid)
 - ✅ Multi-device access via auth
-- ✅ Trading Signals — Day/Swing trade (Gemini 4-key rotation + Twelve Data + Yahoo News)
+- ✅ Trading Signals — Day/Swing trade (Gemini multi-key rotation + Twelve Data + Yahoo News)
 - ✅ Broker Integration — SnapTrade (Schwab, IBKR, Robinhood & more), read-only position sync
 - ✅ AI-Powered Suggested Finds (HuggingFace model cascade, server-side daily cache)
 

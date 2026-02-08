@@ -349,16 +349,15 @@ Deno.serve(async req => {
   const timeoutId = setTimeout(() => ac.abort(), REQUEST_TIMEOUT_MS);
 
   try {
-    // Collect Gemini API keys (supports 1–4 keys for rotation)
+    // Collect Gemini API keys dynamically (GEMINI_API_KEY, GEMINI_API_KEY_2, _3, …)
     const GEMINI_KEYS: string[] = [];
-    const k1 = Deno.env.get('GEMINI_API_KEY');
-    const k2 = Deno.env.get('GEMINI_API_KEY_2');
-    const k3 = Deno.env.get('GEMINI_API_KEY_3');
-    const k4 = Deno.env.get('GEMINI_API_KEY_4');
-    if (k1) GEMINI_KEYS.push(k1);
-    if (k2) GEMINI_KEYS.push(k2);
-    if (k3) GEMINI_KEYS.push(k3);
-    if (k4) GEMINI_KEYS.push(k4);
+    const primary = Deno.env.get('GEMINI_API_KEY');
+    if (primary) GEMINI_KEYS.push(primary);
+    for (let i = 2; ; i++) {
+      const k = Deno.env.get(`GEMINI_API_KEY_${i}`);
+      if (!k) break;
+      GEMINI_KEYS.push(k);
+    }
 
     if (GEMINI_KEYS.length === 0) {
       return new Response(JSON.stringify({ error: 'No GEMINI_API_KEY configured' }), {

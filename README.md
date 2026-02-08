@@ -25,7 +25,7 @@ A personal investing decision-support tool that combines automated conviction sc
 - **Day Trade** — Intraday signals (1m/15m/1h timeframes), R:R 1:1.5–1:2, high news weight
 - **Swing Trade** — Multi-day/week signals (4h/1d/1w timeframes), R:R 1:1.5–1:2.5, trend alignment preferred
 - **Interactive Charts** — Candlestick charts with entry/stop/target overlays (2-3 years of history for swing)
-- Powered by Gemini (4-key rotation) + Twelve Data (candles) + Yahoo Finance (news)
+- Powered by Gemini (multi-key rotation) + Twelve Data (candles) + Yahoo Finance (news)
 
 ### Suggested Finds (`/finds`)
 
@@ -68,7 +68,7 @@ A personal investing decision-support tool that combines automated conviction sc
 │       32b      │ │ └─ Gemini         │ │                           │
 │                │ │    (sentiment +   │ │ daily-suggestions         │
 │ fetch-stock-   │ │     trade agent)  │ │ └─ PostgreSQL (shared     │
-│ data           │ │    4-key rotation │ │    daily cache)           │
+│ data           │ │    key rotation   │ │    daily cache)           │
 │ └─ Finnhub API │ │                   │ │                           │
 │                │ └───────────────────┘ └───────────────────────────┘
 │ broker-connect │
@@ -99,7 +99,7 @@ A personal investing decision-support tool that combines automated conviction sc
 |---|---|---|---|
 | **Conviction Scoring** | Automated 0-100 score per stock | None (rule-based) | Finnhub metrics, earnings, recommendations |
 | **Portfolio Trade Signals** | BUY / SELL / no-action per stock | Groq (Llama 3.3 70B) | Finnhub data + market news + risk profile |
-| **Trade Signals** | Day/Swing trade with entry, stop, target | Gemini (4-key rotation) | Twelve Data candles + Yahoo Finance news |
+| **Trade Signals** | Day/Swing trade with entry, stop, target | Gemini (multi-key rotation) | Twelve Data candles + Yahoo Finance news |
 | **Quiet Compounders** | Discover quality under-the-radar stocks | HuggingFace (Qwen2.5-72B) | Finnhub metrics + general market news |
 | **Gold Mines** | Macro-theme-driven opportunities | HuggingFace (Qwen2.5-72B) | Market news + Finnhub fundamentals |
 
@@ -159,9 +159,7 @@ cp .env.example .env
 supabase secrets set FINNHUB_API_KEY=your_key
 supabase secrets set GROQ_API_KEY=your_key
 supabase secrets set GEMINI_API_KEY=your_key
-supabase secrets set GEMINI_API_KEY_2=your_key           # optional, rate-limit rotation
-supabase secrets set GEMINI_API_KEY_3=your_key           # optional
-supabase secrets set GEMINI_API_KEY_4=your_key           # optional
+supabase secrets set GEMINI_API_KEY_2=your_key           # optional, add more (_3, _4, …) for rate-limit rotation
 supabase secrets set TWELVE_DATA_API_KEY=your_key
 supabase secrets set HUGGINGFACE_API_KEY=your_key
 supabase secrets set SNAPTRADE_CLIENT_ID=your_client_id  # optional, broker integration
