@@ -9,7 +9,6 @@ import {
   BarChart3,
   Zap,
   Globe,
-  Info,
 } from 'lucide-react';
 import { Spinner } from './Spinner';
 import { createChart, CandlestickSeries, LineSeries, ColorType } from 'lightweight-charts';
@@ -149,20 +148,35 @@ function CollapsibleSection({
   title,
   icon,
   defaultOpen = false,
+  accentColor,
   children,
 }: {
   title: string;
   icon: React.ReactNode;
   defaultOpen?: boolean;
+  accentColor?: 'blue' | 'amber' | 'green' | 'purple';
   children: React.ReactNode;
 }) {
   const [open, setOpen] = useState(defaultOpen);
+
+  const accentStyles: Record<string, { border: string; header: string; strip: string }> = {
+    blue: { border: 'border-blue-200', header: 'bg-blue-50/60 hover:bg-blue-50', strip: 'bg-blue-500' },
+    amber: { border: 'border-amber-200', header: 'bg-amber-50/60 hover:bg-amber-50', strip: 'bg-amber-500' },
+    green: { border: 'border-green-200', header: 'bg-green-50/60 hover:bg-green-50', strip: 'bg-green-500' },
+    purple: { border: 'border-purple-200', header: 'bg-purple-50/60 hover:bg-purple-50', strip: 'bg-purple-500' },
+  };
+  const accent = accentColor ? accentStyles[accentColor] : null;
+
   return (
-    <div className="border border-[hsl(var(--border))] rounded-xl overflow-hidden">
+    <div className={cn('rounded-xl overflow-hidden border', accent ? accent.border : 'border-[hsl(var(--border))]')}>
+      {accent && <div className={cn('h-1', accent.strip)} />}
       <button
         type="button"
         onClick={() => setOpen(!open)}
-        className="w-full flex items-center justify-between px-4 py-3 text-sm font-medium text-[hsl(var(--foreground))] hover:bg-[hsl(var(--accent))] transition-colors"
+        className={cn(
+          'w-full flex items-center justify-between px-4 py-3 text-sm font-semibold text-[hsl(var(--foreground))] transition-colors',
+          accent ? accent.header : 'hover:bg-[hsl(var(--accent))]'
+        )}
       >
         <span className="flex items-center gap-2">
           {icon}
@@ -170,7 +184,7 @@ function CollapsibleSection({
         </span>
         {open ? <ChevronUp className="w-4 h-4 text-[hsl(var(--muted-foreground))]" /> : <ChevronDown className="w-4 h-4 text-[hsl(var(--muted-foreground))]" />}
       </button>
-      {open && <div className="px-4 pb-4 pt-1">{children}</div>}
+      {open && <div className="px-4 pb-4 pt-1 bg-white">{children}</div>}
     </div>
   );
 }
@@ -481,21 +495,21 @@ export function TradingSignals() {
 
       {/* Static indicators — always visible */}
       <div className="flex flex-wrap items-center gap-2 text-[11px]">
-        <span className="text-[10px] font-semibold uppercase tracking-wider text-[hsl(var(--muted-foreground))]">Indicators</span>
+        <span className="text-[10px] font-semibold uppercase tracking-wider text-blue-600">Indicators</span>
         {[
-          { name: 'RSI', param: '14' },
-          { name: 'MACD', param: '12/26/9' },
-          { name: 'EMA', param: '20' },
-          { name: 'SMA', param: '50 · 200' },
-          { name: 'ATR', param: '14' },
-          { name: 'ADX', param: '14' },
-          { name: 'Volume', param: '20d avg' },
-          { name: 'S/R', param: 'swing H/L' },
-          { name: 'MA Cross', param: 'EMA20/SMA50' },
+          { name: 'RSI', param: '14', color: 'bg-blue-50 border-blue-200 text-blue-700' },
+          { name: 'MACD', param: '12/26/9', color: 'bg-indigo-50 border-indigo-200 text-indigo-700' },
+          { name: 'EMA', param: '20', color: 'bg-violet-50 border-violet-200 text-violet-700' },
+          { name: 'SMA', param: '50 · 200', color: 'bg-purple-50 border-purple-200 text-purple-700' },
+          { name: 'ATR', param: '14', color: 'bg-orange-50 border-orange-200 text-orange-700' },
+          { name: 'ADX', param: '14', color: 'bg-amber-50 border-amber-200 text-amber-700' },
+          { name: 'Volume', param: '20d avg', color: 'bg-emerald-50 border-emerald-200 text-emerald-700' },
+          { name: 'S/R', param: 'swing H/L', color: 'bg-cyan-50 border-cyan-200 text-cyan-700' },
+          { name: 'MA Cross', param: 'EMA20/SMA50', color: 'bg-rose-50 border-rose-200 text-rose-700' },
         ].map((i) => (
-          <span key={i.name} className="rounded-full bg-[hsl(var(--secondary))] border border-[hsl(var(--border))] px-2.5 py-0.5">
-            <span className="font-medium text-[hsl(var(--foreground))]">{i.name}</span>
-            <span className="text-[hsl(var(--muted-foreground))]"> ({i.param})</span>
+          <span key={i.name} className={cn('rounded-full border px-2.5 py-0.5', i.color)}>
+            <span className="font-semibold">{i.name}</span>
+            <span className="opacity-75"> ({i.param})</span>
           </span>
         ))}
       </div>
@@ -563,12 +577,24 @@ export function TradingSignals() {
         <div className="space-y-4 animate-fade-in-up">
           {/* Auto-detection reasoning */}
           {result.trade.autoReason && (
-            <div className="flex items-start gap-2 rounded-lg bg-blue-50 border border-blue-100 px-3 py-2 text-xs">
-              <Info className="w-3.5 h-3.5 text-blue-500 mt-0.5 shrink-0" />
-              <div>
-                <span className="font-semibold text-blue-700">Auto selected {result.trade.detectedMode?.replace('_', ' ')}</span>
-                <span className="text-blue-600 ml-1">— {result.trade.autoReason}</span>
+            <div className="rounded-xl bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200 px-4 py-3 text-sm">
+              <div className="flex items-center gap-2">
+                <span className="flex items-center justify-center w-6 h-6 rounded-full bg-blue-100">
+                  <Zap className="w-3.5 h-3.5 text-blue-600" />
+                </span>
+                <span className="font-bold text-blue-800">
+                  Auto selected{' '}
+                  <span className={cn(
+                    'inline-flex items-center px-2 py-0.5 rounded-full text-xs font-bold uppercase tracking-wide',
+                    result.trade.detectedMode?.includes('DAY')
+                      ? 'bg-amber-100 text-amber-800 border border-amber-300'
+                      : 'bg-indigo-100 text-indigo-800 border border-indigo-300'
+                  )}>
+                    {result.trade.detectedMode?.replace('_', ' ')}
+                  </span>
+                </span>
               </div>
+              <p className="mt-1.5 ml-8 text-xs text-blue-700 leading-relaxed">{result.trade.autoReason}</p>
             </div>
           )}
 
@@ -660,12 +686,25 @@ export function TradingSignals() {
             )}
           </div>
 
+          {/* Technical Indicators — shown FIRST for visibility */}
+          {result.indicators && (
+            <CollapsibleSection
+              title="Technical Indicators"
+              icon={<BarChart3 className="w-4 h-4 text-blue-600" />}
+              defaultOpen
+              accentColor="blue"
+            >
+              <IndicatorsPanel indicators={result.indicators} />
+            </CollapsibleSection>
+          )}
+
           {/* Scenarios */}
           {result.trade.scenarios && (
             <CollapsibleSection
               title="Scenario Analysis"
-              icon={<Zap className="w-4 h-4 text-amber-500" />}
+              icon={<Zap className="w-4 h-4 text-amber-600" />}
               defaultOpen
+              accentColor="amber"
             >
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <ScenarioCard
@@ -687,16 +726,6 @@ export function TradingSignals() {
                   color="red"
                 />
               </div>
-            </CollapsibleSection>
-          )}
-
-          {/* Technical Indicators */}
-          {result.indicators && (
-            <CollapsibleSection
-              title="Technical Indicators"
-              icon={<BarChart3 className="w-4 h-4 text-blue-500" />}
-            >
-              <IndicatorsPanel indicators={result.indicators} />
             </CollapsibleSection>
           )}
 
