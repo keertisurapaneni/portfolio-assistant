@@ -34,14 +34,40 @@ export function BrokerConnect({ onSyncComplete }: BrokerConnectProps) {
     try {
       const url = status?.connected ? await getBrokerPortalUrl() : await connectBroker();
       const popup = window.open(url, 'snaptrade', 'width=600,height=700');
+
+      // If popup was blocked by the browser, bail immediately
+      if (!popup) {
+        setError('Popup blocked — please allow popups for this site and try again.');
+        setLoading(false);
+        return;
+      }
+
+      const MAX_WAIT_MS = 5 * 60 * 1000; // 5 min safety timeout
+      const started = Date.now();
+
       const poll = setInterval(async () => {
-        if (popup?.closed) {
+        if (popup.closed || Date.now() - started > MAX_WAIT_MS) {
           clearInterval(poll);
           setLoading(false);
-          // Try to sync after popup closes — silently ignore "no accounts" errors
-          // (user may have browsed but not linked a brokerage)
-          await handleSync(true);
-          await loadStatus();
+
+          if (Date.now() - started > MAX_WAIT_MS) {
+            popup.close();
+            setError('Connection timed out. Please try again.');
+            return;
+          }
+
+          // Try to sync after popup closes
+          try {
+            const result = await syncBrokerPositions();
+            onSyncComplete(result);
+            await loadStatus();
+            setSuccessMsg(`Synced ${result.stats.total} positions (${result.stats.added} added, ${result.stats.updated} updated)`);
+            setTimeout(() => setSuccessMsg(null), 4000);
+          } catch {
+            // Sync failed — user likely didn't complete the connection
+            await loadStatus();
+            setError('Connection not completed — please try again. If your broker login failed, try a fresh connection.');
+          }
         }
       }, 1000);
     } catch (err) {
