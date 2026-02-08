@@ -500,22 +500,21 @@ export function TradingSignals() {
       </div>
 
       {/* Static indicators — always visible */}
-      <div className="flex flex-wrap items-center gap-2 text-[11px]">
-        <span className="text-[10px] font-semibold uppercase tracking-wider text-blue-600">Indicators</span>
+      <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+        <span className="text-[10px] font-semibold uppercase tracking-wider text-[hsl(var(--muted-foreground))] mr-1">Indicators</span>
         {[
-          { name: 'RSI', param: '14', color: 'bg-blue-50 border-blue-200 text-blue-700' },
-          { name: 'MACD', param: '12/26/9', color: 'bg-indigo-50 border-indigo-200 text-indigo-700' },
-          { name: 'EMA', param: '20', color: 'bg-violet-50 border-violet-200 text-violet-700' },
-          { name: 'SMA', param: '50 · 200', color: 'bg-purple-50 border-purple-200 text-purple-700' },
-          { name: 'ATR', param: '14', color: 'bg-orange-50 border-orange-200 text-orange-700' },
-          { name: 'ADX', param: '14', color: 'bg-amber-50 border-amber-200 text-amber-700' },
-          { name: 'Volume', param: '20d avg', color: 'bg-emerald-50 border-emerald-200 text-emerald-700' },
-          { name: 'S/R', param: 'swing H/L', color: 'bg-cyan-50 border-cyan-200 text-cyan-700' },
-          { name: 'MA Cross', param: 'EMA20/SMA50', color: 'bg-rose-50 border-rose-200 text-rose-700' },
+          { name: 'RSI', param: '14' },
+          { name: 'MACD', param: '12/26/9' },
+          { name: 'EMA', param: '20' },
+          { name: 'SMA', param: '50 · 200' },
+          { name: 'ATR', param: '14' },
+          { name: 'ADX', param: '14' },
+          { name: 'Volume', param: '20d avg' },
+          { name: 'S/R', param: 'swing H/L' },
+          { name: 'MA Cross', param: 'EMA20/SMA50' },
         ].map((i) => (
-          <span key={i.name} className={cn('rounded-full border px-2.5 py-0.5', i.color)}>
-            <span className="font-semibold">{i.name}</span>
-            <span className="opacity-75"> ({i.param})</span>
+          <span key={i.name} className="rounded-full bg-[hsl(var(--secondary))] border border-[hsl(var(--border))] px-2 py-0.5 text-[hsl(var(--muted-foreground))]">
+            <span className="font-medium text-[hsl(var(--foreground))]">{i.name}</span> ({i.param})
           </span>
         ))}
       </div>
