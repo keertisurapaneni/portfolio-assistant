@@ -233,28 +233,6 @@ npm run preview  # Preview production build
 npm run lint     # Run ESLint
 ```
 
-## How AI Signals Work
-
-### Portfolio AI (per-stock on My Portfolio)
-
-1. **Trigger Detection** — Client checks if a stock has a reason to analyze (price dip, price surge, stop-loss zone, quality dip, etc.) — thresholds vary by risk profile
-2. **Smart Stop-Loss** — Stocks in stop-loss territory but green today go to AI for evaluation instead of automatic SELL
-3. **AI Analysis** — Triggered stocks sent to Groq 70B with full context (conviction scores, price, news, position data, risk profile)
-4. **Buy-on-Dips Philosophy** — AI is instructed to recommend BUY only on quality pullbacks, not on stocks up today
-5. **Fallback Pipeline** — If 70B rate-limits → tries Qwen3 32B → retries with backoff
-6. **Risk-Keyed Cache** — AI results cached per stock per risk profile in localStorage
-
-### Trading Signals (Day / Swing)
-
-1. **Mode Selection** — User picks Day Trade or Swing Trade; mode persists across sessions
-2. **Parallel Data Fetch** — Candle data (Twelve Data) and news (Yahoo Finance) fetched concurrently
-3. **Two-Phase AI** — Gemini Sentiment Agent scores news, then Trade Agent generates entry/stop/target
-4. **Gemini Key Rotation** — Up to 4 API keys rotated round-robin to handle rate limits
-5. **Chart Rendering** — Lightweight Charts v5 with candlesticks + overlay lines for entry, stop, target
-6. **Extended History** — Swing charts show ~600 daily candles (2-3 years), day charts show 150 intraday candles
-
-Signals only run on explicit user action — no background API calls.
-
 ## Commit Conventions
 
 Vercel auto-deploys on push to `master`, **except** commits prefixed with:
