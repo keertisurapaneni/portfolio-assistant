@@ -93,5 +93,17 @@ Both agents emit the **same fields** so the UI has a single contract:
 
 ## Status
 
-**State:** Captured — not yet implemented.  
-**Prompts:** Swing prompts available; day prompts to be defined/aligned with above.
+**State:** ✅ Implemented (2026-02-08)
+
+Implementation exceeded the original spec. See [trade-signals-indicator-engine.md](../../../docs/trade-signals-indicator-engine.md) for the complete current-state reference.
+
+**What was built beyond the original epic:**
+
+- **Auto mode** (default) — picks Day or Swing automatically via ATR% + ADX analysis
+- **Technical Indicator Engine** — RSI(14), MACD(12,26,9), EMA(20), SMA(50,200), ATR(14), ADX(14), Volume Ratio, Support/Resistance, EMA/SMA Crossover, Trend Classification
+- **Market context** — SPY trend + VIX volatility included in every analysis
+- **Enriched AI prompts** — pre-computed indicators as structured data (not raw candles)
+- **Expanded output** — 0-10 numeric confidence, dual targets, bias label, bullish/neutral/bearish scenarios
+- **AI provider** — Google Gemini (multi-key rotation + model cascade), not Together AI
+- **Frontend caching** — 15-min TTL (swing), 3-min TTL (day), Auto results cached under resolved mode
+- **UI** — Collapsible scenarios, indicator panels, methodology display, interactive candlestick charts

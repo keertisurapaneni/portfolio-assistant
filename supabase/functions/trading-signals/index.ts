@@ -1,10 +1,11 @@
 // Portfolio Assistant — Trading Signals Edge Function
 //
 // Mental model (no mixing):
-//   Twelve Data → candles → (indicators) → AI trade agent (Gemini)
-//   Yahoo Finance → articles → sentiment agent (Gemini) → AI trade agent (Gemini)
+//   Twelve Data → candles → Indicator Engine → enriched AI prompt → Gemini trade agent
+//   Yahoo Finance → articles → sentiment agent (Gemini)
+//   Twelve Data → SPY + VIX → market context → AI prompt
 //
-// Returns { trade, chart } for Day or Swing mode.
+// Returns { trade, chart, indicators, marketSnapshot } for Day, Swing, or Auto mode.
 //
 // LLM split across the app:
 //   Groq   = Portfolio AI (ai-proxy)
@@ -15,12 +16,21 @@
 //   Candles: Polygon.io (faster intraday), Alpaca Market Data (if trading later)
 //   News: Finnhub (finance-only), Alpha Vantage News
 //
-// 5) What we fetch per request:
-//    Day Trade:  Twelve Data 1m, 15m, 1h  |  Yahoo Finance news
-//    Swing Trade: Twelve Data 4h, 1d, 1w  |  Yahoo Finance news
+// Modes:
+//   AUTO       — fetches daily candles first to decide Day vs Swing via ATR% + ADX
+//   DAY_TRADE  — 1m, 15m, 1h candles + news
+//   SWING_TRADE — 4h, 1d, 1w candles + news
 //
-// 6) Rule: Whatever data the AI sees must be exactly what the chart shows.
-//    We use the same timeframes (and same primary series) for both; no separate chart fetch.
+// Rule: Whatever data the AI sees must be exactly what the chart shows.
+
+import {
+  type OHLCV,
+  type IndicatorSummary,
+  computeAllIndicators,
+  computeATR,
+  computeADX,
+  formatIndicatorsForPrompt,
+} from './indicators.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -42,10 +52,11 @@ const GEMINI_MODELS = ['gemini-2.0-flash-lite', 'gemini-2.0-flash', 'gemini-2.5-
 const REQUEST_TIMEOUT_MS = 90_000; // 90s total for the whole pipeline
 
 type Mode = 'DAY_TRADE' | 'SWING_TRADE';
+type RequestMode = Mode | 'AUTO';
 
 interface RequestPayload {
   ticker: string;
-  mode: Mode;
+  mode: RequestMode;
 }
 
 // Timeframes per mode — same data feeds the AI and the chart.
@@ -132,6 +143,95 @@ async function fetchYahooNews(symbol: string): Promise<NewsItem[]> {
   );
 }
 
+// ── Market snapshot (SPY + VIX) ─────────────────────────
+
+interface MarketSnapshot {
+  bias: string;
+  volatility: string;
+  spyTrend: string;
+  vix: number;
+}
+
+async function fetchMarketSnapshot(apiKey: string): Promise<MarketSnapshot | null> {
+  try {
+    const [spyRes, vixRes] = await Promise.all([
+      fetchCandles('SPY', '1day', apiKey, 60),
+      fetchCandles('VIX', '1day', apiKey, 5),
+    ]);
+
+    if (!spyRes?.values?.length || !vixRes?.values?.length) return null;
+
+    // Convert to OHLCV (newest-first already from Twelve Data)
+    const spyBars: OHLCV[] = spyRes.values.map(v => ({
+      o: parseFloat(v.open), h: parseFloat(v.high),
+      l: parseFloat(v.low), c: parseFloat(v.close),
+      v: v.volume ? parseFloat(v.volume) : 0,
+    }));
+
+    const vixClose = parseFloat(vixRes.values[0].close);
+    const spyPrice = spyBars[0].c;
+
+    // SMA(50) for SPY trend
+    let sma50 = 0;
+    const len = Math.min(50, spyBars.length);
+    for (let i = 0; i < len; i++) sma50 += spyBars[i].c;
+    sma50 /= len;
+
+    const spyTrend = spyPrice > sma50 ? 'Bullish (above SMA50)' : 'Bearish (below SMA50)';
+    const bias = spyPrice > sma50 ? 'Bullish' : 'Bearish';
+
+    let volatility: string;
+    if (vixClose < 15) volatility = 'Low';
+    else if (vixClose < 20) volatility = 'Moderate';
+    else if (vixClose < 30) volatility = 'High';
+    else volatility = 'Extreme';
+
+    return { bias, volatility, spyTrend, vix: Math.round(vixClose * 10) / 10 };
+  } catch (e) {
+    console.warn('[Trading Signals] Market snapshot fetch failed:', e);
+    return null;
+  }
+}
+
+// ── Auto mode detection ─────────────────────────────────
+
+async function detectMode(
+  ticker: string,
+  apiKey: string
+): Promise<{ mode: Mode; reason: string }> {
+  // Fetch daily candles for ATR% and ADX
+  const daily = await fetchCandles(ticker, '1day', apiKey, 60);
+  if (!daily?.values?.length || daily.values.length < 30) {
+    return { mode: 'SWING_TRADE', reason: 'Insufficient daily data — defaulting to swing' };
+  }
+
+  const bars: OHLCV[] = daily.values.map(v => ({
+    o: parseFloat(v.open), h: parseFloat(v.high),
+    l: parseFloat(v.low), c: parseFloat(v.close),
+    v: v.volume ? parseFloat(v.volume) : 0,
+  }));
+
+  const currentPrice = bars[0].c;
+  const atr = computeATR(bars);
+  const adx = computeADX(bars);
+
+  const atrPct = atr !== null && currentPrice > 0 ? (atr / currentPrice) * 100 : 0;
+
+  // High ATR% (> 2%) + strong volume activity → day trade
+  // Otherwise swing trade
+  if (atrPct > 2 && (adx === null || adx > 20)) {
+    return {
+      mode: 'DAY_TRADE',
+      reason: `ATR ${atrPct.toFixed(1)}% > 2% with ${adx !== null ? `ADX ${adx.toFixed(0)}` : 'unknown ADX'} — high intraday volatility favors day trading`,
+    };
+  }
+
+  return {
+    mode: 'SWING_TRADE',
+    reason: `ATR ${atrPct.toFixed(1)}% ≤ 2%${adx !== null ? `, ADX ${adx.toFixed(0)}` : ''} — lower volatility favors swing trading`,
+  };
+}
+
 // ── Gemini caller (model cascade + round-robin key rotation) ────────
 
 let _geminiKeyIndex = 0; // round-robin counter persists across calls within same invocation
@@ -208,124 +308,149 @@ Respond ONLY with valid JSON (no markdown, no backticks):
 
 // ── Day Trade Agent ─────────────────────────────────────
 
-const DAY_TRADE_SYSTEM = `You are a professional intraday trader. Your job is to find actionable trade setups. Lean toward giving a directional call (BUY or SELL) when the data supports it, but recommend HOLD when there is genuinely no edge.`;
+const DAY_TRADE_SYSTEM = `You are a professional intraday trader. Your job is to find actionable trade setups using pre-computed technical indicators and price action data. Lean toward giving a directional call (BUY or SELL) when the data supports it, but recommend HOLD when there is genuinely no edge.`;
 
 const DAY_TRADE_USER = `You are provided with:
 
-1) Technical price action data across three intraday timeframes:
-   - 1 minute candles (entry precision)
-   - 15 minute candles (intraday structure)
-   - 1 hour candles (trend bias)
+1) Pre-computed technical indicators (RSI, MACD, EMA/SMA, ATR, ADX, volume, support/resistance).
+   These are the PRIMARY input — use them to assess trend, momentum, volatility, and key levels.
 
-Each candle includes: time, open, high, low, close, volume.
+2) Recent price candles across three intraday timeframes (1m, 15m, 1h) for validation.
 
-2) Recent news headlines for the stock. Assess the sentiment yourself:
-   - Determine if news is Positive, Neutral, or Negative for the stock price
-   - Use sentiment only as confirmation or caution, not the primary driver
+3) Recent news headlines for the stock. Assess the sentiment yourself:
+   - Use sentiment only as confirmation or caution, not the primary driver.
 
 ---
 
 Analysis rules:
-- Use the 1-hour timeframe to determine intraday trend bias.
-- Use the 15-minute timeframe to assess momentum and structure.
-- Use the 1-minute timeframe to refine entries and stops.
-- If the 1-hour trend is clear, lean into it — even if the setup isn't perfect, provide a directional call with lower confidence.
-- Only recommend HOLD when price action is truly directionless (flat, no momentum, tight range).
+- Use indicators to determine the overall bias FIRST, then validate with candles.
+- RSI > 70 = overbought caution, RSI < 30 = oversold opportunity.
+- MACD histogram direction confirms momentum.
+- Price relative to EMA(20)/SMA(50) determines short/medium trend.
+- ADX > 25 means trend is strong enough to trade; ADX < 20 means ranging.
+- ATR sets realistic stop-loss distances.
+- Support/resistance levels define key entry/exit zones.
+- If indicators mostly agree on direction, give a directional call. Use lower confidence if some conflict.
+- Only recommend HOLD when indicators genuinely conflict across the board.
 
 Risk management:
 - Entry must be near current price.
-- Stop-loss must be placed beyond a recent intraday swing.
-- Target must provide at least 1.5× reward relative to risk.
+- Stop-loss should be based on ATR (1-1.5x ATR from entry) and placed beyond a key level.
+- Target 1 (conservative): nearest resistance (BUY) or support (SELL).
+- Target 2 (stretch): next resistance/support beyond Target 1.
+- Minimum 1.5× reward-to-risk for Target 1.
 - If the setup is marginal, widen the stop and lower confidence rather than defaulting to HOLD.
-
-Use the most recent 1-minute close as the proxy for current market price.
 
 ---
 
-Output format (STRICT – no extra text):
+Output format (STRICT — respond ONLY with valid JSON, no markdown, no backticks, no extra text):
 
 {
   "mode": "DAY_TRADE",
-  "recommendation": "BUY | SELL | HOLD",
+  "recommendation": "BUY" | "SELL" | "HOLD",
+  "bias": "short phrase describing the setup, e.g. Bullish continuation, Bearish reversal, Range / Wait",
   "entryPrice": number | null,
   "stopLoss": number | null,
   "targetPrice": number | null,
+  "targetPrice2": number | null,
   "riskReward": "1:x" | null,
   "rationale": {
-    "technical": "1-2 sentences on price action and levels",
+    "technical": "2-3 sentences on indicator readings and price action",
     "sentiment": "1 sentence on news impact",
-    "risk": "1 sentence on risk/reward and stop placement"
+    "risk": "1-2 sentences on risk/reward, stop placement, and key levels"
   },
-  "confidence": "LOW | MEDIUM | HIGH"
+  "confidence": number between 0 and 10 (0 = no edge, 10 = strongest conviction),
+  "scenarios": {
+    "bullish": { "probability": number 0-100, "summary": "1 sentence" },
+    "neutral": { "probability": number 0-100, "summary": "1 sentence" },
+    "bearish": { "probability": number 0-100, "summary": "1 sentence" }
+  }
 }
+
+The three scenario probabilities must sum to 100.
 
 ---
 
-Technical Data:
+{{INDICATOR_SUMMARY}}
+
+Recent Candles (for validation):
 {{TECHNICAL_DATA}}
 
-Sentiment Data:
+News Headlines:
 {{SENTIMENT_DATA}}`;
 
 // ── Swing Trade Agent ───────────────────────────────────
 
-const SWING_TRADE_SYSTEM = `You are a professional swing trader. Your job is to find actionable multi-day trade setups. Lean toward giving a directional call (BUY or SELL) when the data supports it, but recommend HOLD when there is genuinely no edge.`;
+const SWING_TRADE_SYSTEM = `You are a professional swing trader. Your job is to find actionable multi-day trade setups using pre-computed technical indicators and price action data. Lean toward giving a directional call (BUY or SELL) when the data supports it, but recommend HOLD when there is genuinely no edge.`;
 
 const SWING_TRADE_USER = `You are provided with:
 
-1) Technical price action data across three higher timeframes:
-   - 4 hour candles (setup structure)
-   - Daily candles (trend confirmation)
-   - Weekly candles (macro trend context)
+1) Pre-computed technical indicators (RSI, MACD, EMA/SMA, ATR, ADX, volume, support/resistance).
+   These are the PRIMARY input — use them to assess trend, momentum, volatility, and key levels.
 
-Each candle includes: time, open, high, low, close, volume.
+2) Recent price candles across three higher timeframes (4h, 1d, 1w) for validation.
 
-2) Recent news headlines for the stock. Assess the sentiment yourself:
-   - Determine if news is Positive, Neutral, or Negative for the stock price
-   - Sentiment must support or at least not contradict the technical trend
+3) Recent news headlines for the stock.
+   - Sentiment must support or at least not contradict the technical trend.
 
 ---
 
 Analysis rules:
-- Identify the dominant trend using the weekly timeframe.
-- Confirm trend strength using the daily timeframe.
-- Use the 4-hour timeframe to define a precise entry zone.
-- If at least two of three timeframes agree on direction, give a directional call. Use lower confidence if the third conflicts.
-- Only recommend HOLD when all timeframes genuinely conflict or price is in a tight sideways range with no momentum.
+- Use indicators to determine the overall bias FIRST, then validate with candles.
+- SMA(200) determines the long-term trend; SMA(50) the medium-term.
+- Price above both = strong uptrend. Price below both = strong downtrend.
+- ADX > 25 confirms a tradeable trend; ADX < 20 signals ranging/choppy market.
+- RSI divergences from price signal potential reversals.
+- MACD crossovers confirm momentum shifts.
+- ATR determines appropriate stop distances for multi-day holds.
+- Support/resistance levels define key entry/exit zones.
+- If indicators mostly agree on direction, give a directional call. Use lower confidence if some conflict.
+- Only recommend HOLD when indicators genuinely conflict or price is in a tight range with low ADX.
+- Counter-trend trades are allowed only if reward exceeds 2.5× risk.
 
 Risk management:
 - Entry should be near a key support (BUY) or resistance (SELL) level.
-- Stop-loss must be beyond a significant swing high/low.
-- Target must provide at least 1.5× reward relative to risk.
-- Counter-trend trades are allowed only if reward exceeds 2.5× risk.
-
-Use the most recent 4-hour close as the proxy for current market price.
+- Stop-loss based on ATR (1.5-2x ATR from entry) and placed beyond a significant swing level.
+- Target 1 (conservative): nearest major resistance (BUY) or support (SELL).
+- Target 2 (stretch): next major level beyond Target 1.
+- Minimum 1.5× reward-to-risk for Target 1.
 
 ---
 
-Output format (STRICT – no extra text):
+Output format (STRICT — respond ONLY with valid JSON, no markdown, no backticks, no extra text):
 
 {
   "mode": "SWING_TRADE",
-  "recommendation": "BUY | SELL | HOLD",
+  "recommendation": "BUY" | "SELL" | "HOLD",
+  "bias": "short phrase describing the setup, e.g. Bullish continuation, Bearish reversal, Range / Wait",
   "entryPrice": number | null,
   "stopLoss": number | null,
   "targetPrice": number | null,
+  "targetPrice2": number | null,
   "riskReward": "1:x" | null,
   "rationale": {
-    "technical": "1-2 sentences on trend and levels",
+    "technical": "2-3 sentences on indicator readings and price action",
     "sentiment": "1 sentence on news impact",
-    "risk": "1 sentence on risk/reward and stop placement"
+    "risk": "1-2 sentences on risk/reward, stop placement, and key levels"
   },
-  "confidence": "LOW | MEDIUM | HIGH"
+  "confidence": number between 0 and 10 (0 = no edge, 10 = strongest conviction),
+  "scenarios": {
+    "bullish": { "probability": number 0-100, "summary": "1 sentence" },
+    "neutral": { "probability": number 0-100, "summary": "1 sentence" },
+    "bearish": { "probability": number 0-100, "summary": "1 sentence" }
+  }
 }
+
+The three scenario probabilities must sum to 100.
 
 ---
 
-Technical Data:
+{{INDICATOR_SUMMARY}}
+
+Recent Candles (for validation):
 {{TECHNICAL_DATA}}
 
-Sentiment Data:
+News Headlines:
 {{SENTIMENT_DATA}}`;
 
 // ── JSON cleaner ────────────────────────────────────────
@@ -377,7 +502,11 @@ Deno.serve(async req => {
 
     const body: RequestPayload = await req.json();
     const ticker = (body?.ticker ?? '').toString().trim().toUpperCase();
-    const mode: Mode = body?.mode === 'DAY_TRADE' ? 'DAY_TRADE' : 'SWING_TRADE';
+    const requestedMode: RequestMode = body?.mode === 'DAY_TRADE'
+      ? 'DAY_TRADE'
+      : body?.mode === 'AUTO'
+        ? 'AUTO'
+        : 'SWING_TRADE';
 
     if (!ticker) {
       return new Response(JSON.stringify({ error: 'Missing or invalid ticker' }), {
@@ -386,7 +515,18 @@ Deno.serve(async req => {
       });
     }
 
-    // ── Step 1 + 2: Fetch candles AND news in parallel ──
+    // ── Step 0: Auto mode detection (if requested) ──
+    let mode: Mode;
+    let detectedMode: { mode: Mode; reason: string } | null = null;
+    if (requestedMode === 'AUTO') {
+      detectedMode = await detectMode(ticker, TWELVE_DATA_API_KEY);
+      mode = detectedMode.mode;
+      console.log(`[Trading Signals] AUTO → ${mode} (${detectedMode.reason})`);
+    } else {
+      mode = requestedMode;
+    }
+
+    // ── Step 1: Fetch candles + news + market snapshot in parallel ──
     const intervals = MODE_INTERVALS[mode];
     // More candles for daily/weekly so swing charts show 2-3 years of history
     const CANDLE_SIZES: Record<string, number> = {
@@ -397,10 +537,12 @@ Deno.serve(async req => {
       fetchCandles(ticker, int, TWELVE_DATA_API_KEY, CANDLE_SIZES[int] ?? 150)
     );
     const newsPromise = fetchYahooNews(ticker);
+    const marketPromise = fetchMarketSnapshot(TWELVE_DATA_API_KEY);
 
-    const [candles1, candles2, candles3, news] = await Promise.all([
+    const [candles1, candles2, candles3, news, marketSnapshot] = await Promise.all([
       ...candlePromises,
       newsPromise,
+      marketPromise,
     ]);
 
     const timeframes: Record<string, { values: Candle[] }> = {};
@@ -422,20 +564,51 @@ Deno.serve(async req => {
       url: n.url,
     }));
 
-    // ── Step 3 + 4: Sentiment Agent + Trade Agent IN PARALLEL ──
-    // Both agents receive the same raw news. The trade agent's prompt now instructs
-    // it to interpret sentiment directly from headlines (no pre-digested score needed).
-    // The sentiment agent runs alongside purely for structured metadata in the response.
+    // ── Step 2: Compute technical indicators ──
+    // Use the primary timeframe candles for indicator computation
+    // Day Trade: use 15m candles (structure), Swing: use 1day candles (trend)
+    const indicatorInterval = mode === 'DAY_TRADE' ? '15min' : '1day';
+    const indicatorCandles = timeframes[indicatorInterval]?.values ?? timeframes[intervals[0]]?.values ?? [];
+    const ohlcvBars: OHLCV[] = indicatorCandles.map(v => ({
+      o: parseFloat(v.open),
+      h: parseFloat(v.high),
+      l: parseFloat(v.low),
+      c: parseFloat(v.close),
+      v: v.volume ? parseFloat(v.volume) : 0,
+    }));
 
-    // Prepare trade agent inputs
-    const technicalData = { timeframes, currentPrice: null as number | null };
-    const primaryInterval = intervals[0]; // 4h for swing, 1min for day
+    const indicators: IndicatorSummary = computeAllIndicators(ohlcvBars);
+
+    // Current price from the newest candle of the primary entry timeframe
+    const primaryInterval = intervals[0]; // 1min for day, 4h for swing
     const primaryCandles = timeframes[primaryInterval]?.values;
+    let currentPrice: number | null = null;
     if (primaryCandles?.length) {
-      const newest = primaryCandles[0];
-      const c = parseFloat(newest.close);
-      if (!Number.isNaN(c)) technicalData.currentPrice = c;
+      const c = parseFloat(primaryCandles[0].close);
+      if (!Number.isNaN(c)) currentPrice = c;
     }
+
+    // ── Step 3: Build enriched prompt ──
+    const marketCtxStr = marketSnapshot
+      ? `SPY: ${marketSnapshot.spyTrend} | VIX: ${marketSnapshot.vix} (${marketSnapshot.volatility} fear)`
+      : undefined;
+    const indicatorPromptText = currentPrice
+      ? formatIndicatorsForPrompt(indicators, currentPrice, marketCtxStr)
+      : '';
+
+    // Trim candle data — send only last 40 candles of each timeframe for validation
+    const trimmedTimeframes: Record<string, unknown> = {};
+    for (const [tf, data] of Object.entries(timeframes)) {
+      trimmedTimeframes[tf] = data.values.slice(0, 40).map(v => ({
+        t: v.datetime,
+        o: parseFloat(v.open),
+        h: parseFloat(v.high),
+        l: parseFloat(v.low),
+        c: parseFloat(v.close),
+        v: v.volume ? parseFloat(v.volume) : 0,
+      }));
+    }
+    const technicalData = { timeframes: trimmedTimeframes, currentPrice };
 
     // Give the trade agent the actual news headlines so it can assess sentiment itself
     const newsForTrade = newsForPrompt.length > 0
@@ -445,10 +618,11 @@ Deno.serve(async req => {
     const tradeSystemPrompt = mode === 'DAY_TRADE' ? DAY_TRADE_SYSTEM : SWING_TRADE_SYSTEM;
     const tradeUserTemplate = mode === 'DAY_TRADE' ? DAY_TRADE_USER : SWING_TRADE_USER;
     const tradeUserPrompt = tradeUserTemplate
+      .replace('{{INDICATOR_SUMMARY}}', indicatorPromptText)
       .replace('{{TECHNICAL_DATA}}', JSON.stringify(technicalData))
       .replace('{{SENTIMENT_DATA}}', JSON.stringify(newsForTrade));
 
-    // Launch both in parallel
+    // ── Step 4: Sentiment Agent + Trade Agent IN PARALLEL ──
     const sentimentPromise = (async () => {
       const defaultSentiment = {
         category: 'Neutral',
@@ -502,24 +676,77 @@ Deno.serve(async req => {
       v: v.volume ? parseFloat(v.volume) : 0,
     }));
 
+    // Normalize confidence to 0-10 number
+    const rawConf = trade.confidence;
+    let confidence: number;
+    if (typeof rawConf === 'number' && !isNaN(rawConf)) {
+      confidence = Math.max(0, Math.min(10, rawConf));
+    } else if (typeof rawConf === 'string') {
+      // Try parsing numeric strings first (AI often returns "7" or "7.5")
+      const parsed = parseFloat(rawConf);
+      if (!isNaN(parsed)) {
+        confidence = Math.max(0, Math.min(10, parsed));
+      } else {
+        // Fallback for legacy qualitative values
+        confidence = rawConf.toUpperCase() === 'HIGH' ? 8 : rawConf.toUpperCase() === 'MEDIUM' ? 5 : rawConf.toUpperCase() === 'LOW' ? 3 : 5;
+      }
+    } else {
+      confidence = 5;
+    }
+
+    // Parse scenarios with defaults
+    const rawScenarios = trade.scenarios as Record<string, { probability?: number; summary?: string }> | undefined;
+    const scenarios = {
+      bullish: {
+        probability: rawScenarios?.bullish?.probability ?? 33,
+        summary: rawScenarios?.bullish?.summary ?? '',
+      },
+      neutral: {
+        probability: rawScenarios?.neutral?.probability ?? 34,
+        summary: rawScenarios?.neutral?.summary ?? '',
+      },
+      bearish: {
+        probability: rawScenarios?.bearish?.probability ?? 33,
+        summary: rawScenarios?.bearish?.summary ?? '',
+      },
+    };
+
     const response = {
       trade: {
         mode: trade.mode ?? mode,
+        ...(detectedMode ? { detectedMode: detectedMode.mode, autoReason: detectedMode.reason } : {}),
         recommendation: trade.recommendation ?? 'HOLD',
+        bias: (trade.bias as string) ?? '',
         entryPrice: trade.entryPrice ?? null,
         stopLoss: trade.stopLoss ?? null,
         targetPrice: trade.targetPrice ?? null,
+        targetPrice2: trade.targetPrice2 ?? null,
         riskReward: trade.riskReward ?? null,
         rationale: trade.rationale ?? {},
-        confidence: trade.confidence ?? 'MEDIUM',
+        confidence,
+        scenarios,
       },
+      indicators: {
+        rsi: indicators.rsi,
+        macd: indicators.macd,
+        ema20: indicators.ema20,
+        sma50: indicators.sma50,
+        sma200: indicators.sma200,
+        atr: indicators.atr,
+        adx: indicators.adx,
+        volumeRatio: indicators.volumeRatio?.ratio ?? null,
+        emaCrossover: indicators.emaCrossover,
+        trend: indicators.trend,
+      },
+      marketSnapshot: marketSnapshot ?? null,
       chart: {
         timeframe: chartInterval,
         candles: chartCandles,
         overlays: [
           trade.entryPrice != null && { type: 'line', label: 'Entry', price: trade.entryPrice },
           trade.stopLoss != null && { type: 'line', label: 'Stop', price: trade.stopLoss },
-          trade.targetPrice != null && { type: 'line', label: 'Target', price: trade.targetPrice },
+          trade.targetPrice != null && { type: 'line', label: 'Target 1', price: trade.targetPrice },
+          trade.targetPrice2 != null && { type: 'line', label: 'Target 2', price: trade.targetPrice2 },
         ].filter(Boolean),
       },
     };

@@ -638,8 +638,9 @@ Portfolio Assistant is a **Single Page Application (SPA)** built with React 18 +
 **API Integration:**
 
 - Stock Data: Finnhub API (60 calls/min free tier)
-- News Data: Finnhub News API
-- LLM Analysis: Groq (Llama 3.3 70B / Qwen3 32B) via Supabase Edge Functions
+- News Data: Finnhub News API + Yahoo Finance (Trade Signals)
+- LLM Analysis: Groq (Llama 3.3 70B / Qwen3 32B) for portfolio signals, Gemini (multi-key rotation) for Trade Signals, HuggingFace (Qwen2.5-72B cascade) for Suggested Finds
+- Candle Data: Twelve Data (Trade Signals — OHLCV for indicator engine)
 - Rate Limiting: Client-side throttling, backend caching
 
 **Security:**
@@ -729,7 +730,7 @@ The following features were implemented during the initial build phase, exceedin
 
 **AI Pipeline:**
 
-- Client → Supabase Edge Function (`gemini-proxy`) → Groq API (70B or 32B fallback)
+- Client → Supabase Edge Function (`ai-proxy`) → Groq API (70B or 32B fallback)
 - Rate limiting: 4s inter-call delay, 15s cooldown on 429, server-side fallback retry
 - System prompt maintained server-side in Edge Function
 
@@ -766,7 +767,7 @@ The following features were implemented during the initial build phase, exceedin
 - ✅ User authentication (Supabase Auth — email/password)
 - ✅ Cloud storage for authenticated users (PostgreSQL + localStorage hybrid)
 - ✅ Multi-device access via auth
-- ✅ Trading Signals — Day/Swing trade (Gemini multi-key rotation + Twelve Data + Yahoo News)
+- ✅ Trading Signals — Auto/Day/Swing modes, indicator engine (RSI, MACD, EMA, ATR, ADX, S/R), SPY+VIX market context, enriched AI prompts, scenario analysis, 0-10 confidence, dual targets
 - ✅ Broker Integration — SnapTrade (Schwab, IBKR, Robinhood & more), read-only position sync
 - ✅ AI-Powered Suggested Finds (HuggingFace model cascade, server-side daily cache)
 
@@ -775,4 +776,3 @@ The following features were implemented during the initial build phase, exceedin
 - ⏳ Guest-to-auth data migration (auto-merge on signup)
 - ⏳ Mobile-responsive design
 - ⏳ Historical conviction score tracking
-- ⏳ Additional AI data: volume vs average, DMA trends, earnings proximity

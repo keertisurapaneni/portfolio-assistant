@@ -116,16 +116,21 @@ Transform Suggested Finds from static curated lists into a dynamic AI-powered di
 
 ---
 
-## Epic 13: Trading Signals — Day Trade | Swing Trade
+## Epic 13: Trading Signals — Auto / Day Trade / Swing Trade
 
-Users get a **Trading Signals** experience with explicit mode selection: **Day Trade | Swing Trade**. Once a mode is selected, the entire pipeline (prompts, timeframes, risk rules) locks to that mode so output is coherent and intentional.
+Users get a **Trading Signals** experience with mode selection: **Auto | Day Trade | Swing Trade**. Auto mode (default) automatically picks Day or Swing based on volatility analysis. The entire pipeline (prompts, timeframes, risk rules, indicators) locks to the resolved mode.
 
-**User Value:** Clear separation between intraday (minutes–hours, 1m/15m/1h, high news, high frequency) and swing (days–weeks, 4h/1d/1w, trend alignment, HOLD most of the time). No mixed signals.
+**User Value:** Clear separation between intraday (minutes–hours, 1m/15m/1h, high news, high frequency) and swing (days–weeks, 4h/1d/1w, trend alignment, HOLD most of the time). Auto mode removes the burden of choosing. Full indicator engine (10 indicators) with market context provides institutional-grade analysis.
 
-**Mode definitions (explicit):**
-- **Day Trade:** Intent minutes–hours; timeframes 1m/15m/1h; R:R 1:1.5–1:2; news high; output frequency high; HOLD common during chop.
-- **Swing Trade:** Intent days–weeks; timeframes 4h/1d/1w; R:R 1:2–1:4; news moderate; trend alignment mandatory; HOLD expected most of the time.
+**Status:** ✅ Implemented
 
-**Implementation Notes:** New tab/section + toggle; mode persisted; prompts and risk rules keyed off mode. Full product and technical spec: `features/trading-signals/` (PRD + technical spec).
+**Implementation Notes:**
+- Auto mode picks Day or Swing via ATR% + ADX analysis on daily candles
+- Full indicator engine: RSI, MACD, EMA, SMA, ATR, ADX, Volume Ratio, S/R, MA Crossover, Trend Classification
+- Market context: SPY trend + VIX volatility in every analysis
+- AI: Google Gemini (multi-key rotation + model cascade), enriched prompts with pre-computed indicators
+- Output: 0-10 confidence, dual targets, bias label, bullish/neutral/bearish scenarios
+- Frontend: mode persistence, in-memory caching (15m swing / 3m day), interactive charts, collapsible sections
+- Full spec: `features/trading-signals/` (PRD + technical spec) and `docs/trade-signals-indicator-engine.md`
 
 ---

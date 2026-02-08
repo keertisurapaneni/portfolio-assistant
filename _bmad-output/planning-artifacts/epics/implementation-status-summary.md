@@ -14,6 +14,6 @@
 | **10: Portfolio Values**       | ✅ Done    | Per-stock + total portfolio with daily P&L        |
 | **11: News Integration**       | ✅ Done    | Headlines on cards + AI context                   |
 | **12: AI-Powered Discovery**   | ✅ Done    | HuggingFace (Qwen2.5-72B → Mixtral → Llama), server-side daily cache |
-| **13: Trading Signals**        | ✅ Done    | Day/Swing toggle, Gemini multi-key rotation, parallel agents, Twelve Data + Yahoo News |
+| **13: Trading Signals**        | ✅ Done    | Auto/Day/Swing modes, indicator engine (RSI, MACD, EMA, ATR, ADX, S/R), SPY+VIX market context, enriched AI prompts, scenario analysis, 0-10 confidence, dual targets, collapsible UI sections |
 
 ---

@@ -70,5 +70,7 @@
     - [Story 10.1: Portfolio Value on Cards and Header](./epic-10-portfolio-value-display-implemented.md#story-101-portfolio-value-on-cards-and-header)
   - [Epic 11: News Integration (IMPLEMENTED)](./epic-11-news-integration-implemented.md)
     - [Story 11.1: News on Stock Cards](./epic-11-news-integration-implemented.md#story-111-news-on-stock-cards)
+  - [Epic 12: AI-Powered Stock Discovery (IMPLEMENTED)](./epic-12-ai-powered-stock-discovery.md)
+  - [Epic 13: Trading Signals — Auto / Day / Swing (IMPLEMENTED)](./epic-13-trading-signals-day-swing.md)
   - [Implementation Status Summary](./implementation-status-summary.md)
   - [Pending / Future Work](./pending-future-work.md)

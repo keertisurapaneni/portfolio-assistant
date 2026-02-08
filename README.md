@@ -22,10 +22,15 @@ A personal investing decision-support tool that combines automated conviction sc
 
 ### Trade Signals (`/signals`)
 
-- **Day Trade** — Intraday signals (1m/15m/1h timeframes), R:R 1:1.5–1:2, high news weight
-- **Swing Trade** — Multi-day/week signals (4h/1d/1w timeframes), R:R 1:1.5–1:2.5, trend alignment preferred
+- **Auto Mode** — Automatically picks Day or Swing based on ATR% and ADX volatility analysis (default)
+- **Day Trade** — Intraday signals (1m/15m/1h timeframes) with technical indicators
+- **Swing Trade** — Multi-day/week signals (4h/1d/1w timeframes) with technical indicators
+- **Technical Indicator Engine** — Pre-computed RSI, MACD, EMA/SMA, ATR, ADX, volume ratio, support/resistance fed to AI
+- **Market Context** — SPY trend + VIX volatility snapshot included in every analysis
+- **Scenario Analysis** — Bullish/neutral/bearish scenarios with probability estimates
+- **Confidence Score** — 0-10 visual confidence rating with dual price targets
 - **Interactive Charts** — Candlestick charts with entry/stop/target overlays (2-3 years of history for swing)
-- Powered by Gemini (multi-key rotation) + Twelve Data (candles) + Yahoo Finance (news)
+- Powered by Gemini (multi-key rotation) + Twelve Data (candles + indicators) + Yahoo Finance (news)
 
 ### Suggested Finds (`/finds`)
 
@@ -54,7 +59,7 @@ A personal investing decision-support tool that combines automated conviction sc
 │          Supabase Auth (optional email/password login)              │
 └──────┬────────────┬────────────────────┬────────────────────────────┘
        │            │                    │
-       │ Portfolio  │ Trading Signals    │  Suggested Finds
+       │ Portfolio  │ Trade Signals      │  Suggested Finds
        │ AI         │                    │
 ┌──────▼─────────┐ ┌▼──────────────────┐ ┌▼──────────────────────────┐
 │ Supabase Edge  │ │ Supabase Edge     │ │ Supabase Edge             │
@@ -99,7 +104,7 @@ A personal investing decision-support tool that combines automated conviction sc
 |---|---|---|---|
 | **Conviction Scoring** | Automated 0-100 score per stock | None (rule-based) | Finnhub metrics, earnings, recommendations |
 | **Portfolio Trade Signals** | BUY / SELL / no-action per stock | Groq (Llama 3.3 70B) | Finnhub data + market news + risk profile |
-| **Trade Signals** | Day/Swing trade with entry, stop, target | Gemini (multi-key rotation) | Twelve Data candles + Yahoo Finance news |
+| **Trade Signals** | Auto/Day/Swing trade with indicators, scenarios, dual targets | Gemini (multi-key rotation) | Twelve Data candles → Indicator Engine (RSI, MACD, EMA, ATR, ADX) + Yahoo Finance news + SPY/VIX market context |
 | **Quiet Compounders** | Discover quality under-the-radar stocks | HuggingFace (Qwen2.5-72B) | Finnhub metrics + general market news |
 | **Gold Mines** | Macro-theme-driven opportunities | HuggingFace (Qwen2.5-72B) | Market news + Finnhub fundamentals |
 

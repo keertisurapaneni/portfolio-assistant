@@ -1,10 +1,22 @@
-# Technical Specification — Trading Signals (Day Trade | Swing Trade)
+# Technical Specification — Trading Signals
 
 **Feature:** Trading Signals  
 **Date:** 2026-02-06  
 **Audience:** Implementation (backend, AI, frontend).
 
 This doc defines **how** to build Trading Signals. Product goals and scope are in [prd-trading-signals.md](./prd-trading-signals.md).
+
+> **Implementation note (2026-02-08):** This spec was the original design document. The actual implementation differs in several significant ways. See [trade-signals-indicator-engine.md](../../../docs/trade-signals-indicator-engine.md) for the complete current-state reference. Key differences:
+>
+> - **AI provider:** Google Gemini (model cascade) with multi-key rotation, not Together AI
+> - **News:** Yahoo Finance, not Finnhub
+> - **Indicator engine:** Full `indicators.ts` module computing RSI(14), MACD(12,26,9), EMA(20), SMA(50,200), ATR(14), ADX(14), Volume Ratio, S/R, MA Crossover, Trend Classification
+> - **Enriched prompts:** Pre-computed indicators injected as structured text; AI receives formatted indicator summary as primary input
+> - **Auto mode:** Fetches daily candles, computes ATR% + ADX to pick Day or Swing automatically
+> - **Market snapshot:** SPY + VIX fetched in parallel
+> - **Expanded output:** confidence 0-10, dual targets, bias label, 3 scenarios with probabilities
+> - **Frontend caching:** 15-min TTL (swing) / 3-min TTL (day)
+> - **VWAP:** Not implemented (not available from Twelve Data REST API without tick data)
 
 ---
 

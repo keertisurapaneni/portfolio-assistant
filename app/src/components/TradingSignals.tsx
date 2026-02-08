@@ -1,5 +1,16 @@
 import { useState, useRef, useEffect } from 'react';
-import { Activity, RefreshCw } from 'lucide-react';
+import {
+  Activity,
+  RefreshCw,
+  ChevronDown,
+  ChevronUp,
+  TrendingUp,
+  TrendingDown,
+  BarChart3,
+  Zap,
+  Globe,
+  Info,
+} from 'lucide-react';
 import { Spinner } from './Spinner';
 import { createChart, CandlestickSeries, LineSeries, ColorType } from 'lightweight-charts';
 import { cn } from '../lib/utils';
@@ -13,12 +24,222 @@ import {
   type TradingSignalsResponse,
   type SignalsMode,
   type ChartCandle,
+  type IndicatorValues,
+  type MarketSnapshot,
 } from '../lib/tradingSignalsApi';
 
 function formatPrice(n: number | null): string {
   if (n == null) return '—';
   return n.toFixed(2);
 }
+
+// ── Confidence Ring ─────────────────────────────────────
+
+function ConfidenceScore({ score }: { score: number | string }) {
+  let safe: number;
+  if (typeof score === 'number' && !isNaN(score)) {
+    safe = score;
+  } else if (typeof score === 'string') {
+    // Handle legacy string values from old edge function
+    const parsed = parseFloat(score);
+    if (!isNaN(parsed)) {
+      safe = parsed;
+    } else {
+      safe = score.toUpperCase() === 'HIGH' ? 8 : score.toUpperCase() === 'MEDIUM' ? 5 : score.toUpperCase() === 'LOW' ? 3 : 5;
+    }
+  } else {
+    safe = 5;
+  }
+  const clamped = Math.max(0, Math.min(10, Math.round(safe)));
+  const pct = clamped / 10;
+  const radius = 18;
+  const circumference = 2 * Math.PI * radius;
+  const offset = circumference * (1 - pct);
+
+  let color: string;
+  if (clamped >= 7) color = '#22c55e';       // green
+  else if (clamped >= 4) color = '#f59e0b';  // amber
+  else color = '#ef4444';                     // red
+
+  return (
+    <div className="flex items-center gap-2">
+      <svg width="44" height="44" className="transform -rotate-90">
+        <circle cx="22" cy="22" r={radius} stroke="#e5e7eb" strokeWidth="4" fill="none" />
+        <circle
+          cx="22" cy="22" r={radius}
+          stroke={color}
+          strokeWidth="4"
+          fill="none"
+          strokeDasharray={circumference}
+          strokeDashoffset={offset}
+          strokeLinecap="round"
+          className="transition-all duration-700"
+        />
+      </svg>
+      <div className="absolute w-[44px] flex items-center justify-center">
+        <span className="text-sm font-bold" style={{ color }}>{clamped}</span>
+      </div>
+    </div>
+  );
+}
+
+// ── Market Snapshot Banner ──────────────────────────────
+
+function MarketBanner({ snapshot }: { snapshot: MarketSnapshot }) {
+  const volColor =
+    snapshot.volatility === 'Low' ? 'text-green-600' :
+    snapshot.volatility === 'Moderate' ? 'text-amber-600' :
+    snapshot.volatility === 'High' ? 'text-orange-600' : 'text-red-600';
+
+  const biasIcon = snapshot.bias === 'Bullish'
+    ? <TrendingUp className="w-3.5 h-3.5 text-green-600" />
+    : <TrendingDown className="w-3.5 h-3.5 text-red-600" />;
+
+  return (
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--secondary))] px-4 py-2 text-xs text-[hsl(var(--muted-foreground))]">
+      <span className="flex items-center gap-1.5">
+        <Globe className="w-3.5 h-3.5" />
+        Market
+      </span>
+      <span className="flex items-center gap-1">
+        {biasIcon}
+        SPY: <span className="font-medium text-[hsl(var(--foreground))]">{snapshot.spyTrend}</span>
+      </span>
+      <span>
+        VIX: <span className={cn('font-medium', volColor)}>{snapshot.vix} ({snapshot.volatility})</span>
+      </span>
+    </div>
+  );
+}
+
+// ── Scenario Card ───────────────────────────────────────
+
+function ScenarioCard({
+  label,
+  probability,
+  summary,
+  color,
+}: {
+  label: string;
+  probability: number;
+  summary: string;
+  color: 'green' | 'gray' | 'red';
+}) {
+  const barColor = { green: 'bg-green-500', gray: 'bg-gray-400', red: 'bg-red-500' }[color];
+  const bgColor = { green: 'bg-green-50 border-green-100', gray: 'bg-gray-50 border-gray-100', red: 'bg-red-50 border-red-100' }[color];
+  const labelColor = { green: 'text-green-700', gray: 'text-gray-600', red: 'text-red-700' }[color];
+
+  return (
+    <div className={cn('rounded-lg border p-3', bgColor)}>
+      <div className="flex items-center justify-between mb-1.5">
+        <span className={cn('text-xs font-semibold', labelColor)}>{label}</span>
+        <span className={cn('text-xs font-bold tabular-nums', labelColor)}>{probability}%</span>
+      </div>
+      <div className="w-full h-1.5 rounded-full bg-white/70 mb-2">
+        <div className={cn('h-full rounded-full transition-all duration-500', barColor)} style={{ width: `${probability}%` }} />
+      </div>
+      {summary && <p className="text-[11px] text-[hsl(var(--muted-foreground))] leading-snug">{summary}</p>}
+    </div>
+  );
+}
+
+// ── Collapsible Section ─────────────────────────────────
+
+function CollapsibleSection({
+  title,
+  icon,
+  defaultOpen = false,
+  children,
+}: {
+  title: string;
+  icon: React.ReactNode;
+  defaultOpen?: boolean;
+  children: React.ReactNode;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div className="border border-[hsl(var(--border))] rounded-xl overflow-hidden">
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        className="w-full flex items-center justify-between px-4 py-3 text-sm font-medium text-[hsl(var(--foreground))] hover:bg-[hsl(var(--accent))] transition-colors"
+      >
+        <span className="flex items-center gap-2">
+          {icon}
+          {title}
+        </span>
+        {open ? <ChevronUp className="w-4 h-4 text-[hsl(var(--muted-foreground))]" /> : <ChevronDown className="w-4 h-4 text-[hsl(var(--muted-foreground))]" />}
+      </button>
+      {open && <div className="px-4 pb-4 pt-1">{children}</div>}
+    </div>
+  );
+}
+
+// ── Indicators Panel ────────────────────────────────────
+
+function IndicatorsPanel({ indicators }: { indicators: IndicatorValues }) {
+  const row = (label: string, value: string | null, interpretation?: string) => (
+    <div className="flex items-center justify-between py-1.5 border-b border-[hsl(var(--border))] last:border-0">
+      <span className="text-xs text-[hsl(var(--muted-foreground))]">{label}</span>
+      <div className="text-right">
+        <span className="text-xs font-semibold text-[hsl(var(--foreground))] tabular-nums">{value ?? '—'}</span>
+        {interpretation && <span className="ml-1.5 text-[10px] text-[hsl(var(--muted-foreground))]">{interpretation}</span>}
+      </div>
+    </div>
+  );
+
+  const rsiInterp = indicators.rsi !== null
+    ? indicators.rsi > 70 ? '(overbought)' : indicators.rsi < 30 ? '(oversold)' : indicators.rsi > 50 ? '(bullish)' : '(bearish)'
+    : undefined;
+
+  const adxInterp = indicators.adx !== null
+    ? indicators.adx >= 25 ? '(trending)' : '(weak trend)'
+    : undefined;
+
+  const macdInterp = indicators.macd
+    ? indicators.macd.histogram > 0 ? '(bullish)' : '(bearish)'
+    : undefined;
+
+  return (
+    <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6">
+      <div>
+        <p className="text-[10px] font-semibold uppercase tracking-wider text-[hsl(var(--muted-foreground))] mb-1">Momentum</p>
+        {row('RSI(14)', indicators.rsi?.toFixed(1) ?? null, rsiInterp)}
+        {row('MACD', indicators.macd ? `${indicators.macd.value}` : null, macdInterp)}
+        {indicators.macd && row('  Signal', indicators.macd.signal.toFixed(2))}
+        {indicators.macd && row('  Histogram', `${indicators.macd.histogram > 0 ? '+' : ''}${indicators.macd.histogram}`)}
+      </div>
+      <div>
+        <p className="text-[10px] font-semibold uppercase tracking-wider text-[hsl(var(--muted-foreground))] mb-1">Trend & Volatility</p>
+        {row('EMA(20)', indicators.ema20?.toFixed(2) ?? null)}
+        {row('SMA(50)', indicators.sma50?.toFixed(2) ?? null)}
+        {row('SMA(200)', indicators.sma200?.toFixed(2) ?? null)}
+        {row('ADX(14)', indicators.adx?.toFixed(1) ?? null, adxInterp)}
+        {row('ATR(14)', indicators.atr?.toFixed(2) ?? null)}
+        {row('Vol Ratio', indicators.volumeRatio?.toFixed(2) ?? null, indicators.volumeRatio ? `(${indicators.volumeRatio > 1.2 ? 'above avg' : indicators.volumeRatio < 0.8 ? 'below avg' : 'normal'})` : undefined)}
+      </div>
+      {/* Crossover & Trend — full width */}
+      <div className="col-span-1 sm:col-span-2 mt-1 pt-2 border-t border-[hsl(var(--border))]">
+        <p className="text-[10px] font-semibold uppercase tracking-wider text-[hsl(var(--muted-foreground))] mb-1">Signals</p>
+        {row('MA Crossover', indicators.emaCrossover ? {
+          bullish_cross: 'Bullish cross',
+          bearish_cross: 'Bearish cross',
+          above: 'EMA > SMA',
+          below: 'EMA < SMA',
+        }[indicators.emaCrossover] : null, indicators.emaCrossover === 'bullish_cross' ? '(EMA20 just crossed above SMA50)' : indicators.emaCrossover === 'bearish_cross' ? '(EMA20 just crossed below SMA50)' : undefined)}
+        {row('Trend', indicators.trend ? {
+          strong_uptrend: 'Strong Uptrend',
+          uptrend: 'Uptrend',
+          sideways: 'Sideways',
+          downtrend: 'Downtrend',
+          strong_downtrend: 'Strong Downtrend',
+        }[indicators.trend] : null, indicators.trend === 'strong_uptrend' ? '(price > SMA50 > SMA200)' : indicators.trend === 'strong_downtrend' ? '(price < SMA50 < SMA200)' : undefined)}
+      </div>
+    </div>
+  );
+}
+
+// ── Chart ───────────────────────────────────────────────
 
 function ChartPanel({ candles, overlays }: { candles: ChartCandle[]; overlays: { label: string; price: number }[] }) {
   const chartRef = useRef<HTMLDivElement>(null);
@@ -44,10 +265,6 @@ function ChartPanel({ candles, overlays }: { candles: ChartCandle[]; overlays: {
       wickDownColor: '#ef5350',
     });
 
-    // For intraday candles (day trade), timestamps contain time info (length > 10).
-    // Lightweight Charts needs unique ascending times:
-    //   - Daily+ data: use 'YYYY-MM-DD' string
-    //   - Intraday data: use Unix timestamp (seconds)
     const isIntraday = candles.some((c) => c.t.length > 10);
 
     const seriesData = [...candles]
@@ -63,8 +280,15 @@ function ChartPanel({ candles, overlays }: { candles: ChartCandle[]; overlays: {
       }));
     candleSeries.setData(seriesData);
 
+    const lineColors: Record<string, string> = {
+      Entry: '#4da6ff',
+      Stop: '#ef5350',
+      'Target 1': '#26a69a',
+      'Target 2': '#0d9488',
+    };
+
     overlays.forEach((o) => {
-      const lineColor = o.label === 'Entry' ? '#4da6ff' : o.label === 'Stop' ? '#ef5350' : '#26a69a';
+      const lineColor = lineColors[o.label] ?? '#94a3b8';
       const line = chart.addSeries(LineSeries, { color: lineColor, lineWidth: 1, title: o.label, lineStyle: 2 });
       line.setData(seriesData.map((d) => ({ time: d.time, value: o.price })));
     });
@@ -84,12 +308,156 @@ function ChartPanel({ candles, overlays }: { candles: ChartCandle[]; overlays: {
   return <div ref={chartRef} className="w-full rounded-xl border border-[hsl(var(--border))] bg-white shadow-sm" />;
 }
 
+// ── Methodology Panel ───────────────────────────────────
+
+function MethodologyPanel({ trade }: { trade: TradingSignalsResponse['trade'] }) {
+  const resolvedMode = (trade.detectedMode ?? trade.mode ?? '').toUpperCase();
+  const isDay = resolvedMode.includes('DAY');
+
+  const timeframes = isDay
+    ? [
+        { tf: '1-minute', purpose: 'Entry precision', bars: '150' },
+        { tf: '15-minute', purpose: 'Intraday structure + indicators', bars: '150' },
+        { tf: '1-hour', purpose: 'Trend bias', bars: '150' },
+      ]
+    : [
+        { tf: '4-hour', purpose: 'Setup structure', bars: '250' },
+        { tf: 'Daily', purpose: 'Trend + indicators', bars: '600' },
+        { tf: 'Weekly', purpose: 'Macro context', bars: '150' },
+      ];
+
+  const indicators = [
+    { name: 'RSI', params: '14-period', usage: 'Momentum & overbought/oversold' },
+    { name: 'MACD', params: '12, 26, 9', usage: 'Momentum crossovers' },
+    { name: 'EMA', params: '20-period', usage: 'Short-term trend' },
+    { name: 'SMA', params: '50 & 200-period', usage: 'Medium & long-term trend' },
+    { name: 'ATR', params: '14-period', usage: 'Volatility & stop-loss sizing' },
+    { name: 'ADX', params: '14-period', usage: 'Trend strength (>25 = trending)' },
+    { name: 'Volume', params: '20-day avg', usage: 'Participation confirmation' },
+    { name: 'S/R', params: '5-bar lookback', usage: 'Key support & resistance levels' },
+  ];
+
+  return (
+    <div className="space-y-4 text-xs">
+      {/* Auto-detection reasoning */}
+      {trade.autoReason && (
+        <div className="rounded-lg bg-blue-50 border border-blue-100 px-3 py-2">
+          <p className="font-semibold text-blue-700 mb-0.5">Auto Mode Detection</p>
+          <p className="text-blue-600">{trade.autoReason}</p>
+        </div>
+      )}
+
+      {/* Timeframes */}
+      <div>
+        <p className="text-[10px] font-semibold uppercase tracking-wider text-[hsl(var(--muted-foreground))] mb-1.5">
+          Timeframes analyzed
+        </p>
+        <div className="grid grid-cols-3 gap-2">
+          {timeframes.map((tf) => (
+            <div key={tf.tf} className="rounded-lg bg-[hsl(var(--secondary))] px-3 py-2">
+              <p className="font-semibold text-[hsl(var(--foreground))]">{tf.tf}</p>
+              <p className="text-[hsl(var(--muted-foreground))]">{tf.purpose}</p>
+              <p className="text-[hsl(var(--muted-foreground))] mt-0.5">{tf.bars} candles</p>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Indicators */}
+      <div>
+        <p className="text-[10px] font-semibold uppercase tracking-wider text-[hsl(var(--muted-foreground))] mb-1.5">
+          Technical indicators applied
+        </p>
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+          {indicators.map((ind) => (
+            <div key={ind.name} className="rounded-lg bg-[hsl(var(--secondary))] px-3 py-2">
+              <p className="font-semibold text-[hsl(var(--foreground))]">{ind.name} <span className="font-normal text-[hsl(var(--muted-foreground))]">({ind.params})</span></p>
+              <p className="text-[hsl(var(--muted-foreground))]">{ind.usage}</p>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Data sources */}
+      <div>
+        <p className="text-[10px] font-semibold uppercase tracking-wider text-[hsl(var(--muted-foreground))] mb-1.5">
+          Data sources
+        </p>
+        <div className="flex flex-wrap gap-2">
+          {[
+            { label: 'Twelve Data', desc: 'OHLCV candles' },
+            { label: 'Yahoo Finance', desc: 'News headlines' },
+            { label: 'SPY', desc: 'Market trend' },
+            { label: 'VIX', desc: 'Volatility index' },
+            { label: 'Google Gemini', desc: 'AI analysis' },
+          ].map((src) => (
+            <span key={src.label} className="inline-flex items-center gap-1 rounded-full bg-[hsl(var(--secondary))] px-2.5 py-1 text-[hsl(var(--muted-foreground))]">
+              <span className="font-medium text-[hsl(var(--foreground))]">{src.label}</span>
+              <span className="text-[10px]">· {src.desc}</span>
+            </span>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Signal Cache ────────────────────────────────────────
+// Swing signals are based on 4h/daily/weekly candles — stable for 15+ min.
+// Day trade signals use 1m/15m/1h — shorter shelf life.
+// Auto results are cached under their resolved mode so switching manually
+// to that mode serves the same result instantly.
+
+interface CacheEntry {
+  data: TradingSignalsResponse;
+  timestamp: number;
+}
+
+const CACHE_TTL_MS: Record<string, number> = {
+  SWING_TRADE: 15 * 60 * 1000, // 15 minutes
+  DAY_TRADE: 3 * 60 * 1000,    // 3 minutes
+};
+
+const signalCache = new Map<string, CacheEntry>();
+
+function getCacheKey(ticker: string, resolvedMode: string): string {
+  return `${ticker}_${resolvedMode}`;
+}
+
+function getCached(ticker: string, resolvedMode: string): TradingSignalsResponse | null {
+  const entry = signalCache.get(getCacheKey(ticker, resolvedMode));
+  if (!entry) return null;
+  const ttl = CACHE_TTL_MS[resolvedMode] ?? CACHE_TTL_MS.SWING_TRADE;
+  if (Date.now() - entry.timestamp > ttl) {
+    signalCache.delete(getCacheKey(ticker, resolvedMode));
+    return null;
+  }
+  return entry.data;
+}
+
+function setCache(ticker: string, data: TradingSignalsResponse): void {
+  // Resolve the actual mode (Auto → detected mode, or explicit mode)
+  const resolvedMode = data.trade.detectedMode ?? data.trade.mode;
+  const key = getCacheKey(ticker, resolvedMode.replace(' ', '_').toUpperCase());
+  signalCache.set(key, { data, timestamp: Date.now() });
+}
+
+function formatAge(ms: number): string {
+  const sec = Math.round(ms / 1000);
+  if (sec < 60) return `${sec}s ago`;
+  return `${Math.round(sec / 60)}m ago`;
+}
+
+// ── Main Component ──────────────────────────────────────
+
 export function TradingSignals() {
   const [ticker, setTicker] = useState('');
   const [mode, setMode] = useState<SignalsMode>(() => getStoredMode());
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<TradingSignalsResponse | null>(null);
+  const [fromCache, setFromCache] = useState(false);
+  const [cacheAge, setCacheAge] = useState(0);
   const [elapsed, setElapsed] = useState(0);
 
   // Live timer while loading
@@ -100,20 +468,62 @@ export function TradingSignals() {
     return () => clearInterval(t);
   }, [loading]);
 
+  // Resolve which mode to check in the cache for the current selection
+  const resolveCheckModes = (m: SignalsMode): string[] => {
+    if (m === 'AUTO') return ['DAY_TRADE', 'SWING_TRADE']; // Auto could be either
+    return [m];
+  };
+
   const handleModeChange = (m: SignalsMode) => {
     setMode(m);
     setStoredMode(m);
-    setResult(null);
     setError(null);
+
+    // Check if we have a cached result for this mode + current ticker
+    const sym = ticker.trim().toUpperCase();
+    if (sym) {
+      const checkModes = m === 'AUTO' ? ['DAY_TRADE', 'SWING_TRADE'] : [m];
+      for (const cm of checkModes) {
+        const cached = getCached(sym, cm);
+        if (cached) {
+          setResult(cached);
+          setFromCache(true);
+          const entry = signalCache.get(getCacheKey(sym, cm));
+          setCacheAge(entry ? Date.now() - entry.timestamp : 0);
+          return;
+        }
+      }
+    }
+    setResult(null);
+    setFromCache(false);
   };
 
-  const fetchSignal = async (sym: string) => {
+  const fetchSignal = async (sym: string, forceRefresh = false) => {
     setError(null);
+    setFromCache(false);
+
+    // Check cache first (unless force refresh)
+    if (!forceRefresh) {
+      const checkModes = resolveCheckModes(mode);
+      for (const cm of checkModes) {
+        const cached = getCached(sym, cm);
+        if (cached) {
+          setResult(cached);
+          setFromCache(true);
+          const entry = signalCache.get(getCacheKey(sym, cm));
+          setCacheAge(entry ? Date.now() - entry.timestamp : 0);
+          return;
+        }
+      }
+    }
+
     setLoading(true);
     setResult(null);
     try {
       const data = await fetchTradingSignal(sym, mode);
+      setCache(sym, data);
       setResult(data);
+      setFromCache(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to fetch signal');
     } finally {
@@ -133,7 +543,19 @@ export function TradingSignals() {
 
   const handleRefresh = () => {
     const sym = ticker.trim().toUpperCase();
-    if (sym) fetchSignal(sym);
+    if (sym) fetchSignal(sym, true); // force refresh — always bypasses cache
+  };
+
+  const modeButtons: { value: SignalsMode; label: string }[] = [
+    { value: 'AUTO', label: 'Auto' },
+    { value: 'SWING_TRADE', label: 'Swing' },
+    { value: 'DAY_TRADE', label: 'Day' },
+  ];
+
+  const modeDescription: Record<SignalsMode, string> = {
+    AUTO: 'Automatically picks Day or Swing based on volatility',
+    DAY_TRADE: '1m · 15m · 1h candles + live news sentiment',
+    SWING_TRADE: '4h · daily · weekly candles + news sentiment',
   };
 
   return (
@@ -147,115 +569,167 @@ export function TradingSignals() {
           </span>
         </div>
         <p className="mt-1 text-sm text-[hsl(var(--muted-foreground))]">
-          Get a single actionable signal (Day or Swing) with entry, stop, target, and confidence.
+          AI-powered signals with technical indicators, scenario analysis, and market context.
         </p>
       </div>
 
-      <form onSubmit={handleSubmit} className="flex flex-wrap items-end gap-4">
-        <div className="flex-1 min-w-[140px]">
-          <label htmlFor="ticker" className="block text-sm font-medium text-[hsl(var(--foreground))] mb-1">
-            Ticker
-          </label>
-          <input
-            id="ticker"
-            type="text"
-            placeholder="e.g. AAPL"
-            value={ticker}
-            onChange={(e) => setTicker(e.target.value.toUpperCase())}
-            className="w-full rounded-lg border border-[hsl(var(--input))] bg-[hsl(var(--background))] px-4 py-2.5 text-[hsl(var(--foreground))] placeholder:text-[hsl(var(--muted-foreground))] focus:outline-none focus:ring-2 focus:ring-[hsl(var(--ring))]"
-            disabled={loading}
-          />
-        </div>
-        <div>
-          <span className="block text-sm font-medium text-[hsl(var(--foreground))] mb-1">Mode</span>
-          <div className="flex rounded-lg bg-[hsl(var(--secondary))] p-0.5 gap-0.5">
-            <button
-              type="button"
-              onClick={() => handleModeChange('SWING_TRADE')}
-              className={cn(
-                'px-4 py-2 text-sm font-medium rounded-md transition-all',
-                mode === 'SWING_TRADE'
-                  ? 'bg-white text-[hsl(var(--foreground))] shadow-sm'
-                  : 'text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))]'
-              )}
-            >
-              Swing
-            </button>
-            <button
-              type="button"
-              onClick={() => handleModeChange('DAY_TRADE')}
-              className={cn(
-                'px-4 py-2 text-sm font-medium rounded-md transition-all',
-                mode === 'DAY_TRADE'
-                  ? 'bg-white text-[hsl(var(--foreground))] shadow-sm'
-                  : 'text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))]'
-              )}
-            >
-              Day
-            </button>
+      {/* Static indicators — always visible */}
+      <div className="flex flex-wrap items-center gap-2 text-[11px]">
+        <span className="text-[10px] font-semibold uppercase tracking-wider text-[hsl(var(--muted-foreground))]">Indicators</span>
+        {[
+          { name: 'RSI', param: '14' },
+          { name: 'MACD', param: '12/26/9' },
+          { name: 'EMA', param: '20' },
+          { name: 'SMA', param: '50 · 200' },
+          { name: 'ATR', param: '14' },
+          { name: 'ADX', param: '14' },
+          { name: 'Volume', param: '20d avg' },
+          { name: 'S/R', param: 'swing H/L' },
+          { name: 'MA Cross', param: 'EMA20/SMA50' },
+        ].map((i) => (
+          <span key={i.name} className="rounded-full bg-[hsl(var(--secondary))] border border-[hsl(var(--border))] px-2.5 py-0.5">
+            <span className="font-medium text-[hsl(var(--foreground))]">{i.name}</span>
+            <span className="text-[hsl(var(--muted-foreground))]"> ({i.param})</span>
+          </span>
+        ))}
+      </div>
+
+      <div className="space-y-2">
+        <form onSubmit={handleSubmit} className="flex flex-wrap items-end gap-4">
+          <div className="flex-1 min-w-[140px]">
+            <label htmlFor="ticker" className="block text-sm font-medium text-[hsl(var(--foreground))] mb-1">
+              Ticker
+            </label>
+            <input
+              id="ticker"
+              type="text"
+              placeholder="e.g. AAPL"
+              value={ticker}
+              onChange={(e) => setTicker(e.target.value.toUpperCase())}
+              className="w-full rounded-lg border border-[hsl(var(--input))] bg-[hsl(var(--background))] px-4 py-2.5 text-[hsl(var(--foreground))] placeholder:text-[hsl(var(--muted-foreground))] focus:outline-none focus:ring-2 focus:ring-[hsl(var(--ring))]"
+              disabled={loading}
+            />
           </div>
-          <p className="mt-1.5 text-[11px] text-[hsl(var(--muted-foreground))]">
-            {mode === 'DAY_TRADE'
-              ? '1m · 15m · 1h candles + live news sentiment'
-              : '4h · daily · weekly candles + news sentiment'}
-          </p>
-        </div>
-        <button
-          type="submit"
-          disabled={loading}
-          className="flex items-center gap-2 rounded-lg bg-[hsl(var(--primary))] px-6 py-2.5 text-sm font-semibold text-white hover:bg-[hsl(221,83%,48%)] hover:shadow-lg hover:shadow-blue-500/25 disabled:opacity-60 transition-all"
-        >
-          {loading ? (
-            <>
-              <Spinner size="md" /> Getting signal… <span className="tabular-nums text-white/70">{elapsed}s</span>
-            </>
-          ) : (
-            <>
-              <Activity className="h-4 w-4" /> Get signal
-            </>
-          )}
-        </button>
-      </form>
+          <div>
+            <span className="block text-sm font-medium text-[hsl(var(--foreground))] mb-1">Mode</span>
+            <div className="flex rounded-lg bg-[hsl(var(--secondary))] p-0.5 gap-0.5">
+              {modeButtons.map((btn) => (
+                <button
+                  key={btn.value}
+                  type="button"
+                  onClick={() => handleModeChange(btn.value)}
+                  className={cn(
+                    'px-4 py-2 text-sm font-medium rounded-md transition-all',
+                    mode === btn.value
+                      ? 'bg-white text-[hsl(var(--foreground))] shadow-sm'
+                      : 'text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))]'
+                  )}
+                >
+                  {btn.label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <button
+            type="submit"
+            disabled={loading}
+            className="flex items-center gap-2 rounded-lg bg-[hsl(var(--primary))] px-6 py-2.5 text-sm font-semibold text-white hover:bg-[hsl(221,83%,48%)] hover:shadow-lg hover:shadow-blue-500/25 disabled:opacity-60 transition-all"
+          >
+            {loading ? (
+              <>
+                <Spinner size="md" /> Getting signal… <span className="tabular-nums text-white/70">{elapsed}s</span>
+              </>
+            ) : (
+              <>
+                <Activity className="h-4 w-4" /> Get signal
+              </>
+            )}
+          </button>
+        </form>
+        <p className="text-[11px] text-[hsl(var(--muted-foreground))]">
+          {modeDescription[mode]}
+        </p>
+      </div>
 
       {error && <ErrorBanner message={error} />}
 
       {result && (
-        <div className="space-y-6 animate-fade-in-up">
+        <div className="space-y-4 animate-fade-in-up">
+          {/* Auto-detection reasoning */}
+          {result.trade.autoReason && (
+            <div className="flex items-start gap-2 rounded-lg bg-blue-50 border border-blue-100 px-3 py-2 text-xs">
+              <Info className="w-3.5 h-3.5 text-blue-500 mt-0.5 shrink-0" />
+              <div>
+                <span className="font-semibold text-blue-700">Auto selected {result.trade.detectedMode?.replace('_', ' ')}</span>
+                <span className="text-blue-600 ml-1">— {result.trade.autoReason}</span>
+              </div>
+            </div>
+          )}
+
+          {/* Market snapshot banner */}
+          {result.marketSnapshot && <MarketBanner snapshot={result.marketSnapshot} />}
+
+          {/* Signal card */}
           <div className={cn(
             'rounded-xl border bg-white p-6 shadow-md',
             result.trade.recommendation === 'BUY' && 'border-emerald-200',
             result.trade.recommendation === 'SELL' && 'border-red-200',
             result.trade.recommendation === 'HOLD' && 'border-amber-200',
           )}>
+            {/* Header row: signal badge + bias + confidence + refresh */}
             <div className="flex flex-wrap items-center justify-between gap-4">
               <div className="flex items-center gap-3">
                 <SignalBadge signal={result.trade.recommendation} size="lg" pulse />
-                <span className="text-sm text-[hsl(var(--muted-foreground))]">
-                  {result.trade.mode.replace('_', ' ')} · {result.trade.confidence} confidence
-                </span>
+                <div className="flex flex-col">
+                  {result.trade.bias && (
+                    <span className="text-sm font-medium text-[hsl(var(--foreground))]">{result.trade.bias}</span>
+                  )}
+                  <span className="text-xs text-[hsl(var(--muted-foreground))]">
+                    {result.trade.mode.replace('_', ' ')}
+                    {result.trade.detectedMode && (
+                      <span className="ml-1 text-blue-500">(Auto-detected)</span>
+                    )}
+                  </span>
+                </div>
               </div>
-              <button
-                type="button"
-                onClick={handleRefresh}
-                disabled={loading}
-                className="flex items-center gap-1.5 rounded-lg border border-[hsl(var(--input))] px-3 py-1.5 text-xs font-medium text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--accent))] hover:text-[hsl(var(--foreground))] disabled:opacity-60 transition-colors"
-                title="Refresh signal"
-              >
-                <RefreshCw className={cn('h-3.5 w-3.5', loading && 'animate-spin')} /> Refresh
-              </button>
+              <div className="flex items-center gap-3">
+                <div className="relative flex items-center">
+                  <ConfidenceScore score={result.trade.confidence} />
+                  <span className="ml-1 text-[10px] text-[hsl(var(--muted-foreground))]">/10</span>
+                </div>
+                {fromCache && (
+                  <span className="text-[10px] text-[hsl(var(--muted-foreground))] bg-[hsl(var(--secondary))] px-2 py-0.5 rounded-full" title="Served from cache — click Refresh for a fresh signal">
+                    cached · {formatAge(cacheAge)}
+                  </span>
+                )}
+                <button
+                  type="button"
+                  onClick={handleRefresh}
+                  disabled={loading}
+                  className="flex items-center gap-1.5 rounded-lg border border-[hsl(var(--input))] px-3 py-1.5 text-xs font-medium text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--accent))] hover:text-[hsl(var(--foreground))] disabled:opacity-60 transition-colors"
+                  title="Refresh signal (bypasses cache)"
+                >
+                  <RefreshCw className={cn('h-3.5 w-3.5', loading && 'animate-spin')} /> Refresh
+                </button>
+              </div>
             </div>
+
+            {/* Stat cards */}
             {result.trade.recommendation === 'HOLD' ? (
               <div className="mt-4 rounded-lg bg-[hsl(var(--secondary))] px-4 py-3 text-sm text-[hsl(var(--muted-foreground))]">
                 No trade recommended right now — conditions don't meet the criteria. Check back later or try a different mode.
               </div>
             ) : (
-              <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
+              <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-5">
                 <StatCard label="Entry" value={formatPrice(result.trade.entryPrice)} color="blue" />
                 <StatCard label="Stop" value={formatPrice(result.trade.stopLoss)} color="red" />
-                <StatCard label="Target" value={formatPrice(result.trade.targetPrice)} color="green" />
+                <StatCard label="Target 1" value={formatPrice(result.trade.targetPrice)} color="green" />
+                <StatCard label="Target 2" value={formatPrice(result.trade.targetPrice2)} color="green" />
                 <StatCard label="R:R" value={result.trade.riskReward ?? '—'} color="purple" />
               </div>
             )}
+
+            {/* Rationale */}
             {result.trade.rationale && (result.trade.rationale.technical || result.trade.rationale.sentiment || result.trade.rationale.risk) && (
               <div className="mt-4 space-y-2.5 border-t border-[hsl(var(--border))] pt-4">
                 {result.trade.rationale.technical && (
@@ -280,6 +754,47 @@ export function TradingSignals() {
             )}
           </div>
 
+          {/* Scenarios */}
+          {result.trade.scenarios && (
+            <CollapsibleSection
+              title="Scenario Analysis"
+              icon={<Zap className="w-4 h-4 text-amber-500" />}
+              defaultOpen
+            >
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <ScenarioCard
+                  label="Bullish"
+                  probability={result.trade.scenarios.bullish.probability}
+                  summary={result.trade.scenarios.bullish.summary}
+                  color="green"
+                />
+                <ScenarioCard
+                  label="Neutral"
+                  probability={result.trade.scenarios.neutral.probability}
+                  summary={result.trade.scenarios.neutral.summary}
+                  color="gray"
+                />
+                <ScenarioCard
+                  label="Bearish"
+                  probability={result.trade.scenarios.bearish.probability}
+                  summary={result.trade.scenarios.bearish.summary}
+                  color="red"
+                />
+              </div>
+            </CollapsibleSection>
+          )}
+
+          {/* Technical Indicators */}
+          {result.indicators && (
+            <CollapsibleSection
+              title="Technical Indicators"
+              icon={<BarChart3 className="w-4 h-4 text-blue-500" />}
+            >
+              <IndicatorsPanel indicators={result.indicators} />
+            </CollapsibleSection>
+          )}
+
+          {/* Chart */}
           {result.chart.candles.length > 0 && (
             <div>
               <h3 className="mb-2 text-sm font-medium text-[hsl(var(--foreground))]">
@@ -291,6 +806,11 @@ export function TradingSignals() {
               />
             </div>
           )}
+
+          {/* Disclaimer */}
+          <p className="text-center text-[11px] text-[hsl(var(--muted-foreground))]">
+            For educational purposes only. Not financial advice.
+          </p>
         </div>
       )}
     </div>

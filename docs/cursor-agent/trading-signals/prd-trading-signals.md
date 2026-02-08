@@ -1,9 +1,23 @@
-# Product Requirements Document — Trading Signals (Day Trade | Swing Trade)
+# Product Requirements Document — Trading Signals
 
 **Feature:** Trading Signals  
 **Author:** keerti  
 **Date:** 2026-02-06  
-**Status:** Draft — analysis and requirements; no epic commitment yet.
+**Status:** Implemented
+
+> **Implementation note (2026-02-08):** This PRD was written for the initial Day/Swing design. The current implementation extends it with Auto mode, a full technical indicator engine, market context, scenario analysis, and an expanded output schema. See [trade-signals-indicator-engine.md](../../trade-signals-indicator-engine.md) for the complete current-state reference. Key differences from this original PRD:
+>
+> - **Auto mode** added as the default (picks Day or Swing via ATR% + ADX analysis)
+> - **AI provider:** Google Gemini (multi-key rotation + model cascade), not Together AI
+> - **News provider:** Yahoo Finance, not Finnhub
+> - **Indicator engine:** RSI, MACD, EMA, SMA, ATR, ADX, Volume Ratio, S/R, MA Crossover, Trend Classification — all pre-computed and fed to the AI as structured data
+> - **Market context:** SPY trend + VIX volatility included in every analysis
+> - **Confidence:** Numeric 0-10 scale (not HIGH/MEDIUM/LOW)
+> - **Dual targets:** targetPrice (conservative) + targetPrice2 (stretch)
+> - **Scenarios:** Bullish/neutral/bearish with probability estimates
+> - **Bias label:** Short phrase describing the setup (e.g., "Bullish continuation")
+> - **Frontend caching:** 15-min TTL for swing, 3-min for day trade
+> - **Default mode:** Auto (not Swing)
 
 **Related:** [Technical spec](./technical-spec-trading-signals.md) — prompts, data sources, pipelines, contracts, chart.
 
