@@ -5,7 +5,7 @@ import { Analytics } from '@vercel/analytics/react';
 import { Activity, Briefcase, Brain, Lightbulb, RefreshCw, TrendingUp, User, LogOut, ChevronDown } from 'lucide-react';
 import type { StockWithConviction, RiskProfile } from './types';
 import { getUserData, saveUserData, addTickers, updateStock, removeStock, clearAllData, importStocksWithPositions } from './lib/storage';
-import { getCloudUserData, cloudAddTickers, cloudRemoveTicker, cloudClearAll, migrateGuestToCloud } from './lib/cloudStorage';
+import { getCloudUserData, cloudAddTickers, cloudRemoveTicker, cloudClearAll, migrateGuestToCloud, cloudImportStocksWithPositions } from './lib/cloudStorage';
 import { getConvictionResult } from './lib/convictionEngine';
 import { calculatePortfolioWeights } from './lib/portfolioCalc';
 import { fetchMultipleStocks } from './lib/stockApiEdge';
@@ -473,8 +473,24 @@ function AppContent() {
     if (tickers.length === 0) return;
     setIsRefreshing(true);
     setHasAutoRefreshed(true);
-    setRefreshProgress(`Fetching data for ${tickers.length} stocks...`);
+    setRefreshProgress(`Importing ${tickers.length} stocks...`);
+
+    // For authed users, sync imported positions to cloud DB
+    if (isAuthed) {
+      const localData = getUserData();
+      const importedStocks = localData.stocks.filter(s => tickers.includes(s.ticker));
+      await cloudImportStocksWithPositions(
+        importedStocks.map(s => ({
+          ticker: s.ticker,
+          name: s.name,
+          shares: s.shares,
+          avgCost: s.avgCost,
+        }))
+      );
+    }
+
     await loadStocks();
+    setRefreshProgress(`Fetching data for ${tickers.length} stocks...`);
     try {
       const stockData = await fetchMultipleStocks(tickers, (completed, total, current) => {
         setRefreshProgress(`Fetching ${current}... (${completed + 1}/${total})`);
