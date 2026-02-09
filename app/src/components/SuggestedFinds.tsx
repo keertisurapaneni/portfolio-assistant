@@ -49,6 +49,7 @@ export function SuggestedFinds({ existingTickers }: SuggestedFindsProps) {
   } = useSuggestedFinds(existingTickers);
 
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [subTab, setSubTab] = useState<'compounders' | 'goldmines'>('compounders');
 
   const handleRefresh = async () => {
     setIsRefreshing(true);

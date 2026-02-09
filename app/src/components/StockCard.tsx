@@ -6,6 +6,37 @@ import { TickerLabel } from './TickerLabel';
 import { SignalBadge } from './SignalBadge';
 import { PriceChange } from './PriceChange';
 
+/** True if the text reads like company/category, not stock health. */
+function looksLikeCompanyCategory(text: string): boolean {
+  if (!text || text.length < 15) return false;
+  const t = text.toLowerCase();
+  return (
+    /\b(company|inc\.?|corp\.?|platform|technology|software|semiconductor)\b/.test(t) &&
+    (t.includes(' a ') || t.includes(' and ') || t.includes('media') || /,\s*a\s+/.test(t))
+  );
+}
+
+/** One-line stock health from scores (readable, fits card). Never returns empty. */
+function stockHealthLine(stock: StockWithConviction): string {
+  const q = Number(stock.qualityScore) || 50;
+  const e = Number(stock.earningsScore) || 50;
+  const m = Number(stock.momentumScore) || 50;
+  const a = Number(stock.analystScore) || 50;
+  const avg = Math.round((q + e + m + a) / 4) || 50;
+  const low = Math.min(q, e, m, a);
+  if (low < 35) {
+    if (m < 40 && (q >= 60 || e >= 60))
+      return `Quality & earnings solid; momentum weak (${m}).`;
+    if (q < 40) return `Weak quality (${q}); earnings ${e >= 55 ? 'improving' : 'weak'}.`;
+    if (e < 40) return `Quality ok; earnings need to improve.`;
+    return `Mixed scores (avg ${avg}); one dimension weak.`;
+  }
+  if (avg >= 72) return `Strong quality, earnings & sentiment (${avg}).`;
+  if (q >= 68 && e >= 65) return `Solid quality & earnings (${avg}); momentum ${m >= 55 ? 'ok' : 'moderate'}.`;
+  if (avg >= 58) return `Balanced profile (${avg}).`;
+  return `Scores ${avg}; tap for analysis.`;
+}
+
 interface StockCardProps {
   stock: StockWithConviction;
   onClick: () => void;
@@ -178,9 +209,14 @@ export function StockCard({ stock, onClick }: StockCardProps) {
             ) : (
               <>
                 <p className="text-sm text-[hsl(var(--muted-foreground))] leading-relaxed line-clamp-1">
-                  {stock.buyPriorityReasoning ||
-                    conviction.rationale[0] ||
-                    'Click refresh to fetch market data'}
+                  {stock.buyPriority
+                    ? (stock.buyPriorityReasoning || 'Click refresh to fetch market data')
+                    : (() => {
+                        const ai = stock.aiSummary?.trim();
+                        const useAi = ai && ai.length > 0 && !looksLikeCompanyCategory(ai);
+                        const health = stockHealthLine(stock);
+                        return (useAi ? ai : health) || stock.buyPriorityReasoning || 'Tap for analysis';
+                      })()}
                 </p>
 
                 {/* Current price with change + position value */}

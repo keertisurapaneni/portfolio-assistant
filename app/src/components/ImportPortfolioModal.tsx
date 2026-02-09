@@ -15,7 +15,8 @@ import { cn } from '../lib/utils';
 
 interface ImportPortfolioModalProps {
   onClose: () => void;
-  onComplete: (addedTickers: string[]) => void;
+  /** addedTickers: newly added; allImportedTickers: added + updated (use this to fetch data after import) */
+  onComplete: (addedTickers: string[], allImportedTickers?: string[]) => void;
 }
 
 type Step = 'upload' | 'mapping' | 'preview' | 'done';
@@ -90,9 +91,10 @@ export function ImportPortfolioModal({ onClose, onComplete }: ImportPortfolioMod
       const importResult = importStocksWithPositions(validRows);
       setResult(importResult);
       setStep('done');
-      // Auto-complete after showing brief success feedback
+      // Auto-complete after showing brief success feedback. Pass all imported tickers (added + updated) so parent can fetch data for them.
+      const allImported = [...new Set([...importResult.added, ...importResult.updated])];
       setTimeout(() => {
-        onComplete(importResult.added);
+        onComplete(importResult.added, allImported);
       }, 1500);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Import failed');

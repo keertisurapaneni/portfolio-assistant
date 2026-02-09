@@ -49,6 +49,8 @@ export interface Stock {
     datetime: number;
     url: string;
   }[];
+  // AI one-line stock health summary (persisted so it survives reload)
+  aiSummary?: string;
 }
 
 export interface QuarterlyEPS {
@@ -104,6 +106,7 @@ export interface StockWithConviction extends Stock {
   conviction: ConvictionResult;
   buyPriority?: 'BUY' | 'SELL' | null; // AI/rule-based trade signal (null = no action)
   buyPriorityReasoning?: string; // AI-generated context-aware reasoning
+  aiSummary?: string; // AI one-line company description (used on card when no BUY/SELL)
   positionValue?: number;
   portfolioWeight?: number;
   isLoading?: boolean; // True while fetching real data

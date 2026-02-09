@@ -235,7 +235,14 @@ function AppContent() {
             if (insight) {
               if (!insight.cached) uncachedCount++;
 
-              // AI is the single source of truth — update card directly
+              // Only use summary if it's stock-health style, not company name/category
+              const meaningful =
+                insight.summary &&
+                insight.summary.trim() !== stock.name &&
+                insight.summary.trim() !== stock.ticker &&
+                insight.summary.length > 10;
+              const aiSummaryToSave = meaningful ? insight.summary.trim() : (stock.aiSummary ?? undefined);
+
               setStocks(prev =>
                 prev.map(s => {
                   if (s.ticker !== stock.ticker) return s;
@@ -243,9 +250,13 @@ function AppContent() {
                     ...s,
                     buyPriority: insight.buyPriority ?? undefined,
                     buyPriorityReasoning: insight.cardNote || insight.reasoning,
+                    aiSummary: aiSummaryToSave,
                   };
                 })
               );
+              if (aiSummaryToSave !== undefined) {
+                updateStock(stock.ticker, { aiSummary: aiSummaryToSave });
+              }
 
               // 4s gap keeps us under 70B's 6K TPM; fallback handles overflow
               if (!insight.cached && i < stockList.length - 1) {
@@ -297,6 +308,12 @@ function AppContent() {
 
               if (insight) {
                 if (!insight.cached) uncachedCount++;
+                const meaningful =
+                  insight.summary &&
+                  insight.summary.trim() !== stock.name &&
+                  insight.summary.trim() !== stock.ticker &&
+                  insight.summary.length > 10;
+                const aiSummaryToSave = meaningful ? insight.summary.trim() : (stock.aiSummary ?? undefined);
                 setStocks(prev =>
                   prev.map(s => {
                     if (s.ticker !== stock.ticker) return s;
@@ -304,9 +321,13 @@ function AppContent() {
                       ...s,
                       buyPriority: insight.buyPriority ?? undefined,
                       buyPriorityReasoning: insight.cardNote || insight.reasoning,
+                      aiSummary: aiSummaryToSave,
                     };
                   })
                 );
+                if (aiSummaryToSave !== undefined) {
+                  updateStock(stock.ticker, { aiSummary: aiSummaryToSave });
+                }
                 if (!insight.cached && i < failedStocks.length - 1) {
                   await new Promise(resolve => setTimeout(resolve, 4000));
                 }
@@ -444,6 +465,55 @@ function AppContent() {
     } else {
       // All tickers were duplicates — just reload
       await loadStocks();
+    }
+  };
+
+  // After CSV/Excel import: stocks are already in storage; just fetch market data for them.
+  const handleImportComplete = async (tickers: string[]) => {
+    if (tickers.length === 0) return;
+    setIsRefreshing(true);
+    setHasAutoRefreshed(true);
+    setRefreshProgress(`Fetching data for ${tickers.length} stocks...`);
+    await loadStocks();
+    try {
+      const stockData = await fetchMultipleStocks(tickers, (completed, total, current) => {
+        setRefreshProgress(`Fetching ${current}... (${completed + 1}/${total})`);
+      });
+      const timestamp = new Date().toISOString();
+      stockData.forEach((data, ticker) => {
+        updateStock(ticker, {
+          name: data.name,
+          currentPrice: data.currentPrice,
+          priceChange: data.change,
+          priceChangePercent: data.changePercent,
+          volume: data.volume,
+          qualityScore: data.qualityScore,
+          momentumScore: data.momentumScore,
+          earningsScore: data.earningsScore,
+          analystScore: data.analystScore,
+          analystRating: data.analystRating || undefined,
+          quarterlyEPS: data.quarterlyEPS,
+          recentNews: data.recentNews,
+          eps: data.eps,
+          peRatio: data.peRatio,
+          roe: data.roe,
+          profitMargin: data.profitMargin,
+          operatingMargin: data.operatingMargin,
+          fiftyTwoWeekHigh: data.fiftyTwoWeekHigh,
+          fiftyTwoWeekLow: data.fiftyTwoWeekLow,
+          lastDataFetch: timestamp,
+        });
+      });
+      const freshStocks = await loadStocks();
+      if (freshStocks) runAIAnalysis(freshStocks);
+      setRefreshProgress(`✓ ${stockData.size} stock${stockData.size !== 1 ? 's' : ''} loaded`);
+      setTimeout(() => setRefreshProgress(null), 2000);
+    } catch (error) {
+      console.error('Failed to fetch stock data after import:', error);
+      setRefreshProgress('⚠️ Some data may be incomplete');
+      setTimeout(() => setRefreshProgress(null), 3000);
+    } finally {
+      setIsRefreshing(false);
     }
   };
 
@@ -821,7 +891,7 @@ function AppContent() {
 
       {/* Add Tickers Modal */}
       {showAddModal && (
-        <AddTickersModal onClose={() => setShowAddModal(false)} onAddTickers={handleAddTickers} />
+        <AddTickersModal onClose={() => setShowAddModal(false)} onAddTickers={handleAddTickers} onImportComplete={handleImportComplete} />
       )}
 
       {/* Auth Modal */}

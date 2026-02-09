@@ -20,7 +20,7 @@ const DAILY_SUGGESTIONS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1
 const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
 // Cache config
-const PROMPT_VERSION = 9; // v9: Gold Mine conviction scores, Steady Compounders rename, Gold Mine categories
+const PROMPT_VERSION = 10; // v10: ensure conviction scores in theme-driven Gold Mines + cache bust
 const CACHE_KEY = `gemini-discovery-v${PROMPT_VERSION}`;
 const CACHE_DURATION = 1000 * 60 * 60 * 24; // 24 hours
 

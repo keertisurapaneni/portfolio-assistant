@@ -19,8 +19,10 @@ BUY PHILOSOPHY — BUY ON DIPS, NOT AT HIGHS:
 - BUY signals should come from QUALITY STOCKS PULLING BACK — a dip on a strong company is a buying opportunity.
 - A stock that is UP today is almost NEVER a BUY. You don't chase green candles.
 - The only exception: a stock is deeply undervalued even after today's gain (e.g., trading at 40% off 52W high despite today's +2%).
-- If "price surge" appears in the trigger data, lean toward null or SELL — not BUY.
-- If "price dip" or "quality dip" appears, THAT is where BUY opportunities live.
+- If "price surge" appears in Triggers, lean toward null or SELL — not BUY.
+- If "price dip" or "quality dip" appears in Triggers, THAT is where BUY opportunities live — prefer BUY when scores support it (e.g. Q/E/M 60+).
+- If "high conviction" appears in Triggers, the stock was flagged for potential BUY; output BUY when quality is strong (avg 65+) and today is flat or down and news is benign.
+- You MUST output BUY for some quality-dip setups when Triggers request it; do not default to null for every stock.
 
 RISK PROFILES:
 - aggressive: Opportunistic. Lean into fear — if scores are decent, news is benign, and price dipped, that's a setup. Higher tolerance for volatility and uncertainty.
@@ -61,7 +63,7 @@ FAILURE CONDITIONS — you have failed if you:
 - Act on price movement alone without fundamental backing
 
 Respond ONLY with valid JSON (no markdown, no backticks, no thinking tags):
-{"buyPriority":"BUY"|"SELL"|null,"confidence":"HIGH"|"MEDIUM"|"LOW"|null,"cardNote":"5-8 words max","reasoning":"2-3 factual sentences citing scores, metrics, and news","summary":"one-line company description"}`;
+{"buyPriority":"BUY"|"SELL"|null,"confidence":"HIGH"|"MEDIUM"|"LOW"|null,"cardNote":"5-8 words max","reasoning":"2-3 factual sentences citing scores, metrics, and news","summary":"One short line on STOCK HEALTH or investment takeaway only (e.g. 'Strong margins and earnings momentum', 'Quality name, trading 20% off highs'). Do NOT repeat company name or industry category. Focus on fundamentals, valuation, or momentum."}`;
 
 interface RequestPayload {
   prompt: string;

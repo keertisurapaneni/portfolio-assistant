@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Plus, ArrowUpDown, BarChart3, Trash2, Shield, Link2, User } from 'lucide-react';
+import { Plus, ArrowUpDown, BarChart3, Trash2, Shield, Link2, User, X } from 'lucide-react';
 import { DismissibleBanner } from './DismissibleBanner';
 import type { StockWithConviction, RiskProfile } from '../types';
 import { StockCard } from './StockCard';
@@ -30,6 +30,13 @@ type SortOption =
 export function Dashboard({ stocks, onStockSelect, onAddTickers, onClearAll, riskProfile, onRiskProfileChange, isAuthed, onLogin, onBrokerSync: _onBrokerSync }: DashboardProps) {
   const [sortBy, setSortBy] = useState<SortOption>('score-desc');
   const [showClearConfirm, setShowClearConfirm] = useState(false);
+  const [onboardingDismissed, setOnboardingDismissed] = useState(
+    () => localStorage.getItem('portfolio-onboarding-dismissed') === '1'
+  );
+  const dismissOnboarding = () => {
+    setOnboardingDismissed(true);
+    localStorage.setItem('portfolio-onboarding-dismissed', '1');
+  };
   const [brokerBannerDismissed, setBrokerBannerDismissed] = useState(
     () => sessionStorage.getItem('broker-banner-dismissed') === '1'
   );
@@ -170,6 +177,11 @@ export function Dashboard({ stocks, onStockSelect, onAddTickers, onClearAll, ris
           <p className="text-[hsl(var(--muted-foreground))]">
             What do I believe right now, and has that belief changed?
           </p>
+          {stocks.length > 0 && !hasPositionData && (
+            <p className="text-sm text-amber-600 dark:text-amber-400 mt-1">
+              Add shares via CSV/Excel import or edit each stock to see portfolio value and per-stock holdings.
+            </p>
+          )}
         </div>
 
         <div className="flex items-center gap-2">
@@ -191,6 +203,25 @@ export function Dashboard({ stocks, onStockSelect, onAddTickers, onClearAll, ris
           </button>
         </div>
       </div>
+
+      {/* One-time onboarding tip — shows once, dismiss forever */}
+      {!onboardingDismissed && (
+        <div className="mb-5 relative rounded-xl border border-blue-200 bg-gradient-to-r from-blue-50 to-indigo-50 dark:from-blue-950/40 dark:to-indigo-950/40 dark:border-blue-800 px-4 py-3">
+          <button
+            onClick={dismissOnboarding}
+            className="absolute top-2.5 right-2.5 text-blue-400 hover:text-blue-700 dark:text-blue-500 dark:hover:text-blue-200 transition-colors"
+            aria-label="Dismiss"
+          >
+            <X className="w-4 h-4" />
+          </button>
+          <p className="text-sm text-blue-900 dark:text-blue-100 pr-6 leading-relaxed">
+            <strong>Score &amp; Buy/Hold/Sell</strong> = long-term conviction &nbsp;&middot;&nbsp;
+            <strong>BUY/SELL badge</strong> = AI suggestion for today &nbsp;&middot;&nbsp;
+            <strong>Concentrated</strong> = position is 15%+ of portfolio &nbsp;&middot;&nbsp;
+            Click any card for full analysis
+          </p>
+        </div>
+      )}
 
       {/* Controls Row — Risk Appetite + Sort */}
       <div className="flex items-center justify-between mb-5">
@@ -251,8 +282,6 @@ export function Dashboard({ stocks, onStockSelect, onAddTickers, onClearAll, ris
           </select>
         </div>
       </div>
-
-      {/* Broker integration banner — currently disabled (SnapTrade requires paid plan) */}
 
       {/* Guest save reminder — subtle nudge for unauthenticated users with stocks */}
       {!isAuthed && !brokerBannerDismissed && (

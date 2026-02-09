@@ -171,9 +171,22 @@ export function generateRationale(
   const earningsImproving = inputs.earningsScore >= 55; // Above neutral suggests improvement
   const qualityWeak = inputs.qualityScore < 40;
 
-  // Quality assessment - be careful not to claim "unprofitable" if we don't have data
+  // Quality assessment - vary the first line by combining with strongest other dimension (avoids "copy-paste" for every high-quality stock)
   if (inputs.qualityScore >= 70) {
-    bullets.push('Strong profitability and fundamentals');
+    const q = inputs.qualityScore;
+    if (inputs.earningsScore >= 70) {
+      bullets.push(`Strong profitability (Q:${q}), solid earnings track record`);
+    } else if (inputs.analystScore >= 75) {
+      bullets.push(`Strong fundamentals (Q:${q}), Wall Street Strong Buy`);
+    } else if (inputs.momentumScore >= 70) {
+      bullets.push(`Strong profitability (Q:${q}), positive momentum`);
+    } else if (inputs.earningsScore >= 60) {
+      bullets.push(`Strong profitability (Q:${q}), solid earnings`);
+    } else if (inputs.analystScore >= 60) {
+      bullets.push(`Strong fundamentals (Q:${q}), Wall Street Buy leaning`);
+    } else {
+      bullets.push(`Strong profitability and fundamentals (Q:${q})`);
+    }
   } else if (inputs.qualityScore === 0 && hasMetricsData) {
     bullets.push('🚨 DEEPLY UNPROFITABLE: Negative EPS and margins across the board');
   } else if (inputs.qualityScore < 15 && !earningsImproving && hasMetricsData) {

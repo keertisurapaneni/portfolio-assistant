@@ -7,11 +7,13 @@ import { ImportPortfolioModal } from './ImportPortfolioModal';
 interface AddTickersModalProps {
   onClose: () => void;
   onAddTickers: (tickers: string[]) => void;
+  /** Called after CSV/Excel import: fetch data for these tickers (they're already in storage). */
+  onImportComplete?: (tickers: string[]) => void;
 }
 
 type Tab = 'manual' | 'import';
 
-export function AddTickersModal({ onClose, onAddTickers }: AddTickersModalProps) {
+export function AddTickersModal({ onClose, onAddTickers, onImportComplete }: AddTickersModalProps) {
   const [activeTab, setActiveTab] = useState<Tab>('manual');
   const [tickerInput, setTickerInput] = useState('');
   const [showImport, setShowImport] = useState(false);
@@ -46,11 +48,13 @@ export function AddTickersModal({ onClose, onAddTickers }: AddTickersModalProps)
           setShowImport(false);
           setActiveTab('manual'); // Return to manual tab when closed
         }}
-        onComplete={addedTickers => {
+        onComplete={(addedTickers, allImportedTickers) => {
           setShowImport(false);
           onClose();
-          // Trigger data fetch for imported stocks
-          if (addedTickers.length > 0) {
+          // Fetch data for all imported tickers (import already added them; addTickers would skip)
+          if (allImportedTickers && allImportedTickers.length > 0 && onImportComplete) {
+            onImportComplete(allImportedTickers);
+          } else if (addedTickers.length > 0) {
             onAddTickers(addedTickers);
           }
         }}

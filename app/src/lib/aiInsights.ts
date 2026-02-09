@@ -68,7 +68,7 @@ export interface AIInsight {
 }
 
 // Bump PROMPT_VERSION whenever the AI prompt changes to invalidate stale cache
-const PROMPT_VERSION = 37; // v37: Smart stop-loss — no mechanical sell on recovering (green) stocks
+const PROMPT_VERSION = 40; // v40: AI summary = stock health / investment takeaway, not company category
 const CACHE_PREFIX = `ai-insight-v${PROMPT_VERSION}`;
 const CACHE_DURATION = 1000 * 60 * 60 * 4; // 4 hours
 
@@ -210,9 +210,9 @@ export async function generateAIInsights(
   const triggers: string[] = [];
 
   const triggerThresholds = {
-    aggressive:    { priceMove: 1.5, offHigh: 10, offHighMinScore: 55, qualityDipScore: 60 },
-    moderate:      { priceMove: 2.0, offHigh: 12, offHighMinScore: 60, qualityDipScore: 68 },
-    conservative:  { priceMove: 2.5, offHigh: 15, offHighMinScore: 65, qualityDipScore: 75 },
+    aggressive:    { priceMove: 1.5, offHigh: 10, offHighMinScore: 55, qualityDipScore: 60, highConvictionScore: 60 },
+    moderate:      { priceMove: 1.5, offHigh: 12, offHighMinScore: 60, qualityDipScore: 65, highConvictionScore: 65 },
+    conservative:  { priceMove: 2.5, offHigh: 15, offHighMinScore: 65, qualityDipScore: 72, highConvictionScore: 70 },
   }[riskProfile ?? 'moderate'];
 
   // Price move triggers: differentiate dip vs surge for proper AI context
@@ -275,6 +275,11 @@ export async function generateAIInsights(
       earningsKeywords.some(kw => (n.headline || '').toLowerCase().includes(kw))
     );
     if (hasEarnings) triggers.push('earnings news');
+  }
+
+  // High-conviction trigger: send quality names to AI for potential BUY (avoids "No Action" for everyone)
+  if (avgScore >= triggerThresholds.highConvictionScore) {
+    triggers.push(`high conviction (avg score ${avgScore}) — review for potential BUY`);
   }
 
   // ── Mechanical SELL guardrails — only for capital protection ──
@@ -347,22 +352,42 @@ export async function generateAIInsights(
     return sellInsight;
   }
 
-  // No triggers → skip AI call, return null instantly
+  // No triggers → skip AI call, return no-action with contextual summary (do NOT cache)
   if (triggers.length === 0) {
-    console.log(`[AI Insights] No triggers for ${stock.ticker} — skipping AI call`);
+    console.log(`[AI Insights] No triggers for ${stock.ticker} — skipping AI call (not cached)`);
+    const isGreen = priceChangePercent !== undefined && priceChangePercent > 0;
+    const pricePart =
+      priceChangePercent !== undefined
+        ? `Today ${priceChangePercent >= 0 ? '+' : ''}${priceChangePercent.toFixed(1)}%. `
+        : '';
+    const greenLine = isGreen
+      ? "We don't chase green — no BUY on up days. "
+      : '';
+    const qualityPart = `Quality score ${avgScore}. `;
+    const reasoning =
+      qualityPart +
+      pricePart +
+      greenLine +
+      'No catalyst today — hold. Consider adding on a 2%+ pullback if you like the name, or trim if the thesis has changed.';
+    const cardNote =
+      priceChangePercent !== undefined
+        ? isGreen
+          ? `Hold · +${priceChangePercent.toFixed(1)}% today (we don't chase green)`
+          : `Hold · score ${avgScore}, ${priceChangePercent >= 0 ? '+' : ''}${priceChangePercent.toFixed(1)}% today`
+        : `Hold · score ${avgScore}, no catalyst today`;
     const noActionInsight: AIInsight = {
       summary: stock.name || stock.ticker,
       buyPriority: null,
       confidence: null,
-      reasoning: 'No significant triggers today — no action needed.',
-      cardNote: 'No triggers, hold steady',
+      reasoning,
+      cardNote,
       dataCompleteness: 'FULL',
       liquidityRisk: liquidity.risk,
       liquidityWarning: liquidity.warning,
       cached: false,
       timestamp: new Date().toISOString(),
     };
-    cacheInsight(stock.ticker, noActionInsight);
+    // Intentionally not cached: so user sees fresh triggers on next load and we don't stick "No Action" for 4h
     return noActionInsight;
   }
 
@@ -466,8 +491,9 @@ export async function generateAIInsights(
 
     const avgScore = Math.round((qualityScore + earningsScore + momentumScore + analystScore) / 4);
 
-    // Compact prompt — all rules/examples are in the system message (Edge Function)
+    // Compact prompt — include triggers so the AI knows why it was invoked (dip, high conviction, etc.)
     const prompt = `${stock.ticker} (${stock.name || stock.ticker})
+Triggers: ${triggers.join(', ')}
 Today: ${priceChangeText}${rangeContext}${gainLossContext}
 Position: ${positionContext}${!hasPositionData ? ' [not imported]' : ''}
 Scores: Q:${qualityScore} E:${earningsScore} M:${momentumScore} A:${analystScore} Avg:${avgScore}/100
@@ -525,10 +551,11 @@ Risk: ${riskProfile || 'moderate'}`;
       riskProfile
     );
 
-    // Map buyPriority: accept "BUY", "SELL", or treat everything else as null
+    // Map buyPriority: accept BUY/SELL (case-insensitive, trimmed); treat everything else as null
+    const rawPriority = String(parsedResponse.buyPriority ?? '').trim().toUpperCase();
     let aiBuyPriority: AIInsight['buyPriority'] = null;
-    if (parsedResponse.buyPriority === 'BUY') aiBuyPriority = 'BUY';
-    else if (parsedResponse.buyPriority === 'SELL') aiBuyPriority = 'SELL';
+    if (rawPriority === 'BUY') aiBuyPriority = 'BUY';
+    else if (rawPriority === 'SELL') aiBuyPriority = 'SELL';
 
     // Map confidence: accept HIGH, MEDIUM, LOW
     let aiConfidence: AIInsight['confidence'] = null;
@@ -536,14 +563,35 @@ Risk: ${riskProfile || 'moderate'}`;
     else if (parsedResponse.confidence === 'MEDIUM') aiConfidence = 'MEDIUM';
     else if (parsedResponse.confidence === 'LOW') aiConfidence = 'LOW';
 
+    let finalReasoning = parsedResponse.reasoning || ruleBased.reasoning;
+    let finalCardNote = parsedResponse.cardNote || '';
+
+    // Guardrails: never show BUY when stock is up today (don't chase green) or position is already concentrated
+    if (aiBuyPriority === 'BUY') {
+      const isGreenToday = priceChangePercent !== undefined && priceChangePercent > 0;
+      const isConcentrated =
+        portfolioWeight !== undefined && portfolioWeight > guardrails.rebalanceAt;
+      if (isGreenToday) {
+        aiBuyPriority = null;
+        aiConfidence = null;
+        finalReasoning = `Stock is up ${priceChangePercent.toFixed(1)}% today. We don't chase green — hold.`;
+        finalCardNote = "Hold · up today (we don't chase green)";
+      } else if (isConcentrated) {
+        aiBuyPriority = null;
+        aiConfidence = null;
+        finalReasoning = `Position is ${portfolioWeight.toFixed(1)}% of portfolio — already concentrated. Don't add more; hold or consider trimming.`;
+        finalCardNote = "Hold · concentrated, don't add";
+      }
+    }
+
     const insight: AIInsight = {
       summary:
         parsedResponse.summary ||
         generateEnhancedSummary(stock, qualityScore, earningsScore, analystScore),
       buyPriority: aiBuyPriority,
       confidence: aiConfidence,
-      reasoning: parsedResponse.reasoning || ruleBased.reasoning,
-      cardNote: parsedResponse.cardNote || '',
+      reasoning: finalReasoning,
+      cardNote: finalCardNote,
       dataCompleteness: ruleBased.dataCompleteness,
       missingData: ruleBased.missingData,
       liquidityRisk: liquidity.risk,
@@ -686,9 +734,21 @@ export function generateRuleBased(
     };
   }
 
-  // ── NO BUY SIGNALS from rule-based ──
-  // BUY decisions are made ONLY by the AI (generateAIInsights).
-  // Rule-based only handles mechanical SELL guardrails above.
+  // ── BUY: only for clear quality-dip when AI is not used (e.g. API fallback)
+  const dipThreshold = riskProfile === 'aggressive' ? 1.5 : riskProfile === 'conservative' ? 2.5 : 2;
+  const minScoreForBuy = riskProfile === 'aggressive' ? 62 : riskProfile === 'conservative' ? 72 : 66;
+  if (
+    avgScore >= minScoreForBuy &&
+    priceChangePercent !== undefined &&
+    priceChangePercent <= -dipThreshold
+  ) {
+    return {
+      buyPriority: 'BUY',
+      reasoning: `Quality score ${avgScore}, down ${Math.abs(priceChangePercent).toFixed(1)}% today — dip on a strong name. Consider adding.`,
+      dataCompleteness,
+      missingData,
+    };
+  }
 
   // ── NO SIGNAL (most stocks most days) ──
   let context = '';
