@@ -179,7 +179,7 @@ export function Dashboard({ stocks, onStockSelect, onAddTickers, onClearAll, ris
           </p>
           {stocks.length > 0 && !hasPositionData && (
             <p className="text-sm text-amber-600 dark:text-amber-400 mt-1">
-              Add shares via CSV/Excel import or edit each stock to see portfolio value and per-stock holdings.
+              Add number of shares per stock (via CSV import or edit) for better AI predictions and portfolio analysis.
             </p>
           )}
         </div>
