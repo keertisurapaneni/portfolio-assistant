@@ -490,6 +490,11 @@ function AppContent() {
     }
 
     await loadStocks();
+
+    // loadStocks() clears localStorage for authed users (cloud is source of truth).
+    // Re-add tickers so updateStock() below can write market data to localStorage cache.
+    if (isAuthed) addTickers(tickers);
+
     setRefreshProgress(`Fetching data for ${tickers.length} stocks...`);
     try {
       const stockData = await fetchMultipleStocks(tickers, (completed, total, current) => {
