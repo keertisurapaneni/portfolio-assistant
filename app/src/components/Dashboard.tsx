@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Plus, ArrowUpDown, BarChart3, Trash2, Shield, Link2, User, X, Info } from 'lucide-react';
+import { Plus, ArrowUpDown, BarChart3, Trash2, Shield, Link2, X, Info } from 'lucide-react';
 import { DismissibleBanner } from './DismissibleBanner';
 import type { StockWithConviction, RiskProfile } from '../types';
 import { StockCard } from './StockCard';
@@ -225,16 +225,6 @@ export function Dashboard({ stocks, onStockSelect, onAddTickers, onClearAll, ris
         </div>
       )}
 
-      {/* Missing shares nudge */}
-      {!hasPositionData && !sharesBannerDismissed && (
-        <DismissibleBanner variant="amber" onDismiss={dismissSharesBanner} className="mb-5 py-2.5">
-          <Info className="w-3.5 h-3.5 text-amber-600 flex-shrink-0" />
-          <p className="text-xs text-amber-800 flex-1">
-            Add number of shares per stock (via CSV import or edit) for better AI predictions and portfolio analysis.
-          </p>
-        </DismissibleBanner>
-      )}
-
       {/* Controls Row — Risk Appetite + Sort */}
       <div className="flex items-center justify-between mb-5">
         <div className="flex items-center gap-3">
@@ -295,17 +285,36 @@ export function Dashboard({ stocks, onStockSelect, onAddTickers, onClearAll, ris
         </div>
       </div>
 
-      {/* Guest save reminder — subtle nudge for unauthenticated users with stocks */}
-      {!isAuthed && !brokerBannerDismissed && (
-        <DismissibleBanner variant="amber" onDismiss={dismissBrokerBanner} className="mb-5 py-2.5">
-          <User className="w-3.5 h-3.5 text-amber-600 flex-shrink-0" />
-          <p className="text-xs text-amber-800 flex-1">
-            Your portfolio is saved in this browser only.{' '}
-            <button onClick={onLogin} className="underline font-semibold hover:text-amber-900 transition-colors">Log in</button>
-            {' '}to save across devices and connect a brokerage.
-          </p>
-        </DismissibleBanner>
-      )}
+      {/* Nudge banners — single amber banner area below controls */}
+      {(() => {
+        const showLogin = !isAuthed && !brokerBannerDismissed;
+        const showShares = !hasPositionData && !sharesBannerDismissed;
+        if (!showLogin && !showShares) return null;
+
+        const dismissAll = () => {
+          if (showLogin) dismissBrokerBanner();
+          if (showShares) dismissSharesBanner();
+        };
+
+        return (
+          <DismissibleBanner variant="amber" onDismiss={dismissAll} className="mb-5 py-2.5">
+            <Info className="w-3.5 h-3.5 text-amber-600 flex-shrink-0" />
+            <p className="text-xs text-amber-800 flex-1">
+              {showShares && (
+                <>Add number of shares per stock (via CSV import or edit) for better AI predictions.</>
+              )}
+              {showLogin && showShares && <> · </>}
+              {showLogin && (
+                <>
+                  Portfolio is saved in this browser only.{' '}
+                  <button onClick={onLogin} className="underline font-semibold hover:text-amber-900 transition-colors">Log in</button>
+                  {' '}to save across devices.
+                </>
+              )}
+            </p>
+          </DismissibleBanner>
+        );
+      })()}
 
       {/* Stock Cards */}
       <div className="space-y-4">
