@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Plus, ArrowUpDown, BarChart3, Trash2, Shield, Link2, User, X } from 'lucide-react';
+import { Plus, ArrowUpDown, BarChart3, Trash2, Shield, Link2, User, X, Info } from 'lucide-react';
 import { DismissibleBanner } from './DismissibleBanner';
 import type { StockWithConviction, RiskProfile } from '../types';
 import { StockCard } from './StockCard';
@@ -36,6 +36,13 @@ export function Dashboard({ stocks, onStockSelect, onAddTickers, onClearAll, ris
   const dismissOnboarding = () => {
     setOnboardingDismissed(true);
     localStorage.setItem('portfolio-onboarding-dismissed', '1');
+  };
+  const [sharesBannerDismissed, setSharesBannerDismissed] = useState(
+    () => sessionStorage.getItem('shares-banner-dismissed') === '1'
+  );
+  const dismissSharesBanner = () => {
+    setSharesBannerDismissed(true);
+    sessionStorage.setItem('shares-banner-dismissed', '1');
   };
   const [brokerBannerDismissed, setBrokerBannerDismissed] = useState(
     () => sessionStorage.getItem('broker-banner-dismissed') === '1'
@@ -177,11 +184,6 @@ export function Dashboard({ stocks, onStockSelect, onAddTickers, onClearAll, ris
           <p className="text-[hsl(var(--muted-foreground))]">
             What do I believe right now, and has that belief changed?
           </p>
-          {stocks.length > 0 && !hasPositionData && (
-            <p className="text-sm text-amber-600 dark:text-amber-400 mt-1">
-              Add number of shares per stock (via CSV import or edit) for better AI predictions and portfolio analysis.
-            </p>
-          )}
         </div>
 
         <div className="flex items-center gap-2">
@@ -221,6 +223,16 @@ export function Dashboard({ stocks, onStockSelect, onAddTickers, onClearAll, ris
             Click any card for full analysis
           </p>
         </div>
+      )}
+
+      {/* Missing shares nudge */}
+      {!hasPositionData && !sharesBannerDismissed && (
+        <DismissibleBanner variant="amber" onDismiss={dismissSharesBanner} className="mb-5 py-2.5">
+          <Info className="w-3.5 h-3.5 text-amber-600 flex-shrink-0" />
+          <p className="text-xs text-amber-800 flex-1">
+            Add number of shares per stock (via CSV import or edit) for better AI predictions and portfolio analysis.
+          </p>
+        </DismissibleBanner>
       )}
 
       {/* Controls Row — Risk Appetite + Sort */}
