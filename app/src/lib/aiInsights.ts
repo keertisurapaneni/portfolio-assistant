@@ -68,7 +68,7 @@ export interface AIInsight {
 }
 
 // Bump PROMPT_VERSION whenever the AI prompt changes to invalidate stale cache
-const PROMPT_VERSION = 40; // v40: AI summary = stock health / investment takeaway, not company category
+const PROMPT_VERSION = 41; // v41: quality dip requires meaningful drop (-1%+ moderate), not any red day
 const CACHE_PREFIX = `ai-insight-v${PROMPT_VERSION}`;
 const CACHE_DURATION = 1000 * 60 * 60 * 4; // 4 hours
 
@@ -226,8 +226,9 @@ export async function generateAIInsights(
     }
   }
 
-  // Quality stock on a red day — let the AI evaluate potential BUY
-  if (priceChangePercent !== undefined && priceChangePercent < 0 && avgScore >= triggerThresholds.qualityDipScore) {
+  // Quality stock on a meaningful red day — not every -0.1% is a "dip"
+  const qualityDipMinDrop = { aggressive: -0.5, moderate: -1.0, conservative: -1.5 }[riskProfile ?? 'moderate'];
+  if (priceChangePercent !== undefined && priceChangePercent <= qualityDipMinDrop && avgScore >= triggerThresholds.qualityDipScore) {
     triggers.push(`quality dip (avg ${avgScore}, down ${Math.abs(priceChangePercent).toFixed(1)}%)`);
   }
 
