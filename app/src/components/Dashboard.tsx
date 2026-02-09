@@ -155,7 +155,7 @@ export function Dashboard({ stocks, onStockSelect, onAddTickers, onClearAll, ris
   return (
     <div>
       {/* Header */}
-      <div className="flex items-end justify-between mb-8">
+      <div className="flex flex-wrap items-end justify-between gap-4 mb-8">
         <div>
           <div className="flex items-baseline gap-3">
             <h2 className="text-xl font-bold text-[hsl(var(--foreground))] mb-1">Your Holdings</h2>
@@ -226,7 +226,7 @@ export function Dashboard({ stocks, onStockSelect, onAddTickers, onClearAll, ris
       )}
 
       {/* Controls Row — Risk Appetite + Sort */}
-      <div className="flex items-center justify-between mb-5">
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-5">
         <div className="flex items-center gap-3">
           {/* Risk Appetite */}
           <div className={cn(
@@ -317,7 +317,7 @@ export function Dashboard({ stocks, onStockSelect, onAddTickers, onClearAll, ris
       })()}
 
       {/* Stock Cards */}
-      <div className="space-y-4">
+      <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-4">
         {sortedStocks.map(stock => (
           <StockCard key={stock.ticker} stock={stock} onClick={() => onStockSelect(stock)} />
         ))}

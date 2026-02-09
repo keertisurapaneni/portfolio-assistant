@@ -103,16 +103,34 @@ async function fetchWithTimeout(
 
 // ── Data fetchers ───────────────────────────────────────
 
+interface CandleResult {
+  values: Candle[];
+  rateLimited?: undefined;
+}
+interface CandleRateLimited {
+  values?: undefined;
+  rateLimited: true;
+}
+type CandleFetchResult = CandleResult | CandleRateLimited | null;
+
 async function fetchCandles(
   symbol: string,
   interval: string,
   apikey: string,
   outputsize = 150
-): Promise<{ values: Candle[] } | null> {
+): Promise<CandleFetchResult> {
   const url = `${TWELVE_DATA_BASE}/time_series?symbol=${encodeURIComponent(symbol)}&interval=${interval}&outputsize=${outputsize}&apikey=${apikey}`;
   const res = await fetchWithTimeout(url, { timeout: 20_000 });
+  if (res.status === 429) {
+    console.warn(`[Trading Signals] Twelve Data 429 for ${symbol} ${interval}`);
+    return { rateLimited: true };
+  }
   if (!res.ok) return null;
   const data = await res.json();
+  if (data.code === 429 || (data.status === 'error' && /rate limit|too many/i.test(data.message ?? ''))) {
+    console.warn(`[Trading Signals] Twelve Data rate-limited (in-body) for ${symbol} ${interval}: ${data.message}`);
+    return { rateLimited: true };
+  }
   if (data.status === 'error' || !data.values) return null;
   return { values: data.values };
 }
@@ -332,6 +350,9 @@ async function detectMode(
 ): Promise<{ mode: Mode; reason: string }> {
   // Fetch daily candles for ATR% and ADX
   const daily = await fetchCandles(ticker, '1day', apiKey, 60);
+  if (daily?.rateLimited) {
+    return { mode: 'SWING_TRADE', reason: 'Market data rate-limited — defaulting to swing' };
+  }
   if (!daily?.values?.length || daily.values.length < 30) {
     return { mode: 'SWING_TRADE', reason: 'Insufficient daily data — defaulting to swing' };
   }
@@ -707,14 +728,26 @@ Deno.serve(async req => {
       fundamentalsPromise,
     ]);
 
+    const candleResults = [candles1, candles2, candles3];
+    const rateLimitedCount = candleResults.filter(r => r?.rateLimited).length;
+
     const timeframes: Record<string, { values: Candle[] }> = {};
-    if (candles1?.values) timeframes[intervals[0]] = candles1;
-    if (candles2?.values) timeframes[intervals[1]] = candles2;
-    if (candles3?.values) timeframes[intervals[2]] = candles3;
+    if (candles1?.values) timeframes[intervals[0]] = candles1 as CandleResult;
+    if (candles2?.values) timeframes[intervals[1]] = candles2 as CandleResult;
+    if (candles3?.values) timeframes[intervals[2]] = candles3 as CandleResult;
+
+    // If most candle fetches were rate-limited, tell the user clearly instead of sending
+    // empty data to the AI (which produces a misleading generic HOLD).
+    if (rateLimitedCount >= 2) {
+      return new Response(
+        JSON.stringify({ error: 'Market data API rate limit reached — please wait 60 seconds and try again.' }),
+        { status: 429, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
 
     if (Object.keys(timeframes).length === 0) {
       return new Response(
-        JSON.stringify({ error: 'Could not fetch candle data for this symbol' }),
+        JSON.stringify({ error: 'Could not fetch candle data for this symbol. The market data API may be temporarily unavailable.' }),
         { status: 502, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
@@ -738,6 +771,23 @@ Deno.serve(async req => {
       c: parseFloat(v.close),
       v: v.volume ? parseFloat(v.volume) : 0,
     }));
+
+    // Guard: if the indicator candles are too few, the AI would get empty/garbage indicators
+    // and return a misleading HOLD. Fail clearly instead.
+    if (ohlcvBars.length < 30) {
+      const wasRateLimited = rateLimitedCount > 0;
+      return new Response(
+        JSON.stringify({
+          error: wasRateLimited
+            ? 'Market data API rate limit reached — not enough candle data for reliable analysis. Please wait 60 seconds and try again.'
+            : `Insufficient candle data for ${ticker} (got ${ohlcvBars.length} bars, need 30+). The market may be closed or this symbol may not have enough trading history.`,
+        }),
+        {
+          status: wasRateLimited ? 429 : 502,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        }
+      );
+    }
 
     const indicators: IndicatorSummary = computeAllIndicators(ohlcvBars);
 

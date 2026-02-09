@@ -210,7 +210,7 @@ export function SuggestedFinds({ existingTickers }: SuggestedFindsProps) {
           />
         ) : (
           <>
-            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
               {displayedCompounders.map((stock, idx) => (
                 <StockCard
                   key={stock.ticker}
@@ -302,7 +302,7 @@ export function SuggestedFinds({ existingTickers }: SuggestedFindsProps) {
           />
         ) : (
           <>
-            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
               {displayedGoldMines.map((stock, idx) => (
                 <StockCard
                   key={stock.ticker}
@@ -391,7 +391,7 @@ function Header({
 
 function SkeletonCards({ count }: { count: number }) {
   return (
-    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
       {Array.from({ length: count }).map((_, i) => (
         <div
           key={i}

@@ -683,8 +683,8 @@ function AppContent() {
     <div className="min-h-screen bg-[hsl(var(--background))]">
       {/* Header */}
       <header className="sticky top-0 z-30 bg-gradient-to-br from-slate-50 via-blue-50/60 to-indigo-50/40 backdrop-blur-xl border-b border-blue-100/60 shadow-sm">
-        <div className="max-w-4xl mx-auto px-6 py-5">
-          <div className="flex items-center justify-between">
+        <div className="max-w-7xl mx-auto px-6 py-5">
+          <div className="flex flex-wrap items-center justify-between gap-4">
             <div className="flex items-center gap-3.5">
               {/* Logo — bull icon */}
               <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-600 to-indigo-600 shadow-lg shadow-blue-500/25 flex items-center justify-center flex-shrink-0">
@@ -804,7 +804,7 @@ function AppContent() {
           )}
 
           {/* Tabs — NavLinks for client-side routing */}
-          <div className="flex gap-1 mt-6 bg-white/60 p-1 rounded-xl border border-blue-100/50">
+          <div className="flex flex-wrap gap-1 mt-6 bg-white/60 p-1 rounded-xl border border-blue-100/50">
             <NavLink
               to="/"
               end
@@ -869,14 +869,14 @@ function AppContent() {
       </header>
 
       {/* Daily investing quote — below tabs, above content */}
-      <div className="max-w-4xl mx-auto px-6 pt-5 pb-0">
+      <div className="max-w-7xl mx-auto px-6 pt-5 pb-0">
         <p className="text-[13px] text-center text-[hsl(var(--primary))]/50 italic leading-relaxed">
           {investingQuote}
         </p>
       </div>
 
       {/* Main Content — Routed */}
-      <main className="max-w-4xl mx-auto px-6 py-6">
+      <main className="max-w-7xl mx-auto px-6 py-6">
         <Routes>
           <Route path="/" element={
             <Dashboard
@@ -921,7 +921,7 @@ function AppContent() {
       )}
 
       {/* Footer with disclaimer + tech stack link */}
-      <footer className="max-w-4xl mx-auto px-6 py-6 mt-4">
+      <footer className="max-w-7xl mx-auto px-6 py-6 mt-4">
         <p className="text-[10px] text-center text-[hsl(var(--muted-foreground))] opacity-50 max-w-2xl mx-auto">
           Not financial advice. AI-generated signals are for informational purposes only and should not be relied upon for investment decisions. Always do your own research and consult a qualified financial advisor. Past performance does not guarantee future results.
         </p>
