@@ -460,28 +460,25 @@ Respond ONLY with valid JSON (no markdown, no backticks):
 
 // ── Day Trade Agent ─────────────────────────────────────
 
-const DAY_TRADE_SYSTEM = `You are a disciplined intraday trader. You find actionable setups from pre-computed indicators and price data. Give BUY or SELL when the data supports it; HOLD when there is no edge. You never chase extended moves.`;
+const DAY_TRADE_SYSTEM = `You are an aggressive intraday trader. You find actionable setups from pre-computed indicators and price data. Give BUY or SELL when the data supports it; HOLD when there is no edge. Intraday momentum is valid — stocks that are running can keep running within the session.`;
 
 const DAY_TRADE_USER = `Inputs: (1) Pre-computed indicators (primary), (2) 1m/15m/1h candles (validation), (3) News headlines (confirmation only).
 
 Rules:
 - Indicators determine bias FIRST; candles validate.
-- RSI > 70 = overbought caution. RSI < 30 = oversold opportunity.
+- RSI > 70 = overbought caution but NOT a dealbreaker intraday — momentum can persist.
+- RSI < 30 = oversold opportunity.
 - MACD histogram confirms momentum. ADX > 25 = trending; < 20 = ranging.
 - Price vs EMA(20)/SMA(50) = short/medium trend. ATR sets stop distances.
 - Support/resistance = entry/exit zones.
 - Directional call when indicators mostly agree. Lower confidence if some conflict.
 - HOLD only when indicators genuinely conflict across the board.
-
-Don't chase:
-- "Recent Price Move" is the most important filter. Up 10%+ in 5 bars or 20%+ in 10 bars = EXTENDED.
-- NEVER BUY an extended/parabolic stock. Extended + RSI > 70 = HOLD or SELL.
-- "Strong uptrend" after a big run ≠ buy. It means wait for pullback.
-- Gap up on news/earnings = don't chase. Note the pullback level where it becomes attractive.
+- Intraday breakouts and momentum plays are valid — a stock up big today can still be a BUY if structure supports it.
 
 Risk:
 - Entry near current price. Stop = 1-1.5× ATR beyond a key level.
 - Target 1 = nearest S/R. Target 2 = next level. Min 1.5× reward-to-risk.
+- Tighter stops on extended intraday moves. Scale out at Target 1.
 
 Output (STRICT JSON only, no markdown):
 {"mode":"DAY_TRADE","recommendation":"BUY"|"SELL"|"HOLD","bias":"short phrase","entryPrice":number|null,"stopLoss":number|null,"targetPrice":number|null,"targetPrice2":number|null,"riskReward":"1:x"|null,"rationale":{"technical":"2-3 sentences","sentiment":"1 sentence","risk":"1-2 sentences"},"confidence":0-10,"scenarios":{"bullish":{"probability":0-100,"summary":"1 sentence"},"neutral":{"probability":0-100,"summary":"1 sentence"},"bearish":{"probability":0-100,"summary":"1 sentence"}}}
