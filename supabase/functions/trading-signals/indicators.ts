@@ -376,6 +376,25 @@ export function computeSupportResistance(data: OHLCV[], lookback = 5, count = 2)
   return { support, resistance };
 }
 
+// ── Recent Move (% change over N bars) ──────────────────
+
+export interface RecentMove {
+  change5: number | null;   // % change over last 5 bars
+  change10: number | null;  // % change over last 10 bars
+  change20: number | null;  // % change over last 20 bars
+}
+
+/** Compute recent % moves. Data is newest-first. */
+export function computeRecentMove(data: OHLCV[]): RecentMove {
+  const cur = data.length > 0 ? data[0].c : 0;
+  const pct = (idx: number) => {
+    if (data.length <= idx || cur === 0) return null;
+    const prev = data[idx].c;
+    return prev > 0 ? round(((cur - prev) / prev) * 100, 1) : null;
+  };
+  return { change5: pct(5), change10: pct(10), change20: pct(20) };
+}
+
 // ── Full Indicator Summary ──────────────────────────────
 
 export interface IndicatorSummary {
@@ -390,6 +409,7 @@ export interface IndicatorSummary {
   supportResistance: SupportResistance;
   emaCrossover: CrossoverState;
   trend: TrendLabel;
+  recentMove: RecentMove;
 }
 
 /**
@@ -415,6 +435,7 @@ export function computeAllIndicators(data: OHLCV[]): IndicatorSummary {
     supportResistance: computeSupportResistance(data),
     emaCrossover: detectEMASMACrossover(data),
     trend: classifyTrend(currentPrice, sma50, sma200),
+    recentMove: computeRecentMove(data),
   };
 }
 
@@ -513,6 +534,25 @@ export function formatIndicatorsForPrompt(
     const fmt = (n: number) => n >= 1_000_000 ? `${round(n / 1_000_000, 1)}M` : n >= 1_000 ? `${round(n / 1_000, 1)}K` : `${round(n)}`;
     const label = vr.ratio > 1.2 ? 'ABOVE average' : vr.ratio < 0.8 ? 'BELOW average' : 'near average';
     lines.push(`  Current: ${fmt(vr.current)} vs 20-day avg ${fmt(vr.average)} — ${vr.ratio}x ${label}`);
+  }
+
+  // Recent price move — critical for "don't chase" logic
+  const rm = ind.recentMove;
+  if (rm.change5 !== null || rm.change10 !== null || rm.change20 !== null) {
+    lines.push('');
+    lines.push('Recent Price Move:');
+    if (rm.change5 !== null) {
+      const label5 = Math.abs(rm.change5) > 15 ? ' ⚠️ PARABOLIC' : Math.abs(rm.change5) > 8 ? ' ⚠️ EXTENDED' : '';
+      lines.push(`  5-bar change: ${rm.change5 > 0 ? '+' : ''}${rm.change5}%${label5}`);
+    }
+    if (rm.change10 !== null) {
+      const label10 = Math.abs(rm.change10) > 25 ? ' ⚠️ PARABOLIC' : Math.abs(rm.change10) > 15 ? ' ⚠️ EXTENDED' : '';
+      lines.push(`  10-bar change: ${rm.change10 > 0 ? '+' : ''}${rm.change10}%${label10}`);
+    }
+    if (rm.change20 !== null) {
+      const label20 = Math.abs(rm.change20) > 40 ? ' ⚠️ PARABOLIC' : Math.abs(rm.change20) > 25 ? ' ⚠️ EXTENDED' : '';
+      lines.push(`  20-bar change: ${rm.change20 > 0 ? '+' : ''}${rm.change20}%${label20}`);
+    }
   }
 
   // Key levels
