@@ -51,7 +51,7 @@ git checkout -b feat/<short-description>
 # Commit, push, create PR
 git add -A && git commit -m "<message>"
 git push -u origin HEAD
-gh pr create --repo keertisurapaneni/portfolio-assistant --title "<title>" --body "<body>"
+GITHUB_TOKEN=$GITHUB_TOKEN_PERSONAL gh pr create --repo keertisurapaneni/portfolio-assistant --title "<title>" --body "<body>"
 ```
 
 This lets CodeQL and other checks run before code hits master.
@@ -61,7 +61,7 @@ This lets CodeQL and other checks run before code hits master.
 After checks pass (or if no CI checks are configured yet), merge the PR:
 
 ```bash
-gh pr merge <number> --repo keertisurapaneni/portfolio-assistant --squash --delete-branch
+GITHUB_TOKEN=$GITHUB_TOKEN_PERSONAL gh pr merge <number> --repo keertisurapaneni/portfolio-assistant --squash --delete-branch
 ```
 
 Vercel auto-deploys from master after merge.
@@ -77,6 +77,6 @@ git checkout master && git pull origin master
 - **Always ensure dev server is running** so the user can test locally.
 - **Never skip the local build step.** Even for "small" changes.
 - **Never push directly to master.** Always use a PR.
-- **Never create or merge a PR without explicit user approval.**
+- **Always create the PR and merge it** (squash) once CI checks pass — no need to ask for separate merge approval.
 - **Squash merge** to keep master history clean.
-- If `gh pr create` fails due to SSH alias, give the user the GitHub PR URL to create manually.
+- Always use `GITHUB_TOKEN=$GITHUB_TOKEN_PERSONAL` prefix for `gh` commands (personal repo uses a different account than the office `GITHUB_TOKEN`).
