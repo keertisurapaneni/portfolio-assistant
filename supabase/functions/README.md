@@ -2,11 +2,41 @@
 
 This folder contains Supabase Edge Functions (serverless Deno functions) for Portfolio Assistant.
 
-## Shared Modules
+## Shared Modules (`_shared/`)
+
+All shared code lives in `_shared/` and is imported by both `trading-signals` and `trade-scanner`. Edit shared modules → deploy both functions.
 
 ### `_shared/prompts.ts`
 
-Single source of truth for AI trading prompts. Both `trading-signals` and `trade-scanner` import the same system prompts and rules so signals stay consistent. Edit here → deploy both functions.
+Single source of truth for AI trading prompts, rules, and system instructions. Both functions import the same `DAY_TRADE_SYSTEM`, `SWING_TRADE_SYSTEM`, rules, and scanner Pass 2 refine prompts.
+
+### `_shared/indicators.ts`
+
+Full technical indicator engine — 13 indicators computed from OHLCV candle data:
+
+- RSI (14), MACD (12/26/9), EMA (20), SMA (50/200), ATR (14), ADX (14)
+- Volume Ratio, Support/Resistance, EMA/SMA Crossover, Trend Classification
+- Recent Move, Gap Detection
+
+Both the scanner (Pass 2) and full analysis use `computeAllIndicators()` + `formatIndicatorsForPrompt()` from this module, guaranteeing identical indicator values for the same data.
+
+### `_shared/data-fetchers.ts`
+
+Yahoo Finance data utilities (no API key needed):
+
+- `fetchCandles(ticker, interval, size)` — OHLCV candles (1min to weekly), with 1h→4h aggregation
+- `fetchMarketSnapshot()` — SPY trend + VIX for market context
+- `fetchYahooNews(ticker)` — recent headlines
+- `fetchFundamentalsBatch(symbols)` — P/E, earnings date, analyst ratings (v7 quote API)
+- `formatFundamentalsForAI()` / `formatNewsForAI()` — AI prompt formatters
+
+### `_shared/analysis.ts`
+
+Shared analysis pipeline used by `trading-signals` (full analysis):
+
+- `prepareAnalysisContext(ticker, mode, lite?)` — fetches candles, computes all 13 indicators, gets market snapshot + news, formats everything for AI
+- `MODE_INTERVALS` — candle timeframes per mode (day: 1m/15m/1h, swing: 4h/1d/1w)
+- `CANDLE_SIZES` — how many candles to fetch per timeframe
 
 ---
 
@@ -14,158 +44,51 @@ Single source of truth for AI trading prompts. Both `trading-signals` and `trade
 
 ### `trading-signals`
 
-Full AI analysis for a single ticker — fetches multi-timeframe candles (Twelve Data), news (Yahoo), market snapshot (SPY/VIX), computes indicators, and runs parallel Gemini agents for sentiment + trade signal.
+Full AI analysis for a single ticker. Uses `prepareAnalysisContext` from `_shared/analysis.ts` to fetch Yahoo Finance candles, compute indicators, and build prompts. Runs parallel Gemini agents for sentiment + trade signal + long-term outlook.
+
+**Data sources:** Yahoo Finance (candles, news, market context), Finnhub (fundamentals, earnings calendar).
 
 ### `trade-scanner`
 
-Two-pass AI scanner for Trade Ideas. Pass 1 filters Yahoo screener results with indicators; Pass 2 re-evaluates top candidates with candle data. Results cached in `trade_scans` table (day: 30 min, swing: 6 hr TTL).
+Two-pass AI scanner for Trade Ideas:
+
+- **Pass 1:** Yahoo screener finds movers → lightweight indicators → Gemini batch filters to top 5
+- **Pass 2:** Each shortlisted ticker gets full 13-indicator analysis using the **same shared `computeAllIndicators` + `formatIndicatorsForPrompt`** code as full analysis. Day trades fetch 15min candles (matching FA); swing trades reuse daily OHLCV from chart enrichment (zero extra fetches).
+
+Results cached in `trade_scans` table (day: 30 min TTL, swing: 6 hr TTL).
 
 ### `fetch-stock-data`
 
-Secure proxy for Finnhub API calls with server-side caching.
+Secure proxy for Finnhub API calls with server-side caching (15 min TTL).
 
-**Purpose:**
+**Endpoints:** `quote`, `metrics`, `recommendations`, `earnings`
 
-- Protect Finnhub API key (never exposed to client)
-- Server-side caching (15 minutes TTL) to reduce API calls
-- Graceful fallback to stale cache on errors
-- Rate limit protection
-
-**Endpoints:**
-
-- `quote` - Current price, change, high/low
-- `metrics` - Fundamentals (P/E, margins, ROE, beta, 52-week range)
-- `recommendations` - Analyst consensus (Strong Buy, Buy, Hold, Sell, Strong Sell)
-- `earnings` - Quarterly earnings history (actual vs estimate)
-
-**Request:**
-
-```json
-POST https://<project-ref>.supabase.co/functions/v1/fetch-stock-data
-Headers:
-  Content-Type: application/json
-  Authorization: Bearer <supabase-anon-key>
-  apikey: <supabase-anon-key>
-Body:
-{
-  "ticker": "AAPL",
-  "endpoint": "quote"
-}
-```
-
-**Response (Success):**
-
-```json
-{
-  "c": 150.25,
-  "d": 2.5,
-  "dp": 1.69,
-  "h": 151.0,
-  "l": 148.5,
-  "o": 149.0,
-  "pc": 147.75,
-  "cached": false
-}
-```
-
-**Response (Cached):**
-
-```json
-{
-  ... data ...,
-  "cached": true,
-  "cacheAge": 450
-}
-```
-
-**Response (Error with stale cache):**
-
-```json
-{
-  ... stale data ...,
-  "cached": true,
-  "stale": true,
-  "error": "Rate limit exceeded. Using cached data."
-}
-```
+---
 
 ## Deployment
 
 ### Prerequisites
 
-- Supabase CLI installed: `brew install supabase/tap/supabase`
+- Supabase CLI: `brew install supabase/tap/supabase`
 - Logged in: `supabase login`
-- Project linked: `supabase link --project-ref <your-project-ref>`
-- Docker/Colima running
+- Project linked: `supabase link --project-ref <ref>`
 
-### Set Secrets
+### Secrets
 
 ```bash
-supabase secrets set FINNHUB_API_KEY=your_actual_key_here
+supabase secrets set FINNHUB_API_KEY=<key>
+supabase secrets set GEMINI_API_KEY=<key>
+supabase secrets set GEMINI_API_KEY_2=<key>
+# ... up to GEMINI_API_KEY_11 (sequential, no gaps)
 ```
 
 ### Deploy
 
 ```bash
-cd supabase
-supabase functions deploy fetch-stock-data
+# Deploy both signal functions (shared modules are bundled automatically)
+npx supabase functions deploy trading-signals --no-verify-jwt
+npx supabase functions deploy trade-scanner --no-verify-jwt
+npx supabase functions deploy fetch-stock-data --no-verify-jwt
 ```
 
-### Test Locally
-
-```bash
-supabase functions serve fetch-stock-data
-```
-
-Then test with:
-
-```bash
-curl -X POST http://localhost:54321/functions/v1/fetch-stock-data \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer <anon-key>" \
-  -d '{"ticker":"AAPL","endpoint":"quote"}'
-```
-
-## Security
-
-- **API Key**: Stored as Edge Function secret (never in code)
-- **RLS**: Cache table allows authenticated users to read, service_role to write
-- **CORS**: Currently allows all origins (`*`) - restrict to your domain in production
-- **Rate Limiting**: Client-side throttling + Finnhub rate limits
-
-## Monitoring
-
-Check logs in Supabase Dashboard:
-
-- **Project** → **Edge Functions** → `fetch-stock-data` → **Logs**
-
-Look for:
-
-- `[Cache HIT]` - Data served from cache
-- `[Cache STALE]` - Cache expired, fetching fresh data
-- `[Finnhub API]` - Actual API call made
-- `[Cache UPDATED]` - New data cached
-- `[Fallback]` - Error occurred, returning stale cache
-
-## Troubleshooting
-
-**Error: `FINNHUB_API_KEY not configured`**
-
-- Run: `supabase secrets set FINNHUB_API_KEY=your_key`
-
-**Error: `Import failed: 524`**
-
-- Change import from `esm.sh` to `jsr:` registry
-
-**Error: `Database error: relation "stock_cache" does not exist`**
-
-- Ensure migrations ran: `supabase db push`
-
-**Slow responses on first deploy:**
-
-- Cold start (image pull) - subsequent calls are fast
-
-**Cache not working:**
-
-- Check `stock_cache` table has data: `select * from stock_cache;`
-- Verify RLS policies allow service_role to write
+**Important:** When editing `_shared/` modules, redeploy **both** `trading-signals` and `trade-scanner`.
