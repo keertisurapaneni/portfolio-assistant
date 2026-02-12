@@ -27,6 +27,13 @@ import {
   type MarketSnapshot,
   type LongTermOutlook,
 } from '../lib/tradingSignalsApi';
+import {
+  getAutoTraderConfig,
+  processTradeIdeas,
+  type ProcessResult,
+} from '../lib/autoTrader';
+import type { TradeIdea } from '../lib/tradeScannerApi';
+import { useAuth } from '../lib/auth';
 import { TradeIdeas } from './TradeIdeas';
 
 function formatPrice(n: number | null): string {
@@ -435,6 +442,8 @@ function formatAge(ms: number): string {
 // ── Main Component ──────────────────────────────────────
 
 export function TradingSignals() {
+  const { user } = useAuth();
+  const isAuthed = !!user;
   const [ticker, setTicker] = useState('');
   const [mode, setMode] = useState<SignalsMode>(() => getStoredMode());
   const [loading, setLoading] = useState(false);
@@ -443,6 +452,11 @@ export function TradingSignals() {
   const [fromCache, setFromCache] = useState(false);
   const [cacheAge, setCacheAge] = useState(0);
   const [elapsed, setElapsed] = useState(0);
+
+  // Auto-execute prompt state
+  const [showExecutePrompt, setShowExecutePrompt] = useState(false);
+  const [executing, setExecuting] = useState(false);
+  const [executeResult, setExecuteResult] = useState<ProcessResult | null>(null);
 
   // Live timer while loading
   useEffect(() => {
@@ -498,15 +512,70 @@ export function TradingSignals() {
 
     setLoading(true);
     setResult(null);
+    setShowExecutePrompt(false);
+    setExecuteResult(null);
     try {
       const data = await fetchTradingSignal(sym, effectiveMode);
       setCache(sym, data);
       setResult(data);
       setFromCache(false);
+
+      // Show execute prompt if authenticated, auto-trading enabled, and signal is strong
+      const config = getAutoTraderConfig();
+      if (
+        isAuthed &&
+        config.enabled &&
+        data.trade.confidence >= config.minFAConfidence &&
+        data.trade.recommendation !== 'HOLD' &&
+        (data.trade.entryPrice != null)
+      ) {
+        setShowExecutePrompt(true);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to fetch signal');
     } finally {
       setLoading(false);
+    }
+  };
+
+  // Execute trade from the prompt
+  const handleExecuteTrade = async () => {
+    if (!result) return;
+    const sym = ticker.trim().toUpperCase();
+    const tradeMode = (result.trade.mode === 'DAY_TRADE' || result.trade.mode === 'SWING_TRADE')
+      ? result.trade.mode
+      : (mode === 'DAY_TRADE' ? 'DAY_TRADE' : 'SWING_TRADE');
+
+    setExecuting(true);
+    setExecuteResult(null);
+    try {
+      // Build a synthetic TradeIdea from the FA result
+      const idea: TradeIdea = {
+        ticker: sym,
+        name: sym,
+        price: result.trade.entryPrice ?? 0,
+        change: 0,
+        changePercent: 0,
+        signal: result.trade.recommendation as 'BUY' | 'SELL',
+        confidence: result.trade.confidence,
+        reason: result.trade.rationale?.technical ?? '',
+        tags: [],
+        mode: tradeMode as 'DAY_TRADE' | 'SWING_TRADE',
+      };
+
+      const results = await processTradeIdeas([idea]);
+      if (results.length > 0) {
+        setExecuteResult(results[0]);
+      }
+    } catch (err) {
+      setExecuteResult({
+        ticker: sym,
+        action: 'failed',
+        reason: err instanceof Error ? err.message : 'Execution failed',
+      });
+    } finally {
+      setExecuting(false);
+      setShowExecutePrompt(false);
     }
   };
 
@@ -643,6 +712,76 @@ export function TradingSignals() {
       </div>
 
       {error && <ErrorBanner message={error} />}
+
+      {/* Execute Trade Prompt — shown when auto-trading is enabled and signal is strong */}
+      {showExecutePrompt && result && (
+        <div className="animate-fade-in-up rounded-xl border-2 border-emerald-300 bg-gradient-to-r from-emerald-50 to-teal-50 p-4 shadow-sm">
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <div className="flex items-center justify-center w-10 h-10 rounded-full bg-emerald-100">
+                <Zap className="w-5 h-5 text-emerald-600" />
+              </div>
+              <div>
+                <p className="text-sm font-semibold text-emerald-900">
+                  Execute this trade on IB Paper?
+                </p>
+                <p className="text-xs text-emerald-700 mt-0.5">
+                  {result.trade.recommendation} {ticker.toUpperCase()} — Confidence {result.trade.confidence}/10
+                  {result.trade.entryPrice && ` — Entry $${result.trade.entryPrice.toFixed(2)}`}
+                  {result.trade.stopLoss && ` — Stop $${result.trade.stopLoss.toFixed(2)}`}
+                  {result.trade.targetPrice && ` — Target $${result.trade.targetPrice.toFixed(2)}`}
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setShowExecutePrompt(false)}
+                className="px-3 py-1.5 text-xs font-medium text-slate-600 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors"
+              >
+                Skip
+              </button>
+              <button
+                onClick={handleExecuteTrade}
+                disabled={executing}
+                className={cn(
+                  'flex items-center gap-1.5 px-4 py-1.5 text-xs font-semibold text-white rounded-lg transition-all',
+                  'bg-emerald-600 hover:bg-emerald-700 shadow-sm shadow-emerald-500/25',
+                  executing && 'opacity-50 cursor-not-allowed'
+                )}
+              >
+                {executing ? (
+                  <>
+                    <Spinner size="xs" className="text-white" />
+                    Executing...
+                  </>
+                ) : (
+                  <>
+                    <Zap className="w-3.5 h-3.5" />
+                    Execute Trade
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Execute result feedback */}
+      {executeResult && (
+        <div className={cn(
+          'animate-fade-in-up rounded-xl border px-4 py-3 text-sm',
+          executeResult.action === 'executed'
+            ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+            : executeResult.action === 'skipped'
+              ? 'bg-amber-50 border-amber-200 text-amber-800'
+              : 'bg-red-50 border-red-200 text-red-800'
+        )}>
+          <span className="font-semibold">
+            {executeResult.action === 'executed' ? 'Order placed!' : executeResult.action === 'skipped' ? 'Skipped:' : 'Failed:'}
+          </span>
+          {' '}{executeResult.reason}
+        </div>
+      )}
 
       {result && (
         <div className="space-y-4 animate-fade-in-up">

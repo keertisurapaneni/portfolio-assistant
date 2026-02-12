@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Flame,
   TrendingUp,
@@ -9,9 +9,15 @@ import {
   ChevronRight,
   BarChart3,
   AlertTriangle,
+  Bot,
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { fetchTradeIdeas, type TradeIdea, type ScanResult } from '../lib/tradeScannerApi';
+import {
+  getAutoTraderConfig,
+  processTradeIdeas,
+  type ProcessResult,
+} from '../lib/autoTrader';
 import { Spinner } from './Spinner';
 
 // ── Client-side cache ───────────────────────────────────
@@ -36,6 +42,9 @@ export function TradeIdeas({ onSelectTicker }: TradeIdeasProps) {
   const [data, setData] = useState<ScanResult | null>(_cache);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [autoTrading, setAutoTrading] = useState(false);
+  const [, setAutoTradeResults] = useState<ProcessResult[]>([]);
+  const processedRef = useRef<Set<string>>(new Set()); // track already-processed tickers
 
   const load = useCallback(async (force = false) => {
     if (!force && _cache && Date.now() - _cacheTime < CACHE_TTL) {
@@ -57,6 +66,29 @@ export function TradeIdeas({ onSelectTicker }: TradeIdeasProps) {
   }, []);
 
   useEffect(() => { load(); }, [load]);
+
+  // Auto-trade: when new data arrives and auto-trading is enabled,
+  // process any new ideas that haven't been processed yet
+  useEffect(() => {
+    if (!data) return;
+    const config = getAutoTraderConfig();
+    if (!config.enabled) return;
+
+    const allIdeas = [...(data.dayTrades ?? []), ...(data.swingTrades ?? [])];
+    const newIdeas = allIdeas.filter(i => !processedRef.current.has(i.ticker));
+    if (newIdeas.length === 0) return;
+
+    // Mark as processing so we don't re-trigger
+    newIdeas.forEach(i => processedRef.current.add(i.ticker));
+
+    setAutoTrading(true);
+    processTradeIdeas(newIdeas, config)
+      .then(results => {
+        setAutoTradeResults(prev => [...results, ...prev].slice(0, 20));
+      })
+      .catch(console.error)
+      .finally(() => setAutoTrading(false));
+  }, [data]);
 
   const dayIdeas = data?.dayTrades ?? [];
   const swingIdeas = data?.swingTrades ?? [];
@@ -82,6 +114,18 @@ export function TradeIdeas({ onSelectTicker }: TradeIdeasProps) {
             </span>
           )}
           {loading && <Spinner size="xs" className="text-amber-500" />}
+          {autoTrading && (
+            <span className="flex items-center gap-1 text-[10px] font-semibold bg-blue-50 text-blue-700 border border-blue-200 px-1.5 py-0.5 rounded-full">
+              <Bot className="w-3 h-3 animate-pulse" />
+              Auto-executing...
+            </span>
+          )}
+          {getAutoTraderConfig().enabled && !autoTrading && (
+            <span className="flex items-center gap-1 text-[10px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200 px-1.5 py-0.5 rounded-full">
+              <Bot className="w-3 h-3" />
+              AUTO
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-2">
           <span
