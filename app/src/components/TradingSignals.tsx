@@ -452,12 +452,6 @@ export function TradingSignals() {
     return () => clearInterval(t);
   }, [loading]);
 
-  // Resolve which mode to check in the cache for the current selection
-  const resolveCheckModes = (m: SignalsMode): string[] => {
-    if (m === 'AUTO') return ['DAY_TRADE', 'SWING_TRADE']; // Auto could be either
-    return [m];
-  };
-
   const handleModeChange = (m: SignalsMode) => {
     setMode(m);
     setStoredMode(m);
