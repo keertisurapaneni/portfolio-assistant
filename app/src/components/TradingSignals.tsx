@@ -27,6 +27,7 @@ import {
   type MarketSnapshot,
   type LongTermOutlook,
 } from '../lib/tradingSignalsApi';
+import { TradeIdeas } from './TradeIdeas';
 
 function formatPrice(n: number | null): string {
   if (n == null) return '—';
@@ -481,13 +482,14 @@ export function TradingSignals() {
     setFromCache(false);
   };
 
-  const fetchSignal = async (sym: string, forceRefresh = false) => {
+  const fetchSignal = async (sym: string, forceRefresh = false, modeOverride?: SignalsMode) => {
+    const effectiveMode = modeOverride ?? mode;
     setError(null);
     setFromCache(false);
 
     // Check cache first (unless force refresh)
     if (!forceRefresh) {
-      const checkModes = resolveCheckModes(mode);
+      const checkModes = effectiveMode === 'AUTO' ? ['DAY_TRADE', 'SWING_TRADE'] : [effectiveMode];
       for (const cm of checkModes) {
         const cached = getCached(sym, cm);
         if (cached) {
@@ -503,7 +505,7 @@ export function TradingSignals() {
     setLoading(true);
     setResult(null);
     try {
-      const data = await fetchTradingSignal(sym, mode);
+      const data = await fetchTradingSignal(sym, effectiveMode);
       setCache(sym, data);
       setResult(data);
       setFromCache(false);
@@ -512,6 +514,13 @@ export function TradingSignals() {
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleSelectIdea = (t: string, m: 'DAY_TRADE' | 'SWING_TRADE') => {
+    setTicker(t);
+    setMode(m);
+    setStoredMode(m);
+    fetchSignal(t, false, m);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -555,6 +564,9 @@ export function TradingSignals() {
           AI-powered signals with technical indicators, scenario analysis, and market context.
         </p>
       </div>
+
+      {/* Trade Ideas — auto-scanned high-confidence picks */}
+      <TradeIdeas onSelectTicker={handleSelectIdea} />
 
       {/* Static indicators — always visible */}
       <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
