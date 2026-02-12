@@ -1,0 +1,33 @@
+# IBC Configuration for IB Gateway auto-login
+# Copy this file to config.ini and fill in your credentials.
+# config.ini is gitignored — your credentials stay local.
+#
+# Documentation: https://github.com/IbcAlpha/IBC/blob/master/userguide.md
+
+# ── Credentials ──────────────────────────────────────────
+# Your Interactive Brokers paper trading username and password
+IbLoginId=YOUR_PAPER_USERNAME
+IbPassword=YOUR_PAPER_PASSWORD
+
+# ── Trading Mode ─────────────────────────────────────────
+# paper = paper trading (recommended for testing)
+# live  = live trading (use with extreme caution)
+TradingMode=paper
+
+# ── IB Gateway Settings ──────────────────────────────────
+# Accept the non-brokerage account warning that appears on login
+AcceptNonBrokerageAccountWarning=yes
+
+# Accept incoming API connections (required for TWS API)
+AcceptIncomingConnectionAction=accept
+
+# Allow connections from localhost only
+IbAutoClosedown=no
+
+# ── Timeouts ─────────────────────────────────────────────
+# Close IB Gateway after this many seconds without API connection
+# Set to 0 to disable (keep running forever)
+ClosedownAt=
+
+# ── Logging ──────────────────────────────────────────────
+LogToConsole=yes
