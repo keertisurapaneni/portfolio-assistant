@@ -2,7 +2,23 @@
 
 This folder contains Supabase Edge Functions (serverless Deno functions) for Portfolio Assistant.
 
+## Shared Modules
+
+### `_shared/prompts.ts`
+
+Single source of truth for AI trading prompts. Both `trading-signals` and `trade-scanner` import the same system prompts and rules so signals stay consistent. Edit here → deploy both functions.
+
+---
+
 ## Functions
+
+### `trading-signals`
+
+Full AI analysis for a single ticker — fetches multi-timeframe candles (Twelve Data), news (Yahoo), market snapshot (SPY/VIX), computes indicators, and runs parallel Gemini agents for sentiment + trade signal.
+
+### `trade-scanner`
+
+Two-pass AI scanner for Trade Ideas. Pass 1 filters Yahoo screener results with indicators; Pass 2 re-evaluates top candidates with candle data. Results cached in `trade_scans` table (day: 30 min, swing: 6 hr TTL).
 
 ### `fetch-stock-data`
 

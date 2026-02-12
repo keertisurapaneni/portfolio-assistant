@@ -117,6 +117,12 @@ Open browser console (F12) and check for:
 - Reduces API calls for all users
 - Managed by Edge Functions (service role)
 
+**`trade_scans`** - Cached trade scanner results
+
+- Stores AI-generated trade ideas (day + swing) shared across all users
+- Day trades: 30 min TTL; Swing trades: 6 hr TTL
+- Reduces Gemini API calls by serving cached results
+
 **`user_dismissals`** - Dismissed stock suggestions
 
 - Tracks which suggested stocks users have dismissed

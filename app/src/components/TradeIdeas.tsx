@@ -8,6 +8,7 @@ import {
   ChevronUp,
   ChevronRight,
   BarChart3,
+  AlertTriangle,
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { fetchTradeIdeas, type TradeIdea, type ScanResult } from '../lib/tradeScannerApi';
@@ -198,6 +199,15 @@ export function TradeIdeas({ onSelectTicker }: TradeIdeasProps) {
             </button>
           </div>
 
+          {/* Caution banner */}
+          <div className="mx-4 mt-2.5 flex items-start gap-2 rounded-lg bg-amber-50 border border-amber-200/70 px-3 py-2">
+            <AlertTriangle className="w-3.5 h-3.5 text-amber-500 mt-0.5 flex-shrink-0" />
+            <p className="text-[11px] leading-snug text-amber-700">
+              AI-screened ideas with candle validation. Run a <span className="font-semibold">full analysis</span> for
+              entry/exit levels, risk sizing, and multi-timeframe confirmation before trading.
+            </p>
+          </div>
+
           {/* Content */}
           <div className="p-4 pt-3">
             {loading && !data && (
@@ -375,7 +385,7 @@ function IdeaCard({
 
       {/* Analyze CTA */}
       <div className="flex items-center gap-1 mt-2 text-[10px] font-semibold text-[hsl(var(--muted-foreground))] group-hover:text-[hsl(var(--primary))] transition-colors">
-        Get full signal <ChevronRight className="w-3 h-3 transition-transform group-hover:translate-x-0.5" />
+        Run full analysis <ChevronRight className="w-3 h-3 transition-transform group-hover:translate-x-0.5" />
       </div>
     </button>
   );

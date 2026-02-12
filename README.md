@@ -22,6 +22,7 @@ A personal investing decision-support tool that combines automated conviction sc
 
 ### Trade Signals (`/signals`)
 
+- **Trade Ideas** — AI scanner suggests high-confidence day and swing trade setups with BUY/SELL signals and confidence scores; click any idea to run a full analysis
 - **Auto Mode** — Automatically picks Day or Swing based on ATR% and ADX volatility analysis (default)
 - **Day Trade** — Intraday signals (1m/15m/1h timeframes) with technical indicators
 - **Swing Trade** — Multi-day/week signals (4h/1d/1w timeframes) with technical indicators
@@ -31,7 +32,7 @@ A personal investing decision-support tool that combines automated conviction sc
 - **Confidence Score** — 0-10 visual confidence rating with dual price targets
 - **Long Term Outlook** — Fundamental analysis section (ROE, P/E, margins, earnings, analyst recs) that appears in all modes — powered by Finnhub + Gemini running in parallel with zero added latency
 - **Interactive Charts** — Candlestick charts with entry/stop/target overlays (2-3 years of history for swing)
-- Powered by Gemini (multi-key rotation) + Twelve Data (candles + indicators) + Yahoo Finance (news) + Finnhub (fundamentals)
+- Powered by Gemini (multi-key rotation) + Twelve Data (candles + indicators) + Yahoo Finance (news + screener) + Finnhub (fundamentals)
 
 ### Suggested Finds (`/finds`)
 
@@ -89,7 +90,8 @@ A personal investing decision-support tool that combines automated conviction sc
 │    login, dis- │   │  ├─ portfolios (user tickers + positions)   │
 │    connect)    │   │  ├─ broker_connections (SnapTrade creds)    │
 │                │   │  ├─ user_settings (risk profile)            │
-│ broker-sync    │   │  └─ daily_suggestions (shared AI cache)     │
+│ broker-sync    │   │  ├─ trade_scans (scanner results cache)      │
+│  └─ daily_suggestions (shared AI cache)     │
 │ └─ SnapTrade   │   └─────────────────────────────────────────────┘
 │    (positions) │
 │                │
@@ -111,6 +113,7 @@ A personal investing decision-support tool that combines automated conviction sc
 |---|---|---|---|
 | **Conviction Scoring** | Automated 0-100 score per stock | None (rule-based) | Finnhub metrics, earnings, recommendations |
 | **Portfolio Trade Signals** | BUY / SELL / no-action per stock | Groq (Llama 3.3 70B) | Finnhub data + market news + risk profile |
+| **Trade Ideas** | Scan market for high-confidence day/swing setups | Gemini (multi-key rotation) | Yahoo Finance screener + candles → Indicator Engine + Gemini two-pass evaluation |
 | **Trade Signals** | Auto/Day/Swing trade with indicators, scenarios, dual targets + Long Term Outlook | Gemini (multi-key rotation) | Twelve Data candles → Indicator Engine (RSI, MACD, EMA, ATR, ADX) + Yahoo Finance news + SPY/VIX market context + Finnhub fundamentals |
 | **Quiet Compounders** | Discover quality stocks ranked by conviction, with valuation/AI tags and category filtering | HuggingFace (Qwen2.5-72B) | Finnhub metrics |
 | **Gold Mines** | Macro-theme-driven opportunities | HuggingFace (Qwen2.5-72B) | Market news + Finnhub fundamentals |
@@ -121,6 +124,7 @@ A personal investing decision-support tool that combines automated conviction sc
 |---|---|---|
 | `ai-proxy` | Portfolio AI analysis with model fallback | Groq |
 | `trading-signals` | Day/Swing signals with parallel AI agents | Twelve Data + Yahoo Finance + Gemini |
+| `trade-scanner` | Trade Ideas: two-pass AI scanner with DB caching | Yahoo Finance + Gemini |
 | `huggingface-proxy` | Suggested Finds AI with model cascade | HuggingFace |
 | `gemini-proxy` | Gemini proxy for client-side AI calls | Google Gemini |
 | `daily-suggestions` | Shared daily cache per category (GET/POST/DELETE) | PostgreSQL |

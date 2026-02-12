@@ -1,9 +1,11 @@
-// Portfolio Assistant — Trade Scanner Edge Function (v2)
+// Portfolio Assistant — Trade Scanner Edge Function (v3)
 //
-// Architecture:
+// Architecture (two-pass):
 //   1. DISCOVERY  — Yahoo Finance screener finds movers (free, fast)
-//   2. EVALUATION — Gemini AI batch-evaluates candidates (same brain as full analysis)
-//   3. CACHING    — Results stored in Supabase DB, shared across ALL users
+//   2. PASS 1     — Gemini AI batch-evaluates candidates on indicators (quick filter)
+//   3. PASS 2     — Top picks get intraday/daily candle data, AI re-evaluates with
+//                   price action (mirrors full analysis quality)
+//   4. CACHING    — Results stored in Supabase DB, shared across ALL users
 //
 // Refresh cadence:
 //   Day trades:   every 30 min during market hours (9:30 AM – 4:00 PM ET)
@@ -13,6 +15,12 @@
 // Returns { dayTrades, swingTrades, timestamp, cached }
 
 import { createClient } from 'jsr:@supabase/supabase-js@2';
+import {
+  DAY_TRADE_SYSTEM,
+  DAY_TRADE_RULES,
+  SWING_TRADE_SYSTEM,
+  SWING_TRADE_RULES,
+} from '../_shared/prompts.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -60,6 +68,8 @@ interface YahooQuote {
   fiftyDayAverage?: number | { raw: number };
   twoHundredDayAverage?: number | { raw: number };
   marketCap?: number | { raw: number };
+  // Computed indicators (populated from chart data)
+  _indicators?: Indicators;
 }
 
 // AI response shape for one stock
@@ -98,6 +108,85 @@ function rawVal(v: number | { raw: number } | undefined | null): number {
 function round(n: number, d = 2): number {
   const f = Math.pow(10, d);
   return Math.round(n * f) / f;
+}
+
+// ── Technical Indicators (lightweight, computed from daily closes) ───
+
+interface Indicators {
+  rsi14: number | null;
+  macdHistogram: number | null;
+  sma20: number | null;
+  atr14: number | null;
+}
+
+function computeRSI(closes: number[], period = 14): number | null {
+  // closes = oldest-first
+  if (closes.length < period + 1) return null;
+  let avgGain = 0, avgLoss = 0;
+  for (let i = 1; i <= period; i++) {
+    const diff = closes[i] - closes[i - 1];
+    if (diff > 0) avgGain += diff; else avgLoss += Math.abs(diff);
+  }
+  avgGain /= period;
+  avgLoss /= period;
+  for (let i = period + 1; i < closes.length; i++) {
+    const diff = closes[i] - closes[i - 1];
+    avgGain = (avgGain * (period - 1) + (diff > 0 ? diff : 0)) / period;
+    avgLoss = (avgLoss * (period - 1) + (diff < 0 ? Math.abs(diff) : 0)) / period;
+  }
+  if (avgLoss === 0) return 100;
+  return round(100 - 100 / (1 + avgGain / avgLoss), 1);
+}
+
+function computeMACDHistogram(closes: number[], fast = 12, slow = 26, sig = 9): number | null {
+  // closes = oldest-first
+  if (closes.length < slow + sig) return null;
+  const ema = (data: number[], p: number): number[] => {
+    const k = 2 / (p + 1);
+    const out: number[] = [];
+    let prev = data.slice(0, p).reduce((a, b) => a + b, 0) / p;
+    for (let i = 0; i < p - 1; i++) out.push(NaN);
+    out.push(prev);
+    for (let i = p; i < data.length; i++) { prev = data[i] * k + prev * (1 - k); out.push(prev); }
+    return out;
+  };
+  const fastE = ema(closes, fast);
+  const slowE = ema(closes, slow);
+  const macdLine: number[] = [];
+  for (let i = 0; i < closes.length; i++) {
+    macdLine.push(isNaN(fastE[i]) || isNaN(slowE[i]) ? NaN : fastE[i] - slowE[i]);
+  }
+  const validMacd = macdLine.filter(v => !isNaN(v));
+  if (validMacd.length < sig) return null;
+  const k2 = 2 / (sig + 1);
+  let sigVal = validMacd.slice(0, sig).reduce((a, b) => a + b, 0) / sig;
+  for (let i = sig; i < validMacd.length; i++) sigVal = validMacd[i] * k2 + sigVal * (1 - k2);
+  return round(validMacd[validMacd.length - 1] - sigVal, 3);
+}
+
+function computeATR(highs: number[], lows: number[], closes: number[], period = 14): number | null {
+  // all oldest-first
+  if (closes.length < period + 1) return null;
+  const trs: number[] = [];
+  for (let i = 1; i < closes.length; i++) {
+    trs.push(Math.max(highs[i] - lows[i], Math.abs(highs[i] - closes[i - 1]), Math.abs(lows[i] - closes[i - 1])));
+  }
+  if (trs.length < period) return null;
+  let atr = trs.slice(0, period).reduce((a, b) => a + b, 0) / period;
+  for (let i = period; i < trs.length; i++) atr = (atr * (period - 1) + trs[i]) / period;
+  return round(atr, 2);
+}
+
+function computeIndicators(
+  closes: number[], highs: number[], lows: number[],
+): Indicators {
+  // All arrays should be oldest-first
+  return {
+    rsi14: computeRSI(closes),
+    macdHistogram: computeMACDHistogram(closes),
+    sma20: closes.length >= 20 ? round(closes.slice(-20).reduce((a, b) => a + b, 0) / 20, 2) : null,
+    atr14: computeATR(highs, lows, closes),
+  };
 }
 
 const YAHOO_HEADERS = {
@@ -177,6 +266,11 @@ async function fetchChartQuote(symbol: string): Promise<YahooQuote | null> {
     const price = meta.regularMarketPrice ?? 0;
     const prevClose = meta.chartPreviousClose ?? (validCloses.length >= 2 ? validCloses[validCloses.length - 2] : 0);
 
+    // Compute technical indicators from OHLCV history (oldest-first)
+    const rawHighs = (quotes.high ?? []).filter((h: number | null): h is number => h != null);
+    const rawLows = (quotes.low ?? []).filter((l: number | null): l is number => l != null);
+    const indicators = computeIndicators(validCloses, rawHighs, rawLows);
+
     return {
       symbol: meta.symbol ?? symbol,
       shortName: meta.shortName,
@@ -194,6 +288,7 @@ async function fetchChartQuote(symbol: string): Promise<YahooQuote | null> {
       fiftyTwoWeekLow: meta.fiftyTwoWeekLow ?? 0,
       fiftyDayAverage: sma50,
       twoHundredDayAverage: sma200,
+      _indicators: indicators,
     };
   } catch (e) {
     console.warn(`[Trade Scanner] Chart fetch failed for ${symbol}:`, e);
@@ -213,6 +308,81 @@ async function fetchSwingQuotes(symbols: string[]): Promise<YahooQuote[]> {
   return results;
 }
 
+// ── Intraday candle fetcher (Yahoo v8, 5m bars) ─────────
+// Used in second-pass refinement for top picks only (~5-6 stocks).
+
+interface IntradayCandle {
+  time: string;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+}
+
+async function fetchCandleData(
+  symbol: string,
+  interval = '5m',
+  range = '1d',
+): Promise<IntradayCandle[]> {
+  try {
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=${range}&interval=${interval}&includePrePost=false`;
+    const res = await fetch(url, { headers: YAHOO_HEADERS });
+    if (!res.ok) return [];
+    const data = await res.json();
+    const result = data?.chart?.result?.[0];
+    if (!result) return [];
+
+    const timestamps: number[] = result.timestamp ?? [];
+    const quotes = result.indicators?.quote?.[0] ?? {};
+    const opens: (number | null)[] = quotes.open ?? [];
+    const highs: (number | null)[] = quotes.high ?? [];
+    const lows: (number | null)[] = quotes.low ?? [];
+    const closes: (number | null)[] = quotes.close ?? [];
+    const volumes: (number | null)[] = quotes.volume ?? [];
+
+    const isDaily = interval === '1d' || interval === '1wk';
+
+    const candles: IntradayCandle[] = [];
+    for (let i = 0; i < timestamps.length; i++) {
+      if (opens[i] == null || closes[i] == null) continue;
+      const dt = new Date(timestamps[i] * 1000);
+      let label: string;
+      if (isDaily) {
+        // Daily/weekly: show date like "Feb 10"
+        label = dt.toLocaleDateString('en-US', { timeZone: 'America/New_York', month: 'short', day: 'numeric' });
+      } else {
+        // Intraday: show time like "09:35"
+        label = dt.toLocaleString('en-US', { timeZone: 'America/New_York', hour: '2-digit', minute: '2-digit', hour12: false });
+      }
+      candles.push({
+        time: label,
+        open: round(opens[i]!),
+        high: round(highs[i] ?? opens[i]!),
+        low: round(lows[i] ?? opens[i]!),
+        close: round(closes[i]!),
+        volume: volumes[i] ?? 0,
+      });
+    }
+    return candles;
+  } catch (e) {
+    console.warn(`[Trade Scanner] Candle fetch failed for ${symbol} (${interval}/${range}):`, e);
+    return [];
+  }
+}
+
+function formatCandlesCompact(candles: IntradayCandle[], maxCandles = 40): string {
+  if (candles.length === 0) return 'No intraday candles available.';
+  const recent = candles.slice(-maxCandles);
+  const lines = recent.map(c => {
+    const volK = c.volume >= 1_000_000
+      ? `${(c.volume / 1_000_000).toFixed(1)}M`
+      : `${Math.round(c.volume / 1000)}K`;
+    return `${c.time} O:${c.open} H:${c.high} L:${c.low} C:${c.close} V:${volK}`;
+  });
+  return lines.join('\n');
+}
+
 // ── Format stock data for AI prompt ─────────────────────
 
 function formatQuoteForAI(q: YahooQuote, idx: number): string {
@@ -229,6 +399,7 @@ function formatQuoteForAI(q: YahooQuote, idx: number): string {
   const low = rawVal(q.regularMarketDayLow);
   const open = rawVal(q.regularMarketOpen);
   const prevClose = rawVal(q.regularMarketPreviousClose);
+  const ind = q._indicators;
 
   const parts = [
     `${idx + 1}. ${q.symbol} ($${round(price)})`,
@@ -244,6 +415,25 @@ function formatQuoteForAI(q: YahooQuote, idx: number): string {
     const gapPct = round(((open - prevClose) / prevClose) * 100, 1);
     if (Math.abs(gapPct) > 1) parts.push(`Gap: ${gapPct > 0 ? '+' : ''}${gapPct}%`);
   }
+
+  // Technical indicators (critical for matching full analysis)
+  if (ind) {
+    if (ind.rsi14 !== null) {
+      const rsiLabel = ind.rsi14 >= 70 ? ' (overbought)' : ind.rsi14 <= 30 ? ' (oversold)' : '';
+      parts.push(`RSI(14): ${ind.rsi14}${rsiLabel}`);
+    }
+    if (ind.macdHistogram !== null) {
+      parts.push(`MACD hist: ${ind.macdHistogram > 0 ? '+' : ''}${ind.macdHistogram} (${ind.macdHistogram > 0 ? 'bullish' : 'bearish'})`);
+    }
+    if (ind.sma20 !== null) {
+      parts.push(`SMA20: $${ind.sma20} (${price > ind.sma20 ? 'above' : 'below'})`);
+    }
+    if (ind.atr14 !== null) {
+      const atrPct = round((ind.atr14 / price) * 100, 1);
+      parts.push(`ATR: $${ind.atr14} (${atrPct}%)`);
+    }
+  }
+
   if (sma50 > 0) parts.push(`SMA50: $${round(sma50)} (${price > sma50 ? 'above' : 'below'})`);
   if (sma200 > 0) parts.push(`SMA200: $${round(sma200)} (${price > sma200 ? 'above' : 'below'})`);
   if (high52 > 0 && low52 > 0 && high52 > low52) {
@@ -334,62 +524,57 @@ function cleanJson(text: string): string {
     .trim();
 }
 
-// ── AI batch evaluation prompts ─────────────────────────
-
-const DAY_SCAN_SYSTEM = `You are an aggressive intraday trader who trades longs and shorts equally. You evaluate a batch of stocks to find the BEST day trade setups. You must be SELECTIVE — only recommend stocks where you have genuine conviction. Quality over quantity.
-
-Rules (same as your full analysis):
-- Momentum continuation is valid intraday — stocks running CAN keep running.
-- RSI > 70 = overbought caution but not a dealbreaker if momentum is strong.
-- Volume ratio is critical: > 2x confirms the move; < 1x = suspect. Weight this heavily.
-- Overextended stocks (up 30%+ today) = SELL/short candidates, not BUY.
-- Big losers on high volume = SELL candidates (ride breakdown).
-- SKIP anything without a clear edge — a stock moving 3% on average volume is noise.
-- Price < $5 = extra caution (penny stock manipulation risk).
-- Your confidence score MUST match what you'd give in a full analysis. Be honest. If unsure, SKIP.`;
+// ── AI prompts (all use shared rules from _shared/prompts.ts) ────
+// Pass 1: Quick batch scan with indicators only (no candles).
+// Pass 2: Refine top picks with candle data using the SAME rules.
 
 const DAY_SCAN_USER = `Evaluate these stocks for INTRADAY trades. For each, decide BUY, SELL, or SKIP.
+NOTE: You only have indicators (no candle data). For extreme movers (>20%), max confidence 7 — you'd need candles to be sure.
 
-IMPORTANT:
-- Only BUY/SELL if confidence >= 7. Otherwise SKIP.
-- Your signal and confidence MUST be what you'd give in a full detailed analysis with the same data.
+${DAY_TRADE_RULES}
+
+- SKIP anything without a clear edge — a stock moving 3% on average volume is noise.
 - Better to SKIP 80% and return 2-3 great picks than recommend 10 mediocre ones.
-- Confidence 7 = decent setup, 8 = strong, 9 = very strong, 10 = rare slam dunk.
 
 Respond with a JSON array ONLY (no markdown, no backticks):
 [{"ticker":"AAPL","signal":"BUY"|"SELL"|"SKIP","confidence":0-10,"reason":"1 sentence"}]
 
 Stocks:
 {{STOCK_DATA}}`;
-
-const SWING_SCAN_SYSTEM = `You are a disciplined swing trader with 20 years experience. You find multi-day setups from price data and moving averages. You buy pullbacks to support, NEVER chase rallies. You short breakdowns below key levels. Quality over quantity — you'd rather sit in cash than take a mediocre trade.
-
-Rules (same as your full analysis):
-- SMA(200) = long-term trend. SMA(50) = medium-term. Above both = uptrend; below both = downtrend.
-- BUY: price pulling back to SMA50 in uptrend, near support, on declining volume.
-- SELL: price bouncing into SMA50 resistance in downtrend, or breaking below support on volume.
-- NEVER BUY a stock extended 15%+ above SMA50 — wait for pullback.
-- NEVER BUY within 3 days of earnings.
-- Volume ratio > 2x on the move = institutional activity (confirms direction).
-- Volume ratio < 0.8x on the move = suspect — lower confidence significantly.
-- SKIP anything in no-man's-land (between SMA50 and SMA200 with no clear trend).
-- Your confidence score MUST match what you'd give in a full analysis.`;
 
 const SWING_SCAN_USER = `Evaluate these stocks for SWING trades (multi-day holds). For each, decide BUY, SELL, or SKIP.
+NOTE: You only have indicators (no candle data). For extreme movers (>20%), max confidence 6-7 — you'd need candles to be sure.
 
-IMPORTANT:
-- Only BUY/SELL if confidence >= 6. Otherwise SKIP.
-- Your signal and confidence MUST be what you'd give in a full detailed analysis with the same data.
+${SWING_TRADE_RULES}
+
+- SKIP anything without a clear edge or in no-man's-land (between SMA50 and SMA200, RSI 45-55).
 - Better to SKIP 80% and return 3-5 solid picks than recommend 10 mediocre ones.
-- Look for: pullbacks to SMA50 support in uptrends, breakdowns below key levels in downtrends, stocks near 52w lows that are stabilizing.
-- Confidence 6 = decent setup, 7 = good, 8 = strong, 9 = very strong, 10 = rare slam dunk.
-- On a strong market day most stocks are UP — look for those pulling back to support as swing entries.
 
 Respond with a JSON array ONLY (no markdown, no backticks):
 [{"ticker":"AAPL","signal":"BUY"|"SELL"|"SKIP","confidence":0-10,"reason":"1 sentence"}]
 
 Stocks:
 {{STOCK_DATA}}`;
+
+// Pass 2 refine: SAME system + rules as full analysis, just batch output format.
+
+const DAY_REFINE_USER = `Evaluate each stock for an INTRADAY trade using the indicators and candle data provided.
+
+${DAY_TRADE_RULES}
+
+Output: JSON array ONLY (no markdown, no backticks). Use SKIP instead of HOLD.
+[{"ticker":"AAPL","signal":"BUY"|"SELL"|"SKIP","confidence":0-10,"reason":"1-2 sentences"}]
+
+{{STOCKS}}`;
+
+const SWING_REFINE_USER = `Evaluate each stock for a SWING trade (multi-day hold) using the indicators and candle data provided.
+
+${SWING_TRADE_RULES}
+
+Output: JSON array ONLY (no markdown, no backticks). Use SKIP instead of HOLD.
+[{"ticker":"AAPL","signal":"BUY"|"SELL"|"SKIP","confidence":0-10,"reason":"1-2 sentences"}]
+
+{{STOCKS}}`;
 
 // ── Build TradeIdea from AI eval + Yahoo quote ──────────
 
@@ -587,30 +772,92 @@ Deno.serve(async (req) => {
           deduped.set(sym, q);
         }
       }
-      const candidates = [...deduped.values()]
+      let candidates = [...deduped.values()]
         .sort((a, b) => Math.abs(rawVal(b.regularMarketChangePercent)) - Math.abs(rawVal(a.regularMarketChangePercent)))
         .slice(0, 15);
+
+      // Enrich day trade candidates with chart data (indicators: RSI, MACD, ATR)
+      // This is critical for matching the full analysis signal
+      const enrichedQuotes = await fetchSwingQuotes(candidates.map(q => q.symbol));
+      const enrichMap = new Map(enrichedQuotes.map(q => [q.symbol, q]));
+      candidates = candidates.map(q => {
+        const enriched = enrichMap.get(q.symbol);
+        if (enriched) {
+          // Merge: keep screener's real-time data but add indicators + SMAs from chart
+          return {
+            ...q,
+            fiftyDayAverage: enriched.fiftyDayAverage,
+            twoHundredDayAverage: enriched.twoHundredDayAverage,
+            fiftyTwoWeekHigh: enriched.fiftyTwoWeekHigh,
+            fiftyTwoWeekLow: enriched.fiftyTwoWeekLow,
+            _indicators: enriched._indicators,
+          };
+        }
+        return q;
+      });
+      console.log(`[Trade Scanner] Enriched ${enrichedQuotes.length}/${candidates.length} day candidates with indicators`);
 
       if (candidates.length > 0) {
         const stockData = candidates.map((q, i) => formatQuoteForAI(q, i)).join('\n');
         const prompt = DAY_SCAN_USER.replace('{{STOCK_DATA}}', stockData);
 
         try {
-          const raw = await callGemini(GEMINI_KEYS, DAY_SCAN_SYSTEM, prompt, 0.15, 2000);
+          // ── Pass 1: Quick scan with indicators only ──
+          const raw = await callGemini(GEMINI_KEYS, DAY_TRADE_SYSTEM, prompt, 0.15, 2000);
           const evals: AIEval[] = JSON.parse(cleanJson(raw));
           const quoteMap = new Map(candidates.map(q => [q.symbol, q]));
 
-          dayIdeas = evals
-            .filter(e => e.signal !== 'SKIP' && e.confidence >= 7)
-            .map(e => {
-              const q = quoteMap.get(e.ticker);
-              return q ? buildIdea(e, q, 'DAY_TRADE') : null;
-            })
-            .filter((x): x is TradeIdea => x !== null)
+          const pass1 = evals
+            .filter(e => e.signal !== 'SKIP' && e.confidence >= 6) // Lower threshold for pass 1 — pass 2 will tighten
             .sort((a, b) => b.confidence - a.confidence)
-            .slice(0, 6);
+            .slice(0, 8); // Keep top 8 for refinement
 
-          console.log(`[Trade Scanner] Day: ${candidates.length} candidates → ${evals.length} evaluated → ${dayIdeas.length} passed (confidence >= 7)`);
+          console.log(`[Trade Scanner] Day Pass 1: ${candidates.length} → ${pass1.length} shortlisted (${pass1.map(e => `${e.ticker}:${e.signal}/${e.confidence}`).join(', ')})`);
+
+          // ── Pass 2: Refine top picks with multi-timeframe candles (5m + 15m) ──
+          if (pass1.length > 0) {
+            console.log(`[Trade Scanner] Fetching 5m + 15m candles for ${pass1.length} day candidates...`);
+            const [candles5m, candles15m] = await Promise.all([
+              Promise.all(pass1.map(async (e) => ({
+                ticker: e.ticker,
+                candles: await fetchCandleData(e.ticker, '5m', '1d'),
+              }))),
+              Promise.all(pass1.map(async (e) => ({
+                ticker: e.ticker,
+                candles: await fetchCandleData(e.ticker, '15m', '5d'),
+              }))),
+            ]);
+
+            const stockBlocks = pass1.map((e) => {
+              const q = quoteMap.get(e.ticker);
+              const c5 = candles5m.find(c => c.ticker === e.ticker);
+              const c15 = candles15m.find(c => c.ticker === e.ticker);
+              const summary = formatQuoteForAI(q!, 0);
+              const text5m = c5 && c5.candles.length > 0
+                ? formatCandlesCompact(c5.candles, 30)
+                : 'No 5m candles available';
+              const text15m = c15 && c15.candles.length > 0
+                ? formatCandlesCompact(c15.candles, 20)
+                : 'No 15m candles available';
+              return `--- ${e.ticker} ---\nIndicators: ${summary}\nPass-1 signal: ${e.signal}/${e.confidence} ("${e.reason}")\n\n5m Candles (today, ET):\n${text5m}\n\n15m Candles (5-day, ET):\n${text15m}`;
+            }).join('\n\n');
+
+            const refinePrompt = DAY_REFINE_USER.replace('{{STOCKS}}', stockBlocks);
+            const refineRaw = await callGemini(GEMINI_KEYS, DAY_TRADE_SYSTEM, refinePrompt, 0.15, 2000);
+            const refined: AIEval[] = JSON.parse(cleanJson(refineRaw));
+
+            dayIdeas = refined
+              .filter(e => e.signal !== 'SKIP' && e.confidence >= 7)
+              .map(e => {
+                const q = quoteMap.get(e.ticker);
+                return q ? buildIdea(e, q, 'DAY_TRADE') : null;
+              })
+              .filter((x): x is TradeIdea => x !== null)
+              .sort((a, b) => b.confidence - a.confidence)
+              .slice(0, 6);
+
+            console.log(`[Trade Scanner] Day Pass 2: ${pass1.length} refined → ${dayIdeas.length} final (${dayIdeas.map(d => `${d.ticker}:${d.signal}/${d.confidence}`).join(', ')})`);
+          }
         } catch (err) {
           console.error('[Trade Scanner] Day AI eval failed:', err);
           // Keep stale data if AI fails
@@ -633,21 +880,59 @@ Deno.serve(async (req) => {
         const prompt = SWING_SCAN_USER.replace('{{STOCK_DATA}}', stockData);
 
         try {
-          const raw = await callGemini(GEMINI_KEYS, SWING_SCAN_SYSTEM, prompt, 0.15, 3000);
+          // ── Pass 1: Quick scan with indicators only ──
+          const raw = await callGemini(GEMINI_KEYS, SWING_TRADE_SYSTEM, prompt, 0.15, 3000);
           const evals: AIEval[] = JSON.parse(cleanJson(raw));
           const quoteMap = new Map(candidates.map(q => [q.symbol, q]));
 
-          swingIdeas = evals
-            .filter(e => e.signal !== 'SKIP' && e.confidence >= 6)
-            .map(e => {
-              const q = quoteMap.get(e.ticker);
-              return q ? buildIdea(e, q, 'SWING_TRADE') : null;
-            })
-            .filter((x): x is TradeIdea => x !== null)
-            .sort((a, b) => b.confidence - a.confidence)
-            .slice(0, 6);
+          // Log top AI evaluations for debugging
+          const nonSkip = evals.filter(e => e.signal !== 'SKIP').sort((a, b) => b.confidence - a.confidence);
+          const topSkips = evals.filter(e => e.signal === 'SKIP').sort((a, b) => b.confidence - a.confidence).slice(0, 3);
+          console.log(`[Trade Scanner] Swing Pass 1 non-SKIP: ${nonSkip.slice(0, 5).map(e => `${e.ticker}:${e.signal}/${e.confidence}`).join(', ') || 'none'}`);
+          console.log(`[Trade Scanner] Swing Pass 1 sample SKIPs: ${topSkips.map(e => `${e.ticker}(${e.confidence}): ${e.reason.slice(0, 50)}`).join(' | ') || 'none'}`);
 
-          console.log(`[Trade Scanner] Swing: ${candidates.length} candidates → ${evals.length} evaluated → ${swingIdeas.length} passed (confidence >= 7)`);
+          const pass1 = nonSkip
+            .filter(e => e.confidence >= 5) // Lower threshold for pass 1
+            .slice(0, 8);
+
+          // ── Pass 2: Refine top picks with daily candles ──
+          if (pass1.length > 0) {
+            console.log(`[Trade Scanner] Fetching daily candles for ${pass1.length} swing candidates...`);
+            const candleResults = await Promise.all(
+              pass1.map(async (e) => ({
+                ticker: e.ticker,
+                candles: await fetchCandleData(e.ticker, '1d', '3mo'),
+              }))
+            );
+
+            const stockBlocks = pass1.map((e) => {
+              const q = quoteMap.get(e.ticker);
+              const cr = candleResults.find(c => c.ticker === e.ticker);
+              const summary = formatQuoteForAI(q!, 0);
+              const candleText = cr && cr.candles.length > 0
+                ? formatCandlesCompact(cr.candles, 20) // Last 20 daily candles
+                : 'No daily candles available';
+              return `--- ${e.ticker} ---\nIndicators: ${summary}\nPass-1 signal: ${e.signal}/${e.confidence} ("${e.reason}")\nDaily Candles (recent 20 days):\n${candleText}`;
+            }).join('\n\n');
+
+            const refinePrompt = SWING_REFINE_USER.replace('{{STOCKS}}', stockBlocks);
+            const refineRaw = await callGemini(GEMINI_KEYS, SWING_TRADE_SYSTEM, refinePrompt, 0.15, 3000);
+            const refined: AIEval[] = JSON.parse(cleanJson(refineRaw));
+
+            swingIdeas = refined
+              .filter(e => e.signal !== 'SKIP' && e.confidence >= 6)
+              .map(e => {
+                const q = quoteMap.get(e.ticker);
+                return q ? buildIdea(e, q, 'SWING_TRADE') : null;
+              })
+              .filter((x): x is TradeIdea => x !== null)
+              .sort((a, b) => b.confidence - a.confidence)
+              .slice(0, 6);
+
+            console.log(`[Trade Scanner] Swing Pass 2: ${pass1.length} refined → ${swingIdeas.length} final (${swingIdeas.map(d => `${d.ticker}:${d.signal}/${d.confidence}`).join(', ')})`);
+          } else {
+            console.log(`[Trade Scanner] Swing: ${candidates.length} candidates → 0 passed pass 1, skipping pass 2`);
+          }
         } catch (err) {
           console.error('[Trade Scanner] Swing AI eval failed:', err);
         }
