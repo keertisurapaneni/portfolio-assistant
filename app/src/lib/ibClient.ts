@@ -1,16 +1,15 @@
 /**
- * Interactive Brokers Client Portal Gateway REST client.
+ * Interactive Brokers client — talks to the local auto-trader Node.js service.
  *
- * Talks to the CPGW running locally at https://localhost:5000.
- * All calls go through the browser — no backend service needed.
+ * The auto-trader service (localhost:3001) bridges to IB Gateway via TWS API.
+ * No daily login needed — IBC handles auto-login to IB Gateway.
  *
- * Setup: download CPGW from IB, run it, login via browser once/day.
- * CORS: configure conf.yaml to allow localhost:5173.
+ * Architecture: Browser → auto-trader (REST, port 3001) → IB Gateway (TWS, port 4002)
  */
 
 // ── Configuration ────────────────────────────────────────
 
-const IB_BASE_URL = 'https://localhost:5000/v1/api';
+const IB_BASE_URL = 'http://localhost:3001/api';
 
 // ── Types ────────────────────────────────────────────────
 
@@ -103,37 +102,35 @@ async function ibFetch<T>(
 
 // ── Auth / Session ───────────────────────────────────────
 
-/** Check if CPGW session is alive */
+/** Check if auto-trader service + IB Gateway are connected */
 export async function checkAuthStatus(): Promise<IBAuthStatus> {
   try {
-    return await ibFetch<IBAuthStatus>('/iserver/auth/status', {
-      method: 'POST',
-    });
+    return await ibFetch<IBAuthStatus>('/status');
   } catch {
-    return { authenticated: false, connected: false, competing: false, fail: 'Gateway unreachable' };
+    return { authenticated: false, connected: false, competing: false, fail: 'Auto-trader service unreachable' };
   }
 }
 
-/** Keep session alive (call every 60s while auto-trading) */
+/** Ping to verify service is alive (TWS API keeps its own connection) */
 export async function pingSession(): Promise<boolean> {
   try {
-    await ibFetch('/tickle', { method: 'POST' });
-    return true;
+    const status = await ibFetch<IBAuthStatus>('/status');
+    return status.connected;
   } catch {
     return false;
   }
 }
 
-/** Re-authenticate (triggers SSO) */
+/** Re-authenticate — not needed with IBC auto-login, but kept for interface compatibility */
 export async function reauthenticate(): Promise<void> {
-  await ibFetch('/iserver/reauthenticate', { method: 'POST' });
+  // No-op: IBC handles authentication automatically
 }
 
 // ── Accounts ─────────────────────────────────────────────
 
-/** Get all accounts (returns paper + live if both exist) */
+/** Get all accounts from the auto-trader service */
 export async function getAccounts(): Promise<string[]> {
-  const data = await ibFetch<{ accounts: string[] }>('/iserver/accounts');
+  const data = await ibFetch<{ accounts: string[] }>('/status');
   return data.accounts ?? [];
 }
 
@@ -141,32 +138,26 @@ export async function getAccounts(): Promise<string[]> {
 
 /** Search for a stock contract by ticker symbol */
 export async function searchContract(symbol: string): Promise<IBContractSearch | null> {
-  const results = await ibFetch<IBContractSearch[]>(
-    `/iserver/secdef/search`,
-    {
-      method: 'POST',
-      body: JSON.stringify({ symbol: symbol.toUpperCase(), secType: 'STK' }),
-    }
-  );
-
-  if (!results || results.length === 0) return null;
-
-  // Prefer US-listed stock
-  const usStock = results.find(
-    (r) => r.secType === 'STK' && (r.exchange === 'NASDAQ' || r.exchange === 'NYSE' || r.exchange === 'SMART')
-  );
-  return usStock ?? results[0];
+  try {
+    return await ibFetch<IBContractSearch>(`/contract/${symbol.toUpperCase()}`);
+  } catch {
+    return null;
+  }
 }
 
 // ── Orders ───────────────────────────────────────────────
 
 /**
  * Place a bracket order (entry + stop loss + take profit).
- * IB's bracket order format: parent + 2 child orders.
+ * Sends to the auto-trader service which places via TWS API.
+ *
+ * Accepts both legacy (conid) and new (symbol) params.
+ * The auto-trader service resolves contracts internally by symbol.
  */
 export async function placeBracketOrder(params: {
   accountId: string;
   conid: number;
+  symbol?: string;
   side: 'BUY' | 'SELL';
   quantity: number;
   entryPrice: number;
@@ -174,54 +165,22 @@ export async function placeBracketOrder(params: {
   takeProfit: number;
   tif?: 'DAY' | 'GTC';
 }): Promise<IBOrderReply[]> {
-  const { accountId, conid, side, quantity, entryPrice, stopLoss, takeProfit, tif = 'GTC' } = params;
-
-  // Opposite side for closing orders
-  const closeSide = side === 'BUY' ? 'SELL' : 'BUY';
-
-  const orders = {
-    orders: [
-      {
-        // Parent: entry limit order
-        acctId: accountId,
-        conid,
-        orderType: 'LMT',
-        side,
-        quantity,
-        price: entryPrice,
-        tif,
-        outsideRTH: false,
-        isSingleGroup: true,
-        // Children follow
-        childOrders: [
-          {
-            // Stop loss
-            acctId: accountId,
-            conid,
-            orderType: 'STP',
-            side: closeSide,
-            quantity,
-            price: stopLoss,
-            tif,
-          },
-          {
-            // Take profit
-            acctId: accountId,
-            conid,
-            orderType: 'LMT',
-            side: closeSide,
-            quantity,
-            price: takeProfit,
-            tif,
-          },
-        ],
-      },
-    ],
-  };
+  const { symbol, side, quantity, entryPrice, stopLoss, takeProfit, tif = 'GTC' } = params;
 
   return await ibFetch<IBOrderReply[]>(
-    `/iserver/account/${accountId}/orders`,
-    { method: 'POST', body: JSON.stringify(orders) }
+    '/order',
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        symbol: symbol ?? '',
+        side,
+        quantity,
+        entryPrice,
+        stopLoss,
+        takeProfit,
+        tif,
+      }),
+    }
   );
 }
 
@@ -231,51 +190,45 @@ export async function placeMarketOrder(params: {
   conid: number;
   side: 'BUY' | 'SELL';
   quantity: number;
+  symbol?: string;
 }): Promise<IBOrderReply[]> {
-  const { accountId, conid, side, quantity } = params;
+  const { side, quantity, symbol } = params;
 
+  // Use bracket order with very wide stop/target to simulate market order
+  // The auto-trader service handles this via TWS API
   return await ibFetch<IBOrderReply[]>(
-    `/iserver/account/${accountId}/orders`,
+    '/order',
     {
       method: 'POST',
       body: JSON.stringify({
-        orders: [{
-          acctId: accountId,
-          conid,
-          orderType: 'MKT',
-          side,
-          quantity,
-          tif: 'DAY',
-        }],
+        symbol: symbol ?? '',
+        side,
+        quantity,
+        entryPrice: 0,    // 0 signals market order to the service
+        stopLoss: 0,
+        takeProfit: 0,
+        tif: 'DAY',
       }),
     }
   );
 }
 
-/** Confirm an order reply (IB sometimes asks for confirmation) */
-export async function confirmOrder(replyId: string): Promise<IBOrderReply[]> {
-  return await ibFetch<IBOrderReply[]>(
-    `/iserver/reply/${replyId}`,
-    { method: 'POST', body: JSON.stringify({ confirmed: true }) }
-  );
+/** Confirm an order reply — not needed with TWS API (auto-confirmed) */
+export async function confirmOrder(_replyId: string): Promise<IBOrderReply[]> {
+  // TWS API doesn't have the same confirmation flow as CPGW
+  return [];
 }
 
 /** Cancel an order */
-export async function cancelOrder(accountId: string, orderId: string): Promise<void> {
-  await ibFetch(`/iserver/account/${accountId}/order/${orderId}`, {
-    method: 'DELETE',
-  });
+export async function cancelOrder(_accountId: string, orderId: string): Promise<void> {
+  await ibFetch(`/order/${orderId}`, { method: 'DELETE' });
 }
 
 // ── Positions ────────────────────────────────────────────
 
 /** Get all open positions */
-export async function getPositions(accountId: string): Promise<IBPosition[]> {
-  const pageId = 0;
-  const data = await ibFetch<IBPosition[]>(
-    `/portfolio/${accountId}/positions/${pageId}`
-  );
-  return data ?? [];
+export async function getPositions(_accountId: string): Promise<IBPosition[]> {
+  return await ibFetch<IBPosition[]>('/positions');
 }
 
 // ── Orders List ──────────────────────────────────────────
@@ -295,16 +248,6 @@ export interface IBLiveOrder {
 
 /** Get live/working orders */
 export async function getLiveOrders(): Promise<IBLiveOrder[]> {
-  const data = await ibFetch<{ orders: IBLiveOrder[] }>('/iserver/account/orders');
+  const data = await ibFetch<{ orders: IBLiveOrder[] }>('/orders');
   return data.orders ?? [];
-}
-
-// ── Market Data ──────────────────────────────────────────
-
-/** Get a quick snapshot of market data for a conid */
-export async function getMarketDataSnapshot(conids: number[]): Promise<Record<string, unknown>[]> {
-  const fields = '31,84,86'; // last price, bid, ask
-  return await ibFetch<Record<string, unknown>[]>(
-    `/iserver/marketdata/snapshot?conids=${conids.join(',')}&fields=${fields}`
-  );
 }

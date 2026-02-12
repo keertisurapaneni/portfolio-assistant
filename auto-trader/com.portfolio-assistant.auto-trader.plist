@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  macOS launchd plist — auto-starts the auto-trader on Mac login.
+
+  To install:
+    cp com.portfolio-assistant.auto-trader.plist ~/Library/LaunchAgents/
+    launchctl load ~/Library/LaunchAgents/com.portfolio-assistant.auto-trader.plist
+
+  To uninstall:
+    launchctl unload ~/Library/LaunchAgents/com.portfolio-assistant.auto-trader.plist
+    rm ~/Library/LaunchAgents/com.portfolio-assistant.auto-trader.plist
+
+  Logs: /tmp/auto-trader-stdout.log, /tmp/auto-trader-stderr.log
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.portfolio-assistant.auto-trader</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>-c</string>
+        <!-- UPDATE this path to match your checkout location -->
+        <string>cd ~/Git-RV/portfolio-assistant/auto-trader && ./start.sh</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/auto-trader-stdout.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/tmp/auto-trader-stderr.log</string>
+
+    <!-- Only run on weekdays during market hours (ET: 9 AM - 4:30 PM) -->
+    <!-- Remove this section to run all day -->
+    <key>StartCalendarInterval</key>
+    <array>
+        <!-- Monday through Friday at 9:00 AM -->
+        <dict>
+            <key>Weekday</key><integer>1</integer>
+            <key>Hour</key><integer>9</integer>
+            <key>Minute</key><integer>0</integer>
+        </dict>
+        <dict>
+            <key>Weekday</key><integer>2</integer>
+            <key>Hour</key><integer>9</integer>
+            <key>Minute</key><integer>0</integer>
+        </dict>
+        <dict>
+            <key>Weekday</key><integer>3</integer>
+            <key>Hour</key><integer>9</integer>
+            <key>Minute</key><integer>0</integer>
+        </dict>
+        <dict>
+            <key>Weekday</key><integer>4</integer>
+            <key>Hour</key><integer>9</integer>
+            <key>Minute</key><integer>0</integer>
+        </dict>
+        <dict>
+            <key>Weekday</key><integer>5</integer>
+            <key>Hour</key><integer>9</integer>
+            <key>Minute</key><integer>0</integer>
+        </dict>
+    </array>
+</dict>
+</plist>

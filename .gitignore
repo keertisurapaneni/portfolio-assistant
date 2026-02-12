@@ -47,3 +47,9 @@ lerna-debug.log*
 # _bmad-output/
 .vercel
 .env*.local
+
+# Auto-trader: IBC credentials (never commit)
+auto-trader/ibc/config.ini
+
+# Playwright MCP
+.playwright-mcp/

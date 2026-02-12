@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import {
   TrendingUp,
   Gem,
@@ -8,12 +8,15 @@ import {
   RefreshCw,
   AlertCircle,
   Award,
+  Zap,
 } from 'lucide-react';
 import { TickerLabel } from './TickerLabel';
 import { ErrorBanner } from './ErrorBanner';
 import type { EnhancedSuggestedStock } from '../data/suggestedFinds';
 import { useSuggestedFinds, COMPOUNDER_CATEGORIES, GOLD_MINE_CATEGORIES } from '../hooks/useSuggestedFinds';
 import { cn } from '../lib/utils';
+import { getAutoTraderConfig, processSuggestedFinds, type ProcessResult } from '../lib/autoTrader';
+import { useAuth } from '../lib/auth';
 
 interface SuggestedFindsProps {
   existingTickers: string[];
@@ -49,6 +52,38 @@ export function SuggestedFinds({ existingTickers }: SuggestedFindsProps) {
   } = useSuggestedFinds(existingTickers);
 
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [, setAutoTradeResults] = useState<ProcessResult[]>([]);
+  const [isAutoTrading, setIsAutoTrading] = useState(false);
+  const processedFindsRef = useRef<Set<string>>(new Set());
+  const { user } = useAuth();
+  const isAuthed = !!user;
+
+  // ── Auto-buy Suggested Finds with conviction 7+ ──
+  useEffect(() => {
+    const config = getAutoTraderConfig();
+    if (!config.enabled || !isAuthed) return;
+
+    // Combine compounders and gold mines
+    const allStocks = [...displayedCompounders, ...displayedGoldMines];
+    if (allStocks.length === 0) return;
+
+    // Filter stocks with conviction >= 7 that haven't been processed yet
+    const newStocks = allStocks.filter(
+      s => (s.conviction ?? 0) >= 7 && !processedFindsRef.current.has(s.ticker)
+    );
+    if (newStocks.length === 0) return;
+
+    // Mark as processed to avoid duplicates
+    newStocks.forEach(s => processedFindsRef.current.add(s.ticker));
+
+    setIsAutoTrading(true);
+    processSuggestedFinds(newStocks, config)
+      .then(results => {
+        setAutoTradeResults(results);
+        setIsAutoTrading(false);
+      })
+      .catch(() => setIsAutoTrading(false));
+  }, [displayedCompounders, displayedGoldMines, isAuthed]);
 
   const handleRefresh = async () => {
     setIsRefreshing(true);
@@ -154,6 +189,22 @@ export function SuggestedFinds({ existingTickers }: SuggestedFindsProps) {
         isRefreshing={isRefreshing || isLoading}
         onRefresh={handleRefresh}
       />
+
+      {/* Auto-trading indicator */}
+      {isAuthed && getAutoTraderConfig().enabled && (
+        <div className={cn(
+          'flex items-center gap-2 px-3 py-2 rounded-lg text-sm',
+          isAutoTrading
+            ? 'bg-amber-50 text-amber-700 border border-amber-200'
+            : 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+        )}>
+          <Zap className={cn('w-3.5 h-3.5', isAutoTrading && 'animate-pulse')} />
+          {isAutoTrading
+            ? 'Auto-buying suggested finds with conviction 7+...'
+            : 'Auto-buy enabled — stocks with conviction 7+ will be purchased on IB paper'
+          }
+        </div>
+      )}
 
       {/* Steady Compounders */}
       <section>
