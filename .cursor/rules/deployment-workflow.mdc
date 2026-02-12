@@ -1,5 +1,5 @@
 ---
-description: Deployment workflow — always verify local build before deploying to Vercel
+description: Deployment workflow — ensure local dev server, build, user approval before push
 alwaysApply: true
 ---
 
@@ -7,7 +7,21 @@ alwaysApply: true
 
 When deploying changes (user says "deploy", "push to Vercel", "ship it", etc.), follow this sequence:
 
-## 1. Local Build Verification (always do first)
+## 0. Ensure Local Dev Server is Running
+
+Before anything else, check if the Vite dev server is running. Look at terminal files for an active `npm run dev` process on port 5173.
+
+If NOT running, start it:
+
+```bash
+cd app && npm run dev
+```
+
+Tell the user: "Dev server running at http://localhost:5173/ — test your changes there first."
+
+**Wait for the user to test and confirm** before proceeding to build.
+
+## 1. Local Build Verification
 
 Run the TypeScript build from the `app/` directory:
 
@@ -24,7 +38,7 @@ cd app && npm run build
 After a successful build, tell the user:
 > "Local build passed. Ready to deploy to Vercel — should I push?"
 
-**Wait for the user to confirm** (e.g. "ok", "yes", "go ahead") before proceeding.
+**ALWAYS wait for the user to explicitly confirm** (e.g. "ok", "yes", "go ahead") before pushing to main. NEVER auto-push.
 
 ## 3. Deploy to Vercel via Git Push
 
@@ -36,6 +50,7 @@ git add -A && git commit -m "<message>" && git push origin master
 
 ## Rules
 
+- **Always ensure dev server is running** so the user can test locally.
 - **Never skip the local build step.** Even for "small" changes.
-- **Never push to git without user approval** after the build passes.
+- **Never push to git/main without explicit user approval.**
 - If Supabase edge functions also changed, deploy those first (`supabase functions deploy <name> --no-verify-jwt`), then do the frontend build + push.

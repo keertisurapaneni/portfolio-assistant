@@ -1,0 +1,27 @@
+---
+description: Keep docs and READMEs up to date, archive useful plans
+alwaysApply: true
+---
+
+# Documentation & Plans
+
+## Save Useful Plans
+
+When a conversation produces a solid implementation plan (architecture, feature design, multi-step approach), save it to `docs/cursor/` so it's preserved:
+
+```
+docs/cursor/
+  YYYY-MM-DD-feature-name.md
+```
+
+Include: goal, approach, key decisions, and any trade-offs discussed.
+
+## Keep Docs Updated
+
+After significant changes (new features, architecture changes, new edge functions, new DB tables), update the relevant docs:
+
+- `README.md` — project overview, setup instructions
+- `supabase/functions/README.md` — edge function docs
+- Feature-specific docs in `docs/`
+
+Don't create docs for trivial changes. Use judgment — if a future dev would be confused without it, document it.

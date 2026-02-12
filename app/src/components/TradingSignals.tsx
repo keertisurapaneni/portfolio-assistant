@@ -514,7 +514,10 @@ export function TradingSignals() {
     setTicker(t);
     setMode(m);
     setStoredMode(m);
-    fetchSignal(t, false, m);
+    setResult(null);  // Clear stale result so old analysis doesn't show
+    setError(null);
+    // Don't auto-run the full AI analysis — let the user click Analyze.
+    // Just populate the ticker + mode so they can review before running.
   };
 
   const handleSubmit = async (e: React.FormEvent) => {

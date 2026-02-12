@@ -1,7 +1,7 @@
 /**
  * Trade Scanner API — calls the trade-scanner Supabase Edge Function.
- * Scans market movers + curated universe for high-confidence trade setups.
- * Returns day trade and swing trade ideas scored 0-100.
+ * Discovers market movers via Yahoo, evaluates with Gemini AI (same brain
+ * as full analysis), caches in Supabase DB shared across all users.
  */
 
 const TRADE_SCANNER_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/trade-scanner`;
@@ -13,10 +13,9 @@ export interface TradeIdea {
   change: number;
   changePercent: number;
   signal: 'BUY' | 'SELL';
-  confidence: 'Very High' | 'High' | 'Moderate';
-  score: number;        // 0-100 internal score
-  reason: string;       // e.g. "Up 6.2% · Vol 3.1x avg"
-  tags: string[];       // e.g. ["momentum", "volume-surge"]
+  confidence: number;     // 0-10 AI confidence (same scale as full analysis)
+  reason: string;         // AI-generated 1-sentence rationale
+  tags: string[];         // e.g. ["momentum", "volume-surge"]
   mode: 'DAY_TRADE' | 'SWING_TRADE';
 }
 

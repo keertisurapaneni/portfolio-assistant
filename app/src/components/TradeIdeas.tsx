@@ -17,7 +17,7 @@ import { Spinner } from './Spinner';
 
 let _cache: ScanResult | null = null;
 let _cacheTime = 0;
-const CACHE_TTL = 10 * 60 * 1000;
+const CACHE_TTL = 5 * 60 * 1000; // 5 min client-side (DB has its own TTL)
 
 // ── Props ───────────────────────────────────────────────
 
@@ -127,7 +127,7 @@ export function TradeIdeas({ onSelectTicker }: TradeIdeasProps) {
               )}>
                 {idea.changePercent >= 0 ? '+' : ''}{idea.changePercent}%
               </span>
-              <ConfidenceRing score={idea.score} size="sm" />
+              <ConfidenceRing score={idea.confidence} size="sm" />
             </button>
           ))}
           {ideas.length > 5 && (
@@ -220,7 +220,7 @@ export function TradeIdeas({ onSelectTicker }: TradeIdeasProps) {
                     : 'No confirmed swing setups found.'}
                 </p>
                 <p className="text-xs text-[hsl(var(--muted-foreground))] opacity-70">
-                  Market may be closed or conditions don't meet the criteria.
+                  Market may be closed or the AI didn't find setups worth recommending.
                 </p>
               </div>
             )}
@@ -243,15 +243,14 @@ export function TradeIdeas({ onSelectTicker }: TradeIdeasProps) {
   );
 }
 
-// ── Confidence Ring (matches the full Trade Signal analysis ring) ─────
-// Converts 0-100 internal score → 0-10 display, with a circular gauge.
-// Two sizes: "sm" for collapsed preview pills, "md" for expanded cards.
+// ── Confidence Ring ──────────────────────────────────────
+// Same visual as the full Trade Signal analysis confidence ring.
+// Score is already 0-10 from the AI.
 
 function ConfidenceRing({ score, size = 'md' }: { score: number; size?: 'sm' | 'md' }) {
-  const score10 = Math.max(0, Math.min(10, Math.round(score / 10)));
-  const pct = score10 / 10;
+  const clamped = Math.max(0, Math.min(10, Math.round(score)));
+  const pct = clamped / 10;
 
-  // Dimensions vary by size
   const dim = size === 'sm' ? 22 : 36;
   const radius = size === 'sm' ? 8 : 14;
   const strokeWidth = size === 'sm' ? 2.5 : 3.5;
@@ -259,8 +258,8 @@ function ConfidenceRing({ score, size = 'md' }: { score: number; size?: 'sm' | '
   const offset = circumference * (1 - pct);
 
   let color: string;
-  if (score10 >= 7) color = '#22c55e';       // green
-  else if (score10 >= 4) color = '#f59e0b';  // amber
+  if (clamped >= 7) color = '#22c55e';       // green
+  else if (clamped >= 4) color = '#f59e0b';  // amber
   else color = '#ef4444';                     // red
 
   return (
@@ -283,13 +282,9 @@ function ConfidenceRing({ score, size = 'md' }: { score: number; size?: 'sm' | '
       </svg>
       <span
         className="absolute font-bold"
-        style={{
-          color,
-          fontSize: size === 'sm' ? '8px' : '11px',
-          lineHeight: 1,
-        }}
+        style={{ color, fontSize: size === 'sm' ? '8px' : '11px', lineHeight: 1 }}
       >
-        {score10}
+        {clamped}
       </span>
     </div>
   );
@@ -337,7 +332,7 @@ function IdeaCard({
           <SignalPill signal={idea.signal} />
           <span className="text-sm font-bold text-[hsl(var(--foreground))]">{idea.ticker}</span>
           <div className="flex items-center gap-0.5">
-            <ConfidenceRing score={idea.score} size="md" />
+            <ConfidenceRing score={idea.confidence} size="md" />
             <span className="text-[8px] text-[hsl(var(--muted-foreground))]">/10</span>
           </div>
         </div>
@@ -359,7 +354,7 @@ function IdeaCard({
         </span>
       </div>
 
-      {/* Reason */}
+      {/* AI reason */}
       <p className="mt-1.5 text-[11px] text-[hsl(var(--muted-foreground))] leading-snug line-clamp-2">
         {idea.reason}
       </p>
