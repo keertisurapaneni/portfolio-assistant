@@ -123,6 +123,26 @@ Open browser console (F12) and check for:
 - Day trades: 30 min TTL; Swing trades: 6 hr TTL
 - Reduces Gemini API calls by serving cached results
 
+**`paper_trades`** - Auto-executed paper trades
+
+- Tracks every trade placed by the auto-trader on IB paper account
+- Entry, stop-loss, target, fill price, close price, P&L
+- Status lifecycle: PENDING → SUBMITTED → FILLED → STOPPED/TARGET_HIT/CLOSED
+- Scanner confidence + FA confidence + rationale stored per trade
+
+**`trade_learnings`** - AI feedback per completed trade
+
+- Outcome classification: WIN, LOSS, BREAKEVEN
+- AI-generated lesson: what worked, what failed, market context
+- References parent `paper_trades` row (cascade delete)
+
+**`trade_performance`** - Aggregate performance stats
+
+- Single-row table tracking win rate, avg P&L, total trades
+- Common win/loss patterns (text arrays)
+- AI-generated performance summary
+- Updated after each trade batch analysis
+
 **`user_dismissals`** - Dismissed stock suggestions
 
 - Tracks which suggested stocks users have dismissed
@@ -138,12 +158,33 @@ All tables have RLS enabled:
 
 ---
 
+## Edge Functions
+
+All Supabase Edge Functions live in `functions/`. See [`functions/README.md`](functions/README.md) for shared module details and deployment instructions.
+
+| Function | Purpose | External API |
+|---|---|---|
+| `ai-proxy` | Portfolio AI analysis with model fallback | Groq |
+| `trading-signals` | Day/Swing signals with parallel AI agents | Yahoo Finance + Gemini + Finnhub |
+| `trade-scanner` | Trade Ideas: two-pass AI scanner with DB caching | Yahoo Finance + Gemini |
+| `huggingface-proxy` | Suggested Finds AI with model cascade | HuggingFace |
+| `gemini-proxy` | Gemini proxy for client-side AI calls | Google Gemini |
+| `daily-suggestions` | Shared daily cache per category (GET/POST/DELETE) | PostgreSQL |
+| `fetch-stock-data` | Stock data proxy with server-side cache | Finnhub |
+| `scrape-market-movers` | Gainers/losers screener with retry logic | Yahoo Finance |
+| `fetch-yahoo-news` | Company-specific news | Yahoo Finance |
+| `broker-connect` | SnapTrade registration, login portal, disconnect | SnapTrade |
+| `broker-sync` | Fetch and normalize brokerage positions | SnapTrade |
+
+---
+
 ## Migrations
 
 Migrations are located in `migrations/` folder and numbered sequentially:
 
 1. `20260205000001_initial_schema.sql` - Create tables, indexes, triggers
 2. `20260205000002_rls_policies.sql` - Enable RLS and create security policies
+3. `20260213000001_paper_trades.sql` - Paper trading tables (paper_trades, trade_learnings, trade_performance)
 
 To add new migrations later:
 

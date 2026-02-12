@@ -79,7 +79,7 @@ Secure proxy for Finnhub API calls with server-side caching (15 min TTL).
 supabase secrets set FINNHUB_API_KEY=<key>
 supabase secrets set GEMINI_API_KEY=<key>
 supabase secrets set GEMINI_API_KEY_2=<key>
-# ... up to GEMINI_API_KEY_11 (sequential, no gaps)
+# ... up to GEMINI_API_KEY_13 (sequential, no gaps)
 ```
 
 ### Deploy

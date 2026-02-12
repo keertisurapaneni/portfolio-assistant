@@ -47,6 +47,19 @@ A personal investing decision-support tool that combines automated conviction sc
 - Powered by HuggingFace Inference API with model cascade (Qwen2.5-72B → Mixtral-8x7B → Llama-3.1-8B)
 - Server-side daily cache per category — same picks for everyone each day, saves AI tokens
 
+### Paper Trading (`/paper-trading`) 🔒
+
+*Requires authentication*
+
+- **Auto-Execution** — Scanner ideas (confidence 7+) automatically run full analysis → place bracket orders on IB paper account
+- **Manual Execution** — Research any ticker; if FA confidence is 7+ with a BUY/SELL recommendation, prompts to execute on IB
+- **IB Integration** — Bracket orders (entry + stop-loss + target) via Interactive Brokers Gateway
+- **Position Tracking** — Active positions, fill prices, P&L in real-time from Supabase
+- **AI Feedback Loop** — Analyzes completed trades (wins/losses), stores lessons, identifies winning/losing patterns
+- **Performance Dashboard** — Win rate, average P&L, best/worst trades, pattern analysis
+- **Enable/Disable Toggle** — Turn auto-trading on/off at any time
+- **Activity Log** — Live event stream of what the auto-trader is doing
+
 ### Market Movers (`/movers`)
 
 - Top 25 gainers and losers from Yahoo Finance
@@ -63,48 +76,45 @@ A personal investing decision-support tool that combines automated conviction sc
 ┌──────────────────────────▼──────────────────────────────────────────┐
 │                     Vercel (Frontend)                                │
 │          React 18 · TypeScript · Vite · Tailwind CSS 4              │
-│          Client-side routing: / , /signals , /finds , /movers       │
+│  Client-side routing: / , /signals , /finds , /movers , /paper-trading │
 │          Supabase Auth (optional email/password login)              │
-└──────┬────────────┬────────────────────┬────────────────────────────┘
-       │            │                    │
-       │ Portfolio  │ Trade Signals      │  Suggested Finds
-       │ AI         │                    │
-┌──────▼─────────┐ ┌▼──────────────────┐ ┌▼──────────────────────────┐
-│ Supabase Edge  │ │ Supabase Edge     │ │ Supabase Edge             │
-│ Functions      │ │ Functions         │ │ Functions                 │
-│                │ │                   │ │                           │
-│ ai-proxy       │ │ trading-signals   │ │ huggingface-proxy         │
-│ └─ Groq API    │ │ ├─ Twelve Data    │ │ └─ HuggingFace API        │
-│    ├─ llama-   │ │ │  (candles)      │ │    ├─ Qwen2.5-72B        │
-│    │  3.3-70b  │ │ ├─ Yahoo Finance  │ │    ├─ Mixtral-8x7B       │
-│    └─ qwen3-   │ │ │  (news)         │ │    └─ Llama-3.1-8B       │
-│       32b      │ │ └─ Gemini         │ │                           │
-│                │ │    (sentiment +   │ │ daily-suggestions         │
-│ fetch-stock-   │ │     trade agent)  │ │ └─ PostgreSQL (shared     │
-│ data           │ │    key rotation   │ │    daily cache)           │
-│ └─ Finnhub API │ │                   │ │                           │
-│                │ └───────────────────┘ └───────────────────────────┘
-│ broker-connect │
-│ └─ SnapTrade   │   ┌─────────────────────────────────────────────┐
-│    (register,  │   │  Supabase PostgreSQL (RLS)                  │
-│    login, dis- │   │  ├─ portfolios (user tickers + positions)   │
-│    connect)    │   │  ├─ broker_connections (SnapTrade creds)    │
-│                │   │  ├─ user_settings (risk profile)            │
-│ broker-sync    │   │  ├─ trade_scans (scanner results cache)      │
-│  └─ daily_suggestions (shared AI cache)     │
-│ └─ SnapTrade   │   └─────────────────────────────────────────────┘
-│    (positions) │
+└──────┬────────────┬────────────────────┬──────────┬─────────────────┘
+       │            │                    │          │
+       │ Portfolio  │ Trade Signals      │ Finds    │ Paper Trading
+       │ AI         │                    │          │ (auth-only)
+┌──────▼─────────┐ ┌▼──────────────────┐ ┌▼───────┐ ┌▼───────────────┐
+│ Supabase Edge  │ │ Supabase Edge     │ │ Edge   │ │ auto-trader/   │
+│ Functions      │ │ Functions         │ │ Funcs  │ │ (local Node.js │
+│                │ │                   │ │        │ │  service)      │
+│ ai-proxy       │ │ trading-signals   │ │ hf-    │ │ @stoqey/ib     │
+│ └─ Groq API    │ │ ├─ Yahoo Finance  │ │ proxy  │ │ → IB Gateway   │
+│                │ │ ├─ Finnhub        │ │        │ │   (port 4002)  │
+│ fetch-stock-   │ │ └─ Gemini (13     │ │ daily- │ │                │
+│ data           │ │    keys, rotated) │ │ sugg.  │ │ IBC auto-login │
+│ └─ Finnhub API │ │                   │ │        │ │ (hands-off)    │
+│                │ │ trade-scanner     │ │        │ └────────────────┘
+│ broker-connect │ │ └─ Yahoo + Gemini │ │        │
+│ broker-sync    │ │                   │ │        │
+│ └─ SnapTrade   │ └───────────────────┘ └────────┘
 │                │
 │ scrape-market- │   ┌─────────────────────────────────────────────┐
-│ movers         │   │  Storage Strategy                           │
-│ └─ Yahoo       │   │  Guest: localStorage (browser-only)         │
-│    Finance     │   │  Authed: Supabase PostgreSQL (cloud)        │
-│                │   │         + localStorage (market data cache)  │
-│ fetch-yahoo-   │   └─────────────────────────────────────────────┘
-│ news           │
-│ └─ Yahoo       │
-│    Finance     │
-└────────────────┘
+│ movers         │   │  Supabase PostgreSQL (RLS)                  │
+│ fetch-yahoo-   │   │  ├─ portfolios (user holdings)              │
+│ news           │   │  ├─ broker_connections (SnapTrade creds)    │
+│ └─ Yahoo       │   │  ├─ user_settings (risk profile)            │
+│    Finance     │   │  ├─ trade_scans (scanner results cache)     │
+└────────────────┘   │  ├─ daily_suggestions (shared AI cache)     │
+                     │  ├─ paper_trades (auto-executed trades)     │
+                     │  ├─ trade_learnings (AI feedback per trade) │
+                     │  └─ trade_performance (aggregate stats)     │
+                     └─────────────────────────────────────────────┘
+
+                     ┌─────────────────────────────────────────────┐
+                     │  Storage Strategy                           │
+                     │  Guest: localStorage (browser-only)         │
+                     │  Authed: Supabase PostgreSQL (cloud)        │
+                     │         + localStorage (market data cache)  │
+                     └─────────────────────────────────────────────┘
 ```
 
 ### How the AI Layers Work
@@ -117,24 +127,10 @@ A personal investing decision-support tool that combines automated conviction sc
 | **Trade Signals** | Auto/Day/Swing trade with indicators, scenarios, dual targets + Long Term Outlook | Gemini (multi-key rotation) | Twelve Data candles → Indicator Engine (RSI, MACD, EMA, ATR, ADX) + Yahoo Finance news + SPY/VIX market context + Finnhub fundamentals |
 | **Quiet Compounders** | Discover quality stocks ranked by conviction, with valuation/AI tags and category filtering | HuggingFace (Qwen2.5-72B) | Finnhub metrics |
 | **Gold Mines** | Macro-theme-driven opportunities | HuggingFace (Qwen2.5-72B) | Market news + Finnhub fundamentals |
+| **Paper Trading** | Auto-execute high-confidence signals, track P&L | Gemini (via scanner + FA) | Scanner results + full analysis → IB Gateway bracket orders |
+| **AI Feedback Loop** | Analyze trade outcomes, learn from wins/losses | Heuristic (rule-based) | paper_trades + trade_learnings → pattern recognition |
 
-### Edge Functions
-
-| Function | Purpose | External API |
-|---|---|---|
-| `ai-proxy` | Portfolio AI analysis with model fallback | Groq |
-| `trading-signals` | Day/Swing signals with parallel AI agents | Twelve Data + Yahoo Finance + Gemini |
-| `trade-scanner` | Trade Ideas: two-pass AI scanner with DB caching | Yahoo Finance + Gemini |
-| `huggingface-proxy` | Suggested Finds AI with model cascade | HuggingFace |
-| `gemini-proxy` | Gemini proxy for client-side AI calls | Google Gemini |
-| `daily-suggestions` | Shared daily cache per category (GET/POST/DELETE) | PostgreSQL |
-| `fetch-stock-data` | Stock data proxy with server-side cache | Finnhub |
-| `scrape-market-movers` | Gainers/losers screener with retry logic | Yahoo Finance |
-| `fetch-yahoo-news` | Company-specific news | Yahoo Finance |
-| `broker-connect` | SnapTrade registration, login portal, disconnect | SnapTrade |
-| `broker-sync` | Fetch and normalize brokerage positions | SnapTrade |
-
-**API keys never touch the browser** — all sensitive keys stored as Supabase secrets.
+**API keys never touch the browser** — all sensitive keys stored as Supabase secrets. Edge function details are in [`supabase/functions/README.md`](supabase/functions/README.md).
 
 ## Quick Start
 
