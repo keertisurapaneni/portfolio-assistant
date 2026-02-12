@@ -27,12 +27,14 @@
 
 import {
   type OHLCV,
-  type IndicatorSummary,
-  computeAllIndicators,
   computeATR,
   computeADX,
-  formatIndicatorsForPrompt,
-} from './indicators.ts';
+} from '../_shared/indicators.ts';
+import {
+  type Mode,
+  prepareAnalysisContext,
+  MODE_INTERVALS,
+} from '../_shared/analysis.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -40,11 +42,7 @@ const corsHeaders = {
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 };
 
-const TWELVE_DATA_BASE = 'https://api.twelvedata.com';
-// Twelve Data: supports all required timeframes, same feed for AI + chart, free tier OK for MVP.
-// GET /time_series?symbol=SYMBOL&interval=1d&outputsize=150&apikey=KEY → datetime, open, high, low, close, volume
-const YAHOO_NEWS_URL = 'https://query1.finance.yahoo.com/v1/finance/search';
-// Yahoo Finance news: no API key needed, already used elsewhere in the app (fetch-yahoo-news).
+// Yahoo Finance: candles via shared data-fetchers, news + market snapshot via shared analysis context. No API key needed.
 
 // Gemini: model cascade + key rotation (Trading Signals only)
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
@@ -53,7 +51,6 @@ const GEMINI_MODELS = ['gemini-2.0-flash-lite', 'gemini-2.0-flash', 'gemini-2.5-
 
 const REQUEST_TIMEOUT_MS = 90_000; // 90s total for the whole pipeline
 
-type Mode = 'DAY_TRADE' | 'SWING_TRADE';
 type RequestMode = Mode | 'AUTO';
 
 interface RequestPayload {
@@ -61,29 +58,7 @@ interface RequestPayload {
   mode: RequestMode;
 }
 
-// Timeframes per mode — same data feeds the AI and the chart.
-// Day Trade: 1m (entry), 15m (structure), 1h (trend). Swing: 4h (setup), 1d (trend), 1w (macro).
-const MODE_INTERVALS: Record<Mode, [string, string, string]> = {
-  DAY_TRADE: ['1min', '15min', '1h'],
-  SWING_TRADE: ['4h', '1day', '1week'],
-};
-
-interface Candle {
-  datetime: string;
-  open: string;
-  high: string;
-  low: string;
-  close: string;
-  volume?: string;
-}
-
-interface NewsItem {
-  headline: string;
-  summary?: string;
-  source?: string;
-  datetime: number;
-  url: string;
-}
+// MODE_INTERVALS and CANDLE_SIZES imported from _shared/analysis.ts (single source of truth)
 
 // ── Helpers ──────────────────────────────────────────────
 
@@ -102,66 +77,8 @@ async function fetchWithTimeout(
 }
 
 // ── Data fetchers ───────────────────────────────────────
-
-interface CandleResult {
-  values: Candle[];
-  rateLimited?: undefined;
-}
-interface CandleRateLimited {
-  values?: undefined;
-  rateLimited: true;
-}
-type CandleFetchResult = CandleResult | CandleRateLimited | null;
-
-async function fetchCandles(
-  symbol: string,
-  interval: string,
-  apikey: string,
-  outputsize = 150
-): Promise<CandleFetchResult> {
-  const url = `${TWELVE_DATA_BASE}/time_series?symbol=${encodeURIComponent(symbol)}&interval=${interval}&outputsize=${outputsize}&apikey=${apikey}`;
-  const res = await fetchWithTimeout(url, { timeout: 20_000 });
-  if (res.status === 429) {
-    console.warn(`[Trading Signals] Twelve Data 429 for ${symbol} ${interval}`);
-    return { rateLimited: true };
-  }
-  if (!res.ok) return null;
-  const data = await res.json();
-  if (data.code === 429 || (data.status === 'error' && /rate limit|too many/i.test(data.message ?? ''))) {
-    console.warn(`[Trading Signals] Twelve Data rate-limited (in-body) for ${symbol} ${interval}: ${data.message}`);
-    return { rateLimited: true };
-  }
-  if (data.status === 'error' || !data.values) return null;
-  return { values: data.values };
-}
-
-async function fetchYahooNews(symbol: string): Promise<NewsItem[]> {
-  const url = `${YAHOO_NEWS_URL}?q=${encodeURIComponent(symbol)}&quotesCount=0&newsCount=20`;
-  const res = await fetchWithTimeout(url, {
-    timeout: 10_000,
-    headers: {
-      'User-Agent': 'Mozilla/5.0 (compatible; PortfolioAssistant/1.0)',
-      Accept: 'application/json',
-    },
-  });
-  if (!res.ok) return [];
-  const data = await res.json();
-  if (!data?.news || !Array.isArray(data.news)) return [];
-  return data.news.map(
-    (item: {
-      title?: string;
-      publisher?: string;
-      link?: string;
-      providerPublishTime?: number;
-    }) => ({
-      headline: item.title ?? '',
-      summary: item.title ?? '',
-      source: item.publisher ?? 'Yahoo Finance',
-      url: item.link ?? '',
-      datetime: item.providerPublishTime ? item.providerPublishTime * 1000 : 0,
-    })
-  );
-}
+// Candles, news, market snapshot are all fetched via shared analysis context.
+// Only Finnhub fundamentals + earnings calendar are fetched locally.
 
 // ── Finnhub fundamentals (Long Term Outlook) ───────────
 
@@ -347,67 +264,13 @@ function formatFundamentalsForPrompt(f: FundamentalData, currentPrice: number | 
   return lines.join('\n');
 }
 
-// ── Market snapshot (SPY + VIX) ─────────────────────────
-
-interface MarketSnapshot {
-  bias: string;
-  volatility: string;
-  spyTrend: string;
-  vix: number;
-}
-
-async function fetchMarketSnapshot(apiKey: string): Promise<MarketSnapshot | null> {
-  try {
-    const [spyRes, vixRes] = await Promise.all([
-      fetchCandles('SPY', '1day', apiKey, 60),
-      fetchCandles('VIX', '1day', apiKey, 5),
-    ]);
-
-    if (!spyRes?.values?.length || !vixRes?.values?.length) return null;
-
-    // Convert to OHLCV (newest-first already from Twelve Data)
-    const spyBars: OHLCV[] = spyRes.values.map(v => ({
-      o: parseFloat(v.open), h: parseFloat(v.high),
-      l: parseFloat(v.low), c: parseFloat(v.close),
-      v: v.volume ? parseFloat(v.volume) : 0,
-    }));
-
-    const vixClose = parseFloat(vixRes.values[0].close);
-    const spyPrice = spyBars[0].c;
-
-    // SMA(50) for SPY trend
-    let sma50 = 0;
-    const len = Math.min(50, spyBars.length);
-    for (let i = 0; i < len; i++) sma50 += spyBars[i].c;
-    sma50 /= len;
-
-    const spyTrend = spyPrice > sma50 ? 'Bullish (above SMA50)' : 'Bearish (below SMA50)';
-    const bias = spyPrice > sma50 ? 'Bullish' : 'Bearish';
-
-    let volatility: string;
-    if (vixClose < 15) volatility = 'Low';
-    else if (vixClose < 20) volatility = 'Moderate';
-    else if (vixClose < 30) volatility = 'High';
-    else volatility = 'Extreme';
-
-    return { bias, volatility, spyTrend, vix: Math.round(vixClose * 10) / 10 };
-  } catch (e) {
-    console.warn('[Trading Signals] Market snapshot fetch failed:', e);
-    return null;
-  }
-}
-
 // ── Auto mode detection ─────────────────────────────────
 
 async function detectMode(
   ticker: string,
-  apiKey: string
 ): Promise<{ mode: Mode; reason: string }> {
-  // Fetch daily candles for ATR% and ADX
-  const daily = await fetchCandles(ticker, '1day', apiKey, 60);
-  if (daily?.rateLimited) {
-    return { mode: 'SWING_TRADE', reason: 'Market data rate-limited — defaulting to swing' };
-  }
+  // Fetch daily candles for ATR% and ADX (via shared Yahoo fetcher)
+  const daily = await fetchCandles(ticker, '1day', 60);
   if (!daily?.values?.length || daily.values.length < 30) {
     return { mode: 'SWING_TRADE', reason: 'Insufficient daily data — defaulting to swing' };
   }
@@ -548,6 +411,7 @@ import {
   SWING_TRADE_SYSTEM,
   SWING_TRADE_RULES,
 } from '../_shared/prompts.ts';
+import { fetchCandles } from '../_shared/data-fetchers.ts';
 
 // ── Sentiment Agent ─────────────────────────────────────
 
@@ -663,14 +527,8 @@ Deno.serve(async req => {
       });
     }
 
-    const TWELVE_DATA_API_KEY = Deno.env.get('TWELVE_DATA_API_KEY');
-
-    if (!TWELVE_DATA_API_KEY) {
-      return new Response(JSON.stringify({ error: 'TWELVE_DATA_API_KEY not configured' }), {
-        status: 500,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      });
-    }
+    // Candle data + market snapshot fetched via shared Yahoo Finance fetcher (no API key needed).
+    // This ensures scanner and full analysis use the exact same data source.
 
     const body: RequestPayload = await req.json();
     const ticker = (body?.ticker ?? '').toString().trim().toUpperCase();
@@ -691,140 +549,40 @@ Deno.serve(async req => {
     let mode: Mode;
     let detectedMode: { mode: Mode; reason: string } | null = null;
     if (requestedMode === 'AUTO') {
-      detectedMode = await detectMode(ticker, TWELVE_DATA_API_KEY);
+      detectedMode = await detectMode(ticker);
       mode = detectedMode.mode;
       console.log(`[Trading Signals] AUTO → ${mode} (${detectedMode.reason})`);
     } else {
       mode = requestedMode;
     }
 
-    // ── Step 1: Fetch candles + news + market snapshot in parallel ──
-    const intervals = MODE_INTERVALS[mode];
-    // More candles for daily/weekly so swing charts show 2-3 years of history
-    const CANDLE_SIZES: Record<string, number> = {
-      '1min': 150, '15min': 150, '1h': 150,
-      '4h': 250, '1day': 600, '1week': 150,
-    };
-    const candlePromises = intervals.map(int =>
-      fetchCandles(ticker, int, TWELVE_DATA_API_KEY, CANDLE_SIZES[int] ?? 150)
-    );
-    const newsPromise = fetchYahooNews(ticker);
-    const marketPromise = fetchMarketSnapshot(TWELVE_DATA_API_KEY);
-
-    // Fetch Finnhub fundamentals + earnings calendar in parallel (for Long Term Outlook + trade prompt)
+    // ── Step 1-3: Shared analysis context (same code as scanner Pass 2) ──
+    // Fetch Finnhub fundamentals + earnings in parallel with the shared context
     const finnhubKey = Deno.env.get('FINNHUB_API_KEY');
-    const fundamentalsPromise = finnhubKey
-      ? fetchFundamentals(ticker, finnhubKey)
-      : Promise.resolve(null);
-    const earningsCalendarPromise = finnhubKey
-      ? fetchEarningsCalendar(ticker, finnhubKey)
-      : Promise.resolve(null);
-
-    const [candles1, candles2, candles3, news, marketSnapshot, fundamentals, earningsEvent] = await Promise.all([
-      ...candlePromises,
-      newsPromise,
-      marketPromise,
-      fundamentalsPromise,
-      earningsCalendarPromise,
+    const [ctx, fundamentals, earningsEvent] = await Promise.all([
+      prepareAnalysisContext(ticker, mode),
+      finnhubKey ? fetchFundamentals(ticker, finnhubKey) : Promise.resolve(null),
+      finnhubKey ? fetchEarningsCalendar(ticker, finnhubKey) : Promise.resolve(null),
     ]);
 
-    const candleResults = [candles1, candles2, candles3];
-    const rateLimitedCount = candleResults.filter(r => r?.rateLimited).length;
-
-    const timeframes: Record<string, { values: Candle[] }> = {};
-    if (candles1?.values) timeframes[intervals[0]] = candles1 as CandleResult;
-    if (candles2?.values) timeframes[intervals[1]] = candles2 as CandleResult;
-    if (candles3?.values) timeframes[intervals[2]] = candles3 as CandleResult;
-
-    // If most candle fetches were rate-limited, tell the user clearly instead of sending
-    // empty data to the AI (which produces a misleading generic HOLD).
-    if (rateLimitedCount >= 2) {
+    if (!ctx) {
       return new Response(
-        JSON.stringify({ error: 'Market data API rate limit reached — please wait 60 seconds and try again.' }),
-        { status: 429, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
-    }
-
-    if (Object.keys(timeframes).length === 0) {
-      return new Response(
-        JSON.stringify({ error: 'Could not fetch candle data for this symbol. The market data API may be temporarily unavailable.' }),
+        JSON.stringify({ error: 'Could not fetch candle data for this symbol. Try again or check the ticker.' }),
         { status: 502, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
+
+    const { indicators, indicatorText: indicatorPromptText, candles: timeframes, trimmedCandles, currentPrice, marketSnapshot, news, ohlcvBars } = ctx;
+    const intervals = MODE_INTERVALS[mode];
+    const technicalData = { timeframes: trimmedCandles, currentPrice };
+
+    // Format news for prompts
     const newsForPrompt = news.slice(0, 15).map(n => ({
       headline: n.headline,
-      summary: n.summary ?? '',
       source: n.source,
-      datetime: n.datetime,
-      url: n.url,
     }));
-
-    // ── Step 2: Compute technical indicators ──
-    // Use the primary timeframe candles for indicator computation
-    // Day Trade: use 15m candles (structure), Swing: use 1day candles (trend)
-    const indicatorInterval = mode === 'DAY_TRADE' ? '15min' : '1day';
-    const indicatorCandles = timeframes[indicatorInterval]?.values ?? timeframes[intervals[0]]?.values ?? [];
-    const ohlcvBars: OHLCV[] = indicatorCandles.map(v => ({
-      o: parseFloat(v.open),
-      h: parseFloat(v.high),
-      l: parseFloat(v.low),
-      c: parseFloat(v.close),
-      v: v.volume ? parseFloat(v.volume) : 0,
-    }));
-
-    // Guard: if the indicator candles are too few, the AI would get empty/garbage indicators
-    // and return a misleading HOLD. Fail clearly instead.
-    if (ohlcvBars.length < 30) {
-      const wasRateLimited = rateLimitedCount > 0;
-      return new Response(
-        JSON.stringify({
-          error: wasRateLimited
-            ? 'Market data API rate limit reached — not enough candle data for reliable analysis. Please wait 60 seconds and try again.'
-            : `Insufficient candle data for ${ticker} (got ${ohlcvBars.length} bars, need 30+). The market may be closed or this symbol may not have enough trading history.`,
-        }),
-        {
-          status: wasRateLimited ? 429 : 502,
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        }
-      );
-    }
-
-    const indicators: IndicatorSummary = computeAllIndicators(ohlcvBars);
-
-    // Current price from the newest candle of the primary entry timeframe
-    const primaryInterval = intervals[0]; // 1min for day, 4h for swing
-    const primaryCandles = timeframes[primaryInterval]?.values;
-    let currentPrice: number | null = null;
-    if (primaryCandles?.length) {
-      const c = parseFloat(primaryCandles[0].close);
-      if (!Number.isNaN(c)) currentPrice = c;
-    }
-
-    // ── Step 3: Build enriched prompt ──
-    const marketCtxStr = marketSnapshot
-      ? `SPY: ${marketSnapshot.spyTrend} | VIX: ${marketSnapshot.vix} (${marketSnapshot.volatility} fear)`
-      : undefined;
-    const indicatorPromptText = currentPrice
-      ? formatIndicatorsForPrompt(indicators, currentPrice, marketCtxStr)
-      : '';
-
-    // Trim candle data — send only last 40 candles of each timeframe for validation
-    const trimmedTimeframes: Record<string, unknown> = {};
-    for (const [tf, data] of Object.entries(timeframes)) {
-      trimmedTimeframes[tf] = data.values.slice(0, 40).map(v => ({
-        t: v.datetime,
-        o: parseFloat(v.open),
-        h: parseFloat(v.high),
-        l: parseFloat(v.low),
-        c: parseFloat(v.close),
-        v: v.volume ? parseFloat(v.volume) : 0,
-      }));
-    }
-    const technicalData = { timeframes: trimmedTimeframes, currentPrice };
-
-    // Give the trade agent the actual news headlines so it can assess sentiment itself
     const newsForTrade = newsForPrompt.length > 0
-      ? newsForPrompt.map(n => ({ headline: n.headline, source: n.source }))
+      ? newsForPrompt
       : [{ headline: 'No recent news available', source: '' }];
 
     // Float context for day trade (shares outstanding from Finnhub fundamentals)

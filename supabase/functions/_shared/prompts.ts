@@ -58,3 +58,37 @@ Risk:
 - Entry near key support (BUY) or resistance (SELL). Stop = 1.5-2× ATR beyond swing level.
 - Target 1 = nearest major S/R. Target 2 = next level. Min 1.5× reward-to-risk.
 - Scaling plan: take 50% profit at Target 1, move stop to breakeven, let remaining 50% run to Target 2.`;
+
+// ── Scanner Pass 2 prompts ──────────────────────────────
+// These use the SAME indicator summary + candle data format as full analysis,
+// but request a simpler output (signal/confidence/reason instead of full entry/exit/scenarios).
+// This guarantees the AI sees identical data and applies identical rules.
+
+export const DAY_REFINE_USER = `Inputs: (1) Pre-computed indicators (primary), (2) 1m/15m/1h candles (validation), (3) News headlines (confirmation only).
+
+${DAY_TRADE_RULES}
+
+- Factor in news sentiment: negative headlines = lower confidence or flip direction. Positive news already priced in if stock is extended.
+- Factor in market context (in indicators section): if SPY bearish and VIX elevated, be more cautious on long setups.
+- Factor in earnings proximity: if earnings within 3 days, SKIP unless explicitly an earnings play.
+- Use SKIP instead of HOLD. Better to SKIP 80% and return 2-3 great picks.
+
+Output: JSON array ONLY (no markdown, no backticks).
+[{"ticker":"AAPL","signal":"BUY"|"SELL"|"SKIP","confidence":0-10,"reason":"1-2 sentences"}]
+
+{{STOCKS}}`;
+
+export const SWING_REFINE_USER = `Inputs: (1) Pre-computed indicators (primary), (2) 4h/1d/1w candles (validation), (3) News headlines (must not contradict technicals).
+
+${SWING_TRADE_RULES}
+
+- Factor in fundamentals: high P/E with no growth = caution. Attractive valuation + good setup = higher confidence.
+- Factor in news sentiment: negative headlines = lower confidence or flip direction. Positive news already priced in if stock is extended.
+- Factor in market context (in indicators section): if SPY bearish and VIX elevated, be more cautious on long setups.
+- Factor in earnings proximity: if earnings within 7 days, reduce confidence. Within 3 days, SKIP unless explicitly an earnings play.
+- Use SKIP instead of HOLD. Better to SKIP 80% and return 3-5 solid picks.
+
+Output: JSON array ONLY (no markdown, no backticks).
+[{"ticker":"AAPL","signal":"BUY"|"SELL"|"SKIP","confidence":0-10,"reason":"1-2 sentences"}]
+
+{{STOCKS}}`;

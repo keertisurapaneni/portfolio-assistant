@@ -324,10 +324,17 @@ export function classifyTrend(currentPrice: number, sma50: number | null, sma200
 
 export function computeVolumeRatio(data: OHLCV[], period = 20): { current: number; average: number; ratio: number } | null {
   if (data.length < period + 1) return null;
-  // data[0] is newest
-  const current = data[0].v;
+  // data[0] is newest — but Yahoo returns in-progress bars with volume=0.
+  // Use the first bar with non-zero volume as "current" to avoid 0x ratios.
+  let startIdx = 0;
+  while (startIdx < data.length && data[startIdx].v === 0) startIdx++;
+  if (startIdx >= data.length) return null;
+
+  const current = data[startIdx].v;
   let sum = 0;
-  for (let i = 1; i <= period; i++) sum += data[i].v;
+  const avgStart = startIdx + 1;
+  if (avgStart + period > data.length) return null;
+  for (let i = avgStart; i < avgStart + period; i++) sum += data[i].v;
   const average = sum / period;
   if (average === 0) return { current, average, ratio: 0 };
   return { current, average, ratio: round(current / average) };
