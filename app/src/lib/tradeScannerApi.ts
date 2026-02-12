@@ -12,7 +12,9 @@ export interface TradeIdea {
   price: number;
   change: number;
   changePercent: number;
-  score: number;        // 0-100 (only high-confidence ideas returned)
+  signal: 'BUY' | 'SELL';
+  confidence: 'Very High' | 'High' | 'Moderate';
+  score: number;        // 0-100 internal score
   reason: string;       // e.g. "Up 6.2% · Vol 3.1x avg"
   tags: string[];       // e.g. ["momentum", "volume-surge"]
   mode: 'DAY_TRADE' | 'SWING_TRADE';

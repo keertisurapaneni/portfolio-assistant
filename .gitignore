@@ -45,3 +45,5 @@ lerna-debug.log*
 
 # BMAD outputs (optional - include if you want to version control)
 # _bmad-output/
+.vercel
+.env*.local

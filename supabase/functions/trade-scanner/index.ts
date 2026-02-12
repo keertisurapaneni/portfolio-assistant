@@ -1,14 +1,16 @@
 // Portfolio Assistant — Trade Scanner Edge Function
 //
 // Scans market movers + a curated universe to find the best day trade
-// and swing trade candidates. Returns only HIGH-CONFIDENCE setups.
+// and swing trade candidates. Returns only HIGH-CONFIDENCE setups
+// with explicit BUY / SELL direction.
 //
 // NO Gemini / AI calls — pure data + scoring. Fast and cheap.
 // Full AI analysis happens when the user clicks a pick on the frontend.
 //
 // Data flow:
-//   Yahoo Finance screener  → day trade candidates (top gainers with volume)
-//   Yahoo Finance batch quote → swing trade candidates (pullbacks in uptrends)
+//   Yahoo Finance screener (gainers + losers) → day trade candidates
+//   Yahoo Finance chart API (v8, 1y daily) → swing trade candidates
+//   SMA50 / SMA200 computed from historical closes (v7 batch-quote is auth-gated)
 //
 // Returns { dayTrades, swingTrades, timestamp }
 
@@ -26,7 +28,9 @@ interface TradeIdea {
   price: number;
   change: number;
   changePercent: number;
-  score: number;        // 0-100 (only 60+ returned — high confidence)
+  signal: 'BUY' | 'SELL';
+  confidence: 'Very High' | 'High' | 'Moderate';
+  score: number;        // 0-100 internal score
   reason: string;       // human-readable mini-summary
   tags: string[];       // e.g. ["momentum", "volume-surge"]
   mode: 'DAY_TRADE' | 'SWING_TRADE';
@@ -60,7 +64,6 @@ interface YahooQuote {
 }
 
 // ── Curated swing universe ──────────────────────────────
-// ~50 liquid, well-known names. Swing trading needs liquidity + clear trends.
 
 const SWING_UNIVERSE = [
   // Mega-cap tech
@@ -90,6 +93,12 @@ function round(n: number, d = 2): number {
   return Math.round(n * f) / f;
 }
 
+function confidenceLabel(score: number): 'Very High' | 'High' | 'Moderate' {
+  if (score >= 80) return 'Very High';
+  if (score >= 65) return 'High';
+  return 'Moderate';
+}
+
 const YAHOO_HEADERS = {
   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
   Accept: 'application/json',
@@ -109,41 +118,106 @@ async function fetchMovers(type: 'day_gainers' | 'day_losers'): Promise<YahooQuo
     url.searchParams.set('region', 'US');
 
     const res = await fetch(url.toString(), { headers: YAHOO_HEADERS });
-    if (!res.ok) {
-      console.warn(`[Trade Scanner] Yahoo movers ${type} returned ${res.status}`);
-      return [];
-    }
+    if (!res.ok) return [];
     const data = await res.json();
     return data?.finance?.result?.[0]?.quotes ?? [];
-  } catch (e) {
-    console.warn(`[Trade Scanner] Movers fetch failed:`, e);
+  } catch {
     return [];
   }
 }
 
-async function fetchBatchQuotes(symbols: string[]): Promise<YahooQuote[]> {
-  if (symbols.length === 0) return [];
+/**
+ * Fetch quote data for a single symbol using Yahoo's chart endpoint (v8).
+ * The v7 batch-quote endpoint now requires auth, but the chart endpoint still works.
+ * We pull 1 year of daily data so we can compute SMA50 and SMA200 ourselves.
+ */
+async function fetchChartQuote(symbol: string): Promise<YahooQuote | null> {
   try {
-    // Yahoo batch quote endpoint — one call for all symbols
-    const url = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${symbols.join(',')}`;
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=1y&interval=1d&includePrePost=false`;
     const res = await fetch(url, { headers: YAHOO_HEADERS });
-    if (!res.ok) {
-      console.warn(`[Trade Scanner] Yahoo batch quote returned ${res.status}`);
-      return [];
-    }
+    if (!res.ok) return null;
     const data = await res.json();
-    return data?.quoteResponse?.result ?? [];
+    const result = data?.chart?.result?.[0];
+    if (!result) return null;
+
+    const meta = result.meta ?? {};
+    const quotes = result.indicators?.quote?.[0] ?? {};
+    const closes: (number | null)[] = quotes.close ?? [];
+    const volumes: (number | null)[] = quotes.volume ?? [];
+    const validCloses = closes.filter((c): c is number => c != null);
+    const validVolumes = volumes.filter((v): v is number => v != null);
+
+    // Calculate SMAs from historical closes
+    const sma50 = validCloses.length >= 50
+      ? validCloses.slice(-50).reduce((a, b) => a + b, 0) / 50
+      : 0;
+    const sma200 = validCloses.length >= 200
+      ? validCloses.slice(-200).reduce((a, b) => a + b, 0) / 200
+      : 0;
+
+    // Average volume over last 10 trading days
+    const avgVol10 = validVolumes.length >= 10
+      ? validVolumes.slice(-10).reduce((a, b) => a + b, 0) / 10
+      : 0;
+
+    const price = meta.regularMarketPrice ?? 0;
+    const prevClose = meta.chartPreviousClose ?? (validCloses.length >= 2 ? validCloses[validCloses.length - 2] : 0);
+
+    return {
+      symbol: meta.symbol ?? symbol,
+      shortName: meta.shortName,
+      longName: meta.longName,
+      regularMarketPrice: price,
+      regularMarketChange: prevClose > 0 ? price - prevClose : 0,
+      regularMarketChangePercent: prevClose > 0 ? ((price - prevClose) / prevClose) * 100 : 0,
+      regularMarketVolume: meta.regularMarketVolume ?? (validVolumes.length > 0 ? validVolumes[validVolumes.length - 1] : 0),
+      averageDailyVolume10Day: avgVol10,
+      regularMarketDayHigh: meta.regularMarketDayHigh ?? 0,
+      regularMarketDayLow: meta.regularMarketDayLow ?? 0,
+      regularMarketOpen: validCloses.length > 0 ? (quotes.open ?? [])[closes.length - 1] ?? 0 : 0,
+      regularMarketPreviousClose: prevClose,
+      fiftyTwoWeekHigh: meta.fiftyTwoWeekHigh ?? 0,
+      fiftyTwoWeekLow: meta.fiftyTwoWeekLow ?? 0,
+      fiftyDayAverage: sma50,
+      twoHundredDayAverage: sma200,
+    };
   } catch (e) {
-    console.warn(`[Trade Scanner] Batch quote failed:`, e);
-    return [];
+    console.warn(`[Trade Scanner] Chart fetch failed for ${symbol}:`, e);
+    return null;
   }
+}
+
+/**
+ * Fetch quotes for multiple symbols using parallel chart requests.
+ * Batches in groups of 10 to avoid overwhelming the endpoint.
+ */
+async function fetchSwingQuotes(symbols: string[]): Promise<YahooQuote[]> {
+  if (symbols.length === 0) return [];
+  const BATCH_SIZE = 10;
+  const results: YahooQuote[] = [];
+
+  for (let i = 0; i < symbols.length; i += BATCH_SIZE) {
+    const batch = symbols.slice(i, i + BATCH_SIZE);
+    const batchResults = await Promise.all(batch.map(fetchChartQuote));
+    for (const q of batchResults) {
+      if (q) results.push(q);
+    }
+  }
+
+  console.log(`[Trade Scanner] Chart quotes: ${results.length}/${symbols.length} succeeded, ${results.filter(q => rawVal(q.fiftyDayAverage) > 0).length} have SMA50, ${results.filter(q => rawVal(q.twoHundredDayAverage) > 0).length} have SMA200`);
+  return results;
 }
 
 // ── Day Trade Scoring ───────────────────────────────────
-// High confidence = strong momentum + confirmed by volume + tradeable price.
-// Minimum score to surface: 60/100.
+// Scores both BUY (momentum continuation) and SELL (overextended short).
+//
+// Signal logic:
+//   Gainers 3-20%  → BUY  (ride the momentum)
+//   Gainers >25%   → SELL (overextended, likely to fade — short candidate)
+//   Losers  3-20%  → SELL (ride the breakdown)
+//   Losers  >25%   → skip (too risky for either direction)
 
-function scoreDayTrade(q: YahooQuote): TradeIdea | null {
+function scoreDayTrade(q: YahooQuote, source: 'gainers' | 'losers'): TradeIdea | null {
   const price = rawVal(q.regularMarketPrice);
   const change = rawVal(q.regularMarketChange);
   const changePct = rawVal(q.regularMarketChangePercent);
@@ -157,63 +231,93 @@ function scoreDayTrade(q: YahooQuote): TradeIdea | null {
   if (price <= 2 || !q.symbol) return null;
 
   const absPct = Math.abs(changePct);
+  if (absPct < 2) return null; // not enough movement
+
+  // Determine signal direction
+  let signal: 'BUY' | 'SELL';
+  if (source === 'gainers') {
+    // Extreme gainers (>25%) = SELL (overextended, fade the move)
+    // Moderate gainers (3-25%) = BUY (momentum continuation)
+    signal = absPct > 25 ? 'SELL' : 'BUY';
+  } else {
+    // Losers are SELL candidates (short / ride breakdown)
+    signal = 'SELL';
+  }
+
   let score = 0;
   const tags: string[] = [];
   const reasons: string[] = [];
 
-  // ── 1. Change% (max 30 pts) — sweet spot is 3-15%
-  if (absPct >= 4 && absPct <= 10) { score += 30; }
-  else if (absPct > 10 && absPct <= 20) { score += 25; }
-  else if (absPct >= 3 && absPct < 4) { score += 22; }
-  else if (absPct > 20 && absPct <= 40) { score += 15; }
-  else if (absPct >= 2) { score += 12; }
-  else return null; // < 2% change = not enough momentum for day trade
+  // For SELL on overextended gainers, add specific tags
+  if (source === 'gainers' && signal === 'SELL') {
+    tags.push('overextended');
+    reasons.push(`Up ${round(absPct, 1)}% — extended`);
+  }
+
+  // ── 1. Change% (max 30 pts) — sweet spot is 3-15% for BUY, higher for SELL
+  if (signal === 'BUY') {
+    if (absPct >= 4 && absPct <= 10) score += 30;
+    else if (absPct > 10 && absPct <= 20) score += 25;
+    else if (absPct >= 3 && absPct < 4) score += 22;
+    else if (absPct > 20 && absPct <= 25) score += 18;
+    else if (absPct >= 2) score += 12;
+  } else {
+    // SELL: larger moves = more conviction for mean reversion or breakdown
+    if (absPct >= 4 && absPct <= 15) score += 30;
+    else if (absPct > 15 && absPct <= 30) score += 25;
+    else if (absPct > 30 && absPct <= 50) score += 22;
+    else if (absPct > 50) score += 15; // extreme = risky even to short
+    else if (absPct >= 2) score += 15;
+  }
 
   if (absPct >= 5) tags.push('momentum');
 
-  // ── 2. Volume confirmation (max 30 pts) — THE key filter
-  // Without volume, momentum means nothing.
-  let volRatio = 0;
+  // ── 2. Volume confirmation (max 30 pts)
   if (avgVolume > 0) {
-    volRatio = volume / avgVolume;
+    const volRatio = volume / avgVolume;
     if (volRatio >= 4) { score += 30; tags.push('volume-surge'); reasons.push(`Vol ${round(volRatio, 1)}x avg`); }
     else if (volRatio >= 2.5) { score += 26; tags.push('high-volume'); reasons.push(`Vol ${round(volRatio, 1)}x avg`); }
     else if (volRatio >= 1.5) { score += 20; reasons.push(`Vol ${round(volRatio, 1)}x avg`); }
-    else if (volRatio >= 1) { score += 10; }
-    else { score += 2; } // below-avg volume = low conviction
+    else if (volRatio >= 1) score += 10;
+    else score += 2;
   } else if (volume > 2_000_000) {
     score += 12;
   } else {
     score += 2;
   }
 
-  // ── 3. Price range (max 15 pts) — tradeable, liquid names
+  // ── 3. Price range (max 15 pts)
   if (price >= 10 && price <= 200) score += 15;
   else if (price >= 5 && price < 10) score += 8;
   else if (price > 200 && price <= 500) score += 12;
   else if (price > 500) score += 8;
-  else score += 0; // sub-$5 = risky
 
-  // ── 4. Intraday range (max 15 pts) — room to move
+  // ── 4. Intraday range (max 15 pts)
   if (high > 0 && low > 0 && price > 0) {
     const rangePct = ((high - low) / price) * 100;
     if (rangePct > 6) { score += 15; tags.push('wide-range'); }
-    else if (rangePct > 4) { score += 12; }
-    else if (rangePct > 2) { score += 8; }
-    else { score += 3; }
+    else if (rangePct > 4) score += 12;
+    else if (rangePct > 2) score += 8;
+    else score += 3;
   }
 
-  // ── 5. Gap factor (max 10 pts) — gaps with volume = institutional interest
+  // ── 5. Gap factor (max 10 pts)
   if (prevClose > 0 && open > 0) {
     const gapPct = ((open - prevClose) / prevClose) * 100;
     if (Math.abs(gapPct) > 4) { score += 10; tags.push('gap'); reasons.push(`Gapped ${gapPct > 0 ? '+' : ''}${round(gapPct, 1)}%`); }
-    else if (Math.abs(gapPct) > 2) { score += 6; }
+    else if (Math.abs(gapPct) > 2) score += 6;
   }
+
+  const finalScore = Math.min(100, score);
 
   // Build reason string
   const direction = changePct > 0 ? 'Up' : 'Down';
-  const mainReason = `${direction} ${round(absPct, 1)}%`;
-  const extra = reasons.length > 0 ? ` · ${reasons.join(' · ')}` : '';
+  const mainReason = signal === 'SELL' && source === 'gainers'
+    ? `Up ${round(absPct, 1)}% — overextended short`
+    : `${direction} ${round(absPct, 1)}%`;
+  const extra = reasons.filter(r => !r.startsWith('Up ')).length > 0
+    ? ` · ${reasons.filter(r => !r.startsWith('Up ')).join(' · ')}`
+    : '';
 
   return {
     ticker: q.symbol,
@@ -221,7 +325,9 @@ function scoreDayTrade(q: YahooQuote): TradeIdea | null {
     price: round(price),
     change: round(change),
     changePercent: round(changePct, 1),
-    score: Math.min(100, score),
+    signal,
+    confidence: confidenceLabel(finalScore),
+    score: finalScore,
     reason: `${mainReason}${extra}`,
     tags,
     mode: 'DAY_TRADE',
@@ -229,8 +335,8 @@ function scoreDayTrade(q: YahooQuote): TradeIdea | null {
 }
 
 // ── Swing Trade Scoring ─────────────────────────────────
-// High confidence = pullback in a confirmed uptrend + near support.
-// We want "buy the dip on a strong stock", not "catch a falling knife".
+// BUY: pullback in confirmed uptrend + near support.
+// SELL: breakdown in confirmed downtrend + near resistance.
 
 function scoreSwingTrade(q: YahooQuote): TradeIdea | null {
   const price = rawVal(q.regularMarketPrice);
@@ -249,87 +355,175 @@ function scoreSwingTrade(q: YahooQuote): TradeIdea | null {
   const tags: string[] = [];
   const reasons: string[] = [];
 
-  // ── 1. Uptrend confirmation (max 30 pts) — MUST be in an uptrend
-  // Price above both SMA50 and SMA200 = confirmed uptrend.
-  // Without this, a pullback is just… a downtrend.
-  const aboveSma50 = sma50 > 0 && price > sma50;
-  const aboveSma200 = sma200 > 0 && price > sma200;
-  const sma50Above200 = sma50 > 0 && sma200 > 0 && sma50 > sma200;
+  const hasSma50 = sma50 > 0;
+  const hasSma200 = sma200 > 0;
+  const aboveSma50 = hasSma50 && price > sma50;
+  const aboveSma200 = hasSma200 && price > sma200;
+  const sma50Above200 = hasSma50 && hasSma200 && sma50 > sma200;
+  const belowSma50 = hasSma50 && price < sma50;
+  const belowSma200 = hasSma200 && price < sma200;
+  const sma50Below200 = hasSma50 && hasSma200 && sma50 < sma200;
 
-  if (aboveSma50 && aboveSma200 && sma50Above200) {
-    score += 30; tags.push('strong-uptrend');
-  } else if (aboveSma50 && aboveSma200) {
-    score += 24; tags.push('uptrend');
-  } else if (aboveSma200 && !aboveSma50) {
-    // Below SMA50 but above SMA200 — possible pullback zone, interesting
-    score += 18; tags.push('pullback-zone');
-  } else if (aboveSma50 && !aboveSma200) {
-    score += 10; // recovering but not confirmed
+  // 52-week position (used as trend proxy when SMAs are unavailable)
+  const has52w = high52 > 0 && low52 > 0 && high52 > low52;
+  const weekPos = has52w ? (price - low52) / (high52 - low52) : 0.5;
+
+  // Determine trend direction — prefer SMA data, fallback to 52-week position
+  let isUptrend = false;
+  let isDowntrend = false;
+  if (hasSma50 && hasSma200) {
+    isUptrend = aboveSma50 && aboveSma200;
+    isDowntrend = belowSma50 && belowSma200;
+  } else if (hasSma50) {
+    isUptrend = aboveSma50 && weekPos >= 0.6;
+    isDowntrend = belowSma50 && weekPos <= 0.4;
   } else {
-    score += 0; // below both MAs = likely downtrend, not a swing long
+    // No SMA data at all — use 52-week position as proxy
+    isUptrend = weekPos >= 0.65;
+    isDowntrend = weekPos <= 0.35;
   }
 
-  // ── 2. Pullback quality (max 25 pts) — we want a dip, not a crash
-  if (changePct <= -1 && changePct > -4) {
-    score += 25; tags.push('pullback'); reasons.push(`Dipped ${round(Math.abs(changePct), 1)}%`);
-  } else if (changePct <= -4 && changePct > -8) {
-    score += 20; tags.push('pullback'); reasons.push(`Dipped ${round(Math.abs(changePct), 1)}%`);
-  } else if (changePct <= -8 && changePct > -12) {
-    score += 12; tags.push('sell-off'); reasons.push(`Sold off ${round(Math.abs(changePct), 1)}%`);
-  } else if (changePct <= -12) {
-    score += 5; tags.push('crash'); // catching a falling knife — low confidence
-  } else if (changePct < 0) {
-    score += 15; // mild red day
+  const signal: 'BUY' | 'SELL' = isDowntrend && !isUptrend ? 'SELL' : 'BUY';
+
+  if (signal === 'BUY') {
+    // ── BUY: Pullback in uptrend ──
+
+    // 1. Uptrend confirmation (max 30 pts)
+    if (aboveSma50 && aboveSma200 && sma50Above200) {
+      score += 30; tags.push('strong-uptrend');
+    } else if (aboveSma50 && aboveSma200) {
+      score += 24; tags.push('uptrend');
+    } else if (aboveSma200 && !aboveSma50) {
+      score += 18; tags.push('pullback-zone');
+    } else if (aboveSma50) {
+      score += 18; tags.push('uptrend');
+    } else if (has52w && weekPos >= 0.7) {
+      // Fallback: near 52-week high = likely uptrend
+      score += 22; tags.push('near-highs');
+    } else if (has52w && weekPos >= 0.6) {
+      score += 15; tags.push('upper-range');
+    } else {
+      score += 5;
+    }
+
+    // 2. Pullback quality (max 25 pts) — dip, not crash
+    if (changePct <= -1 && changePct > -4) {
+      score += 25; tags.push('pullback'); reasons.push(`Dipped ${round(Math.abs(changePct), 1)}%`);
+    } else if (changePct <= -4 && changePct > -8) {
+      score += 20; tags.push('pullback'); reasons.push(`Dipped ${round(Math.abs(changePct), 1)}%`);
+    } else if (changePct <= -8 && changePct > -12) {
+      score += 12; tags.push('sell-off'); reasons.push(`Sold off ${round(Math.abs(changePct), 1)}%`);
+    } else if (changePct <= -12) {
+      score += 5; tags.push('crash');
+    } else if (changePct < 0) {
+      score += 15;
+    } else if (changePct >= 0 && changePct < 0.5) {
+      score += 8; // flat day in uptrend = still a decent entry
+    } else {
+      score += 3;
+    }
+
+    // 3. Proximity to support (max 20 pts) — prefer SMA50, fallback to 52w range
+    if (hasSma50) {
+      const distPct = ((price - sma50) / sma50) * 100;
+      if (distPct >= 0 && distPct <= 2) { score += 20; tags.push('at-sma50'); reasons.push('At SMA(50) support'); }
+      else if (distPct >= -2 && distPct < 0) { score += 18; tags.push('testing-sma50'); reasons.push('Testing SMA(50)'); }
+      else if (distPct > 2 && distPct <= 5) score += 12;
+      else if (distPct > 5 && distPct <= 10) score += 6;
+      else if (distPct > 10) score += 2;
+      else score += 5;
+    } else if (has52w) {
+      // No SMA50 — use distance from 52w high as proxy for "discount from trend"
+      const pctFromHigh = ((high52 - price) / high52) * 100;
+      if (pctFromHigh >= 5 && pctFromHigh <= 15) { score += 18; reasons.push(`${round(pctFromHigh, 0)}% off 52w high`); }
+      else if (pctFromHigh >= 2 && pctFromHigh < 5) { score += 14; reasons.push(`${round(pctFromHigh, 0)}% off 52w high`); }
+      else if (pctFromHigh > 15 && pctFromHigh <= 25) score += 10;
+      else score += 4;
+    }
+
+    // 4. 52-week position (max 15 pts) — upper half = healthy
+    if (has52w) {
+      const pctFromHigh = round((1 - weekPos) * 100, 0);
+      if (weekPos >= 0.8) { score += 15; reasons.push(`${pctFromHigh}% from 52w high`); }
+      else if (weekPos >= 0.65) { score += 12; reasons.push(`${pctFromHigh}% from 52w high`); }
+      else if (weekPos >= 0.5) score += 8;
+      else score += 2;
+    }
+
+    // 5. Volume on pullback (max 10 pts) — quiet dips are healthy
+    if (avgVolume > 0 && volume > 0 && changePct < 0) {
+      const volRatio = volume / avgVolume;
+      if (volRatio < 0.7) { score += 10; tags.push('quiet-dip'); reasons.push('Low-vol pullback'); }
+      else if (volRatio < 1) score += 7;
+      else if (volRatio > 2) score -= 5;
+    }
   } else {
-    score += 3; // green day — not ideal entry timing for swing
-  }
+    // ── SELL: Breakdown in downtrend ──
 
-  // ── 3. Proximity to SMA50 support (max 20 pts)
-  // The closer to SMA50 from above, the better the risk/reward.
-  if (sma50 > 0) {
-    const distPct = ((price - sma50) / sma50) * 100;
-    if (distPct >= 0 && distPct <= 2) {
-      score += 20; tags.push('at-sma50'); reasons.push('At SMA(50) support');
-    } else if (distPct >= -2 && distPct < 0) {
-      score += 18; tags.push('testing-sma50'); reasons.push('Testing SMA(50)');
-    } else if (distPct > 2 && distPct <= 5) {
-      score += 12; // above SMA50 but not at support yet
-    } else if (distPct > 5 && distPct <= 10) {
-      score += 6; // well above support — might have more to fall
-    } else if (distPct > 10) {
-      score += 2; // extended above SMA50 — not a buy-the-dip setup
+    // 1. Downtrend confirmation (max 30 pts)
+    if (belowSma50 && belowSma200 && sma50Below200) {
+      score += 30; tags.push('strong-downtrend');
+    } else if (belowSma50 && belowSma200) {
+      score += 24; tags.push('downtrend');
+    } else if (belowSma50) {
+      score += 18; tags.push('weakening');
+    } else if (has52w && weekPos <= 0.3) {
+      // Fallback: near 52-week low = likely downtrend
+      score += 22; tags.push('near-lows');
+    } else if (has52w && weekPos <= 0.4) {
+      score += 15; tags.push('lower-range');
     } else {
-      score += 5; // below SMA50 by more than 2%
+      score += 5;
+    }
+
+    // 2. Breakdown quality (max 25 pts) — bounce into resistance then reject
+    if (changePct >= 1 && changePct < 4) {
+      // Small bounce in downtrend = potential short entry at resistance
+      score += 20; tags.push('bounce'); reasons.push(`Bounced ${round(changePct, 1)}% into resistance`);
+    } else if (changePct < 0 && changePct > -5) {
+      score += 22; tags.push('breakdown'); reasons.push(`Down ${round(Math.abs(changePct), 1)}% — trend continuing`);
+    } else if (changePct <= -5 && changePct > -10) {
+      score += 15; reasons.push(`Down ${round(Math.abs(changePct), 1)}%`);
+    } else if (changePct >= 4) {
+      score += 5; // big bounce = might be reversing, low confidence short
+    } else if (changePct >= 0 && changePct < 1) {
+      score += 10; // flat day in downtrend
+    }
+
+    // 3. Proximity to resistance (max 20 pts) — prefer SMA50, fallback to 52w
+    if (hasSma50) {
+      const distPct = ((price - sma50) / sma50) * 100;
+      if (distPct >= -2 && distPct <= 0) { score += 20; tags.push('at-sma50'); reasons.push('Rejected at SMA(50)'); }
+      else if (distPct > 0 && distPct <= 2) { score += 18; tags.push('testing-sma50'); reasons.push('Testing SMA(50) resistance'); }
+      else if (distPct < -2 && distPct >= -5) score += 12;
+      else if (distPct < -5) score += 6;
+      else score += 3;
+    } else if (has52w) {
+      // No SMA50 — use distance from 52w low
+      const pctFromLow = ((price - low52) / low52) * 100;
+      if (pctFromLow <= 15) { score += 16; reasons.push(`Near 52w low`); }
+      else if (pctFromLow <= 30) score += 10;
+      else score += 4;
+    }
+
+    // 4. 52-week position (max 15 pts) — lower half = bearish
+    if (has52w) {
+      const pctFromLow = round(weekPos * 100, 0);
+      if (weekPos <= 0.3) { score += 15; reasons.push(`${pctFromLow}% above 52w low`); }
+      else if (weekPos <= 0.45) { score += 12; reasons.push(`Lower half of 52w range`); }
+      else if (weekPos <= 0.6) score += 6;
+      else score += 0; // upper half = uptrend context, bad short
+    }
+
+    // 5. Volume on breakdown (max 10 pts) — heavy selling confirms
+    if (avgVolume > 0 && volume > 0 && changePct < 0) {
+      const volRatio = volume / avgVolume;
+      if (volRatio > 2) { score += 10; tags.push('heavy-selling'); reasons.push(`Vol ${round(volRatio, 1)}x avg`); }
+      else if (volRatio > 1.2) score += 6;
     }
   }
 
-  // ── 4. 52-week range position (max 15 pts) — upper half = healthy trend
-  if (high52 > 0 && low52 > 0 && high52 > low52) {
-    const position = (price - low52) / (high52 - low52);
-    const pctFromHigh = round((1 - position) * 100, 0);
-    if (position >= 0.8) {
-      score += 15; reasons.push(`${pctFromHigh}% from 52w high`);
-    } else if (position >= 0.65) {
-      score += 12; reasons.push(`${pctFromHigh}% from 52w high`);
-    } else if (position >= 0.5) {
-      score += 8;
-    } else {
-      score += 2; // lower half of range — bearish context
-    }
-  }
-
-  // ── 5. Volume on pullback (max 10 pts) — quiet pullbacks are healthy
-  if (avgVolume > 0 && volume > 0 && changePct < 0) {
-    const volRatio = volume / avgVolume;
-    if (volRatio < 0.7) {
-      score += 10; tags.push('quiet-dip'); reasons.push('Low-vol pullback');
-    } else if (volRatio < 1) {
-      score += 7;
-    } else if (volRatio > 2) {
-      score -= 5; // heavy selling = institutional distribution, be cautious
-    }
-  }
-
+  const finalScore = Math.max(0, Math.min(100, score));
   const reasonStr = reasons.length > 0 ? reasons.join(' · ') : `${round(changePct, 1)}% today`;
 
   return {
@@ -338,7 +532,9 @@ function scoreSwingTrade(q: YahooQuote): TradeIdea | null {
     price: round(price),
     change: round(change),
     changePercent: round(changePct, 1),
-    score: Math.max(0, Math.min(100, score)),
+    signal,
+    confidence: confidenceLabel(finalScore),
+    score: finalScore,
     reason: reasonStr,
     tags,
     mode: 'SWING_TRADE',
@@ -346,7 +542,6 @@ function scoreSwingTrade(q: YahooQuote): TradeIdea | null {
 }
 
 // ── In-memory cache ─────────────────────────────────────
-// Scanner results are stable intraday — cache 10 min.
 
 let _cachedResult: ScanResult | null = null;
 let _cacheTimestamp = 0;
@@ -360,7 +555,6 @@ Deno.serve(async (req) => {
   }
 
   try {
-    // Parse optional portfolio tickers from request
     let portfolioTickers: string[] = [];
     try {
       const body = await req.json();
@@ -370,45 +564,63 @@ Deno.serve(async (req) => {
           .filter((t: string) => t.length > 0 && t.length <= 10);
       }
     } catch {
-      // No body or invalid JSON — that's fine
+      // No body or invalid JSON — fine
     }
 
-    // Check cache
     const now = Date.now();
     if (_cachedResult && now - _cacheTimestamp < CACHE_TTL_MS) {
-      console.log('[Trade Scanner] Serving cached results');
       return new Response(JSON.stringify({ ..._cachedResult, cached: true }), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       });
     }
 
-    console.log(`[Trade Scanner] Scanning... (${portfolioTickers.length} portfolio tickers)`);
+    console.log(`[Trade Scanner] Scanning...`);
 
-    // ── Fetch data in parallel ──
-    // Day trades: top gainers from Yahoo (comes with volume, change, etc.)
-    // Swing trades: batch quotes for curated universe + portfolio tickers
     const swingSymbols = [...new Set([...SWING_UNIVERSE, ...portfolioTickers])];
 
-    const [gainers, swingQuotes] = await Promise.all([
+    // Fetch gainers + losers for day trades, chart quotes for swing
+    const [gainers, losers, swingQuotes] = await Promise.all([
       fetchMovers('day_gainers'),
-      fetchBatchQuotes(swingSymbols),
+      fetchMovers('day_losers'),
+      fetchSwingQuotes(swingSymbols),
     ]);
 
-    console.log(`[Trade Scanner] Got ${gainers.length} gainers, ${swingQuotes.length} swing quotes`);
+    console.log(`[Trade Scanner] Got ${gainers.length} gainers, ${losers.length} losers, ${swingQuotes.length} swing quotes`);
 
-    // ── Score day trades — only surface score >= 55 (high confidence) ──
-    const dayIdeas: TradeIdea[] = gainers
-      .map(scoreDayTrade)
-      .filter((x): x is TradeIdea => x !== null && x.score >= 55)
-      .sort((a, b) => b.score - a.score)
-      .slice(0, 6);
+    // ── Score day trades (BUY from gainers, SELL from losers + overextended gainers) ──
+    const dayBuys = gainers
+      .map(q => scoreDayTrade(q, 'gainers'))
+      .filter((x): x is TradeIdea => x !== null && x.score >= 55);
+    const daySells = losers
+      .map(q => scoreDayTrade(q, 'losers'))
+      .filter((x): x is TradeIdea => x !== null && x.score >= 55);
 
-    // ── Score swing trades — only surface score >= 50 (confirmed uptrend + pullback) ──
-    const swingIdeas: TradeIdea[] = swingQuotes
+    // Merge, dedupe, sort by score, take top 8
+    const dayAll = [...dayBuys, ...daySells]
+      .sort((a, b) => b.score - a.score);
+    // Dedupe by ticker (keep highest score)
+    const daySeen = new Set<string>();
+    const dayIdeas: TradeIdea[] = [];
+    for (const idea of dayAll) {
+      if (!daySeen.has(idea.ticker) && dayIdeas.length < 8) {
+        daySeen.add(idea.ticker);
+        dayIdeas.push(idea);
+      }
+    }
+
+    // ── Score swing trades (BUY pullbacks + SELL breakdowns) ──
+    const swingAll = swingQuotes
       .map(scoreSwingTrade)
       .filter((x): x is TradeIdea => x !== null && x.score >= 50)
-      .sort((a, b) => b.score - a.score)
-      .slice(0, 6);
+      .sort((a, b) => b.score - a.score);
+    const swingSeen = new Set<string>();
+    const swingIdeas: TradeIdea[] = [];
+    for (const idea of swingAll) {
+      if (!swingSeen.has(idea.ticker) && swingIdeas.length < 8) {
+        swingSeen.add(idea.ticker);
+        swingIdeas.push(idea);
+      }
+    }
 
     const result: ScanResult = {
       dayTrades: dayIdeas,
@@ -416,11 +628,10 @@ Deno.serve(async (req) => {
       timestamp: now,
     };
 
-    // Cache
     _cachedResult = result;
     _cacheTimestamp = now;
 
-    console.log(`[Trade Scanner] Returning ${dayIdeas.length} day trades, ${swingIdeas.length} swing trades`);
+    console.log(`[Trade Scanner] Returning ${dayIdeas.length} day (${dayBuys.length} BUY, ${daySells.length} SELL), ${swingIdeas.length} swing`);
 
     return new Response(JSON.stringify(result), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
