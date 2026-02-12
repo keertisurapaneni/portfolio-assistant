@@ -1,0 +1,41 @@
+---
+description: Deployment workflow — always verify local build before deploying to Vercel
+alwaysApply: true
+---
+
+# Deployment Workflow
+
+When deploying changes (user says "deploy", "push to Vercel", "ship it", etc.), follow this sequence:
+
+## 1. Local Build Verification (always do first)
+
+Run the TypeScript build from the `app/` directory:
+
+```bash
+cd app && npm run build
+```
+
+- If the build **fails**, fix all errors before proceeding.
+- Show the user the error and the fix.
+- Re-run `npm run build` until it passes cleanly.
+
+## 2. Ask for Confirmation
+
+After a successful build, tell the user:
+> "Local build passed. Ready to deploy to Vercel — should I push?"
+
+**Wait for the user to confirm** (e.g. "ok", "yes", "go ahead") before proceeding.
+
+## 3. Deploy to Vercel via Git Push
+
+Only after user confirmation:
+
+```bash
+git add -A && git commit -m "<message>" && git push origin master
+```
+
+## Rules
+
+- **Never skip the local build step.** Even for "small" changes.
+- **Never push to git without user approval** after the build passes.
+- If Supabase edge functions also changed, deploy those first (`supabase functions deploy <name> --no-verify-jwt`), then do the frontend build + push.

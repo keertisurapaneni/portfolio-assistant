@@ -8,7 +8,6 @@ import {
   ChevronUp,
   ChevronRight,
   BarChart3,
-  ShieldCheck,
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { fetchTradeIdeas, type TradeIdea, type ScanResult } from '../lib/tradeScannerApi';
@@ -128,7 +127,7 @@ export function TradeIdeas({ onSelectTicker }: TradeIdeasProps) {
               )}>
                 {idea.changePercent >= 0 ? '+' : ''}{idea.changePercent}%
               </span>
-              <ConfidenceDot confidence={idea.confidence} />
+              <ConfidenceRing score={idea.score} size="sm" />
             </button>
           ))}
           {ideas.length > 5 && (
@@ -244,29 +243,55 @@ export function TradeIdeas({ onSelectTicker }: TradeIdeasProps) {
   );
 }
 
-// ── Confidence Dot (for collapsed preview) ──────────────
+// ── Confidence Ring (matches the full Trade Signal analysis ring) ─────
+// Converts 0-100 internal score → 0-10 display, with a circular gauge.
+// Two sizes: "sm" for collapsed preview pills, "md" for expanded cards.
 
-function ConfidenceDot({ confidence }: { confidence: string }) {
-  const color = confidence === 'Very High' ? 'bg-emerald-500' : confidence === 'High' ? 'bg-green-400' : 'bg-amber-400';
+function ConfidenceRing({ score, size = 'md' }: { score: number; size?: 'sm' | 'md' }) {
+  const score10 = Math.max(0, Math.min(10, Math.round(score / 10)));
+  const pct = score10 / 10;
+
+  // Dimensions vary by size
+  const dim = size === 'sm' ? 22 : 36;
+  const radius = size === 'sm' ? 8 : 14;
+  const strokeWidth = size === 'sm' ? 2.5 : 3.5;
+  const circumference = 2 * Math.PI * radius;
+  const offset = circumference * (1 - pct);
+
+  let color: string;
+  if (score10 >= 7) color = '#22c55e';       // green
+  else if (score10 >= 4) color = '#f59e0b';  // amber
+  else color = '#ef4444';                     // red
+
   return (
-    <span className={cn('w-1.5 h-1.5 rounded-full', color)} title={`${confidence} confidence`} />
-  );
-}
-
-// ── Confidence Badge ────────────────────────────────────
-
-function ConfidenceBadge({ confidence }: { confidence: string }) {
-  const styles = {
-    'Very High': 'bg-emerald-50 text-emerald-700 border-emerald-200',
-    High: 'bg-green-50 text-green-700 border-green-200',
-    Moderate: 'bg-amber-50 text-amber-700 border-amber-200',
-  }[confidence] ?? 'bg-gray-50 text-gray-600 border-gray-200';
-
-  return (
-    <span className={cn('inline-flex items-center gap-1 rounded-full border px-1.5 py-0 text-[9px] font-semibold', styles)}>
-      <ShieldCheck className="w-2.5 h-2.5" />
-      {confidence}
-    </span>
+    <div className="relative inline-flex items-center justify-center" style={{ width: dim, height: dim }}>
+      <svg width={dim} height={dim} className="transform -rotate-90">
+        <circle
+          cx={dim / 2} cy={dim / 2} r={radius}
+          stroke="#e5e7eb" strokeWidth={strokeWidth} fill="none"
+        />
+        <circle
+          cx={dim / 2} cy={dim / 2} r={radius}
+          stroke={color}
+          strokeWidth={strokeWidth}
+          fill="none"
+          strokeDasharray={circumference}
+          strokeDashoffset={offset}
+          strokeLinecap="round"
+          className="transition-all duration-500"
+        />
+      </svg>
+      <span
+        className="absolute font-bold"
+        style={{
+          color,
+          fontSize: size === 'sm' ? '8px' : '11px',
+          lineHeight: 1,
+        }}
+      >
+        {score10}
+      </span>
+    </div>
   );
 }
 
@@ -306,11 +331,15 @@ function IdeaCard({
         'bg-white border-[hsl(var(--border))]'
       )}
     >
-      {/* Top row: signal + ticker + change% */}
+      {/* Top row: signal + ticker + confidence ring + change% */}
       <div className="flex items-center justify-between w-full gap-2">
         <div className="flex items-center gap-2">
           <SignalPill signal={idea.signal} />
           <span className="text-sm font-bold text-[hsl(var(--foreground))]">{idea.ticker}</span>
+          <div className="flex items-center gap-0.5">
+            <ConfidenceRing score={idea.score} size="md" />
+            <span className="text-[8px] text-[hsl(var(--muted-foreground))]">/10</span>
+          </div>
         </div>
         <span className={cn(
           'text-xs font-bold tabular-nums px-1.5 py-0.5 rounded-md',
@@ -335,18 +364,19 @@ function IdeaCard({
         {idea.reason}
       </p>
 
-      {/* Confidence + tags row */}
-      <div className="flex items-center gap-1.5 mt-2 flex-wrap">
-        <ConfidenceBadge confidence={idea.confidence} />
-        {idea.tags.slice(0, 2).map((tag) => (
-          <span
-            key={tag}
-            className="inline-flex items-center rounded-full px-1.5 py-0 text-[9px] font-medium border bg-[hsl(var(--secondary))] text-[hsl(var(--muted-foreground))] border-[hsl(var(--border))]"
-          >
-            {tag}
-          </span>
-        ))}
-      </div>
+      {/* Tags row */}
+      {idea.tags.length > 0 && (
+        <div className="flex items-center gap-1.5 mt-2 flex-wrap">
+          {idea.tags.slice(0, 3).map((tag) => (
+            <span
+              key={tag}
+              className="inline-flex items-center rounded-full px-1.5 py-0 text-[9px] font-medium border bg-[hsl(var(--secondary))] text-[hsl(var(--muted-foreground))] border-[hsl(var(--border))]"
+            >
+              {tag}
+            </span>
+          ))}
+        </div>
+      )}
 
       {/* Analyze CTA */}
       <div className="flex items-center gap-1 mt-2 text-[10px] font-semibold text-[hsl(var(--muted-foreground))] group-hover:text-[hsl(var(--primary))] transition-colors">
