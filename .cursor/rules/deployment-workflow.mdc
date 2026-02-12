@@ -1,5 +1,5 @@
 ---
-description: Deployment workflow — ensure local dev server, build, user approval before push
+description: Deployment workflow — PR-based flow with build verification and user approval
 alwaysApply: true
 ---
 
@@ -9,7 +9,7 @@ When deploying changes (user says "deploy", "push to Vercel", "ship it", etc.), 
 
 ## 0. Ensure Local Dev Server is Running
 
-Before anything else, check if the Vite dev server is running. Look at terminal files for an active `npm run dev` process on port 5173.
+Check if the Vite dev server is running (look at terminal files for `npm run dev` on port 5173).
 
 If NOT running, start it:
 
@@ -21,36 +21,62 @@ Tell the user: "Dev server running at http://localhost:5173/ — test your chang
 
 **Wait for the user to test and confirm** before proceeding to build.
 
-## 1. Local Build Verification
+## 1. Supabase Edge Functions (if changed)
 
-Run the TypeScript build from the `app/` directory:
+Deploy edge functions **before** the frontend push:
+
+```bash
+npx supabase functions deploy <function-name> --no-verify-jwt
+```
+
+If `_shared/` modules changed, redeploy **both** `trading-signals` and `trade-scanner`.
+
+## 2. Local Build Verification
 
 ```bash
 cd app && npm run build
 ```
 
 - If the build **fails**, fix all errors before proceeding.
-- Show the user the error and the fix.
-- Re-run `npm run build` until it passes cleanly.
+- Re-run until it passes cleanly.
 
-## 2. Ask for Confirmation
+## 3. Create PR (not direct push)
 
-After a successful build, tell the user:
-> "Local build passed. Ready to deploy to Vercel — should I push?"
-
-**ALWAYS wait for the user to explicitly confirm** (e.g. "ok", "yes", "go ahead") before pushing to main. NEVER auto-push.
-
-## 3. Deploy to Vercel via Git Push
-
-Only after user confirmation:
+After a successful build, ask for confirmation, then:
 
 ```bash
-git add -A && git commit -m "<message>" && git push origin master
+# Create feature branch (use descriptive name)
+git checkout -b feat/<short-description>
+
+# Commit, push, create PR
+git add -A && git commit -m "<message>"
+git push -u origin HEAD
+gh pr create --repo keertisurapaneni/portfolio-assistant --title "<title>" --body "<body>"
+```
+
+This lets CodeQL and other checks run before code hits master.
+
+## 4. Merge PR
+
+After checks pass (or if no CI checks are configured yet), merge the PR:
+
+```bash
+gh pr merge <number> --repo keertisurapaneni/portfolio-assistant --squash --delete-branch
+```
+
+Vercel auto-deploys from master after merge.
+
+## 5. Return to master
+
+```bash
+git checkout master && git pull origin master
 ```
 
 ## Rules
 
 - **Always ensure dev server is running** so the user can test locally.
 - **Never skip the local build step.** Even for "small" changes.
-- **Never push to git/main without explicit user approval.**
-- If Supabase edge functions also changed, deploy those first (`supabase functions deploy <name> --no-verify-jwt`), then do the frontend build + push.
+- **Never push directly to master.** Always use a PR.
+- **Never create or merge a PR without explicit user approval.**
+- **Squash merge** to keep master history clean.
+- If `gh pr create` fails due to SSH alias, give the user the GitHub PR URL to create manually.
