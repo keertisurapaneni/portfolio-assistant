@@ -376,6 +376,52 @@ export function computeSupportResistance(data: OHLCV[], lookback = 5, count = 2)
   return { support, resistance };
 }
 
+// ── Gap Detection ───────────────────────────────────────
+
+export interface GapInfo {
+  type: 'up' | 'down';
+  gapStart: number;  // bottom of gap (for up gaps: previous high)
+  gapEnd: number;    // top of gap (for up gaps: current low)
+  filled: boolean;
+}
+
+/**
+ * Detect price gaps in candle data. Data is newest-first.
+ * A gap up = bar's low > previous bar's high (price jumped over a range).
+ * A gap down = bar's high < previous bar's low.
+ * Then check if any subsequent bar filled the gap.
+ * Returns only recent gaps (last 60 bars) to keep it relevant.
+ */
+export function detectGaps(data: OHLCV[], maxBars = 60): GapInfo[] {
+  if (data.length < 3) return [];
+
+  const bars = oldestFirst(data);
+  const scanLen = Math.min(bars.length, maxBars);
+  const startIdx = bars.length - scanLen;
+  const gaps: { type: 'up' | 'down'; gapStart: number; gapEnd: number; barIdx: number }[] = [];
+
+  for (let i = Math.max(1, startIdx); i < bars.length; i++) {
+    // Gap up: current bar's low is above previous bar's high
+    if (bars[i].l > bars[i - 1].h) {
+      gaps.push({ type: 'up', gapStart: round(bars[i - 1].h), gapEnd: round(bars[i].l), barIdx: i });
+    }
+    // Gap down: current bar's high is below previous bar's low
+    if (bars[i].h < bars[i - 1].l) {
+      gaps.push({ type: 'down', gapStart: round(bars[i - 1].l), gapEnd: round(bars[i].h), barIdx: i });
+    }
+  }
+
+  // Check if each gap has been filled by any subsequent bar
+  return gaps.map(g => {
+    let filled = false;
+    for (let j = g.barIdx + 1; j < bars.length; j++) {
+      if (g.type === 'up' && bars[j].l <= g.gapStart) { filled = true; break; }
+      if (g.type === 'down' && bars[j].h >= g.gapStart) { filled = true; break; }
+    }
+    return { type: g.type, gapStart: g.gapStart, gapEnd: g.gapEnd, filled };
+  });
+}
+
 // ── Recent Move (% change over N bars) ──────────────────
 
 export interface RecentMove {
@@ -410,6 +456,7 @@ export interface IndicatorSummary {
   emaCrossover: CrossoverState;
   trend: TrendLabel;
   recentMove: RecentMove;
+  gaps: GapInfo[];
 }
 
 /**
@@ -436,6 +483,7 @@ export function computeAllIndicators(data: OHLCV[]): IndicatorSummary {
     emaCrossover: detectEMASMACrossover(data),
     trend: classifyTrend(currentPrice, sma50, sma200),
     recentMove: computeRecentMove(data),
+    gaps: detectGaps(data),
   };
 }
 
@@ -532,8 +580,11 @@ export function formatIndicatorsForPrompt(
     lines.push('Volume:');
     const vr = ind.volumeRatio;
     const fmt = (n: number) => n >= 1_000_000 ? `${round(n / 1_000_000, 1)}M` : n >= 1_000 ? `${round(n / 1_000, 1)}K` : `${round(n)}`;
-    const label = vr.ratio > 1.2 ? 'ABOVE average' : vr.ratio < 0.8 ? 'BELOW average' : 'near average';
-    lines.push(`  Current: ${fmt(vr.current)} vs 20-day avg ${fmt(vr.average)} — ${vr.ratio}x ${label}`);
+    const volLabel = vr.ratio >= 3 ? '⚠️ SURGE (3x+) — strong institutional activity'
+      : vr.ratio >= 1.5 ? 'HIGH (1.5x+) — confirms move'
+      : vr.ratio >= 0.8 ? 'NORMAL — no unusual activity'
+      : '⚠️ DRY (< 0.8x) — move is suspect, low conviction';
+    lines.push(`  Current: ${fmt(vr.current)} vs 20-day avg ${fmt(vr.average)} — ${vr.ratio}x ${volLabel}`);
   }
 
   // Recent price move — critical for "don't chase" logic
@@ -562,6 +613,17 @@ export function formatIndicatorsForPrompt(
     lines.push('Key Levels:');
     if (sr.support.length > 0) lines.push(`  Support: ${sr.support.map(p => `$${p}`).join(', ')}`);
     if (sr.resistance.length > 0) lines.push(`  Resistance: ${sr.resistance.map(p => `$${p}`).join(', ')}`);
+  }
+
+  // Price gaps
+  const unfilledGaps = ind.gaps.filter(g => !g.filled);
+  if (unfilledGaps.length > 0) {
+    lines.push('');
+    lines.push('Unfilled Price Gaps:');
+    for (const g of unfilledGaps.slice(0, 4)) {  // limit to 4 most relevant
+      const dir = g.type === 'up' ? 'Gap Up' : 'Gap Down';
+      lines.push(`  ${dir}: $${g.gapStart} – $${g.gapEnd} (unfilled — potential magnet)`);
+    }
   }
 
   // Market context

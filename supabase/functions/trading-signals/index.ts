@@ -176,6 +176,7 @@ interface FundamentalData {
   beta: number | null;
   week52High: number | null;
   week52Low: number | null;
+  sharesOutstanding: number | null;  // in millions
   analystConsensus: { strongBuy: number; buy: number; hold: number; sell: number; strongSell: number } | null;
   earnings: { quarter: string; actual: number | null; estimate: number | null; surprise: number | null }[];
 }
@@ -229,11 +230,65 @@ async function fetchFundamentals(ticker: string, finnhubKey: string): Promise<Fu
       beta: m['beta'] ?? null,
       week52High: m['52WeekHigh'] ?? null,
       week52Low: m['52WeekLow'] ?? null,
+      sharesOutstanding: m['shareOutstanding'] ?? null,  // Finnhub field name (in millions)
       analystConsensus,
       earnings: earningsData,
     };
   } catch (e) {
     console.warn('[Trading Signals] Fundamentals fetch failed:', e);
+    return null;
+  }
+}
+
+// ── Earnings Calendar (upcoming earnings date) ──────────
+
+interface EarningsEvent {
+  date: string;       // YYYY-MM-DD
+  hour: string;       // 'bmo' (before market open), 'amc' (after close), 'dmh' (during)
+  epsEstimate: number | null;
+  revenueEstimate: number | null;
+  daysUntil: number;
+}
+
+async function fetchEarningsCalendar(ticker: string, finnhubKey: string): Promise<EarningsEvent | null> {
+  try {
+    const base = 'https://finnhub.io/api/v1';
+    const today = new Date();
+    const from = today.toISOString().slice(0, 10);
+    // Look 30 days ahead
+    const future = new Date(today);
+    future.setDate(future.getDate() + 30);
+    const to = future.toISOString().slice(0, 10);
+
+    const res = await fetchWithTimeout(
+      `${base}/calendar/earnings?symbol=${encodeURIComponent(ticker)}&from=${from}&to=${to}&token=${finnhubKey}`,
+      { timeout: 10_000 }
+    );
+    if (!res.ok) return null;
+    const data = await res.json();
+
+    const events = data?.earningsCalendar;
+    if (!Array.isArray(events) || events.length === 0) return null;
+
+    // Find the nearest upcoming event for this ticker
+    const match = events.find(
+      (e: { symbol?: string }) => (e.symbol ?? '').toUpperCase() === ticker.toUpperCase()
+    );
+    if (!match) return null;
+
+    const earningsDate = new Date(match.date + 'T00:00:00');
+    const diffMs = earningsDate.getTime() - today.getTime();
+    const daysUntil = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
+
+    return {
+      date: match.date,
+      hour: match.hour ?? 'unknown',
+      epsEstimate: match.epsEstimate ?? null,
+      revenueEstimate: match.revenueEstimate ?? null,
+      daysUntil,
+    };
+  } catch (e) {
+    console.warn('[Trading Signals] Earnings calendar fetch failed:', e);
     return null;
   }
 }
@@ -384,9 +439,16 @@ async function detectMode(
   };
 }
 
-// ── Gemini caller (model cascade + round-robin key rotation) ────────
+// ── Gemini caller (model cascade + round-robin key AND model rotation) ────────
 
-let _geminiKeyIndex = 0; // round-robin counter persists across calls within same invocation
+// Both counters persist across calls within the same isolate so parallel calls
+// (sentiment, trade, outlook) each start from a DIFFERENT key AND model.
+let _geminiKeyIndex = 0;
+let _geminiModelOffset = 0;
+
+// Track rate-limited key+model combos so we skip them instead of burning RPM.
+// Map key: "modelIdx:keyIdx" → value: timestamp when cooldown expires.
+const _rateLimitedUntil: Map<string, number> = new Map();
 
 async function callGemini(
   apiKeys: string[],
@@ -407,13 +469,35 @@ async function callGemini(
 
   let lastResponse: Response | null = null;
 
-  // Round-robin: start from the next key each call so all keys share the load
-  const startIdx = _geminiKeyIndex % apiKeys.length;
+  // Round-robin keys — each call starts from a different key
+  const keyStart = _geminiKeyIndex % apiKeys.length;
   _geminiKeyIndex++;
 
-  for (const model of GEMINI_MODELS) {
+  // Round-robin models — each parallel call starts from a different model so
+  // sentiment / trade / outlook don't all hammer flash-lite at once.
+  const modelStart = _geminiModelOffset % GEMINI_MODELS.length;
+  _geminiModelOffset++;
+
+  const now = Date.now();
+
+  for (let m = 0; m < GEMINI_MODELS.length; m++) {
+    const modelIdx = (modelStart + m) % GEMINI_MODELS.length;
+    const model = GEMINI_MODELS[modelIdx];
+
     for (let i = 0; i < apiKeys.length; i++) {
-      const key = apiKeys[(startIdx + i) % apiKeys.length];
+      const keyIdx = (keyStart + i) % apiKeys.length;
+      const comboKey = `${modelIdx}:${keyIdx}`;
+
+      // Skip combos we already know are rate-limited
+      const cooldownUntil = _rateLimitedUntil.get(comboKey);
+      if (cooldownUntil && now < cooldownUntil) {
+        console.log(
+          `[Trading Signals] Skipping ${model} key#${keyIdx} (rate-limited for ${Math.ceil((cooldownUntil - now) / 1000)}s more)`
+        );
+        continue;
+      }
+
+      const key = apiKeys[keyIdx];
       const url = `${GEMINI_BASE}/${model}:generateContent?key=${key}`;
       const res = await fetchWithTimeout(url, {
         method: 'POST',
@@ -429,13 +513,26 @@ async function callGemini(
 
       lastResponse = res;
       if (res.status === 429) {
-        console.warn(`[Trading Signals] ${model} key#${(startIdx + i) % apiKeys.length} rate-limited, waiting 500ms...`);
-        await new Promise(r => setTimeout(r, 500));
-        continue;
+        // Parse Retry-After if available, otherwise default to 60s cooldown
+        const retryAfter = res.headers.get('retry-after');
+        const cooldownMs = retryAfter && !isNaN(Number(retryAfter))
+          ? Math.min(Number(retryAfter) * 1000, 120_000) // cap at 2 min
+          : 60_000;
+        _rateLimitedUntil.set(comboKey, Date.now() + cooldownMs);
+        console.warn(
+          `[Trading Signals] ${model} key#${keyIdx} rate-limited → ${cooldownMs / 1000}s cooldown, trying next combo`
+        );
+        continue; // try next key (same model) or next model
       }
       // Non-429 error on this model — try next model
       break;
     }
+  }
+
+  // Housekeeping: purge expired cooldown entries
+  const cleanupNow = Date.now();
+  for (const [k, v] of _rateLimitedUntil) {
+    if (cleanupNow > v) _rateLimitedUntil.delete(k);
   }
 
   const errText = lastResponse ? await lastResponse.text().catch(() => '') : '';
@@ -460,7 +557,7 @@ Respond ONLY with valid JSON (no markdown, no backticks):
 
 // ── Day Trade Agent ─────────────────────────────────────
 
-const DAY_TRADE_SYSTEM = `You are an aggressive intraday trader. You find actionable setups from pre-computed indicators and price data. Give BUY or SELL when the data supports it; HOLD when there is no edge. Intraday momentum is valid — stocks that are running can keep running within the session.`;
+const DAY_TRADE_SYSTEM = `You are an aggressive intraday trader who trades longs and shorts equally. You find actionable setups from pre-computed indicators and price data. Give BUY or SELL when the data supports it; HOLD when there is no edge. Intraday momentum is valid — stocks that are running can keep running within the session.`;
 
 const DAY_TRADE_USER = `Inputs: (1) Pre-computed indicators (primary), (2) 1m/15m/1h candles (validation), (3) News headlines (confirmation only).
 
@@ -474,11 +571,17 @@ Rules:
 - Directional call when indicators mostly agree. Lower confidence if some conflict.
 - HOLD only when indicators genuinely conflict across the board.
 - Intraday breakouts and momentum plays are valid — a stock up big today can still be a BUY if structure supports it.
+- SELL (short) setups are equally valid as BUY. RSI > 70 + rejection at resistance + fading volume = short setup. A break above a key high that immediately reverses = failed breakout / liquidity grab — favor short.
+- Volume ratio is critical confirmation: > 2x confirms the move; > 3x = strong institutional activity; < 0.8x means the move is suspect — lower confidence significantly.
+- If float data is provided: low float (< 20M shares) + volume ratio > 3x = explosive setup, use wider stops. High float (> 500M) = grinder, expect slower moves, tighter stops.
+- Support/resistance levels are liquidity zones where stop losses cluster. A break below support that quickly reverses = stop hunt / liquidity grab — this is bullish, not bearish. A break above resistance that immediately fails = bull trap. Look for these reversals as high-probability entries.
+- If earnings just reported (today/yesterday), expect elevated volume and volatility — factor this into stop sizing and conviction.
 
 Risk:
 - Entry near current price. Stop = 1-1.5× ATR beyond a key level.
 - Target 1 = nearest S/R. Target 2 = next level. Min 1.5× reward-to-risk.
-- Tighter stops on extended intraday moves. Scale out at Target 1.
+- Tighter stops on extended intraday moves.
+- Scaling plan: take 50% profit at Target 1, move stop to breakeven, let remaining 50% run to Target 2.
 
 Output (STRICT JSON only, no markdown):
 {"mode":"DAY_TRADE","recommendation":"BUY"|"SELL"|"HOLD","bias":"short phrase","entryPrice":number|null,"stopLoss":number|null,"targetPrice":number|null,"targetPrice2":number|null,"riskReward":"1:x"|null,"rationale":{"technical":"2-3 sentences","sentiment":"1 sentence","risk":"1-2 sentences"},"confidence":0-10,"scenarios":{"bullish":{"probability":0-100,"summary":"1 sentence"},"neutral":{"probability":0-100,"summary":"1 sentence"},"bearish":{"probability":0-100,"summary":"1 sentence"}}}
@@ -507,6 +610,7 @@ Rules:
 - Support/resistance = entry/exit zones.
 - Directional call when indicators mostly agree. HOLD when genuinely conflicting or tight range + low ADX.
 - Counter-trend only if reward > 2.5× risk.
+- Volume ratio is critical confirmation: > 2x confirms the move; > 3x = institutional accumulation/distribution; < 0.8x means the move is suspect — lower confidence significantly.
 
 Don't chase:
 - "Recent Price Move" is the most important filter. Up 15%+ in 5 bars, 25%+ in 10, or 40%+ in 20 = EXTENDED.
@@ -514,10 +618,13 @@ Don't chase:
 - A 30-50% rally = "wait for pullback to SMA20/SMA50," not "buy the trend."
 - Gap up on preliminary earnings/news = extra caution. Preliminary ≠ final. Don't chase until dust settles.
 - When HOLD on extended stock, include the pullback level where it WOULD become a buy.
+- Unfilled gaps are magnets — price tends to return to fill them. An unfilled gap below current price is a potential pullback target and buy zone. Use gap levels as concrete entry/exit targets when available.
+- If earnings are within 7 days, reduce position size guidance and widen stops. Never recommend a new swing entry within 3 days of earnings unless explicitly a pre-earnings play.
 
 Risk:
 - Entry near key support (BUY) or resistance (SELL). Stop = 1.5-2× ATR beyond swing level.
 - Target 1 = nearest major S/R. Target 2 = next level. Min 1.5× reward-to-risk.
+- Scaling plan: take 50% profit at Target 1, move stop to breakeven, let remaining 50% run to Target 2.
 
 Output (STRICT JSON only, no markdown):
 {"mode":"SWING_TRADE","recommendation":"BUY"|"SELL"|"HOLD","bias":"short phrase","entryPrice":number|null,"stopLoss":number|null,"targetPrice":number|null,"targetPrice2":number|null,"riskReward":"1:x"|null,"rationale":{"technical":"2-3 sentences","sentiment":"1 sentence","risk":"1-2 sentences"},"confidence":0-10,"scenarios":{"bullish":{"probability":0-100,"summary":"1 sentence"},"neutral":{"probability":0-100,"summary":"1 sentence"},"bearish":{"probability":0-100,"summary":"1 sentence"}}}
@@ -642,17 +749,21 @@ Deno.serve(async req => {
     const newsPromise = fetchYahooNews(ticker);
     const marketPromise = fetchMarketSnapshot(TWELVE_DATA_API_KEY);
 
-    // Fetch Finnhub fundamentals in parallel (for Long Term Outlook section)
+    // Fetch Finnhub fundamentals + earnings calendar in parallel (for Long Term Outlook + trade prompt)
     const finnhubKey = Deno.env.get('FINNHUB_API_KEY');
     const fundamentalsPromise = finnhubKey
       ? fetchFundamentals(ticker, finnhubKey)
       : Promise.resolve(null);
+    const earningsCalendarPromise = finnhubKey
+      ? fetchEarningsCalendar(ticker, finnhubKey)
+      : Promise.resolve(null);
 
-    const [candles1, candles2, candles3, news, marketSnapshot, fundamentals] = await Promise.all([
+    const [candles1, candles2, candles3, news, marketSnapshot, fundamentals, earningsEvent] = await Promise.all([
       ...candlePromises,
       newsPromise,
       marketPromise,
       fundamentalsPromise,
+      earningsCalendarPromise,
     ]);
 
     const candleResults = [candles1, candles2, candles3];
@@ -754,10 +865,36 @@ Deno.serve(async req => {
       ? newsForPrompt.map(n => ({ headline: n.headline, source: n.source }))
       : [{ headline: 'No recent news available', source: '' }];
 
+    // Float context for day trade (shares outstanding from Finnhub fundamentals)
+    let extraContext = '';
+    if (mode === 'DAY_TRADE' && fundamentals?.sharesOutstanding != null) {
+      const shares = fundamentals.sharesOutstanding; // in millions
+      const floatLabel = shares < 20 ? 'LOW FLOAT — expect explosive moves, wider spreads'
+        : shares < 100 ? 'MID FLOAT — moderate volatility'
+        : shares < 500 ? 'LARGE FLOAT — steadier price action'
+        : 'MEGA FLOAT — slow grinder, tight stops appropriate';
+      extraContext += `\nShares Outstanding: ${shares < 1000 ? `${Math.round(shares)}M` : `${(shares / 1000).toFixed(1)}B`} — ${floatLabel}`;
+    }
+
+    // Earnings calendar context (both modes)
+    if (earningsEvent) {
+      const d = earningsEvent.daysUntil;
+      const hourLabel = earningsEvent.hour === 'bmo' ? 'before market open'
+        : earningsEvent.hour === 'amc' ? 'after market close'
+        : earningsEvent.hour === 'dmh' ? 'during market hours' : '';
+      if (d <= 0) {
+        extraContext += `\n⚠️ EARNINGS JUST REPORTED (${earningsEvent.date}${hourLabel ? ' ' + hourLabel : ''}) — expect elevated volume and volatility.`;
+      } else if (d <= 7) {
+        extraContext += `\n⚠️ EARNINGS IN ${d} DAY${d > 1 ? 'S' : ''} (${earningsEvent.date}${hourLabel ? ' ' + hourLabel : ''}) — binary event risk.`;
+      } else {
+        extraContext += `\nEarnings upcoming: ${earningsEvent.date} (${d} days out).`;
+      }
+    }
+
     const tradeSystemPrompt = mode === 'DAY_TRADE' ? DAY_TRADE_SYSTEM : SWING_TRADE_SYSTEM;
     const tradeUserTemplate = mode === 'DAY_TRADE' ? DAY_TRADE_USER : SWING_TRADE_USER;
     const tradeUserPrompt = tradeUserTemplate
-      .replace('{{INDICATOR_SUMMARY}}', indicatorPromptText)
+      .replace('{{INDICATOR_SUMMARY}}', indicatorPromptText + extraContext)
       .replace('{{TECHNICAL_DATA}}', JSON.stringify(technicalData))
       .replace('{{SENTIMENT_DATA}}', JSON.stringify(newsForTrade));
 
