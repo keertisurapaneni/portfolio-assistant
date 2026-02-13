@@ -10,6 +10,7 @@ import {
   BarChart3,
   AlertTriangle,
   Bot,
+  CheckCircle,
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { fetchTradeIdeas, type TradeIdea, type ScanResult } from '../lib/tradeScannerApi';
@@ -18,6 +19,7 @@ import {
   processTradeIdeas,
   type ProcessResult,
 } from '../lib/autoTrader';
+import { getActiveTrades, getAllTrades } from '../lib/paperTradesApi';
 import { Spinner } from './Spinner';
 
 // ── Client-side cache ───────────────────────────────────
@@ -44,7 +46,20 @@ export function TradeIdeas({ onSelectTicker }: TradeIdeasProps) {
   const [error, setError] = useState<string | null>(null);
   const [autoTrading, setAutoTrading] = useState(false);
   const [, setAutoTradeResults] = useState<ProcessResult[]>([]);
+  const [tradedTickers, setTradedTickers] = useState<Set<string>>(new Set());
   const processedRef = useRef<Set<string>>(new Set()); // track already-processed tickers
+
+  // Load tickers that already have paper trades (active or recent)
+  useEffect(() => {
+    Promise.all([getActiveTrades(), getAllTrades(50)])
+      .then(([active, all]) => {
+        const tickers = new Set<string>();
+        active.forEach(t => tickers.add(t.ticker.toUpperCase()));
+        all.forEach(t => tickers.add(t.ticker.toUpperCase()));
+        setTradedTickers(tickers);
+      })
+      .catch(console.error);
+  }, []);
 
   const load = useCallback(async (force = false) => {
     if (!force && _cache && Date.now() - _cacheTime < CACHE_TTL) {
@@ -146,35 +161,41 @@ export function TradeIdeas({ onSelectTicker }: TradeIdeasProps) {
       {/* Collapsed preview — horizontal ticker pills */}
       {!expanded && ideas.length > 0 && (
         <div className="px-4 pb-3 flex flex-wrap gap-1.5">
-          {ideas.slice(0, 5).map((idea) => (
-            <button
-              key={idea.ticker}
-              type="button"
-              onClick={() => onSelectTicker(idea.ticker, idea.mode)}
-              className={cn(
-                'inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-medium transition-all',
-                'hover:shadow-sm hover:-translate-y-px',
-                'bg-white border-[hsl(var(--border))]'
-              )}
-            >
-              <span className={cn(
-                'inline-flex items-center px-1.5 py-0 rounded text-[9px] font-bold',
-                idea.signal === 'BUY'
-                  ? 'bg-emerald-100 text-emerald-700'
-                  : 'bg-red-100 text-red-700'
-              )}>
-                {idea.signal}
-              </span>
-              <span className="font-bold text-[hsl(var(--foreground))]">{idea.ticker}</span>
-              <span className={cn(
-                'tabular-nums',
-                idea.changePercent >= 0 ? 'text-green-600' : 'text-red-600'
-              )}>
-                {idea.changePercent >= 0 ? '+' : ''}{idea.changePercent}%
-              </span>
-              <ConfidenceRing score={idea.confidence} size="sm" />
-            </button>
-          ))}
+          {ideas.slice(0, 5).map((idea) => {
+            const isTraded = tradedTickers.has(idea.ticker.toUpperCase());
+            return (
+              <button
+                key={idea.ticker}
+                type="button"
+                onClick={() => onSelectTicker(idea.ticker, idea.mode)}
+                className={cn(
+                  'inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-medium transition-all',
+                  'hover:shadow-sm hover:-translate-y-px',
+                  isTraded
+                    ? 'bg-emerald-50/60 border-emerald-300'
+                    : 'bg-white border-[hsl(var(--border))]'
+                )}
+              >
+                {isTraded && <CheckCircle className="w-3 h-3 text-emerald-500" />}
+                <span className={cn(
+                  'inline-flex items-center px-1.5 py-0 rounded text-[9px] font-bold',
+                  idea.signal === 'BUY'
+                    ? 'bg-emerald-100 text-emerald-700'
+                    : 'bg-red-100 text-red-700'
+                )}>
+                  {idea.signal}
+                </span>
+                <span className="font-bold text-[hsl(var(--foreground))]">{idea.ticker}</span>
+                <span className={cn(
+                  'tabular-nums',
+                  idea.changePercent >= 0 ? 'text-green-600' : 'text-red-600'
+                )}>
+                  {idea.changePercent >= 0 ? '+' : ''}{idea.changePercent}%
+                </span>
+                <ConfidenceRing score={idea.confidence} size="sm" />
+              </button>
+            );
+          })}
           {ideas.length > 5 && (
             <button
               type="button"
@@ -285,6 +306,7 @@ export function TradeIdeas({ onSelectTicker }: TradeIdeasProps) {
                   <IdeaCard
                     key={idea.ticker}
                     idea={idea}
+                    traded={tradedTickers.has(idea.ticker.toUpperCase())}
                     onSelect={onSelectTicker}
                   />
                 ))}
@@ -363,9 +385,11 @@ function SignalPill({ signal }: { signal: 'BUY' | 'SELL' }) {
 
 function IdeaCard({
   idea,
+  traded,
   onSelect,
 }: {
   idea: TradeIdea;
+  traded: boolean;
   onSelect: (ticker: string, mode: 'DAY_TRADE' | 'SWING_TRADE') => void;
 }) {
   const isPositive = idea.changePercent >= 0;
@@ -377,9 +401,19 @@ function IdeaCard({
       className={cn(
         'group relative flex flex-col rounded-lg border p-3 text-left transition-all duration-200',
         'hover:shadow-md hover:border-[hsl(var(--ring))] hover:-translate-y-0.5',
-        'bg-white border-[hsl(var(--border))]'
+        traded
+          ? 'bg-emerald-50/40 border-emerald-300'
+          : 'bg-white border-[hsl(var(--border))]'
       )}
     >
+      {/* Traded badge */}
+      {traded && (
+        <div className="absolute top-2 right-2 flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-emerald-100 border border-emerald-200">
+          <CheckCircle className="w-3 h-3 text-emerald-600" />
+          <span className="text-[9px] font-bold text-emerald-700">TRADED</span>
+        </div>
+      )}
+
       {/* Top row: signal + ticker + confidence ring + change% */}
       <div className="flex items-center justify-between w-full gap-2">
         <div className="flex items-center gap-2">
@@ -390,12 +424,14 @@ function IdeaCard({
             <span className="text-[8px] text-[hsl(var(--muted-foreground))]">/10</span>
           </div>
         </div>
-        <span className={cn(
-          'text-xs font-bold tabular-nums px-1.5 py-0.5 rounded-md',
-          isPositive ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'
-        )}>
-          {isPositive ? '+' : ''}{idea.changePercent}%
-        </span>
+        {!traded && (
+          <span className={cn(
+            'text-xs font-bold tabular-nums px-1.5 py-0.5 rounded-md',
+            isPositive ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'
+          )}>
+            {isPositive ? '+' : ''}{idea.changePercent}%
+          </span>
+        )}
       </div>
 
       {/* Name + price */}
