@@ -206,4 +206,43 @@ useAutoTradeScheduler (every 30min during market hours)
 - `app/src/lib/autoTrader.ts` — Core logic (sizing, dip buy, profit take, regime, Kelly)
 - `app/src/lib/paperTradesApi.ts` — Type updates (source: 'dip_buy' | 'profit_take')
 - `app/src/hooks/useAutoTradeScheduler.ts` — Wire new checks into schedule loop
-- `app/src/components/PaperTrading.tsx` — Settings UI sections
+- `app/src/components/PaperTrading.tsx` — Settings UI + Smart Trading tab
+
+---
+
+## Future Enhancement: Always-On Trading (No Laptop Required)
+
+Currently the auto-trader requires a laptop running IB Gateway locally. Below are
+options to make it run 24/7 without manual intervention.
+
+### Option 1: Cloud VPS with Docker (Recommended first step)
+
+Move IB Gateway + IBC + auto-trader to a cloud VM (DigitalOcean, Hetzner, AWS).
+
+- **LOE**: 2-3 days
+- **Cost**: ~$5-10/mo
+- **What changes**: Dockerize IB Gateway + IBC + auto-trader service, deploy via
+  docker-compose, point Vercel app to the cloud VM's URL instead of localhost.
+- **Trade-off**: IB Gateway still requires weekly 2FA re-auth via IB mobile app.
+  IBC handles the restart automatically, but you'd confirm the login prompt ~once/week.
+
+### Option 2: Switch to Alpaca (Fully serverless)
+
+Replace IB with Alpaca's cloud-native REST API — no gateway or VM needed at all.
+
+- **LOE**: 4-5 days
+- **Cost**: Free (paper trading), $0 commissions on live
+- **What changes**: Rewrite `ibClient.ts` for Alpaca API, potentially move auto-trader
+  logic into Supabase Edge Functions or Vercel serverless functions. Eliminates the
+  local service entirely.
+- **Trade-off**: Leaves IB ecosystem; would need Alpaca account for live trading.
+  Alpaca supports bracket orders, market/limit orders, and real-time streaming natively.
+
+### Option 3: Dedicated home hardware (Cheapest)
+
+Raspberry Pi 5 or mini PC running the current stack 24/7.
+
+- **LOE**: 1 day
+- **Cost**: $50-100 one-time
+- **What changes**: Install Node.js, IB Gateway, IBC on the device, run existing scripts.
+- **Trade-off**: Depends on home internet/power reliability. Still needs weekly IB 2FA.
