@@ -67,11 +67,21 @@ export function SuggestedFinds({ existingTickers }: SuggestedFindsProps) {
     const allStocks = [...displayedCompounders, ...displayedGoldMines];
     if (allStocks.length === 0) return;
 
-    // Filter: conviction >= minSuggestedFindsConviction (default 8) AND Undervalued/Deep Value
+    // Identify top picks (first in each list with conviction 8+)
+    const topPickTickers = new Set<string>();
+    const firstCompounder = displayedCompounders[0];
+    const firstGoldMine = displayedGoldMines[0];
+    if (firstCompounder && (firstCompounder.conviction ?? 0) >= 8) topPickTickers.add(firstCompounder.ticker);
+    if (firstGoldMine && (firstGoldMine.conviction ?? 0) >= 8) topPickTickers.add(firstGoldMine.ticker);
+
+    // Filter: conviction >= minSuggestedFindsConviction AND Undervalued/Deep Value,
+    // OR top pick (always buy regardless of valuation)
     const minConv = config.minSuggestedFindsConviction;
     const newStocks = allStocks.filter(s => {
       if (processedFindsRef.current.has(s.ticker)) return false;
       const conv = s.conviction ?? 0;
+      // Always buy top picks
+      if (topPickTickers.has(s.ticker) && conv >= minConv) return true;
       if (conv < minConv) return false;
       const tag = (s.valuationTag ?? '').toLowerCase();
       return tag === 'deep value' || tag === 'undervalued';
@@ -82,7 +92,7 @@ export function SuggestedFinds({ existingTickers }: SuggestedFindsProps) {
     newStocks.forEach(s => processedFindsRef.current.add(s.ticker));
 
     setIsAutoTrading(true);
-    processSuggestedFinds(newStocks, config)
+    processSuggestedFinds(newStocks, config, topPickTickers)
       .then(results => {
         setAutoTradeResults(results);
         setIsAutoTrading(false);
@@ -206,7 +216,7 @@ export function SuggestedFinds({ existingTickers }: SuggestedFindsProps) {
           <Zap className={cn('w-3.5 h-3.5', isAutoTrading && 'animate-pulse')} />
           {isAutoTrading
             ? 'Auto-buying qualifying suggested finds...'
-            : `Auto-buy enabled — conviction ${getAutoTraderConfig().minSuggestedFindsConviction}+ and Undervalued/Deep Value only`
+            : `Auto-buy enabled — conviction ${getAutoTraderConfig().minSuggestedFindsConviction}+ Undervalued/Deep Value + all Top Picks`
           }
         </div>
       )}

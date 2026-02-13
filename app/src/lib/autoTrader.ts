@@ -537,12 +537,14 @@ async function processSingleIdea(
  * Process Suggested Finds (Quiet Compounders + Gold Mines) for auto-buying.
  * Auto-buy filter: conviction >= minSuggestedFindsConviction (default 8)
  * AND valuation must be "Undervalued" or "Deep Value".
+ * Top picks are always bought regardless of valuation (if conviction meets threshold).
  *
  * These are long-term positions: always SWING_TRADE mode, GTC orders.
  */
 export async function processSuggestedFinds(
   stocks: EnhancedSuggestedStock[],
-  config?: AutoTraderConfig
+  config?: AutoTraderConfig,
+  topPickTickers?: Set<string>
 ): Promise<ProcessResult[]> {
   const cfg = config ?? getAutoTraderConfig();
   const results: ProcessResult[] = [];
@@ -576,11 +578,14 @@ export async function processSuggestedFinds(
   }
 
   // Filter: conviction >= minSuggestedFindsConviction (default 8)
-  // AND valuation must be Undervalued or Deep Value
+  // AND valuation must be Undervalued or Deep Value.
+  // Top picks always qualify regardless of valuation.
   const minConv = cfg.minSuggestedFindsConviction;
+  const tops = topPickTickers ?? new Set<string>();
   const qualified = stocks.filter(s => {
     const conv = s.conviction ?? 0;
     if (conv < minConv) return false;
+    if (tops.has(s.ticker)) return true; // top pick — always buy
     const tag = (s.valuationTag ?? '').toLowerCase();
     return tag === 'deep value' || tag === 'undervalued';
   });
