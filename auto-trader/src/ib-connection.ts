@@ -289,6 +289,45 @@ export function placeBracketOrder(params: BracketOrderParams): Promise<BracketOr
   });
 }
 
+// ── Place Market Order (no bracket — simple buy/sell at market) ──
+
+export interface MarketOrderParams {
+  symbol: string;
+  side: 'BUY' | 'SELL';
+  quantity: number;
+}
+
+export interface MarketOrderResult {
+  orderId: number;
+}
+
+export function placeMarketOrder(params: MarketOrderParams): Promise<MarketOrderResult> {
+  return new Promise((resolve, reject) => {
+    if (!ib || !connected) {
+      return reject(new Error('Not connected to IB Gateway'));
+    }
+
+    const { symbol, side, quantity } = params;
+    const contract = createStockContract(symbol);
+    const orderId = getNextOrderId();
+
+    const order: Order = {
+      action: side === 'BUY' ? OrderAction.BUY : OrderAction.SELL,
+      orderType: OrderType.MKT,
+      totalQuantity: quantity,
+      tif: TimeInForce.DAY,
+      transmit: true,
+    };
+
+    try {
+      ib.placeOrder(orderId, contract, order);
+      resolve({ orderId });
+    } catch (err) {
+      reject(err);
+    }
+  });
+}
+
 // ── Cancel Order ─────────────────────────────────────────
 
 export function cancelOrder(orderId: number): void {

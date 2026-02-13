@@ -194,20 +194,14 @@ export async function placeMarketOrder(params: {
 }): Promise<IBOrderReply[]> {
   const { side, quantity, symbol } = params;
 
-  // Use bracket order with very wide stop/target to simulate market order
-  // The auto-trader service handles this via TWS API
   return await ibFetch<IBOrderReply[]>(
-    '/order',
+    '/market-order',
     {
       method: 'POST',
       body: JSON.stringify({
         symbol: symbol ?? '',
         side,
         quantity,
-        entryPrice: 0,    // 0 signals market order to the service
-        stopLoss: 0,
-        takeProfit: 0,
-        tif: 'DAY',
       }),
     }
   );

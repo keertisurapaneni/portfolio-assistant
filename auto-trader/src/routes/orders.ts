@@ -6,6 +6,7 @@
 import { Router } from 'express';
 import {
   placeBracketOrder,
+  placeMarketOrder,
   cancelOrder,
   requestOpenOrders,
   type BracketOrderParams,
@@ -53,6 +54,44 @@ router.post('/order', async (req, res) => {
     ]);
   } catch (err) {
     console.error('[Route: order]', err);
+    res.status(500).json({ error: err instanceof Error ? err.message : 'Unknown error' });
+  }
+});
+
+/**
+ * POST /api/market-order
+ * Body: { symbol, side, quantity }
+ * Simple market order — no bracket, no stop loss, no target.
+ * Used for long-term holds (Suggested Finds).
+ */
+router.post('/market-order', async (req, res) => {
+  try {
+    const { symbol, side, quantity } = req.body;
+
+    if (!symbol || !side || !quantity) {
+      return res.status(400).json({
+        error: 'Missing required fields: symbol, side, quantity',
+      });
+    }
+
+    if (!['BUY', 'SELL'].includes(side)) {
+      return res.status(400).json({ error: 'side must be BUY or SELL' });
+    }
+
+    const result = await placeMarketOrder({
+      symbol,
+      side,
+      quantity: Number(quantity),
+    });
+
+    res.json([
+      {
+        order_id: String(result.orderId),
+        order_status: 'Submitted',
+      },
+    ]);
+  } catch (err) {
+    console.error('[Route: market-order]', err);
     res.status(500).json({ error: err instanceof Error ? err.message : 'Unknown error' });
   }
 });
