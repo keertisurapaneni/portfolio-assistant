@@ -469,7 +469,9 @@ export function PaperTrading() {
                   <span className="text-[hsl(var(--muted-foreground))] ml-1.5">{event.message}</span>
                   {event.scanner_confidence != null && event.fa_confidence != null && (
                     <span className="text-[hsl(var(--muted-foreground))] ml-1.5 opacity-60">
-                      (Scanner: {event.scanner_confidence}, FA: {event.fa_confidence})
+                      {event.source === 'suggested_finds'
+                        ? `(Conviction: ${event.scanner_confidence})`
+                        : `(Scanner: ${event.scanner_confidence}, FA: ${event.fa_confidence})`}
                     </span>
                   )}
                 </div>
@@ -806,7 +808,7 @@ function PositionsTab({ trades }: { trades: PaperTrade[] }) {
                 <StatusBadge status={trade.status} />
               </td>
               <td className="px-4 py-3 text-xs text-[hsl(var(--muted-foreground))]">
-                {trade.mode === 'DAY_TRADE' ? 'Day' : 'Swing'}
+                {trade.mode === 'DAY_TRADE' ? 'Day' : trade.mode === 'LONG_TERM' ? 'Long Term' : 'Swing'}
               </td>
             </tr>
           ))}

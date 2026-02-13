@@ -14,7 +14,6 @@
 import { useEffect, useRef } from 'react';
 import { fetchTradeIdeas } from '../lib/tradeScannerApi';
 import {
-  getAutoTraderConfig,
   loadAutoTraderConfig,
   processTradeIdeas,
   syncPositions,

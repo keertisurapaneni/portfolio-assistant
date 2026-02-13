@@ -28,7 +28,7 @@ export type CloseReason =
 export interface PaperTrade {
   id: string;
   ticker: string;
-  mode: 'DAY_TRADE' | 'SWING_TRADE';
+  mode: 'DAY_TRADE' | 'SWING_TRADE' | 'LONG_TERM';
   signal: 'BUY' | 'SELL';
   scanner_confidence: number | null;
   fa_confidence: number | null;
@@ -232,7 +232,7 @@ export interface AutoTradeEventRecord {
   event_type: 'info' | 'success' | 'warning' | 'error';
   action: 'executed' | 'skipped' | 'failed' | null;
   source: 'scanner' | 'suggested_finds' | 'manual' | 'system' | null;
-  mode: 'DAY_TRADE' | 'SWING_TRADE' | null;
+  mode: 'DAY_TRADE' | 'SWING_TRADE' | 'LONG_TERM' | null;
   message: string;
   scanner_signal: string | null;
   scanner_confidence: number | null;

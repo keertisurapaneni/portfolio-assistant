@@ -400,7 +400,7 @@ function persistEvent(
   extra?: {
     action?: 'executed' | 'skipped' | 'failed';
     source?: 'scanner' | 'suggested_finds' | 'manual' | 'system';
-    mode?: 'DAY_TRADE' | 'SWING_TRADE';
+    mode?: 'DAY_TRADE' | 'SWING_TRADE' | 'LONG_TERM';
     scanner_signal?: string;
     scanner_confidence?: number;
     fa_recommendation?: string;
@@ -615,7 +615,7 @@ async function processSingleIdea(
  * AND valuation must be "Undervalued" or "Deep Value".
  * Top picks are always bought regardless of valuation (if conviction meets threshold).
  *
- * These are long-term positions: always SWING_TRADE mode, GTC orders.
+ * These are long-term positions: always LONG_TERM mode, GTC orders.
  */
 export async function processSuggestedFinds(
   stocks: EnhancedSuggestedStock[],
@@ -702,7 +702,7 @@ async function processSuggestedFind(
   if (alreadyActive) {
     logEvent(ticker, 'info', `Already have active position (${source}) — skipping`);
     persistEvent(ticker, 'info', `Already have active position (${source}) — skipping`, {
-      action: 'skipped', source: 'suggested_finds', mode: 'SWING_TRADE',
+      action: 'skipped', source: 'suggested_finds', mode: 'LONG_TERM',
       scanner_signal: 'BUY', scanner_confidence: conviction,
       skip_reason: 'Duplicate position', metadata: sfMeta,
     });
@@ -718,7 +718,7 @@ async function processSuggestedFind(
     const msg = `Could not fetch current price for ${source}`;
     logEvent(ticker, 'error', msg);
     persistEvent(ticker, 'error', msg, {
-      action: 'failed', source: 'suggested_finds',
+      action: 'failed', source: 'suggested_finds', mode: 'LONG_TERM',
       scanner_signal: 'BUY', scanner_confidence: conviction,
       skip_reason: 'Price lookup failed', metadata: sfMeta,
     });
@@ -732,7 +732,7 @@ async function processSuggestedFind(
   if (!contract) {
     logEvent(ticker, 'error', `Stock not found on IB (${source})`);
     persistEvent(ticker, 'error', `Stock not found on IB (${source})`, {
-      action: 'failed', source: 'suggested_finds',
+      action: 'failed', source: 'suggested_finds', mode: 'LONG_TERM',
       scanner_signal: 'BUY', scanner_confidence: conviction,
       skip_reason: 'IB contract not found', metadata: sfMeta,
     });
@@ -757,7 +757,7 @@ async function processSuggestedFind(
     // ── 5. Log Trade ──
     const trade = await createPaperTrade({
       ticker,
-      mode: 'SWING_TRADE',
+      mode: 'LONG_TERM',
       signal: 'BUY',
       scanner_confidence: conviction,
       fa_confidence: conviction,        // no FA — use conviction as confidence proxy
@@ -777,7 +777,7 @@ async function processSuggestedFind(
     const msg = `${source} market BUY placed! ${quantity} shares of ${ticker} @ ~$${currentPrice.toFixed(2)}`;
     logEvent(ticker, 'success', msg);
     persistEvent(ticker, 'success', msg, {
-      action: 'executed', source: 'suggested_finds', mode: 'SWING_TRADE',
+      action: 'executed', source: 'suggested_finds', mode: 'LONG_TERM',
       scanner_signal: 'BUY', scanner_confidence: conviction,
       fa_recommendation: 'BUY', fa_confidence: conviction,
       metadata: { ...sfMeta, current_price: currentPrice, quantity, order_type: 'MARKET' },
@@ -787,14 +787,14 @@ async function processSuggestedFind(
     const msg = `Order failed for ${source}: ${err instanceof Error ? err.message : 'Unknown'}`;
     logEvent(ticker, 'error', msg);
     persistEvent(ticker, 'error', msg, {
-      action: 'failed', source: 'suggested_finds',
+      action: 'failed', source: 'suggested_finds', mode: 'LONG_TERM',
       scanner_signal: 'BUY', scanner_confidence: conviction,
       skip_reason: 'Order rejected by IB', metadata: sfMeta,
     });
 
     await createPaperTrade({
       ticker,
-      mode: 'SWING_TRADE',
+      mode: 'LONG_TERM',
       signal: 'BUY',
       scanner_confidence: conviction,
       fa_confidence: conviction,

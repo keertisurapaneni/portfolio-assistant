@@ -9,6 +9,7 @@ import {
   AlertCircle,
   Award,
   Zap,
+  CheckCircle2,
 } from 'lucide-react';
 import { TickerLabel } from './TickerLabel';
 import { ErrorBanner } from './ErrorBanner';
@@ -16,6 +17,7 @@ import type { EnhancedSuggestedStock } from '../data/suggestedFinds';
 import { useSuggestedFinds, COMPOUNDER_CATEGORIES, GOLD_MINE_CATEGORIES } from '../hooks/useSuggestedFinds';
 import { cn } from '../lib/utils';
 import { getAutoTraderConfig, processSuggestedFinds, type ProcessResult } from '../lib/autoTrader';
+import { getActiveTrades } from '../lib/paperTradesApi';
 import { useAuth } from '../lib/auth';
 
 interface SuggestedFindsProps {
@@ -54,9 +56,18 @@ export function SuggestedFinds({ existingTickers }: SuggestedFindsProps) {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [, setAutoTradeResults] = useState<ProcessResult[]>([]);
   const [isAutoTrading, setIsAutoTrading] = useState(false);
+  const [ownedTickers, setOwnedTickers] = useState<Set<string>>(new Set());
   const processedFindsRef = useRef<Set<string>>(new Set());
   const { user } = useAuth();
   const isAuthed = !!user;
+
+  // Fetch active trades to mark owned stocks
+  useEffect(() => {
+    if (!isAuthed) return;
+    getActiveTrades()
+      .then(trades => setOwnedTickers(new Set(trades.map(t => t.ticker))))
+      .catch(() => {/* ignore — badge is best-effort */});
+  }, [isAuthed, isAutoTrading]); // re-fetch after auto-trading finishes
 
   // ── Auto-buy Suggested Finds ──
   useEffect(() => {
@@ -283,6 +294,7 @@ export function SuggestedFinds({ existingTickers }: SuggestedFindsProps) {
                   stock={stock}
                   accentColor="blue"
                   isTopPick={idx === 0 && (stock.conviction ?? 0) >= 8}
+                  isOwned={ownedTickers.has(stock.ticker)}
                 />
               ))}
             </div>
@@ -375,6 +387,7 @@ export function SuggestedFinds({ existingTickers }: SuggestedFindsProps) {
                   stock={stock}
                   accentColor="amber"
                   isTopPick={idx === 0 && (stock.conviction ?? 0) >= 8}
+                  isOwned={ownedTickers.has(stock.ticker)}
                 />
               ))}
             </div>
@@ -576,9 +589,10 @@ interface StockCardProps {
   stock: EnhancedSuggestedStock;
   accentColor: 'blue' | 'amber';
   isTopPick?: boolean;
+  isOwned?: boolean;
 }
 
-function StockCard({ stock, accentColor, isTopPick }: StockCardProps) {
+function StockCard({ stock, accentColor, isTopPick, isOwned }: StockCardProps) {
   const [isExpanded, setIsExpanded] = useState(false);
 
   const borderHover = accentColor === 'blue' ? 'hover:border-blue-200' : 'hover:border-amber-200';
@@ -599,6 +613,17 @@ function StockCard({ stock, accentColor, isTopPick }: StockCardProps) {
         <div className="absolute -top-2.5 left-4 inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-500 text-white text-[10px] font-semibold shadow-sm">
           <Award className="w-3 h-3" />
           Top Pick
+        </div>
+      )}
+
+      {/* Owned badge */}
+      {isOwned && (
+        <div className={cn(
+          'absolute -top-2.5 inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-blue-500 text-white text-[10px] font-semibold shadow-sm',
+          isTopPick ? 'left-[5.5rem]' : 'left-4'
+        )}>
+          <CheckCircle2 className="w-3 h-3" />
+          Owned
         </div>
       )}
 
