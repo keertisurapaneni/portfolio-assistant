@@ -50,31 +50,25 @@ A personal investing decision-support tool that combines automated conviction sc
 
 *Requires authentication — connects to Interactive Brokers paper account via IB Gateway + IBC (hands-off, no daily login)*
 
-#### What It Does
-
-| Feature | Description |
-|---|---|
-| **IB Portfolio** | Live view of all IB positions (shares, avg cost, cost basis, market value, P&L) and open/working orders with bracket order grouping |
-| **Auto-Trade: Scanner** | Scanner ideas that pass the filter below automatically run full analysis → bracket order on IB |
-| **Auto-Trade: Suggested Finds** | Quiet Compounders and Gold Mines that pass the filter below auto-buy as swing trades (GTC) |
-| **Manual Trade Prompt** | Research any ticker → if FA confidence 7+ and BUY/SELL, prompts to execute on IB |
-| **Bracket Orders** | Every trade placed with entry + stop-loss + take-profit via TWS API |
-| **Position Sync** | Active positions, fill prices, P&L synced from IB to Supabase |
-| **AI Feedback Loop** | Analyzes completed trades (wins/losses), stores lessons, identifies winning/losing patterns |
-| **Performance Dashboard** | Win rate, total P&L, best/worst trades, pattern analysis |
-| **Enable/Disable Toggle** | Turn auto-trading on/off anytime; persists across sessions (localStorage) |
-| **Activity Log** | Live event stream of auto-trader actions |
+- **IB Portfolio** — Live view of all IB positions (shares, avg cost, cost basis, market value, P&L) and open/working orders with bracket order grouping
+- **Auto-Trade: Trade Signals** — Trade ideas that pass the filter below automatically run full analysis → bracket order on IB
+- **Auto-Trade: Suggested Finds** — Quiet Compounders and Gold Mines that pass the filter below auto-buy as swing trades (GTC)
+- **Manual Trade** — Research any ticker → if full analysis confidence 7+ and BUY/SELL, prompts to execute on IB
+- **Bracket Orders** — Every trade placed with entry + stop-loss + take-profit via TWS API
+- **Position Sync** — Active positions, fill prices, P&L synced from IB to Supabase
+- **AI Feedback Loop** — Analyzes completed trades (wins/losses), stores lessons, identifies winning/losing patterns
+- **Performance Dashboard** — Win rate, total P&L, best/worst trades, pattern analysis
+- **Enable/Disable Toggle** — Turn auto-trading on/off anytime; persists across sessions (localStorage)
+- **Activity Log** — Live event stream of auto-trader actions
 
 #### Auto-Trade Filters
 
-| Source | Condition | Auto-Buy? |
-|---|---|---|
-| **Scanner Ideas** | Scanner confidence 7+ AND FA confidence 7+ | Yes |
-| **Scanner Ideas** | Scanner or FA confidence below 7 | No |
-| **Suggested Finds** | Conviction 8+ (any valuation) | Yes |
-| **Suggested Finds** | Conviction 7 + "Undervalued" or "Deep Value" | Yes |
-| **Suggested Finds** | Conviction 7 + "Fair Value" or "Fully Valued" | No |
-| **Suggested Finds** | Conviction 6 or below | No |
+| Source | Condition |
+|---|---|
+| **Trade Signals** | Trade idea confidence 7+ AND full analysis confidence 7+ |
+| **Trade Signals (manual)** | Full analysis confidence 7+ with BUY/SELL recommendation |
+| **Suggested Finds** | Conviction 8+ (any valuation) |
+| **Suggested Finds** | Conviction 7 + "Undervalued" or "Deep Value" |
 
 ### Market Movers (`/movers`)
 
