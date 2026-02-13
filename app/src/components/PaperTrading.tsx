@@ -40,10 +40,13 @@ import { getAccounts, getPositions, getLiveOrders, type IBPosition, type IBLiveO
 import {
   type PaperTrade,
   type TradePerformance,
+  type AutoTradeEventRecord,
   getActiveTrades,
   getAllTrades,
   getPerformance,
   recalculatePerformance,
+  getAutoTradeEvents,
+  getAutoTradeEventStats,
 } from '../lib/paperTradesApi';
 import { Spinner } from './Spinner';
 import { analyzeUnreviewedTrades, updatePerformancePatterns } from '../lib/aiFeedback';
@@ -61,6 +64,8 @@ export function PaperTrading() {
   const [performance, setPerformance] = useState<TradePerformance | null>(null);
   const [ibPositions, setIbPositions] = useState<IBPosition[]>([]);
   const [ibOrders, setIbOrders] = useState<IBLiveOrder[]>([]);
+  const [persistedEvents, setPersistedEvents] = useState<AutoTradeEventRecord[]>([]);
+  const [eventStats, setEventStats] = useState<{ total: number; executed: number; skipped: number; failed: number; topSkipReasons: { reason: string; count: number }[]; topMismatchTickers: { ticker: string; count: number }[] } | null>(null);
   const [tab, setTab] = useState<Tab>('portfolio');
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
@@ -69,14 +74,18 @@ export function PaperTrading() {
   const loadData = useCallback(async () => {
     setLoading(true);
     try {
-      const [active, all, perf] = await Promise.all([
+      const [active, all, perf, savedEvents, stats] = await Promise.all([
         getActiveTrades(),
         getAllTrades(50),
         getPerformance(),
+        getAutoTradeEvents(100),
+        getAutoTradeEventStats(),
       ]);
       setActiveTrades(active);
       setAllTrades(all);
       setPerformance(perf);
+      setPersistedEvents(savedEvents);
+      setEventStats(stats);
     } catch (err) {
       console.error('Failed to load paper trading data:', err);
     } finally {
@@ -352,15 +361,73 @@ export function PaperTrading() {
         </>
       )}
 
-      {/* Event Log */}
-      {events.length > 0 && (
+      {/* Decision Stats */}
+      {eventStats && eventStats.total > 0 && (
         <div className="rounded-xl border border-[hsl(var(--border))] bg-white overflow-hidden">
           <div className="px-4 py-2.5 border-b border-[hsl(var(--border))] bg-[hsl(var(--secondary))]">
-            <h3 className="text-sm font-semibold text-[hsl(var(--foreground))]">Activity Log</h3>
+            <h3 className="text-sm font-semibold text-[hsl(var(--foreground))]">Auto-Trade Decision Stats</h3>
           </div>
-          <div className="max-h-48 overflow-y-auto divide-y divide-[hsl(var(--border))]">
+          <div className="p-4 space-y-3">
+            <div className="grid grid-cols-4 gap-3 text-center">
+              <div className="text-xs">
+                <p className="text-lg font-bold text-[hsl(var(--foreground))]">{eventStats.total}</p>
+                <p className="text-[hsl(var(--muted-foreground))]">Decisions</p>
+              </div>
+              <div className="text-xs">
+                <p className="text-lg font-bold text-emerald-600">{eventStats.executed}</p>
+                <p className="text-[hsl(var(--muted-foreground))]">Executed</p>
+              </div>
+              <div className="text-xs">
+                <p className="text-lg font-bold text-amber-600">{eventStats.skipped}</p>
+                <p className="text-[hsl(var(--muted-foreground))]">Skipped</p>
+              </div>
+              <div className="text-xs">
+                <p className="text-lg font-bold text-red-600">{eventStats.failed}</p>
+                <p className="text-[hsl(var(--muted-foreground))]">Failed</p>
+              </div>
+            </div>
+            {eventStats.topSkipReasons.length > 0 && (
+              <div>
+                <p className="text-xs font-medium text-[hsl(var(--muted-foreground))] mb-1">Top Skip Reasons</p>
+                <div className="space-y-1">
+                  {eventStats.topSkipReasons.slice(0, 5).map((r, i) => (
+                    <div key={i} className="flex items-center justify-between text-xs">
+                      <span className="text-[hsl(var(--foreground))] truncate">{r.reason}</span>
+                      <span className="text-[hsl(var(--muted-foreground))] tabular-nums ml-2">{r.count}x</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            {eventStats.topMismatchTickers.length > 0 && (
+              <div>
+                <p className="text-xs font-medium text-[hsl(var(--muted-foreground))] mb-1">Direction Mismatch Tickers</p>
+                <div className="flex flex-wrap gap-1.5">
+                  {eventStats.topMismatchTickers.map((t, i) => (
+                    <span key={i} className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium bg-amber-50 text-amber-700 border border-amber-200 rounded-full">
+                      {t.ticker} <span className="opacity-60">{t.count}x</span>
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Activity Log — shows session events + persisted history */}
+      {(events.length > 0 || persistedEvents.length > 0) && (
+        <div className="rounded-xl border border-[hsl(var(--border))] bg-white overflow-hidden">
+          <div className="px-4 py-2.5 border-b border-[hsl(var(--border))] bg-[hsl(var(--secondary))] flex items-center justify-between">
+            <h3 className="text-sm font-semibold text-[hsl(var(--foreground))]">Activity Log</h3>
+            {persistedEvents.length > 0 && (
+              <span className="text-xs text-[hsl(var(--muted-foreground))]">{persistedEvents.length} saved events</span>
+            )}
+          </div>
+          <div className="max-h-64 overflow-y-auto divide-y divide-[hsl(var(--border))]">
+            {/* Current session events first */}
             {events.slice(0, 20).map((event, i) => (
-              <div key={i} className="flex items-start gap-2 px-4 py-2 text-xs">
+              <div key={`live-${i}`} className="flex items-start gap-2 px-4 py-2 text-xs">
                 {event.type === 'success' && <CheckCircle className="w-3.5 h-3.5 text-emerald-500 mt-0.5 flex-shrink-0" />}
                 {event.type === 'error' && <XCircle className="w-3.5 h-3.5 text-red-500 mt-0.5 flex-shrink-0" />}
                 {event.type === 'warning' && <AlertTriangle className="w-3.5 h-3.5 text-amber-500 mt-0.5 flex-shrink-0" />}
@@ -371,6 +438,38 @@ export function PaperTrading() {
                 </div>
                 <span className="text-[hsl(var(--muted-foreground))] flex-shrink-0 tabular-nums">
                   {new Date(event.timestamp).toLocaleTimeString()}
+                </span>
+              </div>
+            ))}
+            {/* Persisted events (from Supabase) with date */}
+            {persistedEvents
+              .filter(e => e.action) // only show decision events (not info-only)
+              .slice(0, 50)
+              .map((event) => (
+              <div key={event.id} className="flex items-start gap-2 px-4 py-2 text-xs bg-[hsl(var(--secondary))]/30">
+                {event.event_type === 'success' && <CheckCircle className="w-3.5 h-3.5 text-emerald-500 mt-0.5 flex-shrink-0" />}
+                {event.event_type === 'error' && <XCircle className="w-3.5 h-3.5 text-red-500 mt-0.5 flex-shrink-0" />}
+                {event.event_type === 'warning' && <AlertTriangle className="w-3.5 h-3.5 text-amber-500 mt-0.5 flex-shrink-0" />}
+                {event.event_type === 'info' && <Activity className="w-3.5 h-3.5 text-blue-500 mt-0.5 flex-shrink-0" />}
+                <div className="flex-1 min-w-0">
+                  <span className="font-bold text-[hsl(var(--foreground))]">{event.ticker}</span>
+                  {event.action && (
+                    <span className={cn('ml-1.5 px-1.5 py-0.5 rounded text-[10px] font-medium', {
+                      'bg-emerald-100 text-emerald-700': event.action === 'executed',
+                      'bg-amber-100 text-amber-700': event.action === 'skipped',
+                      'bg-red-100 text-red-700': event.action === 'failed',
+                    })}>{event.action}</span>
+                  )}
+                  <span className="text-[hsl(var(--muted-foreground))] ml-1.5">{event.message}</span>
+                  {event.scanner_confidence != null && event.fa_confidence != null && (
+                    <span className="text-[hsl(var(--muted-foreground))] ml-1.5 opacity-60">
+                      (Scanner: {event.scanner_confidence}, FA: {event.fa_confidence})
+                    </span>
+                  )}
+                </div>
+                <span className="text-[hsl(var(--muted-foreground))] flex-shrink-0 tabular-nums whitespace-nowrap">
+                  {new Date(event.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}{' '}
+                  {new Date(event.created_at).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}
                 </span>
               </div>
             ))}

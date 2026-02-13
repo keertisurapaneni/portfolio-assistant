@@ -26,6 +26,7 @@ import {
   hasActiveTrade,
   countActivePositions,
   getActiveTrades,
+  createAutoTradeEvent,
   type PaperTrade,
 } from './paperTradesApi';
 
@@ -313,6 +314,31 @@ export async function processTradeIdeas(
   return results;
 }
 
+/** Persist an event to Supabase (fire-and-forget alongside the in-memory log) */
+function persistEvent(
+  ticker: string,
+  eventType: 'info' | 'success' | 'warning' | 'error',
+  message: string,
+  extra?: {
+    action?: 'executed' | 'skipped' | 'failed';
+    source?: 'scanner' | 'suggested_finds' | 'manual' | 'system';
+    mode?: 'DAY_TRADE' | 'SWING_TRADE';
+    scanner_signal?: string;
+    scanner_confidence?: number;
+    fa_recommendation?: string;
+    fa_confidence?: number;
+    skip_reason?: string;
+    metadata?: Record<string, unknown>;
+  }
+) {
+  createAutoTradeEvent({
+    ticker,
+    event_type: eventType,
+    message,
+    ...extra,
+  });
+}
+
 /** Process a single trade idea end-to-end */
 async function processSingleIdea(
   idea: TradeIdea,
@@ -324,6 +350,10 @@ async function processSingleIdea(
   const alreadyActive = await hasActiveTrade(ticker);
   if (alreadyActive) {
     logEvent(ticker, 'info', 'Already have an active position — skipping');
+    persistEvent(ticker, 'info', 'Already have an active position — skipping', {
+      action: 'skipped', source: 'scanner', mode, scanner_signal: signal,
+      scanner_confidence: scannerConf, skip_reason: 'Duplicate position',
+    });
     return { ticker, action: 'skipped', reason: 'Duplicate position' };
   }
 
@@ -334,7 +364,12 @@ async function processSingleIdea(
     const faMode: SignalsMode = mode === 'DAY_TRADE' ? 'DAY_TRADE' : 'SWING_TRADE';
     fa = await fetchTradingSignal(ticker, faMode);
   } catch (err) {
-    logEvent(ticker, 'error', `FA failed: ${err instanceof Error ? err.message : 'Unknown'}`);
+    const msg = `FA failed: ${err instanceof Error ? err.message : 'Unknown'}`;
+    logEvent(ticker, 'error', msg);
+    persistEvent(ticker, 'error', msg, {
+      action: 'failed', source: 'scanner', mode, scanner_signal: signal,
+      scanner_confidence: scannerConf, skip_reason: 'Full analysis failed',
+    });
     return { ticker, action: 'failed', reason: 'Full analysis failed' };
   }
 
@@ -343,18 +378,35 @@ async function processSingleIdea(
   const faRec = fa.trade.recommendation;
 
   if (faConf < config.minFAConfidence) {
-    logEvent(ticker, 'info', `FA confidence too low: ${faConf}/10 (need ${config.minFAConfidence}+)`);
+    const msg = `FA confidence too low: ${faConf}/10 (need ${config.minFAConfidence}+)`;
+    logEvent(ticker, 'info', msg);
+    persistEvent(ticker, 'info', msg, {
+      action: 'skipped', source: 'scanner', mode, scanner_signal: signal,
+      scanner_confidence: scannerConf, fa_recommendation: faRec, fa_confidence: faConf,
+      skip_reason: `FA confidence ${faConf} < ${config.minFAConfidence}`,
+    });
     return { ticker, action: 'skipped', reason: `FA confidence ${faConf} < ${config.minFAConfidence}` };
   }
 
   if (faRec === 'HOLD') {
     logEvent(ticker, 'info', 'FA says HOLD — skipping');
+    persistEvent(ticker, 'info', 'FA says HOLD — skipping', {
+      action: 'skipped', source: 'scanner', mode, scanner_signal: signal,
+      scanner_confidence: scannerConf, fa_recommendation: faRec, fa_confidence: faConf,
+      skip_reason: 'FA recommendation is HOLD',
+    });
     return { ticker, action: 'skipped', reason: 'FA recommendation is HOLD' };
   }
 
   // ── 4. Direction Consistency ──
   if (faRec !== signal) {
-    logEvent(ticker, 'warning', `Scanner says ${signal} but FA says ${faRec} — skipping`);
+    const msg = `Scanner says ${signal} but FA says ${faRec} — skipping`;
+    logEvent(ticker, 'warning', msg);
+    persistEvent(ticker, 'warning', msg, {
+      action: 'skipped', source: 'scanner', mode, scanner_signal: signal,
+      scanner_confidence: scannerConf, fa_recommendation: faRec, fa_confidence: faConf,
+      skip_reason: `Direction mismatch: scanner ${signal} vs FA ${faRec}`,
+    });
     return { ticker, action: 'skipped', reason: `Direction mismatch: scanner ${signal} vs FA ${faRec}` };
   }
 
@@ -362,13 +414,24 @@ async function processSingleIdea(
   const { entryPrice, stopLoss, targetPrice } = fa.trade;
   if (!entryPrice || !stopLoss || !targetPrice) {
     logEvent(ticker, 'warning', 'FA missing entry/stop/target — skipping');
+    persistEvent(ticker, 'warning', 'FA missing entry/stop/target — skipping', {
+      action: 'skipped', source: 'scanner', mode, scanner_signal: signal,
+      scanner_confidence: scannerConf, fa_recommendation: faRec, fa_confidence: faConf,
+      skip_reason: 'Missing price levels from FA',
+    });
     return { ticker, action: 'skipped', reason: 'Missing price levels from FA' };
   }
 
   // ── 6. Position Sizing ──
   const quantity = Math.floor(config.positionSize / entryPrice);
   if (quantity < 1) {
-    logEvent(ticker, 'warning', `Position size too small: $${config.positionSize} / $${entryPrice} < 1 share`);
+    const msg = `Position size too small: $${config.positionSize} / $${entryPrice} < 1 share`;
+    logEvent(ticker, 'warning', msg);
+    persistEvent(ticker, 'warning', msg, {
+      action: 'skipped', source: 'scanner', mode, scanner_signal: signal,
+      scanner_confidence: scannerConf, fa_recommendation: faRec, fa_confidence: faConf,
+      skip_reason: 'Position size too small for 1 share',
+    });
     return { ticker, action: 'skipped', reason: 'Position size too small for 1 share' };
   }
 
@@ -377,6 +440,11 @@ async function processSingleIdea(
   const contract = await searchContract(ticker);
   if (!contract) {
     logEvent(ticker, 'error', 'Stock not found on IB');
+    persistEvent(ticker, 'error', 'Stock not found on IB', {
+      action: 'failed', source: 'scanner', mode, scanner_signal: signal,
+      scanner_confidence: scannerConf, fa_recommendation: faRec, fa_confidence: faConf,
+      skip_reason: 'IB contract not found',
+    });
     return { ticker, action: 'failed', reason: 'IB contract not found' };
   }
 
@@ -422,11 +490,23 @@ async function processSingleIdea(
       fa_rationale: fa.trade.rationale,
     });
 
-    logEvent(ticker, 'success', `Order placed! ${signal} ${quantity} shares @ $${entryPrice}`);
+    const msg = `Order placed! ${signal} ${quantity} shares @ $${entryPrice}`;
+    logEvent(ticker, 'success', msg);
+    persistEvent(ticker, 'success', msg, {
+      action: 'executed', source: 'scanner', mode, scanner_signal: signal,
+      scanner_confidence: scannerConf, fa_recommendation: faRec, fa_confidence: faConf,
+      metadata: { entry_price: entryPrice, stop_loss: stopLoss, target_price: targetPrice, quantity, risk_reward: fa.trade.riskReward },
+    });
 
     return { ticker, action: 'executed', reason: 'Order placed successfully', trade };
   } catch (err) {
-    logEvent(ticker, 'error', `Order failed: ${err instanceof Error ? err.message : 'Unknown'}`);
+    const msg = `Order failed: ${err instanceof Error ? err.message : 'Unknown'}`;
+    logEvent(ticker, 'error', msg);
+    persistEvent(ticker, 'error', msg, {
+      action: 'failed', source: 'scanner', mode, scanner_signal: signal,
+      scanner_confidence: scannerConf, fa_recommendation: faRec, fa_confidence: faConf,
+      skip_reason: 'Order rejected by IB',
+    });
 
     // Still log the attempt
     await createPaperTrade({
@@ -530,11 +610,17 @@ async function processSuggestedFind(
   const { ticker } = stock;
   const conviction = stock.conviction ?? 0;
   const source = stock.tag === 'Steady Compounder' ? 'Quiet Compounder' : 'Gold Mine';
+  const sfMeta = { conviction, valuation_tag: stock.valuationTag, source_type: source };
 
   // ── 1. Dedup check ──
   const alreadyActive = await hasActiveTrade(ticker);
   if (alreadyActive) {
     logEvent(ticker, 'info', `Already have active position (${source}) — skipping`);
+    persistEvent(ticker, 'info', `Already have active position (${source}) — skipping`, {
+      action: 'skipped', source: 'suggested_finds', mode: 'SWING_TRADE',
+      scanner_signal: 'BUY', scanner_confidence: conviction,
+      skip_reason: 'Duplicate position', metadata: sfMeta,
+    });
     return { ticker, action: 'skipped', reason: 'Duplicate position' };
   }
 
@@ -544,7 +630,13 @@ async function processSuggestedFind(
   try {
     fa = await fetchTradingSignal(ticker, 'SWING_TRADE');
   } catch (err) {
-    logEvent(ticker, 'error', `FA failed: ${err instanceof Error ? err.message : 'Unknown'}`);
+    const msg = `FA failed: ${err instanceof Error ? err.message : 'Unknown'}`;
+    logEvent(ticker, 'error', msg);
+    persistEvent(ticker, 'error', msg, {
+      action: 'failed', source: 'suggested_finds', mode: 'SWING_TRADE',
+      scanner_signal: 'BUY', scanner_confidence: conviction,
+      skip_reason: 'Full analysis failed', metadata: sfMeta,
+    });
     return { ticker, action: 'failed', reason: 'Full analysis failed' };
   }
 
@@ -553,13 +645,27 @@ async function processSuggestedFind(
   const faRec = fa.trade.recommendation;
 
   if (faConf < config.minFAConfidence) {
-    logEvent(ticker, 'info', `FA confidence too low: ${faConf}/10 (need ${config.minFAConfidence}+) for ${source}`);
+    const msg = `FA confidence too low: ${faConf}/10 (need ${config.minFAConfidence}+) for ${source}`;
+    logEvent(ticker, 'info', msg);
+    persistEvent(ticker, 'info', msg, {
+      action: 'skipped', source: 'suggested_finds', mode: 'SWING_TRADE',
+      scanner_signal: 'BUY', scanner_confidence: conviction,
+      fa_recommendation: faRec, fa_confidence: faConf,
+      skip_reason: `FA confidence ${faConf} < ${config.minFAConfidence}`, metadata: sfMeta,
+    });
     return { ticker, action: 'skipped', reason: `FA confidence ${faConf} < ${config.minFAConfidence}` };
   }
 
   // Suggested Finds are always BUY candidates — skip if FA says SELL or HOLD
   if (faRec !== 'BUY') {
-    logEvent(ticker, 'info', `FA says ${faRec} for ${source} — skipping (only buying)`);
+    const msg = `FA says ${faRec} for ${source} — skipping (only buying)`;
+    logEvent(ticker, 'info', msg);
+    persistEvent(ticker, 'info', msg, {
+      action: 'skipped', source: 'suggested_finds', mode: 'SWING_TRADE',
+      scanner_signal: 'BUY', scanner_confidence: conviction,
+      fa_recommendation: faRec, fa_confidence: faConf,
+      skip_reason: `FA recommendation is ${faRec}, not BUY`, metadata: sfMeta,
+    });
     return { ticker, action: 'skipped', reason: `FA recommendation is ${faRec}, not BUY` };
   }
 
@@ -567,13 +673,26 @@ async function processSuggestedFind(
   const { entryPrice, stopLoss, targetPrice } = fa.trade;
   if (!entryPrice || !stopLoss || !targetPrice) {
     logEvent(ticker, 'warning', `FA missing entry/stop/target for ${source} — skipping`);
+    persistEvent(ticker, 'warning', `FA missing entry/stop/target for ${source} — skipping`, {
+      action: 'skipped', source: 'suggested_finds', mode: 'SWING_TRADE',
+      scanner_signal: 'BUY', scanner_confidence: conviction,
+      fa_recommendation: faRec, fa_confidence: faConf,
+      skip_reason: 'Missing price levels from FA', metadata: sfMeta,
+    });
     return { ticker, action: 'skipped', reason: 'Missing price levels from FA' };
   }
 
   // ── 5. Position Sizing ──
   const quantity = Math.floor(config.positionSize / entryPrice);
   if (quantity < 1) {
-    logEvent(ticker, 'warning', `Position size too small for ${source}: $${config.positionSize} / $${entryPrice}`);
+    const msg = `Position size too small for ${source}: $${config.positionSize} / $${entryPrice}`;
+    logEvent(ticker, 'warning', msg);
+    persistEvent(ticker, 'warning', msg, {
+      action: 'skipped', source: 'suggested_finds', mode: 'SWING_TRADE',
+      scanner_signal: 'BUY', scanner_confidence: conviction,
+      fa_recommendation: faRec, fa_confidence: faConf,
+      skip_reason: 'Position size too small for 1 share', metadata: sfMeta,
+    });
     return { ticker, action: 'skipped', reason: 'Position size too small for 1 share' };
   }
 
@@ -582,6 +701,12 @@ async function processSuggestedFind(
   const contract = await searchContract(ticker);
   if (!contract) {
     logEvent(ticker, 'error', `Stock not found on IB (${source})`);
+    persistEvent(ticker, 'error', `Stock not found on IB (${source})`, {
+      action: 'failed', source: 'suggested_finds', mode: 'SWING_TRADE',
+      scanner_signal: 'BUY', scanner_confidence: conviction,
+      fa_recommendation: faRec, fa_confidence: faConf,
+      skip_reason: 'IB contract not found', metadata: sfMeta,
+    });
     return { ticker, action: 'failed', reason: 'IB contract not found' };
   }
 
@@ -626,10 +751,24 @@ async function processSuggestedFind(
       notes: `Source: ${source} | Conviction: ${conviction}/10 | ${stock.valuationTag ?? ''}`,
     });
 
-    logEvent(ticker, 'success', `${source} order placed! BUY ${quantity} shares @ $${entryPrice}`);
+    const msg = `${source} order placed! BUY ${quantity} shares @ $${entryPrice}`;
+    logEvent(ticker, 'success', msg);
+    persistEvent(ticker, 'success', msg, {
+      action: 'executed', source: 'suggested_finds', mode: 'SWING_TRADE',
+      scanner_signal: 'BUY', scanner_confidence: conviction,
+      fa_recommendation: faRec, fa_confidence: faConf,
+      metadata: { ...sfMeta, entry_price: entryPrice, stop_loss: stopLoss, target_price: targetPrice, quantity },
+    });
     return { ticker, action: 'executed', reason: 'Order placed successfully', trade };
   } catch (err) {
-    logEvent(ticker, 'error', `Order failed for ${source}: ${err instanceof Error ? err.message : 'Unknown'}`);
+    const msg = `Order failed for ${source}: ${err instanceof Error ? err.message : 'Unknown'}`;
+    logEvent(ticker, 'error', msg);
+    persistEvent(ticker, 'error', msg, {
+      action: 'failed', source: 'suggested_finds', mode: 'SWING_TRADE',
+      scanner_signal: 'BUY', scanner_confidence: conviction,
+      fa_recommendation: faRec, fa_confidence: faConf,
+      skip_reason: 'Order rejected by IB', metadata: sfMeta,
+    });
 
     await createPaperTrade({
       ticker,
