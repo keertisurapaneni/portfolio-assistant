@@ -202,6 +202,109 @@ export async function getRecentLearnings(limit = 20): Promise<TradeLearning[]> {
   return (data ?? []) as TradeLearning[];
 }
 
+// ── Auto Trade Events ────────────────────────────────────
+
+export interface AutoTradeEventRecord {
+  id: string;
+  ticker: string;
+  event_type: 'info' | 'success' | 'warning' | 'error';
+  action: 'executed' | 'skipped' | 'failed' | null;
+  source: 'scanner' | 'suggested_finds' | 'manual' | 'system' | null;
+  mode: 'DAY_TRADE' | 'SWING_TRADE' | null;
+  message: string;
+  scanner_signal: string | null;
+  scanner_confidence: number | null;
+  fa_recommendation: string | null;
+  fa_confidence: number | null;
+  skip_reason: string | null;
+  metadata: Record<string, unknown> | null;
+  created_at: string;
+}
+
+/** Persist an auto-trade event to Supabase */
+export async function createAutoTradeEvent(
+  event: Partial<AutoTradeEventRecord>
+): Promise<void> {
+  try {
+    await supabase.from('auto_trade_events').insert(event);
+  } catch {
+    // Fire-and-forget — don't break auto-trading if logging fails
+    console.warn('[AutoTradeEvents] Failed to persist event:', event.message);
+  }
+}
+
+/** Get recent auto-trade events (most recent first) */
+export async function getAutoTradeEvents(limit = 100): Promise<AutoTradeEventRecord[]> {
+  const { data, error } = await supabase
+    .from('auto_trade_events')
+    .select('*')
+    .order('created_at', { ascending: false })
+    .limit(limit);
+
+  if (error) return [];
+  return (data ?? []) as AutoTradeEventRecord[];
+}
+
+/** Get auto-trade events for a specific ticker */
+export async function getAutoTradeEventsByTicker(
+  ticker: string,
+  limit = 50
+): Promise<AutoTradeEventRecord[]> {
+  const { data, error } = await supabase
+    .from('auto_trade_events')
+    .select('*')
+    .eq('ticker', ticker)
+    .order('created_at', { ascending: false })
+    .limit(limit);
+
+  if (error) return [];
+  return (data ?? []) as AutoTradeEventRecord[];
+}
+
+/** Get event stats for analysis — counts by action type */
+export async function getAutoTradeEventStats(): Promise<{
+  total: number;
+  executed: number;
+  skipped: number;
+  failed: number;
+  topSkipReasons: { reason: string; count: number }[];
+  topMismatchTickers: { ticker: string; count: number }[];
+}> {
+  const { data, error } = await supabase
+    .from('auto_trade_events')
+    .select('action, skip_reason, ticker')
+    .not('action', 'is', null);
+
+  if (error || !data) return { total: 0, executed: 0, skipped: 0, failed: 0, topSkipReasons: [], topMismatchTickers: [] };
+
+  const total = data.length;
+  const executed = data.filter(e => e.action === 'executed').length;
+  const skipped = data.filter(e => e.action === 'skipped').length;
+  const failed = data.filter(e => e.action === 'failed').length;
+
+  // Count skip reasons
+  const reasonCounts: Record<string, number> = {};
+  data.filter(e => e.action === 'skipped' && e.skip_reason).forEach(e => {
+    reasonCounts[e.skip_reason!] = (reasonCounts[e.skip_reason!] ?? 0) + 1;
+  });
+  const topSkipReasons = Object.entries(reasonCounts)
+    .map(([reason, count]) => ({ reason, count }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 10);
+
+  // Count direction mismatch tickers
+  const mismatchCounts: Record<string, number> = {};
+  data.filter(e => e.skip_reason?.includes('Direction mismatch')).forEach(e => {
+    mismatchCounts[e.ticker] = (mismatchCounts[e.ticker] ?? 0) + 1;
+  });
+  const topMismatchTickers = Object.entries(mismatchCounts)
+    .map(([ticker, count]) => ({ ticker, count }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 10);
+
+  return { total, executed, skipped, failed, topSkipReasons, topMismatchTickers };
+}
+
 // ── Performance Stats ────────────────────────────────────
 
 /** Get aggregate performance */
