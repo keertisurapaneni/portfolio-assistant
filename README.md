@@ -48,30 +48,33 @@ A personal investing decision-support tool that combines automated conviction sc
 
 ### Paper Trading (`/paper-trading`) 🔒
 
-*Requires authentication*
+*Requires authentication — connects to Interactive Brokers paper account via IB Gateway + IBC (hands-off, no daily login)*
 
-- **IB Portfolio** — Live view of all positions in your IB paper account (shares, avg cost, cost basis, market value, P&L) plus all open/working orders with bracket order grouping
-- **IB Portfolio** — Live view of all positions (shares, avg cost, cost basis, market value, P&L) + open orders with bracket order grouping
-- **Auto-Execution** — Scanner ideas automatically run full analysis → place bracket orders on IB paper account
-- **Suggested Finds Auto-Buy** — Quiet Compounders and Gold Mines auto-bought based on the filter below
-- **Manual Execution** — Research any ticker; if FA confidence is 7+ with a BUY/SELL recommendation, prompts to execute on IB
-- **IB Integration** — Bracket orders (entry + stop-loss + target) via Interactive Brokers Gateway with IBC auto-login (hands-off)
-- **Position Tracking** — Active positions, fill prices, P&L synced from IB to Supabase
-- **AI Feedback Loop** — Analyzes completed trades (wins/losses), stores lessons, identifies winning/losing patterns
-- **Performance Dashboard** — Win rate, average P&L, best/worst trades, pattern analysis
-- **Enable/Disable Toggle** — Turn auto-trading on/off; persists across sessions via localStorage
-- **Activity Log** — Live event stream of what the auto-trader is doing
+#### What It Does
 
-#### Auto-Buy Filter (Suggested Finds)
+| Feature | Description |
+|---|---|
+| **IB Portfolio** | Live view of all IB positions (shares, avg cost, cost basis, market value, P&L) and open/working orders with bracket order grouping |
+| **Auto-Trade: Scanner** | Scanner ideas that pass the filter below automatically run full analysis → bracket order on IB |
+| **Auto-Trade: Suggested Finds** | Quiet Compounders and Gold Mines that pass the filter below auto-buy as swing trades (GTC) |
+| **Manual Trade Prompt** | Research any ticker → if FA confidence 7+ and BUY/SELL, prompts to execute on IB |
+| **Bracket Orders** | Every trade placed with entry + stop-loss + take-profit via TWS API |
+| **Position Sync** | Active positions, fill prices, P&L synced from IB to Supabase |
+| **AI Feedback Loop** | Analyzes completed trades (wins/losses), stores lessons, identifies winning/losing patterns |
+| **Performance Dashboard** | Win rate, total P&L, best/worst trades, pattern analysis |
+| **Enable/Disable Toggle** | Turn auto-trading on/off anytime; persists across sessions (localStorage) |
+| **Activity Log** | Live event stream of auto-trader actions |
 
-| Condition | Auto-Buy? | Example |
+#### Auto-Trade Filters
+
+| Source | Condition | Auto-Buy? |
 |---|---|---|
-| Conviction 8+ (any valuation) | Yes | Conviction 9, "Fair Value" → buys |
-| Conviction 7 + "Undervalued" | Yes | Conviction 7, "Undervalued" → buys |
-| Conviction 7 + "Deep Value" | Yes | Conviction 7, "Deep Value" → buys |
-| Conviction 7 + "Fair Value" | No | Conviction 7, "Fair Value" → skips |
-| Conviction 7 + "Fully Valued" | No | Conviction 7, "Fully Valued" → skips |
-| Conviction 6 or below | No | Always skipped regardless of valuation |
+| **Scanner Ideas** | Scanner confidence 7+ AND FA confidence 7+ | Yes |
+| **Scanner Ideas** | Scanner or FA confidence below 7 | No |
+| **Suggested Finds** | Conviction 8+ (any valuation) | Yes |
+| **Suggested Finds** | Conviction 7 + "Undervalued" or "Deep Value" | Yes |
+| **Suggested Finds** | Conviction 7 + "Fair Value" or "Fully Valued" | No |
+| **Suggested Finds** | Conviction 6 or below | No |
 
 ### Market Movers (`/movers`)
 
@@ -138,7 +141,7 @@ A personal investing decision-support tool that combines automated conviction sc
 | **Portfolio Trade Signals** | BUY / SELL / no-action per stock | Groq (Llama 3.3 70B) | Finnhub data + market news + risk profile |
 | **Trade Ideas** | Scan market for high-confidence day/swing setups | Gemini (multi-key rotation) | Yahoo Finance screener + candles → Indicator Engine + Gemini two-pass evaluation |
 | **Trade Signals** | Auto/Day/Swing trade with indicators, scenarios, dual targets + Long Term Outlook | Gemini (multi-key rotation) | Twelve Data candles → Indicator Engine (RSI, MACD, EMA, ATR, ADX) + Yahoo Finance news + SPY/VIX market context + Finnhub fundamentals |
-| **Quiet Compounders** | Discover quality stocks ranked by conviction, with valuation/AI tags and category filtering | HuggingFace (Qwen2.5-72B) | Finnhub metrics |
+| **Quiet Compounders** | Discover quality stocks ranked by conviction, with valuation tags and category filtering | HuggingFace (Qwen2.5-72B) | Finnhub metrics |
 | **Gold Mines** | Macro-theme-driven opportunities | HuggingFace (Qwen2.5-72B) | Market news + Finnhub fundamentals |
 | **Paper Trading** | Auto-execute high-confidence signals, track P&L | Gemini (via scanner + FA) | Scanner results + full analysis → IB Gateway bracket orders |
 | **AI Feedback Loop** | Analyze trade outcomes, learn from wins/losses | Heuristic (rule-based) | paper_trades + trade_learnings → pattern recognition |
