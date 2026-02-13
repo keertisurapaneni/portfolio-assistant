@@ -536,7 +536,7 @@ function ConvictionBadge({ score }: { score: number }) {
 }
 
 // ──────────────────────────────────────────────────────────
-// Valuation + AI impact pills (reusable)
+// Valuation pills (reusable)
 // ──────────────────────────────────────────────────────────
 
 function ValuationPill({ tag }: { tag: string }) {
@@ -549,18 +549,6 @@ function ValuationPill({ tag }: { tag: string }) {
   return (
     <span className={cn('text-[10px] px-2 py-0.5 rounded-full font-medium', style)}>
       {tag}
-    </span>
-  );
-}
-
-function AIImpactPill({ impact }: { impact: string }) {
-  const style =
-    impact === 'Strong Tailwind' || impact === 'Tailwind'
-      ? 'bg-sky-50 text-sky-700'
-      : 'bg-gray-100 text-gray-600';
-  return (
-    <span className={cn('text-[10px] px-2 py-0.5 rounded-full font-medium', style)}>
-      AI: {impact}
     </span>
   );
 }
@@ -614,11 +602,10 @@ function StockCard({ stock, accentColor, isTopPick }: StockCardProps) {
         </span>
       )}
 
-      {/* Valuation + AI Impact pills */}
-      {(stock.valuationTag || stock.aiImpact) && (
+      {/* Valuation pill */}
+      {stock.valuationTag && (
         <div className="flex flex-wrap gap-1 mb-2">
-          {stock.valuationTag && <ValuationPill tag={stock.valuationTag} />}
-          {stock.aiImpact && <AIImpactPill impact={stock.aiImpact} />}
+          <ValuationPill tag={stock.valuationTag} />
         </div>
       )}
 

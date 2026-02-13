@@ -292,7 +292,6 @@ TASK: Select only the stocks you'd genuinely recommend buying TODAY. Be selectiv
 For each stock, assign:
 - "conviction" (1-10): How strongly you'd recommend buying NOW, considering both business quality and current valuation
 - "valuationTag": One of "Deep Value", "Undervalued", "Fair Value", "Fully Valued" — based on P/E relative to growth (PEG concept) and sector norms
-- "aiImpact": One of "Strong Tailwind", "Tailwind", "Neutral" — how AI affects this business
 - "category": The industry category (e.g., "Industrial Services", "Distribution & Logistics", "Waste Management", "Utilities", "Insurance", "HVAC & Building Services", "Food Distribution", "Specialty Chemicals", "Water & Environmental")
 
 Return stocks sorted by conviction (highest first).
@@ -308,7 +307,6 @@ Return ONLY valid JSON:
       "category": "Industry Category",
       "conviction": 9,
       "valuationTag": "Undervalued",
-      "aiImpact": "Neutral",
       "whyGreat": [
         "Specific metric-backed point (e.g. 'ROE of 22% indicates durable capital efficiency')",
         "Second metric-backed point",
@@ -487,6 +485,10 @@ ${stockDataBlock}
 
 TASK: Analyze each stock. For each, explain WHY it's interesting using BOTH the headline catalyst AND the real financial metrics.
 
+For each stock, assign:
+- "conviction" (1-10): How strongly you'd recommend buying NOW, considering both the catalyst AND financial quality
+- "valuationTag": One of "Deep Value", "Undervalued", "Fair Value", "Fully Valued" — based on P/E relative to growth (PEG concept) and sector norms
+
 Return ONLY valid JSON:
 {
   "stocks": [
@@ -497,6 +499,7 @@ Return ONLY valid JSON:
       "reason": "One sentence combining the headline catalyst with a key financial metric",
       "category": "Value chain category",
       "conviction": 8,
+      "valuationTag": "Undervalued",
       "whyGreat": [
         "Specific metric-backed point (e.g. 'ROE of 22% shows strong capital efficiency')",
         "Second metric-backed point tied to the headline catalyst",
@@ -511,7 +514,7 @@ Return ONLY valid JSON:
   ]
 }
 
-Analyze all stocks provided. Each must have conviction (1-10), 3 whyGreat points, and 3 metrics — all from the Finnhub data above.`;
+Analyze all stocks provided. Each must have conviction (1-10), valuationTag, 3 whyGreat points, and 3 metrics — all from the Finnhub data above.`;
 }
 
 // ──────────────────────────────────────────────────────────
@@ -573,6 +576,10 @@ ${stockDataBlock}
 
 TASK: Analyze each stock for the "${category}" sector. Explain why it's a compelling growth pick using real financial data.
 
+For each stock, assign:
+- "conviction" (1-10): How strongly you'd recommend buying NOW
+- "valuationTag": One of "Deep Value", "Undervalued", "Fair Value", "Fully Valued" — based on P/E relative to growth (PEG concept) and sector norms
+
 Return ONLY valid JSON:
 {
   "stocks": [
@@ -583,6 +590,7 @@ Return ONLY valid JSON:
       "reason": "One sentence with the growth catalyst and a key metric",
       "category": "${category}",
       "conviction": 8,
+      "valuationTag": "Undervalued",
       "whyGreat": [
         "Specific metric-backed growth point",
         "Second metric-backed point about the catalyst",
@@ -597,7 +605,7 @@ Return ONLY valid JSON:
   ]
 }
 
-Each stock must have 3 whyGreat points and 3 metrics from the Finnhub data above. Include "conviction" (1-10).`;
+Each stock must have conviction (1-10), valuationTag, 3 whyGreat points, and 3 metrics from the Finnhub data above.`;
 }
 
 // ──────────────────────────────────────────────────────────
@@ -624,7 +632,6 @@ function parseCompounderResponse(raw: string): EnhancedSuggestedStock[] {
     category: s.category ? String(s.category) : undefined,
     conviction: typeof s.conviction === 'number' ? s.conviction : undefined,
     valuationTag: s.valuationTag ? String(s.valuationTag) : undefined,
-    aiImpact: s.aiImpact ? String(s.aiImpact) : undefined,
     whyGreat: Array.isArray(s.whyGreat) ? s.whyGreat.map(String) : [],
     metrics: Array.isArray(s.metrics)
       ? (s.metrics as Array<{ label: string; value: string }>).map((m) => ({
@@ -680,6 +687,7 @@ function parseGoldMineAnalysis(raw: string): EnhancedSuggestedStock[] {
     reason: String(s.reason || ''),
     category: String(s.category || ''),
     conviction: typeof s.conviction === 'number' ? s.conviction : undefined,
+    valuationTag: s.valuationTag ? String(s.valuationTag) : undefined,
     whyGreat: Array.isArray(s.whyGreat) ? s.whyGreat.map(String) : [],
     metrics: Array.isArray(s.metrics)
       ? (s.metrics as Array<{ label: string; value: string }>).map((m) => ({
