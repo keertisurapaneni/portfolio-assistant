@@ -44,7 +44,6 @@ import {
   getPerformance,
   recalculatePerformance,
   getAutoTradeEvents,
-  getAutoTradeEventStats,
 } from '../lib/paperTradesApi';
 import { Spinner } from './Spinner';
 import { analyzeUnreviewedTrades, updatePerformancePatterns } from '../lib/aiFeedback';
@@ -62,7 +61,6 @@ export function PaperTrading() {
   const [ibPositions, setIbPositions] = useState<IBPosition[]>([]);
   const [ibOrders, setIbOrders] = useState<IBLiveOrder[]>([]);
   const [persistedEvents, setPersistedEvents] = useState<AutoTradeEventRecord[]>([]);
-  const [eventStats, setEventStats] = useState<{ total: number; executed: number; skipped: number; failed: number; topSkipReasons: { reason: string; count: number }[]; topMismatchTickers: { ticker: string; count: number }[] } | null>(null);
   const [tab, setTab] = useState<Tab>('portfolio');
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
@@ -71,16 +69,14 @@ export function PaperTrading() {
   const loadData = useCallback(async () => {
     setLoading(true);
     try {
-      const [all, perf, savedEvents, stats] = await Promise.all([
+      const [all, perf, savedEvents] = await Promise.all([
         getAllTrades(50),
         getPerformance(),
         getAutoTradeEvents(100),
-        getAutoTradeEventStats(),
       ]);
       setAllTrades(all);
       setPerformance(perf);
       setPersistedEvents(savedEvents);
-      setEventStats(stats);
     } catch (err) {
       console.error('Failed to load paper trading data:', err);
     } finally {
@@ -190,6 +186,12 @@ export function PaperTrading() {
 
   const completedTrades = allTrades.filter(t =>
     ['STOPPED', 'TARGET_HIT', 'CLOSED', 'CANCELLED', 'REJECTED'].includes(t.status)
+  );
+
+  // Today's executed trades from activity log
+  const todayStr = new Date().toDateString();
+  const todaysExecuted = persistedEvents.filter(e =>
+    e.action === 'executed' && new Date(e.created_at).toDateString() === todayStr
   );
 
   return (
@@ -357,56 +359,45 @@ export function PaperTrading() {
         </>
       )}
 
-      {/* Decision Stats */}
-      {eventStats && eventStats.total > 0 && (
+      {/* Today's Activity */}
+      {todaysExecuted.length > 0 && (
         <div className="rounded-xl border border-[hsl(var(--border))] bg-white overflow-hidden">
-          <div className="px-4 py-2.5 border-b border-[hsl(var(--border))] bg-[hsl(var(--secondary))]">
-            <h3 className="text-sm font-semibold text-[hsl(var(--foreground))]">Auto-Trade Decision Stats</h3>
+          <div className="px-4 py-2.5 border-b border-[hsl(var(--border))] bg-[hsl(var(--secondary))] flex items-center justify-between">
+            <h3 className="text-sm font-semibold text-[hsl(var(--foreground))]">Today&apos;s Trades</h3>
+            <span className="text-xs text-emerald-600 font-medium">{todaysExecuted.length} executed</span>
           </div>
-          <div className="p-4 space-y-3">
-            <div className="grid grid-cols-4 gap-3 text-center">
-              <div className="text-xs">
-                <p className="text-lg font-bold text-[hsl(var(--foreground))]">{eventStats.total}</p>
-                <p className="text-[hsl(var(--muted-foreground))]">Decisions</p>
-              </div>
-              <div className="text-xs">
-                <p className="text-lg font-bold text-emerald-600">{eventStats.executed}</p>
-                <p className="text-[hsl(var(--muted-foreground))]">Executed</p>
-              </div>
-              <div className="text-xs">
-                <p className="text-lg font-bold text-amber-600">{eventStats.skipped}</p>
-                <p className="text-[hsl(var(--muted-foreground))]">Skipped</p>
-              </div>
-              <div className="text-xs">
-                <p className="text-lg font-bold text-red-600">{eventStats.failed}</p>
-                <p className="text-[hsl(var(--muted-foreground))]">Failed</p>
-              </div>
-            </div>
-            {eventStats.topSkipReasons.length > 0 && (
-              <div>
-                <p className="text-xs font-medium text-[hsl(var(--muted-foreground))] mb-1">Top Skip Reasons</p>
-                <div className="space-y-1">
-                  {eventStats.topSkipReasons.slice(0, 5).map((r, i) => (
-                    <div key={i} className="flex items-center justify-between text-xs">
-                      <span className="text-[hsl(var(--foreground))] truncate">{r.reason}</span>
-                      <span className="text-[hsl(var(--muted-foreground))] tabular-nums ml-2">{r.count}x</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-            {eventStats.topMismatchTickers.length > 0 && (
-              <div>
-                <p className="text-xs font-medium text-[hsl(var(--muted-foreground))] mb-1">Direction Mismatch Tickers</p>
-                <div className="flex flex-wrap gap-1.5">
-                  {eventStats.topMismatchTickers.map((t, i) => (
-                    <span key={i} className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium bg-amber-50 text-amber-700 border border-amber-200 rounded-full">
-                      {t.ticker} <span className="opacity-60">{t.count}x</span>
+          <div className="divide-y divide-[hsl(var(--border))]">
+            {todaysExecuted.map((event) => (
+              <div key={event.id} className="flex items-center gap-3 px-4 py-2.5">
+                <CheckCircle className="w-4 h-4 text-emerald-500 flex-shrink-0" />
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="font-bold text-sm text-[hsl(var(--foreground))]">{event.ticker}</span>
+                    <span className={cn(
+                      'inline-flex px-1.5 py-0.5 rounded text-[10px] font-bold',
+                      event.scanner_signal === 'SELL' ? 'bg-red-100 text-red-700' : 'bg-emerald-100 text-emerald-700'
+                    )}>
+                      {event.scanner_signal ?? 'BUY'}
                     </span>
-                  ))}
+                    {event.mode && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 font-medium">
+                        {event.mode === 'DAY_TRADE' ? 'Day' : event.mode === 'LONG_TERM' ? 'Long Term' : 'Swing'}
+                      </span>
+                    )}
+                    {event.source === 'suggested_finds' && event.scanner_confidence != null && (
+                      <span className="text-[10px] text-[hsl(var(--muted-foreground))]">Conviction: {event.scanner_confidence}</span>
+                    )}
+                    {event.source === 'scanner' && event.scanner_confidence != null && event.fa_confidence != null && (
+                      <span className="text-[10px] text-[hsl(var(--muted-foreground))]">Scanner: {event.scanner_confidence}, FA: {event.fa_confidence}</span>
+                    )}
+                  </div>
+                  <p className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5 truncate">{event.message}</p>
                 </div>
+                <span className="text-xs text-[hsl(var(--muted-foreground))] tabular-nums flex-shrink-0">
+                  {new Date(event.created_at).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}
+                </span>
               </div>
-            )}
+            ))}
           </div>
         </div>
       )}
