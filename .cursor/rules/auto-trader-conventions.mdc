@@ -1,0 +1,36 @@
+---
+description: Auto-trader system conventions — IB integration, paper trades, and trading logic
+globs: "{app/src/lib/autoTrader.ts,app/src/lib/paperTradesApi.ts,app/src/lib/ibClient.ts,app/src/hooks/useAutoTradeScheduler.ts,app/src/components/PaperTrading.tsx,auto-trader/**}"
+alwaysApply: false
+---
+
+# Auto-Trader Conventions
+
+## Architecture
+
+```
+Browser (React) → auto-trader service (localhost:3001) → IB Gateway (TWS API, port 4002)
+                → Supabase (paper_trades, auto_trade_events, trade_performance)
+```
+
+- IB positions are the source of truth for portfolio state, not Supabase records
+- `paper_trades` tracks order intent and outcomes; IB tracks actual fills and P&L
+- The auto-trader service enriches IB data with Finnhub prices for real-time P&L
+
+## Trade Modes
+
+- `LONG_TERM` — Suggested Finds (Quiet Compounders / Gold Mines). Use conviction scoring, NOT scanner/FA confidence.
+- `DAY_TRADE` — Scanner signals, bracket orders, auto-close EOD
+- `SWING_TRADE` — Scanner signals, bracket orders, GTC
+
+## Event Sources
+
+`auto_trade_events.source` must be one of: `scanner`, `suggested_finds`, `manual`, `system`, `dip_buy`, `profit_take`
+
+## When Adding New Metrics or Displays
+
+1. Identify the true data source (IB vs Supabase vs computed)
+2. Handle the IB-disconnected fallback gracefully
+3. Format all dollar values through `fmtUsd()` helper
+4. Exclude CANCELLED/REJECTED trades from performance calculations
+5. Test with real negative P&L values

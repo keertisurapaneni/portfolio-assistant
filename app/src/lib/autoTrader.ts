@@ -562,8 +562,21 @@ function persistEvent(
 
 // ── Smart Trading: Allocation Cap ────────────────────────
 
-/** Get total $ deployed across all active positions */
+/** Get total $ deployed across all active positions.
+ *  Uses IB positions (shares × avgCost = real cost basis) as source of truth.
+ *  Falls back to paper_trades.position_size when IB is unreachable. */
 export async function getTotalDeployed(): Promise<number> {
+  try {
+    const positions = await getPositions('');
+    if (positions && positions.length > 0) {
+      return positions.reduce((sum, p) => {
+        const costBasis = Math.abs(p.position) * (p.avgCost ?? 0);
+        return sum + costBasis;
+      }, 0);
+    }
+  } catch {
+    // IB not connected — fall back to paper_trades
+  }
   const trades = await getActiveTrades();
   return trades.reduce((sum, t) => sum + (t.position_size ?? 0), 0);
 }

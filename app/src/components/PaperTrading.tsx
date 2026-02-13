@@ -52,6 +52,12 @@ import { getTotalDeployed } from '../lib/autoTrader';
 import { Spinner } from './Spinner';
 import { analyzeUnreviewedTrades, updatePerformancePatterns } from '../lib/aiFeedback';
 
+/** Format a dollar amount with sign before $: +$500, -$718, $0 */
+function fmtUsd(value: number, decimals = 2, showPlus = false): string {
+  const sign = value > 0 && showPlus ? '+' : value < 0 ? '-' : '';
+  return `${sign}$${Math.abs(value).toFixed(decimals)}`;
+}
+
 // ── Main Component ──────────────────────────────────────
 
 type Tab = 'portfolio' | 'today' | 'signals' | 'history' | 'settings';
@@ -204,6 +210,12 @@ export function PaperTrading() {
     e.action === 'executed' && new Date(e.created_at).toDateString() === todayStr
   );
 
+  // Portfolio totals (for consolidated stats row)
+  const totalCostBasis = ibPositions.reduce((sum, p) => sum + Math.abs(p.position) * p.avgCost, 0);
+  const totalMktValue = ibPositions.reduce((sum, p) => sum + p.mktValue, 0);
+  const totalUnrealizedPnl = ibPositions.reduce((sum, p) => sum + p.unrealizedPnl, 0);
+  const uniqueOrderTickers = new Set(ibOrders.map(o => o.ticker)).size;
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -286,31 +298,40 @@ export function PaperTrading() {
         )}
       </div>
 
-      {/* Stats Cards */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+      {/* Consolidated Stats */}
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+        <StatCard
+          icon={<Briefcase className="w-4 h-4" />}
+          label="Holdings"
+          value={String(ibPositions.length)}
+          subtitle={uniqueOrderTickers > 0 ? `${uniqueOrderTickers} open order${uniqueOrderTickers > 1 ? 's' : ''}` : undefined}
+          color="blue"
+        />
+        <StatCard
+          icon={<DollarSign className="w-4 h-4" />}
+          label="Cost Basis"
+          value={connected && totalCostBasis > 0 ? `$${totalCostBasis.toLocaleString(undefined, { maximumFractionDigits: 0 })}` : '—'}
+          color="blue"
+        />
         <StatCard
           icon={<BarChart3 className="w-4 h-4" />}
-          label="Total Trades"
-          value={String(performance?.total_trades ?? 0)}
-          color="blue"
+          label="Market Value"
+          value={connected && totalMktValue > 0 ? `$${totalMktValue.toLocaleString(undefined, { maximumFractionDigits: 0 })}` : '—'}
+          color={totalMktValue >= totalCostBasis ? 'green' : 'red'}
+        />
+        <StatCard
+          icon={<TrendingUp className="w-4 h-4" />}
+          label="Unrealized P&L"
+          value={connected && totalMktValue > 0 ? fmtUsd(totalUnrealizedPnl, 0, true) : '—'}
+          subtitle={`Realized: ${fmtUsd(performance?.total_pnl ?? 0, 0, true)}`}
+          color={totalUnrealizedPnl >= 0 ? 'green' : 'red'}
         />
         <StatCard
           icon={<Target className="w-4 h-4" />}
           label="Win Rate"
-          value={`${(performance?.win_rate ?? 0).toFixed(1)}%`}
+          value={`${(performance?.win_rate ?? 0).toFixed(0)}%`}
+          subtitle={`${performance?.total_trades ?? 0} closed trade${(performance?.total_trades ?? 0) !== 1 ? 's' : ''}`}
           color={(performance?.win_rate ?? 0) >= 50 ? 'green' : 'red'}
-        />
-        <StatCard
-          icon={<DollarSign className="w-4 h-4" />}
-          label="Total P&L"
-          value={`$${(performance?.total_pnl ?? 0).toFixed(2)}`}
-          color={(performance?.total_pnl ?? 0) >= 0 ? 'green' : 'red'}
-        />
-        <StatCard
-          icon={<Activity className="w-4 h-4" />}
-          label="Avg P&L"
-          value={`$${((performance?.total_pnl ?? 0) / Math.max(performance?.total_trades ?? 1, 1)).toFixed(2)}`}
-          color={((performance?.total_pnl ?? 0) / Math.max(performance?.total_trades ?? 1, 1)) >= 0 ? 'green' : 'red'}
         />
       </div>
 
@@ -450,10 +471,11 @@ export function PaperTrading() {
 
 // ── Stat Card ────────────────────────────────────────────
 
-function StatCard({ icon, label, value, color }: {
+function StatCard({ icon, label, value, subtitle, color }: {
   icon: React.ReactNode;
   label: string;
   value: string;
+  subtitle?: string;
   color: 'blue' | 'green' | 'red' | 'amber';
 }) {
   const colors = {
@@ -470,6 +492,7 @@ function StatCard({ icon, label, value, color }: {
         <span className="text-xs font-medium opacity-75">{label}</span>
       </div>
       <p className="text-2xl font-bold">{value}</p>
+      {subtitle && <p className="text-[10px] mt-0.5 opacity-60">{subtitle}</p>}
     </div>
   );
 }
@@ -497,48 +520,9 @@ function PortfolioTab({ positions, orders, connected, onRefresh }: {
   const totalCostBasis = positions.reduce((sum, p) => sum + Math.abs(p.position) * p.avgCost, 0);
   const totalMktValue = positions.reduce((sum, p) => sum + p.mktValue, 0);
   const totalUnrealizedPnl = positions.reduce((sum, p) => sum + p.unrealizedPnl, 0);
-  // Count unique tickers with open orders (bracket child orders share parentId)
-  const uniqueOrderTickers = new Set(orders.map(o => o.ticker)).size;
 
   return (
     <div className="space-y-4">
-      {/* Portfolio Summary */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <div className="rounded-xl border bg-indigo-50 border-indigo-200 text-indigo-700 p-4">
-          <div className="flex items-center gap-2 mb-2">
-            <Briefcase className="w-4 h-4" />
-            <span className="text-xs font-medium opacity-75">Holdings</span>
-          </div>
-          <p className="text-2xl font-bold">{positions.length}</p>
-        </div>
-        <div className="rounded-xl border bg-blue-50 border-blue-200 text-blue-700 p-4">
-          <div className="flex items-center gap-2 mb-2">
-            <DollarSign className="w-4 h-4" />
-            <span className="text-xs font-medium opacity-75">Cost Basis</span>
-          </div>
-          <p className="text-2xl font-bold">${totalCostBasis.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
-        </div>
-        <div className={cn(
-          'rounded-xl border p-4',
-          totalMktValue > 0 ? 'bg-emerald-50 border-emerald-200 text-emerald-700' : 'bg-slate-50 border-slate-200 text-slate-600'
-        )}>
-          <div className="flex items-center gap-2 mb-2">
-            <BarChart3 className="w-4 h-4" />
-            <span className="text-xs font-medium opacity-75">Market Value</span>
-          </div>
-          <p className="text-2xl font-bold">
-            {totalMktValue > 0 ? `$${totalMktValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '—'}
-          </p>
-        </div>
-        <div className="rounded-xl border bg-amber-50 border-amber-200 text-amber-700 p-4">
-          <div className="flex items-center gap-2 mb-2">
-            <Activity className="w-4 h-4" />
-            <span className="text-xs font-medium opacity-75">Open Orders</span>
-          </div>
-          <p className="text-2xl font-bold">{uniqueOrderTickers}</p>
-        </div>
-      </div>
-
       {/* Positions Table */}
       {positions.length > 0 ? (
         <div className="rounded-xl border border-[hsl(var(--border))] bg-white overflow-hidden">
@@ -596,7 +580,7 @@ function PortfolioTab({ positions, orders, connected, onRefresh }: {
                         {hasMktData ? (
                           <span className="flex items-center justify-end gap-1">
                             {pnl > 0 ? <TrendingUp className="w-3 h-3" /> : pnl < 0 ? <TrendingDown className="w-3 h-3" /> : null}
-                            {pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}
+                            {fmtUsd(pnl, 2, true)}
                           </span>
                         ) : <span className="text-[hsl(var(--muted-foreground))] opacity-50">—</span>}
                       </td>
@@ -615,7 +599,7 @@ function PortfolioTab({ positions, orders, connected, onRefresh }: {
                     'px-4 py-2.5 text-right tabular-nums',
                     totalUnrealizedPnl > 0 ? 'text-emerald-600' : totalUnrealizedPnl < 0 ? 'text-red-600' : ''
                   )}>
-                    {totalUnrealizedPnl >= 0 ? '+' : ''}${totalUnrealizedPnl.toFixed(2)}
+                    {fmtUsd(totalUnrealizedPnl, 2, true)}
                   </td>
                 </tr>
               </tfoot>
@@ -824,7 +808,7 @@ function HistoryTab({ trades }: { trades: PaperTrade[] }) {
                 'px-4 py-3 text-right tabular-nums font-semibold',
                 (trade.pnl ?? 0) > 0 ? 'text-emerald-600' : (trade.pnl ?? 0) < 0 ? 'text-red-600' : ''
               )}>
-                {trade.pnl != null ? `${trade.pnl >= 0 ? '+' : ''}$${trade.pnl.toFixed(2)}` : '—'}
+                {trade.pnl != null ? fmtUsd(trade.pnl, 2, true) : '—'}
               </td>
               <td className="px-4 py-3">
                 <StatusBadge status={trade.status} />
@@ -1288,7 +1272,7 @@ function PerformanceBreakdown({ categories, totalDeployed, maxAllocation }: {
               <span className="text-blue-700 font-medium">Dip Buys: {dipBuy!.totalTrades}</span>
               {dipBuy!.totalPnl !== 0 && (
                 <span className={cn('font-bold', dipBuy!.totalPnl > 0 ? 'text-emerald-600' : 'text-red-600')}>
-                  {dipBuy!.totalPnl >= 0 ? '+' : ''}${dipBuy!.totalPnl.toFixed(0)}
+                  {fmtUsd(dipBuy!.totalPnl, 0, true)}
                 </span>
               )}
             </div>
@@ -1299,7 +1283,7 @@ function PerformanceBreakdown({ categories, totalDeployed, maxAllocation }: {
               <span className="text-emerald-700 font-medium">Profit Takes: {profitTake!.totalTrades}</span>
               {profitTake!.totalPnl !== 0 && (
                 <span className={cn('font-bold', profitTake!.totalPnl > 0 ? 'text-emerald-600' : 'text-red-600')}>
-                  {profitTake!.totalPnl >= 0 ? '+' : ''}${profitTake!.totalPnl.toFixed(0)}
+                  {fmtUsd(profitTake!.totalPnl, 0, true)}
                 </span>
               )}
             </div>
@@ -1349,7 +1333,7 @@ function SignalScorecard({ title, subtitle, data, color }: {
             'text-lg font-bold tabular-nums',
             data.totalPnl > 0 ? 'text-emerald-600' : data.totalPnl < 0 ? 'text-red-600' : textColors[color]
           )}>
-            {data.totalPnl >= 0 ? '+' : ''}${data.totalPnl.toFixed(0)}
+            {fmtUsd(data.totalPnl, 0, true)}
           </p>
         </div>
       </div>
@@ -1375,7 +1359,7 @@ function SignalScorecard({ title, subtitle, data, color }: {
         <div>
           <p className="text-[10px] text-[hsl(var(--muted-foreground))]">Avg P&L</p>
           <p className={cn('text-xs font-bold tabular-nums', data.avgPnl >= 0 ? 'text-emerald-600' : 'text-red-600')}>
-            {data.avgPnl >= 0 ? '+' : ''}${data.avgPnl.toFixed(0)}
+            {fmtUsd(data.avgPnl, 0, true)}
           </p>
         </div>
         <div>
@@ -1392,7 +1376,7 @@ function SignalScorecard({ title, subtitle, data, color }: {
             <div>
               <p className="text-[10px] text-[hsl(var(--muted-foreground))]">Best</p>
               <p className="text-xs font-bold text-emerald-600 tabular-nums truncate">
-                {data.bestTrade.ticker} +${data.bestTrade.pnl.toFixed(0)}
+                {data.bestTrade.ticker} {fmtUsd(data.bestTrade.pnl, 0, true)}
               </p>
             </div>
           )}
@@ -1400,7 +1384,7 @@ function SignalScorecard({ title, subtitle, data, color }: {
             <div>
               <p className="text-[10px] text-[hsl(var(--muted-foreground))]">Worst</p>
               <p className="text-xs font-bold text-red-600 tabular-nums truncate">
-                {data.worstTrade.ticker} ${data.worstTrade.pnl.toFixed(0)}
+                {data.worstTrade.ticker} {fmtUsd(data.worstTrade.pnl, 0)}
               </p>
             </div>
           )}

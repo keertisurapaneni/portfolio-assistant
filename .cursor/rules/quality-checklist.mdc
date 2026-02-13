@@ -1,0 +1,55 @@
+---
+description: Pre-ship quality checklist — catches the bugs the user shouldn't have to find
+alwaysApply: true
+---
+
+# Quality Checklist — Run Before Every Commit
+
+## 1. Data Source of Truth
+
+Before displaying or computing any value, ask: **where does the real data live?**
+
+- Portfolio values → IB positions (shares × avgCost), NOT stale `paper_trades.position_size`
+- Current prices → Finnhub/IB live quotes, NOT saved `entry_price`
+- Account balance → IB account summary, NOT derived from trade records
+- If a DB field could become stale after external actions (manual trades, rebalancing), use the live source
+
+## 2. Currency / Number Formatting
+
+Every dollar amount must handle negative values correctly:
+
+```typescript
+// ❌ BAD — produces $-718.92
+`$${value.toFixed(2)}`
+
+// ✅ GOOD — produces -$718.92
+fmtUsd(value)  // or: `${value < 0 ? '-' : ''}$${Math.abs(value).toFixed(2)}`
+```
+
+When adding any `$` + number display, mentally test with: **positive, zero, negative, very large**.
+
+## 3. Audit All Similar Patterns
+
+When fixing a bug, **grep the entire codebase** for the same pattern before committing.
+If you fix one `$${val.toFixed(2)}`, find and fix ALL of them — not just the one the user reported.
+
+## 4. Edge Case Thinking
+
+Before shipping UI changes, walk through these scenarios mentally:
+- Empty state (0 trades, no data, IB disconnected)
+- Negative values (losses, drawdowns)
+- Large numbers ($100K+, 10000 shares)
+- Stale data (service down, data not refreshed)
+- Mixed states (some positions filled, some cancelled)
+
+## 5. Build Verification
+
+Always run `npx tsc --noEmit` AND visually scan for logic errors before committing.
+A passing type-check doesn't catch wrong data sources or formatting bugs.
+
+## 6. Filter Accuracy
+
+Performance metrics must only count executed trades:
+- Exclude CANCELLED, REJECTED, EXPIRED statuses
+- Only include trades with `fill_price != null` in win/loss calculations
+- Don't count unfilled bracket orders as losses
