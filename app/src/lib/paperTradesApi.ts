@@ -350,7 +350,8 @@ export async function recalculatePerformance(): Promise<TradePerformance | null>
 
   if (error || !trades || trades.length === 0) return null;
 
-  const completed = trades as PaperTrade[];
+  // Only count trades that actually filled — exclude expired/unfilled orders
+  const completed = (trades as PaperTrade[]).filter(t => t.fill_price != null);
   const wins = completed.filter(t => (t.pnl ?? 0) > 0);
   const losses = completed.filter(t => (t.pnl ?? 0) < 0);
   const breakevens = completed.filter(t => (t.pnl ?? 0) === 0);
