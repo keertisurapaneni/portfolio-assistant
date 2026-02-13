@@ -67,16 +67,14 @@ export function SuggestedFinds({ existingTickers }: SuggestedFindsProps) {
     const allStocks = [...displayedCompounders, ...displayedGoldMines];
     if (allStocks.length === 0) return;
 
-    // Filter: conviction >= minSuggestedFindsConviction (default 8),
-    // OR conviction 7+ with Undervalued/Deep Value — not already processed
+    // Filter: conviction >= minSuggestedFindsConviction (default 8) AND Undervalued/Deep Value
     const minConv = config.minSuggestedFindsConviction;
     const newStocks = allStocks.filter(s => {
       if (processedFindsRef.current.has(s.ticker)) return false;
       const conv = s.conviction ?? 0;
-      if (conv < 7) return false;
+      if (conv < minConv) return false;
       const tag = (s.valuationTag ?? '').toLowerCase();
-      const isUndervalued = tag === 'deep value' || tag === 'undervalued';
-      return conv >= minConv || (isUndervalued && conv >= 7);
+      return tag === 'deep value' || tag === 'undervalued';
     });
     if (newStocks.length === 0) return;
 
@@ -208,7 +206,7 @@ export function SuggestedFinds({ existingTickers }: SuggestedFindsProps) {
           <Zap className={cn('w-3.5 h-3.5', isAutoTrading && 'animate-pulse')} />
           {isAutoTrading
             ? 'Auto-buying qualifying suggested finds...'
-            : `Auto-buy enabled — conviction ${getAutoTraderConfig().minSuggestedFindsConviction}+ (or 7+ if undervalued)`
+            : `Auto-buy enabled — conviction ${getAutoTraderConfig().minSuggestedFindsConviction}+ and Undervalued/Deep Value only`
           }
         </div>
       )}
