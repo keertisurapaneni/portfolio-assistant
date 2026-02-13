@@ -8,7 +8,6 @@ import {
   RefreshCw,
   DollarSign,
   Target,
-  Shield,
   Clock,
   AlertTriangle,
   CheckCircle,
@@ -16,7 +15,6 @@ import {
   Settings,
   BarChart3,
   Activity,
-  Zap,
   Briefcase,
   TrendingUp,
   TrendingDown,
@@ -42,7 +40,6 @@ import {
   type PaperTrade,
   type TradePerformance,
   type AutoTradeEventRecord,
-  getActiveTrades,
   getAllTrades,
   getPerformance,
   recalculatePerformance,
@@ -54,13 +51,12 @@ import { analyzeUnreviewedTrades, updatePerformancePatterns } from '../lib/aiFee
 
 // ── Main Component ──────────────────────────────────────
 
-type Tab = 'portfolio' | 'positions' | 'history' | 'settings';
+type Tab = 'portfolio' | 'history' | 'settings';
 
 export function PaperTrading() {
   const [config, setConfig] = useState<AutoTraderConfig>(getAutoTraderConfig);
   const [connected, setConnected] = useState(isIBConnected());
   const [events, setEvents] = useState<AutoTradeEvent[]>(getEventLog());
-  const [activeTrades, setActiveTrades] = useState<PaperTrade[]>([]);
   const [allTrades, setAllTrades] = useState<PaperTrade[]>([]);
   const [performance, setPerformance] = useState<TradePerformance | null>(null);
   const [ibPositions, setIbPositions] = useState<IBPosition[]>([]);
@@ -75,14 +71,12 @@ export function PaperTrading() {
   const loadData = useCallback(async () => {
     setLoading(true);
     try {
-      const [active, all, perf, savedEvents, stats] = await Promise.all([
-        getActiveTrades(),
+      const [all, perf, savedEvents, stats] = await Promise.all([
         getAllTrades(50),
         getPerformance(),
         getAutoTradeEvents(100),
         getAutoTradeEventStats(),
       ]);
-      setActiveTrades(active);
       setAllTrades(all);
       setPerformance(perf);
       setPersistedEvents(savedEvents);
@@ -302,8 +296,8 @@ export function PaperTrading() {
         />
         <StatCard
           icon={<Activity className="w-4 h-4" />}
-          label="Active"
-          value={String(activeTrades.length)}
+          label="Holdings"
+          value={String(ibPositions.length)}
           color="amber"
         />
       </div>
@@ -312,7 +306,6 @@ export function PaperTrading() {
       <div className="flex gap-1 bg-white/60 p-1 rounded-xl border border-[hsl(var(--border))]">
         {[
           { id: 'portfolio' as Tab, label: 'IB Portfolio', icon: Briefcase, count: ibPositions.length },
-          { id: 'positions' as Tab, label: 'Auto-Trades', icon: Zap, count: activeTrades.length },
           { id: 'history' as Tab, label: 'Trade History', icon: Clock, count: completedTrades.length },
           { id: 'settings' as Tab, label: 'Settings', icon: Settings },
         ].map(t => (
@@ -354,9 +347,6 @@ export function PaperTrading() {
               connected={connected}
               onRefresh={loadIBData}
             />
-          )}
-          {tab === 'positions' && (
-            <PositionsTab trades={activeTrades} />
           )}
           {tab === 'history' && (
             <HistoryTab trades={completedTrades} />
@@ -537,7 +527,8 @@ function PortfolioTab({ positions, orders, connected, onRefresh }: {
   const totalCostBasis = positions.reduce((sum, p) => sum + Math.abs(p.position) * p.avgCost, 0);
   const totalMktValue = positions.reduce((sum, p) => sum + p.mktValue, 0);
   const totalUnrealizedPnl = positions.reduce((sum, p) => sum + p.unrealizedPnl, 0);
-  const parentOrders = orders.filter(o => !o.parentId || o.parentId === 0);
+  // Count unique tickers with open orders (bracket child orders share parentId)
+  const uniqueOrderTickers = new Set(orders.map(o => o.ticker)).size;
 
   return (
     <div className="space-y-4">
@@ -574,7 +565,7 @@ function PortfolioTab({ positions, orders, connected, onRefresh }: {
             <Activity className="w-4 h-4" />
             <span className="text-xs font-medium opacity-75">Open Orders</span>
           </div>
-          <p className="text-2xl font-bold">{parentOrders.length}</p>
+          <p className="text-2xl font-bold">{uniqueOrderTickers}</p>
         </div>
       </div>
 
@@ -759,64 +750,6 @@ function PortfolioTab({ positions, orders, connected, onRefresh }: {
 }
 
 // ── Positions Tab ────────────────────────────────────────
-
-function PositionsTab({ trades }: { trades: PaperTrade[] }) {
-  if (trades.length === 0) {
-    return (
-      <div className="text-center py-12">
-        <Shield className="w-10 h-10 text-[hsl(var(--muted-foreground))] opacity-40 mx-auto" />
-        <p className="mt-3 text-sm text-[hsl(var(--muted-foreground))]">No active positions</p>
-        <p className="text-xs text-[hsl(var(--muted-foreground))] opacity-70 mt-1">
-          Enable auto-trading to start executing scanner signals
-        </p>
-      </div>
-    );
-  }
-
-  return (
-    <div className="rounded-xl border border-[hsl(var(--border))] bg-white overflow-hidden">
-      <table className="w-full text-sm">
-        <thead>
-          <tr className="bg-[hsl(var(--secondary))] text-[hsl(var(--muted-foreground))] text-xs">
-            <th className="text-left px-4 py-2.5 font-medium">Ticker</th>
-            <th className="text-left px-4 py-2.5 font-medium">Signal</th>
-            <th className="text-right px-4 py-2.5 font-medium">Entry</th>
-            <th className="text-right px-4 py-2.5 font-medium">Stop</th>
-            <th className="text-right px-4 py-2.5 font-medium">Target</th>
-            <th className="text-right px-4 py-2.5 font-medium">Qty</th>
-            <th className="text-left px-4 py-2.5 font-medium">Status</th>
-            <th className="text-left px-4 py-2.5 font-medium">Mode</th>
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-[hsl(var(--border))]">
-          {trades.map(trade => (
-            <tr key={trade.id} className="hover:bg-[hsl(var(--secondary))]/50">
-              <td className="px-4 py-3 font-bold">{trade.ticker}</td>
-              <td className="px-4 py-3">
-                <span className={cn(
-                  'inline-flex px-2 py-0.5 rounded text-[10px] font-bold',
-                  trade.signal === 'BUY' ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'
-                )}>
-                  {trade.signal}
-                </span>
-              </td>
-              <td className="px-4 py-3 text-right tabular-nums">${trade.entry_price?.toFixed(2)}</td>
-              <td className="px-4 py-3 text-right tabular-nums text-red-600">${trade.stop_loss?.toFixed(2)}</td>
-              <td className="px-4 py-3 text-right tabular-nums text-emerald-600">${trade.target_price?.toFixed(2)}</td>
-              <td className="px-4 py-3 text-right tabular-nums">{trade.quantity}</td>
-              <td className="px-4 py-3">
-                <StatusBadge status={trade.status} />
-              </td>
-              <td className="px-4 py-3 text-xs text-[hsl(var(--muted-foreground))]">
-                {trade.mode === 'DAY_TRADE' ? 'Day' : trade.mode === 'LONG_TERM' ? 'Long Term' : 'Swing'}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
 
 // ── History Tab ──────────────────────────────────────────
 
