@@ -37,6 +37,7 @@ import {
   computeAllIndicators,
   formatIndicatorsForPrompt,
 } from '../_shared/indicators.ts';
+import { buildFeedbackContext } from '../_shared/feedback.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -623,8 +624,11 @@ async function runPass2(
   const tickers = pass1.map(e => e.ticker);
   console.log(`[Trade Scanner] Pass 2: ${tickers.length} ${mode === 'DAY_TRADE' ? 'day' : 'swing'} candidates...`);
 
-  // Fetch market snapshot once for all tickers
-  const marketSnapshot = await fetchMarketSnapshot();
+  // Fetch market snapshot + feedback context in parallel
+  const [marketSnapshot, feedbackCtx] = await Promise.all([
+    fetchMarketSnapshot(),
+    buildFeedbackContext(),
+  ]);
   const marketCtxStr = marketSnapshot
     ? `SPY: ${marketSnapshot.spyTrend} | VIX: ${marketSnapshot.vix} (${marketSnapshot.volatility} fear)`
     : undefined;
@@ -689,7 +693,7 @@ async function runPass2(
 
     // ── Build prompt in the EXACT SAME format as FA ──
     const userPrompt = refineTemplate
-      .replace('{{INDICATOR_SUMMARY}}', indicatorText + extraContext)
+      .replace('{{INDICATOR_SUMMARY}}', indicatorText + extraContext + feedbackCtx)
       .replace('{{TECHNICAL_DATA}}', candleJson)
       .replace('{{SENTIMENT_DATA}}', JSON.stringify(news.length > 0
         ? news.map(n => ({ headline: n.headline, source: n.source }))

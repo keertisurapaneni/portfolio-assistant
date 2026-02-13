@@ -412,6 +412,7 @@ import {
   SWING_TRADE_RULES,
 } from '../_shared/prompts.ts';
 import { fetchCandles } from '../_shared/data-fetchers.ts';
+import { buildFeedbackContext } from '../_shared/feedback.ts';
 
 // ── Sentiment Agent ─────────────────────────────────────
 
@@ -559,10 +560,11 @@ Deno.serve(async req => {
     // ── Step 1-3: Shared analysis context (same code as scanner Pass 2) ──
     // Fetch Finnhub fundamentals + earnings in parallel with the shared context
     const finnhubKey = Deno.env.get('FINNHUB_API_KEY');
-    const [ctx, fundamentals, earningsEvent] = await Promise.all([
+    const [ctx, fundamentals, earningsEvent, feedbackCtx] = await Promise.all([
       prepareAnalysisContext(ticker, mode),
       finnhubKey ? fetchFundamentals(ticker, finnhubKey) : Promise.resolve(null),
       finnhubKey ? fetchEarningsCalendar(ticker, finnhubKey) : Promise.resolve(null),
+      buildFeedbackContext(),
     ]);
 
     if (!ctx) {
@@ -614,7 +616,7 @@ Deno.serve(async req => {
     const tradeSystemPrompt = mode === 'DAY_TRADE' ? DAY_TRADE_SYSTEM : SWING_TRADE_SYSTEM;
     const tradeUserTemplate = mode === 'DAY_TRADE' ? DAY_TRADE_USER : SWING_TRADE_USER;
     const tradeUserPrompt = tradeUserTemplate
-      .replace('{{INDICATOR_SUMMARY}}', indicatorPromptText + extraContext)
+      .replace('{{INDICATOR_SUMMARY}}', indicatorPromptText + extraContext + feedbackCtx)
       .replace('{{TECHNICAL_DATA}}', JSON.stringify(technicalData))
       .replace('{{SENTIMENT_DATA}}', JSON.stringify(newsForTrade));
 

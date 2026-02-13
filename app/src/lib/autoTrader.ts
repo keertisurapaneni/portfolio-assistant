@@ -29,16 +29,25 @@ import {
   createAutoTradeEvent,
   type PaperTrade,
 } from './paperTradesApi';
+import { analyzeCompletedTrade, updatePerformancePatterns } from './aiFeedback';
 
-// ── Lightweight price lookup (Finnhub quote) ─────────────
-const _FINNHUB_BASE = 'https://finnhub.io/api/v1';
-const _FINNHUB_KEY = import.meta.env.VITE_FINNHUB_API_KEY || '';
+// ── Lightweight price lookup (via Supabase edge function — key stays server-side) ──
+const _SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || '';
+const _SUPABASE_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
 
 /** Get the current market price for a ticker (for position sizing). Returns null on failure. */
 async function getQuotePrice(ticker: string): Promise<number | null> {
   try {
     const res = await fetch(
-      `${_FINNHUB_BASE}/quote?symbol=${ticker.toUpperCase()}&token=${_FINNHUB_KEY}`
+      `${_SUPABASE_URL}/functions/v1/fetch-stock-data`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${_SUPABASE_KEY}`,
+        },
+        body: JSON.stringify({ symbol: ticker.toUpperCase(), endpoint: 'quote' }),
+      }
     );
     if (!res.ok) return null;
     const data = await res.json();
@@ -758,7 +767,9 @@ async function processSuggestedFind(
 
 /**
  * Sync IB positions with paper_trades table.
- * Updates fill status, P&L, and detects closed positions.
+ * 1. Detect fills — IB has position → mark SUBMITTED → FILLED
+ * 2. Detect closes — position disappeared → fetch close price → calculate P&L
+ * 3. Expire stale day trades — SUBMITTED day trades older than 1 day → EXPIRED
  */
 export async function syncPositions(accountId: string): Promise<void> {
   try {
@@ -769,11 +780,11 @@ export async function syncPositions(accountId: string): Promise<void> {
 
     for (const trade of activeTrades) {
       const ibPos = ibPositions.find(
-        p => p.contractDesc.toUpperCase().includes(trade.ticker.toUpperCase())
+        p => p.contractDesc.toUpperCase() === trade.ticker.toUpperCase()
       );
 
       if (ibPos && ibPos.position !== 0) {
-        // Position is open on IB
+        // ── Position is open on IB ──
         if (trade.status === 'SUBMITTED' || trade.status === 'PENDING') {
           await updatePaperTrade(trade.id, {
             status: 'FILLED',
@@ -782,29 +793,112 @@ export async function syncPositions(accountId: string): Promise<void> {
           });
           logEvent(trade.ticker, 'success', `Filled @ $${ibPos.avgPrice.toFixed(2)}`);
         }
-      } else if (trade.status === 'FILLED') {
-        // Position was open but now gone — closed by stop/target
-        const pnl = ibPositions.find(
-          p => p.contractDesc.toUpperCase().includes(trade.ticker.toUpperCase())
-        )?.realizedPnl ?? null;
 
-        let closeReason: 'stop_loss' | 'target_hit' | 'manual' = 'manual';
-        if (trade.fill_price && trade.stop_loss && trade.target_price) {
-          // Infer close reason from P&L direction
-          if (pnl !== null && pnl < 0) closeReason = 'stop_loss';
-          else if (pnl !== null && pnl > 0) closeReason = 'target_hit';
+        // Update unrealized P&L if we have market price (enriched positions)
+        if (trade.status === 'FILLED' && ibPos.mktPrice > 0 && trade.fill_price) {
+          const qty = trade.quantity ?? 1;
+          const isLong = trade.signal === 'BUY';
+          const unrealizedPnl = isLong
+            ? (ibPos.mktPrice - trade.fill_price) * qty
+            : (trade.fill_price - ibPos.mktPrice) * qty;
+
+          // Update pnl fields (unrealized while position is open)
+          await updatePaperTrade(trade.id, {
+            pnl: parseFloat(unrealizedPnl.toFixed(2)),
+            pnl_percent: parseFloat(((unrealizedPnl / (trade.fill_price * qty)) * 100).toFixed(2)),
+          });
         }
 
+      } else if (trade.status === 'FILLED') {
+        // ── Position was open but now gone — closed (stop/target/manual) ──
+        // Fetch current price to approximate close price
+        const closePrice = await getQuotePrice(trade.ticker);
+        const fillPrice = trade.fill_price ?? trade.entry_price ?? 0;
+        const qty = trade.quantity ?? 1;
+        const isLong = trade.signal === 'BUY';
+
+        let pnl: number;
+        let actualClosePrice: number;
+
+        if (closePrice) {
+          actualClosePrice = closePrice;
+        } else {
+          // Fallback: use target or stop based on position direction
+          actualClosePrice = fillPrice; // worst case: breakeven
+        }
+
+        pnl = isLong
+          ? (actualClosePrice - fillPrice) * qty
+          : (fillPrice - actualClosePrice) * qty;
+
+        // Infer close reason from P&L and price levels
+        let closeReason: 'stop_loss' | 'target_hit' | 'manual' = 'manual';
+        if (trade.stop_loss && trade.target_price) {
+          if (isLong) {
+            if (actualClosePrice >= trade.target_price) closeReason = 'target_hit';
+            else if (actualClosePrice <= trade.stop_loss) closeReason = 'stop_loss';
+          } else {
+            if (actualClosePrice <= trade.target_price) closeReason = 'target_hit';
+            else if (actualClosePrice >= trade.stop_loss) closeReason = 'stop_loss';
+          }
+        }
+        // No stop/target (e.g. suggested finds) — infer from P&L
+        if (closeReason === 'manual' && pnl > 0) closeReason = 'target_hit';
+        if (closeReason === 'manual' && pnl < 0) closeReason = 'stop_loss';
+
+        const status = closeReason === 'stop_loss' ? 'STOPPED'
+          : closeReason === 'target_hit' ? 'TARGET_HIT'
+          : 'CLOSED';
+
         await updatePaperTrade(trade.id, {
-          status: closeReason === 'stop_loss' ? 'STOPPED' : closeReason === 'target_hit' ? 'TARGET_HIT' : 'CLOSED',
+          status: status as PaperTrade['status'],
           close_reason: closeReason,
+          close_price: actualClosePrice,
           closed_at: new Date().toISOString(),
-          pnl: pnl,
-          pnl_percent: trade.fill_price ? ((pnl ?? 0) / (trade.fill_price * (trade.quantity ?? 1))) * 100 : null,
+          pnl: parseFloat(pnl.toFixed(2)),
+          pnl_percent: fillPrice > 0 ? parseFloat(((pnl / (fillPrice * qty)) * 100).toFixed(2)) : null,
         });
 
-        logEvent(trade.ticker, pnl && pnl > 0 ? 'success' : 'warning',
-          `Position closed (${closeReason}): P&L $${pnl?.toFixed(2) ?? '?'}`);
+        const emoji = pnl > 0 ? 'success' : pnl < 0 ? 'warning' : 'info';
+        logEvent(trade.ticker, emoji as 'success' | 'warning' | 'info',
+          `Position closed (${closeReason}): P&L $${pnl.toFixed(2)} (${((pnl / (fillPrice * qty)) * 100).toFixed(1)}%)`);
+
+        // Persist the close event
+        persistEvent(trade.ticker, emoji as 'success' | 'warning' | 'info',
+          `Closed: ${closeReason} — P&L $${pnl.toFixed(2)}`, {
+            action: pnl >= 0 ? 'executed' : 'failed',
+            source: 'system',
+            metadata: { close_price: actualClosePrice, pnl, close_reason: closeReason },
+          });
+
+        // Trigger AI trade analysis (non-blocking)
+        const closedTrade: PaperTrade = {
+          ...trade,
+          status: status as PaperTrade['status'],
+          close_reason: closeReason,
+          close_price: actualClosePrice,
+          closed_at: new Date().toISOString(),
+          pnl: parseFloat(pnl.toFixed(2)),
+          pnl_percent: fillPrice > 0 ? parseFloat(((pnl / (fillPrice * qty)) * 100).toFixed(2)) : null,
+        };
+        analyzeCompletedTrade(closedTrade)
+          .then(() => updatePerformancePatterns())
+          .catch(err => console.warn('[syncPositions] Trade analysis failed:', err));
+
+      } else if (trade.status === 'SUBMITTED') {
+        // ── Stale SUBMITTED trades — expire day trades older than 1 day ──
+        const tradeAge = Date.now() - new Date(trade.created_at).getTime();
+        const oneDayMs = 24 * 60 * 60 * 1000;
+
+        if (trade.mode === 'DAY_TRADE' && tradeAge > oneDayMs) {
+          await updatePaperTrade(trade.id, {
+            status: 'CLOSED' as PaperTrade['status'],
+            close_reason: 'manual',
+            closed_at: new Date().toISOString(),
+            notes: (trade.notes ?? '') + ' | Expired: DAY order not filled within 1 day',
+          });
+          logEvent(trade.ticker, 'info', 'Day trade expired — order never filled');
+        }
       }
     }
   } catch (err) {

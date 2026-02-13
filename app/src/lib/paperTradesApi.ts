@@ -117,6 +117,28 @@ export async function updatePaperTrade(
   return data as PaperTrade;
 }
 
+/** Delete a paper trade by ID */
+export async function deletePaperTrade(id: string): Promise<void> {
+  const { error } = await supabase
+    .from('paper_trades')
+    .delete()
+    .eq('id', id);
+
+  if (error) throw new Error(`Failed to delete trade: ${error.message}`);
+}
+
+/** Delete paper trades by status */
+export async function deletePaperTradesByStatus(status: TradeStatus): Promise<number> {
+  const { data, error } = await supabase
+    .from('paper_trades')
+    .delete()
+    .eq('status', status)
+    .select('id');
+
+  if (error) throw new Error(`Failed to delete trades: ${error.message}`);
+  return data?.length ?? 0;
+}
+
 /** Get active trades (not yet closed) */
 export async function getActiveTrades(): Promise<PaperTrade[]> {
   const { data, error } = await supabase
@@ -364,4 +386,56 @@ export async function recalculatePerformance(): Promise<TradePerformance | null>
 
   if (updateErr) return null;
   return updated as TradePerformance;
+}
+
+// ── Portfolio Snapshots ──────────────────────────────────
+
+export interface PortfolioSnapshot {
+  id: string;
+  snapshot_date: string;
+  account_id: string | null;
+  total_value: number | null;
+  cash_balance: number | null;
+  total_pnl: number | null;
+  positions: unknown[] | null;
+  open_trade_count: number;
+  created_at: string;
+}
+
+/** Save a daily portfolio snapshot (upserts by date + account) */
+export async function savePortfolioSnapshot(snapshot: {
+  accountId?: string;
+  totalValue: number;
+  cashBalance?: number;
+  totalPnl: number;
+  positions: { ticker: string; qty: number; avgCost: number; mktPrice: number; mktValue: number; unrealizedPnl: number }[];
+  openTradeCount: number;
+}): Promise<void> {
+  const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+  const { error } = await supabase
+    .from('portfolio_snapshots')
+    .upsert({
+      snapshot_date: today,
+      account_id: snapshot.accountId ?? 'default',
+      total_value: snapshot.totalValue,
+      cash_balance: snapshot.cashBalance ?? null,
+      total_pnl: snapshot.totalPnl,
+      positions: snapshot.positions,
+      open_trade_count: snapshot.openTradeCount,
+    }, { onConflict: 'snapshot_date,account_id' });
+
+  if (error) console.error('[savePortfolioSnapshot] Failed:', error.message);
+}
+
+/** Get portfolio snapshots for charting */
+export async function getPortfolioSnapshots(days = 30): Promise<PortfolioSnapshot[]> {
+  const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const { data, error } = await supabase
+    .from('portfolio_snapshots')
+    .select('*')
+    .gte('snapshot_date', since)
+    .order('snapshot_date', { ascending: true });
+
+  if (error) return [];
+  return (data ?? []) as PortfolioSnapshot[];
 }

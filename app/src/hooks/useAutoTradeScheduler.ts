@@ -16,7 +16,10 @@ import { fetchTradeIdeas } from '../lib/tradeScannerApi';
 import {
   getAutoTraderConfig,
   processTradeIdeas,
+  syncPositions,
 } from '../lib/autoTrader';
+import { getPositions } from '../lib/ibClient';
+import { savePortfolioSnapshot, getActiveTrades } from '../lib/paperTradesApi';
 import { useAuth } from '../lib/auth';
 
 /** Check if we're in US market hours (9:30 AM - 4:00 PM ET, weekdays) */
@@ -31,6 +34,47 @@ function isMarketHoursET(): boolean {
 
 /** Interval between scanner checks (30 minutes) */
 const SCANNER_INTERVAL_MS = 30 * 60 * 1000;
+
+/** Save a portfolio snapshot — called once per sync cycle */
+let _lastSnapshotDate = '';
+async function savePortfolioSnapshotQuiet(accountId: string) {
+  const today = new Date().toISOString().slice(0, 10);
+  if (_lastSnapshotDate === today) return; // Already saved today
+
+  try {
+    const [positions, activeTrades] = await Promise.all([
+      getPositions(accountId),
+      getActiveTrades(),
+    ]);
+
+    if (positions.length === 0) return;
+
+    const posData = positions.map(p => ({
+      ticker: p.contractDesc,
+      qty: p.position,
+      avgCost: p.avgPrice,
+      mktPrice: p.mktPrice ?? 0,
+      mktValue: p.mktValue ?? 0,
+      unrealizedPnl: p.unrealizedPnl ?? 0,
+    }));
+
+    const totalValue = posData.reduce((sum, p) => sum + Math.abs(p.mktValue), 0);
+    const totalPnl = posData.reduce((sum, p) => sum + p.unrealizedPnl, 0);
+
+    await savePortfolioSnapshot({
+      accountId,
+      totalValue,
+      totalPnl,
+      positions: posData,
+      openTradeCount: activeTrades.length,
+    });
+
+    _lastSnapshotDate = today;
+    console.log('[AutoTradeScheduler] Portfolio snapshot saved');
+  } catch (err) {
+    console.warn('[AutoTradeScheduler] Snapshot failed:', err);
+  }
+}
 
 export function useAutoTradeScheduler() {
   const { user } = useAuth();
@@ -57,15 +101,22 @@ export function useAutoTradeScheduler() {
         console.log('[AutoTradeScheduler] Background scanner check running...');
         const data = await fetchTradeIdeas();
 
+        // Always sync positions first — detect fills, closes, and update P&L
+        if (config.accountId) {
+          await syncPositions(config.accountId);
+
+          // Save daily portfolio snapshot (non-blocking)
+          savePortfolioSnapshotQuiet(config.accountId).catch(() => {});
+        }
+
         const allIdeas = [...(data.dayTrades ?? []), ...(data.swingTrades ?? [])];
         const newIdeas = allIdeas.filter(i => !processedTickersRef.current.has(i.ticker));
 
-        if (newIdeas.length === 0) return;
-
-        // Mark as processed
-        newIdeas.forEach(i => processedTickersRef.current.add(i.ticker));
-
-        await processTradeIdeas(newIdeas, config);
+        if (newIdeas.length > 0) {
+          // Mark as processed
+          newIdeas.forEach(i => processedTickersRef.current.add(i.ticker));
+          await processTradeIdeas(newIdeas, config);
+        }
       } catch (err) {
         console.error('[AutoTradeScheduler] Scanner check failed:', err);
       }
