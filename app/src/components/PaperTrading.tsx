@@ -351,8 +351,8 @@ export function PaperTrading() {
         {[
           { id: 'portfolio' as Tab, label: 'IB Portfolio', icon: Briefcase, count: ibPositions.length },
           { id: 'today' as Tab, label: "Today's Activity", icon: Zap, count: todaysExecuted.length },
-          { id: 'signals' as Tab, label: 'Signal Quality', icon: Target },
           { id: 'history' as Tab, label: 'Trade History', icon: Clock, count: completedTrades.length },
+          { id: 'signals' as Tab, label: 'Signal Quality', icon: Target },
           { id: 'smart' as Tab, label: 'Smart Trading', icon: Brain },
           { id: 'settings' as Tab, label: 'Settings', icon: Settings },
         ].map(t => (
