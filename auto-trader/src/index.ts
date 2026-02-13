@@ -16,6 +16,7 @@ import statusRoutes from './routes/status.js';
 import contractRoutes from './routes/contracts.js';
 import orderRoutes from './routes/orders.js';
 import positionRoutes from './routes/positions.js';
+import marketDataRoutes from './routes/market-data.js';
 
 const PORT = parseInt(process.env.PORT ?? '3001', 10);
 
@@ -47,6 +48,7 @@ app.use('/api', statusRoutes);
 app.use('/api', contractRoutes);
 app.use('/api', orderRoutes);
 app.use('/api', positionRoutes);
+app.use('/api', marketDataRoutes);
 
 // ── Compatibility endpoints (match old CPGW paths) ──────
 

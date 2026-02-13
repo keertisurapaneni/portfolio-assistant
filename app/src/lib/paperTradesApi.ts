@@ -231,7 +231,7 @@ export interface AutoTradeEventRecord {
   ticker: string;
   event_type: 'info' | 'success' | 'warning' | 'error';
   action: 'executed' | 'skipped' | 'failed' | null;
-  source: 'scanner' | 'suggested_finds' | 'manual' | 'system' | null;
+  source: 'scanner' | 'suggested_finds' | 'manual' | 'system' | 'dip_buy' | 'profit_take' | null;
   mode: 'DAY_TRADE' | 'SWING_TRADE' | 'LONG_TERM' | null;
   message: string;
   scanner_signal: string | null;
@@ -387,6 +387,121 @@ export async function recalculatePerformance(): Promise<TradePerformance | null>
 
   if (updateErr) return null;
   return updated as TradePerformance;
+}
+
+// ── Category Performance (Signal Quality) ────────────────
+
+export interface CategoryPerformance {
+  category: 'suggested_finds' | 'day_trade' | 'swing_trade' | 'dip_buy' | 'profit_take';
+  totalTrades: number;
+  activeTrades: number;
+  wins: number;
+  losses: number;
+  winRate: number;
+  totalPnl: number;
+  avgPnl: number;
+  avgReturnPct: number;
+  bestTrade: { ticker: string; pnl: number } | null;
+  worstTrade: { ticker: string; pnl: number } | null;
+  totalDeployed: number;
+}
+
+/**
+ * Recalculate performance broken down by category:
+ * - suggested_finds: LONG_TERM mode trades (initial picks only, not dip_buy/profit_take)
+ * - day_trade: DAY_TRADE mode scanner trades
+ * - swing_trade: SWING_TRADE mode scanner trades
+ * - dip_buy: dip buy add-ons (portfolio management)
+ * - profit_take: profit take trims (portfolio management)
+ */
+export async function recalculatePerformanceByCategory(): Promise<CategoryPerformance[]> {
+  const { data: allTrades, error } = await supabase
+    .from('paper_trades')
+    .select('*');
+
+  if (error || !allTrades) return [];
+  const trades = allTrades as PaperTrade[];
+
+  const categories: Array<{
+    key: CategoryPerformance['category'];
+    filter: (t: PaperTrade) => boolean;
+  }> = [
+    {
+      key: 'suggested_finds',
+      filter: (t) => t.mode === 'LONG_TERM' && t.signal === 'BUY' &&
+        !(t.notes ?? '').startsWith('Dip buy'),
+    },
+    {
+      key: 'day_trade',
+      filter: (t) => t.mode === 'DAY_TRADE',
+    },
+    {
+      key: 'swing_trade',
+      filter: (t) => t.mode === 'SWING_TRADE',
+    },
+    {
+      key: 'dip_buy',
+      filter: (t) => (t.notes ?? '').startsWith('Dip buy'),
+    },
+    {
+      key: 'profit_take',
+      filter: (t) => (t.notes ?? '').startsWith('Profit take'),
+    },
+  ];
+
+  const results: CategoryPerformance[] = [];
+
+  for (const cat of categories) {
+    const catTrades = trades.filter(cat.filter);
+    const activeStatuses = ['PENDING', 'SUBMITTED', 'FILLED', 'PARTIAL'];
+    const closedStatuses = ['STOPPED', 'TARGET_HIT', 'CLOSED'];
+
+    const active = catTrades.filter(t => activeStatuses.includes(t.status));
+    // Only count completed trades that actually filled
+    const completed = catTrades.filter(
+      t => closedStatuses.includes(t.status) && t.fill_price != null
+    );
+    const wins = completed.filter(t => (t.pnl ?? 0) > 0);
+    const losses = completed.filter(t => (t.pnl ?? 0) < 0);
+
+    const totalPnl = completed.reduce((s, t) => s + (t.pnl ?? 0), 0);
+    const avgPnl = completed.length > 0 ? totalPnl / completed.length : 0;
+
+    // Avg return %
+    const returns = completed
+      .filter(t => t.fill_price && t.quantity)
+      .map(t => ((t.pnl ?? 0) / ((t.fill_price ?? 1) * (t.quantity ?? 1))) * 100);
+    const avgReturnPct = returns.length > 0 ? returns.reduce((a, b) => a + b, 0) / returns.length : 0;
+
+    // For active long-term positions with unrealized P&L, include in active stats
+    const unrealizedPnl = active
+      .filter(t => t.status === 'FILLED' && t.pnl != null)
+      .reduce((s, t) => s + (t.pnl ?? 0), 0);
+
+    // Best/worst
+    const sortedByPnl = [...completed].sort((a, b) => (b.pnl ?? 0) - (a.pnl ?? 0));
+    const best = sortedByPnl[0] ?? null;
+    const worst = sortedByPnl[sortedByPnl.length - 1] ?? null;
+
+    const totalDeployed = active.reduce((s, t) => s + (t.position_size ?? 0), 0);
+
+    results.push({
+      category: cat.key,
+      totalTrades: catTrades.length,
+      activeTrades: active.length,
+      wins: wins.length,
+      losses: losses.length,
+      winRate: completed.length > 0 ? (wins.length / completed.length) * 100 : 0,
+      totalPnl: totalPnl + unrealizedPnl,
+      avgPnl,
+      avgReturnPct,
+      bestTrade: best ? { ticker: best.ticker, pnl: best.pnl ?? 0 } : null,
+      worstTrade: worst && completed.length > 0 ? { ticker: worst.ticker, pnl: worst.pnl ?? 0 } : null,
+      totalDeployed,
+    });
+  }
+
+  return results;
 }
 
 // ── Portfolio Snapshots ──────────────────────────────────

@@ -52,12 +52,49 @@ async function getQuotePrice(ticker: string): Promise<number | null> {
 export interface AutoTraderConfig {
   enabled: boolean;
   maxPositions: number;          // max concurrent positions
-  positionSize: number;          // $ per position (paper money)
+  positionSize: number;          // $ per position (paper money) — fallback when dynamic sizing off
   minScannerConfidence: number;  // min scanner confidence to consider
   minFAConfidence: number;       // min FA confidence to execute
   minSuggestedFindsConviction: number; // min conviction for Suggested Finds auto-buy
   accountId: string | null;      // IB paper account ID
   dayTradeAutoClose: boolean;    // auto-close day trades at 3:55 PM ET
+
+  // ── Allocation Cap ──
+  maxTotalAllocation: number;    // hard cap on total deployed capital ($250K default)
+
+  // ── Layer 1: Dynamic Position Sizing ──
+  useDynamicSizing: boolean;     // use conviction-weighted + risk-based sizing
+  portfolioValue: number;        // total portfolio value (auto-updated from IB)
+  baseAllocationPct: number;     // base % of portfolio per long-term position
+  maxPositionPct: number;        // max single-position % of portfolio
+  riskPerTradePct: number;       // max risk % per scanner trade
+
+  // ── Layer 2: Dip Buying ──
+  dipBuyEnabled: boolean;
+  dipBuyTier1Pct: number;        // dip % to trigger tier 1
+  dipBuyTier1SizePct: number;    // add-on % of original qty
+  dipBuyTier2Pct: number;
+  dipBuyTier2SizePct: number;
+  dipBuyTier3Pct: number;
+  dipBuyTier3SizePct: number;
+  dipBuyCooldownHours: number;   // min hours between dip buys for same ticker
+
+  // ── Layer 3: Profit Taking ──
+  profitTakeEnabled: boolean;
+  profitTakeTier1Pct: number;    // gain % to trigger tier 1
+  profitTakeTier1TrimPct: number;// trim % of position
+  profitTakeTier2Pct: number;
+  profitTakeTier2TrimPct: number;
+  profitTakeTier3Pct: number;
+  profitTakeTier3TrimPct: number;
+  minHoldPct: number;            // never sell below this % of original qty
+
+  // ── Layer 4: Risk Management ──
+  marketRegimeEnabled: boolean;  // adjust sizing for VIX/SPY conditions
+  maxSectorPct: number;          // max portfolio % in one sector
+  earningsAvoidEnabled: boolean; // skip trades near earnings
+  earningsBlackoutDays: number;  // days before earnings to blackout
+  kellyAdaptiveEnabled: boolean; // use Half-Kelly from trade history win rate
 }
 
 const CONFIG_KEY = 'auto-trader-config';
@@ -71,6 +108,43 @@ const DEFAULT_CONFIG: AutoTraderConfig = {
   minSuggestedFindsConviction: 8,
   accountId: null,
   dayTradeAutoClose: true,
+
+  // Allocation Cap
+  maxTotalAllocation: 250_000,
+
+  // Layer 1: Dynamic Sizing
+  useDynamicSizing: true,
+  portfolioValue: 1_000_000,
+  baseAllocationPct: 2.0,
+  maxPositionPct: 5.0,
+  riskPerTradePct: 1.0,
+
+  // Layer 2: Dip Buying
+  dipBuyEnabled: true,
+  dipBuyTier1Pct: 5,
+  dipBuyTier1SizePct: 50,
+  dipBuyTier2Pct: 10,
+  dipBuyTier2SizePct: 75,
+  dipBuyTier3Pct: 15,
+  dipBuyTier3SizePct: 100,
+  dipBuyCooldownHours: 24,
+
+  // Layer 3: Profit Taking
+  profitTakeEnabled: true,
+  profitTakeTier1Pct: 25,
+  profitTakeTier1TrimPct: 20,
+  profitTakeTier2Pct: 50,
+  profitTakeTier2TrimPct: 25,
+  profitTakeTier3Pct: 75,
+  profitTakeTier3TrimPct: 25,
+  minHoldPct: 30,
+
+  // Layer 4: Risk Management
+  marketRegimeEnabled: true,
+  maxSectorPct: 30,
+  earningsAvoidEnabled: true,
+  earningsBlackoutDays: 3,
+  kellyAdaptiveEnabled: false,
 };
 
 /**
@@ -104,6 +178,43 @@ export async function loadAutoTraderConfig(): Promise<AutoTraderConfig> {
         minSuggestedFindsConviction: data.min_suggested_finds_conviction ?? DEFAULT_CONFIG.minSuggestedFindsConviction,
         accountId: data.account_id ?? DEFAULT_CONFIG.accountId,
         dayTradeAutoClose: data.day_trade_auto_close ?? DEFAULT_CONFIG.dayTradeAutoClose,
+
+        // Allocation cap
+        maxTotalAllocation: Number(data.max_total_allocation) || DEFAULT_CONFIG.maxTotalAllocation,
+
+        // Layer 1
+        useDynamicSizing: data.use_dynamic_sizing ?? DEFAULT_CONFIG.useDynamicSizing,
+        portfolioValue: Number(data.portfolio_value) || DEFAULT_CONFIG.portfolioValue,
+        baseAllocationPct: Number(data.base_allocation_pct) || DEFAULT_CONFIG.baseAllocationPct,
+        maxPositionPct: Number(data.max_position_pct) || DEFAULT_CONFIG.maxPositionPct,
+        riskPerTradePct: Number(data.risk_per_trade_pct) || DEFAULT_CONFIG.riskPerTradePct,
+
+        // Layer 2
+        dipBuyEnabled: data.dip_buy_enabled ?? DEFAULT_CONFIG.dipBuyEnabled,
+        dipBuyTier1Pct: Number(data.dip_buy_tier1_pct) || DEFAULT_CONFIG.dipBuyTier1Pct,
+        dipBuyTier1SizePct: Number(data.dip_buy_tier1_size_pct) || DEFAULT_CONFIG.dipBuyTier1SizePct,
+        dipBuyTier2Pct: Number(data.dip_buy_tier2_pct) || DEFAULT_CONFIG.dipBuyTier2Pct,
+        dipBuyTier2SizePct: Number(data.dip_buy_tier2_size_pct) || DEFAULT_CONFIG.dipBuyTier2SizePct,
+        dipBuyTier3Pct: Number(data.dip_buy_tier3_pct) || DEFAULT_CONFIG.dipBuyTier3Pct,
+        dipBuyTier3SizePct: Number(data.dip_buy_tier3_size_pct) || DEFAULT_CONFIG.dipBuyTier3SizePct,
+        dipBuyCooldownHours: data.dip_buy_cooldown_hours ?? DEFAULT_CONFIG.dipBuyCooldownHours,
+
+        // Layer 3
+        profitTakeEnabled: data.profit_take_enabled ?? DEFAULT_CONFIG.profitTakeEnabled,
+        profitTakeTier1Pct: Number(data.profit_take_tier1_pct) || DEFAULT_CONFIG.profitTakeTier1Pct,
+        profitTakeTier1TrimPct: Number(data.profit_take_tier1_trim_pct) || DEFAULT_CONFIG.profitTakeTier1TrimPct,
+        profitTakeTier2Pct: Number(data.profit_take_tier2_pct) || DEFAULT_CONFIG.profitTakeTier2Pct,
+        profitTakeTier2TrimPct: Number(data.profit_take_tier2_trim_pct) || DEFAULT_CONFIG.profitTakeTier2TrimPct,
+        profitTakeTier3Pct: Number(data.profit_take_tier3_pct) || DEFAULT_CONFIG.profitTakeTier3Pct,
+        profitTakeTier3TrimPct: Number(data.profit_take_tier3_trim_pct) || DEFAULT_CONFIG.profitTakeTier3TrimPct,
+        minHoldPct: Number(data.min_hold_pct) || DEFAULT_CONFIG.minHoldPct,
+
+        // Layer 4
+        marketRegimeEnabled: data.market_regime_enabled ?? DEFAULT_CONFIG.marketRegimeEnabled,
+        maxSectorPct: Number(data.max_sector_pct) || DEFAULT_CONFIG.maxSectorPct,
+        earningsAvoidEnabled: data.earnings_avoid_enabled ?? DEFAULT_CONFIG.earningsAvoidEnabled,
+        earningsBlackoutDays: data.earnings_blackout_days ?? DEFAULT_CONFIG.earningsBlackoutDays,
+        kellyAdaptiveEnabled: data.kelly_adaptive_enabled ?? DEFAULT_CONFIG.kellyAdaptiveEnabled,
       };
       localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
       return config;
@@ -138,6 +249,38 @@ export async function saveAutoTraderConfig(config: Partial<AutoTraderConfig>): P
         min_suggested_finds_conviction: updated.minSuggestedFindsConviction,
         account_id: updated.accountId,
         day_trade_auto_close: updated.dayTradeAutoClose,
+        // Allocation cap
+        max_total_allocation: updated.maxTotalAllocation,
+        // Layer 1
+        use_dynamic_sizing: updated.useDynamicSizing,
+        portfolio_value: updated.portfolioValue,
+        base_allocation_pct: updated.baseAllocationPct,
+        max_position_pct: updated.maxPositionPct,
+        risk_per_trade_pct: updated.riskPerTradePct,
+        // Layer 2
+        dip_buy_enabled: updated.dipBuyEnabled,
+        dip_buy_tier1_pct: updated.dipBuyTier1Pct,
+        dip_buy_tier1_size_pct: updated.dipBuyTier1SizePct,
+        dip_buy_tier2_pct: updated.dipBuyTier2Pct,
+        dip_buy_tier2_size_pct: updated.dipBuyTier2SizePct,
+        dip_buy_tier3_pct: updated.dipBuyTier3Pct,
+        dip_buy_tier3_size_pct: updated.dipBuyTier3SizePct,
+        dip_buy_cooldown_hours: updated.dipBuyCooldownHours,
+        // Layer 3
+        profit_take_enabled: updated.profitTakeEnabled,
+        profit_take_tier1_pct: updated.profitTakeTier1Pct,
+        profit_take_tier1_trim_pct: updated.profitTakeTier1TrimPct,
+        profit_take_tier2_pct: updated.profitTakeTier2Pct,
+        profit_take_tier2_trim_pct: updated.profitTakeTier2TrimPct,
+        profit_take_tier3_pct: updated.profitTakeTier3Pct,
+        profit_take_tier3_trim_pct: updated.profitTakeTier3TrimPct,
+        min_hold_pct: updated.minHoldPct,
+        // Layer 4
+        market_regime_enabled: updated.marketRegimeEnabled,
+        max_sector_pct: updated.maxSectorPct,
+        earnings_avoid_enabled: updated.earningsAvoidEnabled,
+        earnings_blackout_days: updated.earningsBlackoutDays,
+        kelly_adaptive_enabled: updated.kellyAdaptiveEnabled,
         updated_at: new Date().toISOString(),
       });
   } catch (err) {
@@ -399,7 +542,7 @@ function persistEvent(
   message: string,
   extra?: {
     action?: 'executed' | 'skipped' | 'failed';
-    source?: 'scanner' | 'suggested_finds' | 'manual' | 'system';
+    source?: 'scanner' | 'suggested_finds' | 'manual' | 'system' | 'dip_buy' | 'profit_take';
     mode?: 'DAY_TRADE' | 'SWING_TRADE' | 'LONG_TERM';
     scanner_signal?: string;
     scanner_confidence?: number;
@@ -415,6 +558,581 @@ function persistEvent(
     message,
     ...extra,
   });
+}
+
+// ── Smart Trading: Allocation Cap ────────────────────────
+
+/** Get total $ deployed across all active positions */
+export async function getTotalDeployed(): Promise<number> {
+  const trades = await getActiveTrades();
+  return trades.reduce((sum, t) => sum + (t.position_size ?? 0), 0);
+}
+
+/** Check if a new position fits within the allocation cap */
+async function checkAllocationCap(
+  config: AutoTraderConfig,
+  positionSize: number,
+  ticker: string,
+): Promise<boolean> {
+  const deployed = await getTotalDeployed();
+  if (deployed + positionSize > config.maxTotalAllocation) {
+    const msg = `Allocation cap: $${deployed.toFixed(0)} + $${positionSize.toFixed(0)} > $${config.maxTotalAllocation.toFixed(0)} limit`;
+    logEvent(ticker, 'warning', msg);
+    persistEvent(ticker, 'warning', msg, {
+      action: 'skipped', source: 'system',
+      skip_reason: 'Allocation cap reached',
+      metadata: { deployed, positionSize, cap: config.maxTotalAllocation },
+    });
+    return false;
+  }
+  return true;
+}
+
+// ── Smart Trading: Layer 1 — Dynamic Position Sizing ─────
+
+/** Conviction multiplier for long-term holds */
+function convictionMultiplier(conviction: number): number {
+  if (conviction >= 10) return 1.5;
+  if (conviction >= 9) return 1.25;
+  if (conviction >= 8) return 1.0;
+  if (conviction >= 7) return 0.75;
+  return 0.5;
+}
+
+/** Calculate position size in shares. Returns { quantity, dollarSize }. */
+export function calculatePositionSize(
+  config: AutoTraderConfig,
+  params: {
+    price: number;
+    mode: 'LONG_TERM' | 'DAY_TRADE' | 'SWING_TRADE';
+    conviction?: number;      // for long-term holds
+    entryPrice?: number;      // for scanner trades
+    stopLoss?: number;        // for scanner trades (risk-based sizing)
+    regimeMultiplier?: number; // from market regime check
+    kellyMultiplier?: number;  // from Half-Kelly
+  }
+): { quantity: number; dollarSize: number } {
+  const { price, mode, conviction, entryPrice, stopLoss, regimeMultiplier = 1.0, kellyMultiplier = 1.0 } = params;
+
+  if (!config.useDynamicSizing || price <= 0) {
+    // Fallback: flat position sizing
+    const qty = Math.max(1, Math.floor(config.positionSize / price));
+    return { quantity: qty, dollarSize: qty * price };
+  }
+
+  const pv = config.portfolioValue;
+  const maxDollar = pv * (config.maxPositionPct / 100);
+  let dollarSize: number;
+
+  if (mode === 'LONG_TERM' && conviction != null) {
+    // Conviction-weighted: base allocation * conviction multiplier
+    const base = pv * (config.baseAllocationPct / 100);
+    dollarSize = base * convictionMultiplier(conviction);
+  } else if (stopLoss && entryPrice && Math.abs(entryPrice - stopLoss) > 0) {
+    // Risk-based: risk budget / risk per share
+    const riskBudget = pv * (config.riskPerTradePct / 100);
+    const riskPerShare = Math.abs(entryPrice - stopLoss);
+    const qty = Math.floor(riskBudget / riskPerShare);
+    dollarSize = qty * price;
+  } else {
+    // Fallback: base allocation
+    dollarSize = pv * (config.baseAllocationPct / 100);
+  }
+
+  // Apply regime + Kelly multipliers
+  dollarSize = dollarSize * regimeMultiplier * kellyMultiplier;
+
+  // Cap at max position size
+  dollarSize = Math.min(dollarSize, maxDollar);
+
+  // Also cap at fallback positionSize if dynamic result is unreasonable
+  dollarSize = Math.max(dollarSize, 100); // minimum $100
+
+  const quantity = Math.max(1, Math.floor(dollarSize / price));
+  return { quantity, dollarSize: quantity * price };
+}
+
+// ── Smart Trading: Layer 4a — Market Regime ──────────────
+
+export interface MarketRegime {
+  vix: number | null;
+  spyPrice: number | null;
+  spySma20: number | null;
+  multiplier: number;
+  label: string;
+}
+
+/** Cache regime for 30 min */
+let _regimeCache: { data: MarketRegime; ts: number } | null = null;
+const REGIME_CACHE_MS = 30 * 60 * 1000;
+
+/** Fetch VIX and SPY data, compute regime multiplier */
+export async function getMarketRegime(config: AutoTraderConfig): Promise<MarketRegime> {
+  if (!config.marketRegimeEnabled) {
+    return { vix: null, spyPrice: null, spySma20: null, multiplier: 1.0, label: 'disabled' };
+  }
+
+  // Check cache
+  if (_regimeCache && Date.now() - _regimeCache.ts < REGIME_CACHE_MS) {
+    return _regimeCache.data;
+  }
+
+  let vix: number | null = null;
+  let spyPrice: number | null = null;
+
+  try {
+    // VIX quote via auto-trader service
+    const [vixRes, spyRes] = await Promise.all([
+      fetch(`${_IB_BASE}/quote/VIX`).then(r => r.ok ? r.json() : null).catch(() => null),
+      fetch(`${_IB_BASE}/quote/SPY`).then(r => r.ok ? r.json() : null).catch(() => null),
+    ]);
+    vix = vixRes?.price ?? null;
+    spyPrice = spyRes?.price ?? null;
+  } catch {
+    // Use defaults
+  }
+
+  let multiplier = 1.0;
+  let label = 'normal';
+
+  if (vix != null) {
+    if (vix > 30) { multiplier = 0.5; label = 'panic'; }
+    else if (vix > 25) { multiplier = 0.6; label = 'fear'; }
+    else if (vix < 15) { multiplier = 1.1; label = 'complacent'; }
+  }
+
+  // SPY trend (simple: if SPY is available, compare to a rough threshold)
+  // We don't have SMA20 from the quote endpoint, but we can approximate
+  // by checking if price is significantly below recent levels
+  const spySma20: number | null = null; // would need historical data
+
+  const regime: MarketRegime = { vix, spyPrice, spySma20, multiplier, label };
+  _regimeCache = { data: regime, ts: Date.now() };
+  return regime;
+}
+
+// ── Smart Trading: Layer 4b — Sector Concentration ───────
+
+/** Cache sector lookups (ticker → sector) for 24h */
+const _sectorCache: Map<string, { sector: string; ts: number }> = new Map();
+const SECTOR_CACHE_MS = 24 * 60 * 60 * 1000;
+
+/** Fetch sector for a ticker via Finnhub company profile */
+async function getTickerSector(ticker: string): Promise<string | null> {
+  const cached = _sectorCache.get(ticker.toUpperCase());
+  if (cached && Date.now() - cached.ts < SECTOR_CACHE_MS) return cached.sector;
+
+  try {
+    const res = await fetch(`${_IB_BASE}/sector/${ticker.toUpperCase()}`);
+    if (!res.ok) return null;
+    const data = await res.json();
+    const sector = data.sector ?? data.finnhubIndustry ?? null;
+    if (sector) {
+      _sectorCache.set(ticker.toUpperCase(), { sector, ts: Date.now() });
+    }
+    return sector;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Check if adding a new position in the given ticker's sector would exceed
+ * the max sector allocation. Returns true if OK to proceed, false if blocked.
+ */
+export async function checkSectorExposure(
+  config: AutoTraderConfig,
+  ticker: string,
+  newPositionSize: number,
+): Promise<boolean> {
+  if (config.maxSectorPct >= 100) return true; // disabled
+
+  const sector = await getTickerSector(ticker);
+  if (!sector) return true; // can't determine sector, allow
+
+  // Get all active trades and compute sector exposure
+  const trades = await getActiveTrades();
+  let sectorExposure = 0;
+  for (const t of trades) {
+    const tSector = await getTickerSector(t.ticker);
+    if (tSector === sector) {
+      sectorExposure += t.position_size ?? 0;
+    }
+  }
+
+  const maxSectorDollar = config.portfolioValue * (config.maxSectorPct / 100);
+  if (sectorExposure + newPositionSize > maxSectorDollar) {
+    logEvent(ticker, 'warning', `Sector limit: ${sector} at $${sectorExposure.toFixed(0)} + $${newPositionSize.toFixed(0)} > $${maxSectorDollar.toFixed(0)}`);
+    persistEvent(ticker, 'warning', `Sector concentration limit reached (${sector})`, {
+      action: 'skipped', source: 'system',
+      skip_reason: `Sector ${sector} over ${config.maxSectorPct}%`,
+      metadata: { sector, sectorExposure, newPositionSize, maxSectorDollar },
+    });
+    return false;
+  }
+  return true;
+}
+
+// ── Smart Trading: Layer 4c — Earnings Blackout ──────────
+
+/** Cache earnings dates (ticker → next earnings date) for 24h */
+const _earningsCache: Map<string, { date: string | null; ts: number }> = new Map();
+
+/** Check if a ticker has earnings within the blackout window */
+export async function checkEarningsBlackout(
+  config: AutoTraderConfig,
+  ticker: string,
+): Promise<boolean> {
+  if (!config.earningsAvoidEnabled) return true; // disabled, allow
+
+  const cached = _earningsCache.get(ticker.toUpperCase());
+  if (cached && Date.now() - cached.ts < SECTOR_CACHE_MS) {
+    if (!cached.date) return true; // no earnings date found
+    const daysUntil = (new Date(cached.date).getTime() - Date.now()) / (24 * 60 * 60 * 1000);
+    if (daysUntil >= 0 && daysUntil <= config.earningsBlackoutDays) {
+      logEvent(ticker, 'warning', `Earnings in ${daysUntil.toFixed(0)} days — blackout`);
+      persistEvent(ticker, 'warning', `Earnings blackout: ${daysUntil.toFixed(0)} days until earnings`, {
+        action: 'skipped', source: 'system',
+        skip_reason: `Earnings within ${config.earningsBlackoutDays} days`,
+        metadata: { earningsDate: cached.date, daysUntil },
+      });
+      return false;
+    }
+    return true;
+  }
+
+  try {
+    const res = await fetch(`${_IB_BASE}/earnings/${ticker.toUpperCase()}`);
+    if (!res.ok) {
+      _earningsCache.set(ticker.toUpperCase(), { date: null, ts: Date.now() });
+      return true;
+    }
+    const data = await res.json();
+    const earningsDate = data.earningsDate ?? null;
+    _earningsCache.set(ticker.toUpperCase(), { date: earningsDate, ts: Date.now() });
+
+    if (earningsDate) {
+      const daysUntil = (new Date(earningsDate).getTime() - Date.now()) / (24 * 60 * 60 * 1000);
+      if (daysUntil >= 0 && daysUntil <= config.earningsBlackoutDays) {
+        logEvent(ticker, 'warning', `Earnings on ${earningsDate} (${daysUntil.toFixed(0)} days) — blackout`);
+        persistEvent(ticker, 'warning', `Earnings blackout: ${earningsDate}`, {
+          action: 'skipped', source: 'system',
+          skip_reason: `Earnings within ${config.earningsBlackoutDays} days`,
+          metadata: { earningsDate, daysUntil },
+        });
+        return false;
+      }
+    }
+    return true;
+  } catch {
+    return true; // can't check, allow
+  }
+}
+
+// ── Smart Trading: Layer 4d — Half-Kelly Adaptive ────────
+
+import { getPerformance } from './paperTradesApi';
+
+/**
+ * Calculate the Half-Kelly multiplier from actual trade history.
+ * Returns a multiplier between 0.25 and 2.0 (clamped for safety).
+ * Returns 1.0 if insufficient data or Kelly is disabled.
+ */
+export async function calculateKellyMultiplier(config: AutoTraderConfig): Promise<number> {
+  if (!config.kellyAdaptiveEnabled) return 1.0;
+
+  const perf = await getPerformance();
+  if (!perf || perf.total_trades < 10) return 1.0; // insufficient data
+
+  const winRate = (perf.win_rate ?? 0) / 100; // convert from % to decimal
+  const avgWin = Math.abs(perf.avg_win ?? 0);
+  const avgLoss = Math.abs(perf.avg_loss ?? 1);
+
+  if (avgWin <= 0 || avgLoss <= 0) return 1.0;
+
+  // Kelly fraction: f = (winRate * avgWin - (1-winRate) * avgLoss) / avgWin
+  const kelly = (winRate * avgWin - (1 - winRate) * avgLoss) / avgWin;
+
+  // Half-Kelly for safety
+  const halfKelly = kelly / 2;
+
+  // Clamp between 0.25 and 2.0
+  return Math.max(0.25, Math.min(2.0, halfKelly));
+}
+
+// ── Smart Trading: Layer 2 — Dip Buying ──────────────────
+
+import type { IBPosition } from './ibClient';
+
+/**
+ * Check all long-term positions for dip-buy opportunities.
+ * Buys more shares when price drops below avgCost by tier thresholds.
+ */
+export async function checkDipBuyOpportunities(
+  config: AutoTraderConfig,
+  ibPositions: IBPosition[],
+): Promise<ProcessResult[]> {
+  if (!config.dipBuyEnabled || !config.accountId) return [];
+
+  const results: ProcessResult[] = [];
+  const activeTrades = await getActiveTrades();
+  const longTermFilled = activeTrades.filter(t => t.mode === 'LONG_TERM' && t.status === 'FILLED');
+
+  const tiers = [
+    { pct: config.dipBuyTier3Pct, sizePct: config.dipBuyTier3SizePct, label: 'Tier 3' },
+    { pct: config.dipBuyTier2Pct, sizePct: config.dipBuyTier2SizePct, label: 'Tier 2' },
+    { pct: config.dipBuyTier1Pct, sizePct: config.dipBuyTier1SizePct, label: 'Tier 1' },
+  ];
+
+  for (const trade of longTermFilled) {
+    const ibPos = ibPositions.find(p => p.contractDesc.toUpperCase() === trade.ticker.toUpperCase());
+    if (!ibPos || ibPos.mktPrice <= 0 || ibPos.avgCost <= 0) continue;
+
+    const dipPct = ((ibPos.mktPrice - ibPos.avgCost) / ibPos.avgCost) * 100;
+    if (dipPct >= 0) continue; // not a dip
+    const absDip = Math.abs(dipPct);
+
+    // Find highest triggered tier
+    const triggered = tiers.find(t => absDip >= t.pct);
+    if (!triggered) continue;
+
+    // Cooldown check: no dip buy for this ticker in last N hours
+    const cooldownMs = config.dipBuyCooldownHours * 60 * 60 * 1000;
+    const { data: recentDipBuys } = await supabase
+      .from('auto_trade_events')
+      .select('created_at')
+      .eq('ticker', trade.ticker)
+      .eq('source', 'dip_buy')
+      .eq('action', 'executed')
+      .order('created_at', { ascending: false })
+      .limit(1);
+
+    if (recentDipBuys && recentDipBuys.length > 0) {
+      const lastBuyTime = new Date(recentDipBuys[0].created_at).getTime();
+      if (Date.now() - lastBuyTime < cooldownMs) {
+        logEvent(trade.ticker, 'info', `Dip buy cooldown active (${config.dipBuyCooldownHours}h)`);
+        continue;
+      }
+    }
+
+    // Max position check
+    const currentPositionValue = Math.abs(ibPos.position) * ibPos.mktPrice;
+    const maxPositionValue = config.portfolioValue * (config.maxPositionPct / 100);
+    if (currentPositionValue >= maxPositionValue) {
+      logEvent(trade.ticker, 'info', `Position already at max (${config.maxPositionPct}% of portfolio)`);
+      continue;
+    }
+
+    // Allocation cap check
+    const originalQty = trade.quantity ?? Math.abs(ibPos.position);
+    const addOnQty = Math.max(1, Math.floor(originalQty * (triggered.sizePct / 100)));
+    const addOnDollar = addOnQty * ibPos.mktPrice;
+
+    const capOk = await checkAllocationCap(config, addOnDollar, trade.ticker);
+    if (!capOk) continue;
+
+    // Place dip buy
+    logEvent(trade.ticker, 'info', `Dip buy ${triggered.label}: ${addOnQty} shares at -${absDip.toFixed(1)}%`);
+
+    try {
+      const contract = await searchContract(trade.ticker);
+      if (!contract) continue;
+
+      const orderReplies = await placeMarketOrder({
+        accountId: config.accountId,
+        conid: contract.conid,
+        side: 'BUY',
+        quantity: addOnQty,
+        symbol: trade.ticker,
+      });
+      await handleOrderConfirmations(orderReplies);
+      const orderId = orderReplies[0]?.order_id ?? null;
+
+      await createPaperTrade({
+        ticker: trade.ticker,
+        mode: 'LONG_TERM',
+        signal: 'BUY',
+        scanner_confidence: trade.scanner_confidence,
+        fa_confidence: trade.fa_confidence,
+        fa_recommendation: 'BUY',
+        entry_price: ibPos.mktPrice,
+        quantity: addOnQty,
+        position_size: addOnDollar,
+        ib_order_id: orderId,
+        status: 'SUBMITTED',
+        notes: `Dip buy ${triggered.label} at -${absDip.toFixed(1)}% | Added ${addOnQty} shares`,
+      });
+
+      const msg = `Dip buy ${triggered.label}: +${addOnQty} shares at $${ibPos.mktPrice.toFixed(2)} (-${absDip.toFixed(1)}%)`;
+      logEvent(trade.ticker, 'success', msg);
+      persistEvent(trade.ticker, 'success', msg, {
+        action: 'executed', source: 'dip_buy', mode: 'LONG_TERM',
+        scanner_signal: 'BUY', scanner_confidence: trade.scanner_confidence ?? undefined,
+        metadata: { tier: triggered.label, dipPct: absDip, addOnQty, addOnDollar, mktPrice: ibPos.mktPrice },
+      });
+
+      results.push({ ticker: trade.ticker, action: 'executed', reason: `Dip buy ${triggered.label}` });
+    } catch (err) {
+      const msg = `Dip buy failed: ${err instanceof Error ? err.message : 'Unknown'}`;
+      logEvent(trade.ticker, 'error', msg);
+      persistEvent(trade.ticker, 'error', msg, {
+        action: 'failed', source: 'dip_buy', mode: 'LONG_TERM',
+        skip_reason: 'Dip buy order failed',
+        metadata: { tier: triggered.label, dipPct: absDip },
+      });
+      results.push({ ticker: trade.ticker, action: 'failed', reason: msg });
+    }
+  }
+
+  return results;
+}
+
+// ── Smart Trading: Layer 3 — Profit Taking ───────────────
+
+/**
+ * Check all long-term positions for profit-taking opportunities.
+ * Trims positions when gains exceed tier thresholds.
+ */
+export async function checkProfitTakeOpportunities(
+  config: AutoTraderConfig,
+  ibPositions: IBPosition[],
+): Promise<ProcessResult[]> {
+  if (!config.profitTakeEnabled || !config.accountId) return [];
+
+  const results: ProcessResult[] = [];
+  const activeTrades = await getActiveTrades();
+  const longTermFilled = activeTrades.filter(t => t.mode === 'LONG_TERM' && t.status === 'FILLED');
+
+  const tiers = [
+    { pct: config.profitTakeTier3Pct, trimPct: config.profitTakeTier3TrimPct, label: 'Tier 3' },
+    { pct: config.profitTakeTier2Pct, trimPct: config.profitTakeTier2TrimPct, label: 'Tier 2' },
+    { pct: config.profitTakeTier1Pct, trimPct: config.profitTakeTier1TrimPct, label: 'Tier 1' },
+  ];
+
+  for (const trade of longTermFilled) {
+    const ibPos = ibPositions.find(p => p.contractDesc.toUpperCase() === trade.ticker.toUpperCase());
+    if (!ibPos || ibPos.mktPrice <= 0 || ibPos.avgCost <= 0) continue;
+
+    const gainPct = ((ibPos.mktPrice - ibPos.avgCost) / ibPos.avgCost) * 100;
+    if (gainPct <= 0) continue; // no gain
+
+    // Find highest triggered tier
+    const triggered = tiers.find(t => gainPct >= t.pct);
+    if (!triggered) continue;
+
+    // Check if we already trimmed at this tier
+    const { data: pastTrimEvents } = await supabase
+      .from('auto_trade_events')
+      .select('metadata')
+      .eq('ticker', trade.ticker)
+      .eq('source', 'profit_take')
+      .eq('action', 'executed');
+
+    const alreadyTrimmedAtTier = pastTrimEvents?.some(
+      e => (e.metadata as Record<string, unknown>)?.tier === triggered.label
+    );
+    if (alreadyTrimmedAtTier) continue;
+
+    // Min hold check
+    const originalQty = trade.quantity ?? Math.abs(ibPos.position);
+    const currentQty = Math.abs(ibPos.position);
+    const minHoldQty = Math.ceil(originalQty * (config.minHoldPct / 100));
+    const trimQty = Math.max(1, Math.floor(currentQty * (triggered.trimPct / 100)));
+
+    if (currentQty - trimQty < minHoldQty) {
+      const adjustedTrim = currentQty - minHoldQty;
+      if (adjustedTrim < 1) {
+        logEvent(trade.ticker, 'info', `Can't trim: would go below ${config.minHoldPct}% min hold`);
+        continue;
+      }
+    }
+
+    const actualTrimQty = Math.min(trimQty, currentQty - minHoldQty);
+    if (actualTrimQty < 1) continue;
+
+    const trimDollar = actualTrimQty * ibPos.mktPrice;
+
+    // Place sell order
+    logEvent(trade.ticker, 'info', `Profit take ${triggered.label}: selling ${actualTrimQty} shares at +${gainPct.toFixed(1)}%`);
+
+    try {
+      const contract = await searchContract(trade.ticker);
+      if (!contract) continue;
+
+      const orderReplies = await placeMarketOrder({
+        accountId: config.accountId,
+        conid: contract.conid,
+        side: 'SELL',
+        quantity: actualTrimQty,
+        symbol: trade.ticker,
+      });
+      await handleOrderConfirmations(orderReplies);
+      const orderId = orderReplies[0]?.order_id ?? null;
+
+      // Log as a separate "partial sell" trade record
+      await createPaperTrade({
+        ticker: trade.ticker,
+        mode: 'LONG_TERM',
+        signal: 'SELL',
+        scanner_confidence: trade.scanner_confidence,
+        fa_confidence: trade.fa_confidence,
+        fa_recommendation: 'SELL',
+        entry_price: ibPos.mktPrice,
+        quantity: actualTrimQty,
+        position_size: trimDollar,
+        ib_order_id: orderId,
+        status: 'SUBMITTED',
+        notes: `Profit take ${triggered.label} at +${gainPct.toFixed(1)}% | Sold ${actualTrimQty} of ${currentQty} shares`,
+      });
+
+      const msg = `Profit take ${triggered.label}: sold ${actualTrimQty} shares at $${ibPos.mktPrice.toFixed(2)} (+${gainPct.toFixed(1)}%)`;
+      logEvent(trade.ticker, 'success', msg);
+      persistEvent(trade.ticker, 'success', msg, {
+        action: 'executed', source: 'profit_take', mode: 'LONG_TERM',
+        scanner_signal: 'SELL', scanner_confidence: trade.scanner_confidence ?? undefined,
+        metadata: { tier: triggered.label, gainPct, trimQty: actualTrimQty, trimDollar, mktPrice: ibPos.mktPrice },
+      });
+
+      results.push({ ticker: trade.ticker, action: 'executed', reason: `Profit take ${triggered.label}` });
+    } catch (err) {
+      const msg = `Profit take failed: ${err instanceof Error ? err.message : 'Unknown'}`;
+      logEvent(trade.ticker, 'error', msg);
+      persistEvent(trade.ticker, 'error', msg, {
+        action: 'failed', source: 'profit_take', mode: 'LONG_TERM',
+        skip_reason: 'Profit take order failed',
+        metadata: { tier: triggered.label, gainPct },
+      });
+      results.push({ ticker: trade.ticker, action: 'failed', reason: msg });
+    }
+  }
+
+  return results;
+}
+
+// ── Smart Trading: Pre-Trade Checks ──────────────────────
+
+/**
+ * Run all pre-trade checks (allocation cap, sector limits, earnings blackout).
+ * Returns true if the trade is allowed, false if blocked.
+ */
+async function runPreTradeChecks(
+  config: AutoTraderConfig,
+  ticker: string,
+  positionSize: number,
+): Promise<boolean> {
+  // 1. Allocation cap
+  const capOk = await checkAllocationCap(config, positionSize, ticker);
+  if (!capOk) return false;
+
+  // 2. Sector limits
+  const sectorOk = await checkSectorExposure(config, ticker, positionSize);
+  if (!sectorOk) return false;
+
+  // 3. Earnings blackout
+  const earningsOk = await checkEarningsBlackout(config, ticker);
+  if (!earningsOk) return false;
+
+  return true;
 }
 
 /** Process a single trade idea end-to-end */
@@ -500,10 +1218,21 @@ async function processSingleIdea(
     return { ticker, action: 'skipped', reason: 'Missing price levels from FA' };
   }
 
-  // ── 6. Position Sizing ──
-  const quantity = Math.floor(config.positionSize / entryPrice);
+  // ── 6. Dynamic Position Sizing ──
+  const regime = await getMarketRegime(config);
+  const kellyMult = await calculateKellyMultiplier(config);
+  const sizing = calculatePositionSize(config, {
+    price: entryPrice,
+    mode,
+    entryPrice,
+    stopLoss,
+    regimeMultiplier: regime.multiplier,
+    kellyMultiplier: kellyMult,
+  });
+  const quantity = sizing.quantity;
+
   if (quantity < 1) {
-    const msg = `Position size too small: $${config.positionSize} / $${entryPrice} < 1 share`;
+    const msg = `Position size too small: $${sizing.dollarSize.toFixed(0)} / $${entryPrice} < 1 share`;
     logEvent(ticker, 'warning', msg);
     persistEvent(ticker, 'warning', msg, {
       action: 'skipped', source: 'scanner', mode, scanner_signal: signal,
@@ -511,6 +1240,12 @@ async function processSingleIdea(
       skip_reason: 'Position size too small for 1 share',
     });
     return { ticker, action: 'skipped', reason: 'Position size too small for 1 share' };
+  }
+
+  // ── 6b. Pre-trade checks (allocation cap, sector limits, earnings blackout) ──
+  const preCheckOk = await runPreTradeChecks(config, ticker, sizing.dollarSize);
+  if (!preCheckOk) {
+    return { ticker, action: 'skipped', reason: 'Pre-trade check failed (allocation/sector/earnings)' };
   }
 
   // ── 7. Search IB Contract ──
@@ -725,7 +1460,23 @@ async function processSuggestedFind(
     return { ticker, action: 'failed', reason: 'Price lookup failed' };
   }
 
-  const quantity = Math.max(1, Math.floor(config.positionSize / currentPrice));
+  // Dynamic position sizing for long-term holds
+  const regime = await getMarketRegime(config);
+  const kellyMult = await calculateKellyMultiplier(config);
+  const sizing = calculatePositionSize(config, {
+    price: currentPrice,
+    mode: 'LONG_TERM',
+    conviction,
+    regimeMultiplier: regime.multiplier,
+    kellyMultiplier: kellyMult,
+  });
+  const quantity = sizing.quantity;
+
+  // Pre-trade checks (allocation cap, sector limits, earnings blackout)
+  const preCheckOk = await runPreTradeChecks(config, ticker, sizing.dollarSize);
+  if (!preCheckOk) {
+    return { ticker, action: 'skipped', reason: 'Pre-trade check failed (allocation/sector/earnings)' };
+  }
 
   // ── 3. Search IB Contract ──
   const contract = await searchContract(ticker);

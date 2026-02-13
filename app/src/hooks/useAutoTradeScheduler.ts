@@ -15,11 +15,20 @@ import { useEffect, useRef } from 'react';
 import { fetchTradeIdeas } from '../lib/tradeScannerApi';
 import {
   loadAutoTraderConfig,
+  saveAutoTraderConfig,
   processTradeIdeas,
   syncPositions,
+  checkDipBuyOpportunities,
+  checkProfitTakeOpportunities,
 } from '../lib/autoTrader';
 import { getPositions } from '../lib/ibClient';
-import { savePortfolioSnapshot, getActiveTrades } from '../lib/paperTradesApi';
+import {
+  savePortfolioSnapshot,
+  getActiveTrades,
+  recalculatePerformance,
+  recalculatePerformanceByCategory,
+} from '../lib/paperTradesApi';
+import { analyzeUnreviewedTrades, updatePerformancePatterns } from '../lib/aiFeedback';
 import { useAuth } from '../lib/auth';
 
 /** Check if we're in US market hours (9:30 AM - 4:00 PM ET, weekdays) */
@@ -76,6 +85,38 @@ async function savePortfolioSnapshotQuiet(accountId: string) {
   }
 }
 
+/** Check if it's past 4:15 PM ET (post-market close) */
+function isPastMarketCloseET(): boolean {
+  const now = new Date();
+  const et = new Date(now.toLocaleString('en-US', { timeZone: 'America/New_York' }));
+  const mins = et.getHours() * 60 + et.getMinutes();
+  return mins >= 16 * 60 + 15;
+}
+
+/** Daily rehydration — run once per day after market close */
+let _lastRehydrationDate = '';
+async function runDailyRehydration(accountId: string) {
+  const today = new Date().toISOString().slice(0, 10);
+  if (_lastRehydrationDate === today) return;
+  if (!isPastMarketCloseET()) return;
+
+  try {
+    console.log('[AutoTradeScheduler] Running daily rehydration...');
+    await syncPositions(accountId);
+    await recalculatePerformance();
+    await recalculatePerformanceByCategory();
+    const analyzed = await analyzeUnreviewedTrades();
+    if (analyzed > 0) {
+      await updatePerformancePatterns();
+      console.log(`[AutoTradeScheduler] Analyzed ${analyzed} unreviewed trades`);
+    }
+    _lastRehydrationDate = today;
+    console.log('[AutoTradeScheduler] Daily rehydration complete');
+  } catch (err) {
+    console.warn('[AutoTradeScheduler] Rehydration failed:', err);
+  }
+}
+
 export function useAutoTradeScheduler() {
   const { user } = useAuth();
   const isAuthed = !!user;
@@ -108,6 +149,33 @@ export function useAutoTradeScheduler() {
 
           // Save daily portfolio snapshot (non-blocking)
           savePortfolioSnapshotQuiet(config.accountId).catch(() => {});
+
+          // Update portfolio value from IB positions
+          try {
+            const positions = await getPositions(config.accountId);
+            if (positions.length > 0) {
+              const totalMktValue = positions.reduce(
+                (sum, p) => sum + Math.abs(p.position) * (p.mktPrice > 0 ? p.mktPrice : p.avgCost), 0
+              );
+              if (totalMktValue > 0) {
+                // Include cash estimate (portfolio - positions)
+                const pv = Math.max(totalMktValue, config.portfolioValue);
+                if (Math.abs(pv - config.portfolioValue) > 1000) {
+                  await saveAutoTraderConfig({ portfolioValue: pv });
+                  console.log(`[AutoTradeScheduler] Portfolio value updated: $${pv.toLocaleString()}`);
+                }
+              }
+            }
+
+            // Layer 2 & 3: Dip buying and profit taking
+            await checkDipBuyOpportunities(config, positions);
+            await checkProfitTakeOpportunities(config, positions);
+          } catch (err) {
+            console.warn('[AutoTradeScheduler] Smart trading checks failed:', err);
+          }
+
+          // Daily rehydration (after 4:15 PM ET)
+          runDailyRehydration(config.accountId).catch(() => {});
         }
 
         const allIdeas = [...(data.dayTrades ?? []), ...(data.swingTrades ?? [])];

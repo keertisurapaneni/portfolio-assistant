@@ -41,11 +41,14 @@ import {
   type PaperTrade,
   type TradePerformance,
   type AutoTradeEventRecord,
+  type CategoryPerformance,
   getAllTrades,
   getPerformance,
   recalculatePerformance,
+  recalculatePerformanceByCategory,
   getAutoTradeEvents,
 } from '../lib/paperTradesApi';
+import { getTotalDeployed } from '../lib/autoTrader';
 import { Spinner } from './Spinner';
 import { analyzeUnreviewedTrades, updatePerformancePatterns } from '../lib/aiFeedback';
 
@@ -62,6 +65,8 @@ export function PaperTrading() {
   const [ibPositions, setIbPositions] = useState<IBPosition[]>([]);
   const [ibOrders, setIbOrders] = useState<IBLiveOrder[]>([]);
   const [persistedEvents, setPersistedEvents] = useState<AutoTradeEventRecord[]>([]);
+  const [categoryPerf, setCategoryPerf] = useState<CategoryPerformance[]>([]);
+  const [totalDeployed, setTotalDeployed] = useState(0);
   const [tab, setTab] = useState<Tab>('portfolio');
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
@@ -70,14 +75,18 @@ export function PaperTrading() {
   const loadData = useCallback(async () => {
     setLoading(true);
     try {
-      const [all, perf, savedEvents] = await Promise.all([
+      const [all, perf, savedEvents, catPerf, deployed] = await Promise.all([
         getAllTrades(50),
         getPerformance(),
         getAutoTradeEvents(100),
+        recalculatePerformanceByCategory(),
+        getTotalDeployed(),
       ]);
       setAllTrades(all);
       setPerformance(perf);
       setPersistedEvents(savedEvents);
+      setCategoryPerf(catPerf);
+      setTotalDeployed(deployed);
     } catch (err) {
       console.error('Failed to load paper trading data:', err);
     } finally {
@@ -304,6 +313,13 @@ export function PaperTrading() {
           color={((performance?.total_pnl ?? 0) / Math.max(performance?.total_trades ?? 1, 1)) >= 0 ? 'green' : 'red'}
         />
       </div>
+
+      {/* Signal Quality / Performance Breakdown */}
+      <PerformanceBreakdown
+        categories={categoryPerf}
+        totalDeployed={totalDeployed}
+        maxAllocation={config.maxTotalAllocation}
+      />
 
       {/* Tabs */}
       <div className="flex gap-1 bg-white/60 p-1 rounded-xl border border-[hsl(var(--border))]">
@@ -956,17 +972,439 @@ function SettingsTab({ config, onUpdate }: {
         </div>
       </div>
 
+      {/* Allocation Cap */}
+      <div className="border-t border-[hsl(var(--border))] pt-6 mt-2">
+        <h4 className="text-sm font-semibold text-[hsl(var(--foreground))] mb-4">Testing Budget</h4>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <div>
+            <label className="block text-sm font-medium text-[hsl(var(--foreground))] mb-1.5">
+              Max Total Allocation
+            </label>
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-[hsl(var(--muted-foreground))]">$</span>
+              <input
+                type="number"
+                value={config.maxTotalAllocation}
+                onChange={e => onUpdate({ maxTotalAllocation: Number(e.target.value) })}
+                className="w-full px-3 py-2 border border-[hsl(var(--border))] rounded-lg text-sm"
+                min={10000}
+                step={10000}
+              />
+            </div>
+            <p className="text-xs text-[hsl(var(--muted-foreground))] mt-1">Hard cap on total deployed capital</p>
+          </div>
+        </div>
+      </div>
+
+      {/* Dynamic Position Sizing */}
+      <div className="border-t border-[hsl(var(--border))] pt-6 mt-2">
+        <div className="flex items-center gap-3 mb-4">
+          <SettingsToggle
+            enabled={config.useDynamicSizing}
+            onToggle={() => onUpdate({ useDynamicSizing: !config.useDynamicSizing })}
+          />
+          <div>
+            <p className="text-sm font-semibold text-[hsl(var(--foreground))]">Dynamic Position Sizing</p>
+            <p className="text-xs text-[hsl(var(--muted-foreground))]">Conviction-weighted + risk-based sizing (replaces flat $ per trade)</p>
+          </div>
+        </div>
+        {config.useDynamicSizing && (
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pl-14">
+            <SettingsInput label="Base Allocation %" value={config.baseAllocationPct}
+              onChange={v => onUpdate({ baseAllocationPct: v })} min={0.5} max={10} step={0.5}
+              help="% of portfolio per long-term position" />
+            <SettingsInput label="Max Position %" value={config.maxPositionPct}
+              onChange={v => onUpdate({ maxPositionPct: v })} min={1} max={20} step={1}
+              help="Max single-position % of portfolio" />
+            <SettingsInput label="Risk Per Trade %" value={config.riskPerTradePct}
+              onChange={v => onUpdate({ riskPerTradePct: v })} min={0.25} max={5} step={0.25}
+              help="Max risk % per scanner trade" />
+          </div>
+        )}
+      </div>
+
+      {/* Dip Buying */}
+      <div className="border-t border-[hsl(var(--border))] pt-6 mt-2">
+        <div className="flex items-center gap-3 mb-4">
+          <SettingsToggle
+            enabled={config.dipBuyEnabled}
+            onToggle={() => onUpdate({ dipBuyEnabled: !config.dipBuyEnabled })}
+          />
+          <div>
+            <p className="text-sm font-semibold text-[hsl(var(--foreground))]">Dip Buying</p>
+            <p className="text-xs text-[hsl(var(--muted-foreground))]">Auto average-down when long-term positions drop</p>
+          </div>
+        </div>
+        {config.dipBuyEnabled && (
+          <div className="space-y-3 pl-14">
+            <div className="grid grid-cols-3 gap-3">
+              <div className="text-xs text-[hsl(var(--muted-foreground))] font-medium">Tier</div>
+              <div className="text-xs text-[hsl(var(--muted-foreground))] font-medium">Dip %</div>
+              <div className="text-xs text-[hsl(var(--muted-foreground))] font-medium">Add-on Size %</div>
+            </div>
+            {[
+              { label: 'Tier 1', dipKey: 'dipBuyTier1Pct' as const, sizeKey: 'dipBuyTier1SizePct' as const },
+              { label: 'Tier 2', dipKey: 'dipBuyTier2Pct' as const, sizeKey: 'dipBuyTier2SizePct' as const },
+              { label: 'Tier 3', dipKey: 'dipBuyTier3Pct' as const, sizeKey: 'dipBuyTier3SizePct' as const },
+            ].map(tier => (
+              <div key={tier.label} className="grid grid-cols-3 gap-3 items-center">
+                <span className="text-xs font-medium">{tier.label}</span>
+                <input type="number" value={config[tier.dipKey]}
+                  onChange={e => onUpdate({ [tier.dipKey]: Number(e.target.value) })}
+                  className="px-2 py-1.5 border border-[hsl(var(--border))] rounded-lg text-xs w-full"
+                  min={1} max={50} step={1} />
+                <input type="number" value={config[tier.sizeKey]}
+                  onChange={e => onUpdate({ [tier.sizeKey]: Number(e.target.value) })}
+                  className="px-2 py-1.5 border border-[hsl(var(--border))] rounded-lg text-xs w-full"
+                  min={10} max={200} step={10} />
+              </div>
+            ))}
+            <SettingsInput label="Cooldown (hours)" value={config.dipBuyCooldownHours}
+              onChange={v => onUpdate({ dipBuyCooldownHours: v })} min={1} max={168} step={1}
+              help="Min hours between dip buys for same ticker" />
+          </div>
+        )}
+      </div>
+
+      {/* Profit Taking */}
+      <div className="border-t border-[hsl(var(--border))] pt-6 mt-2">
+        <div className="flex items-center gap-3 mb-4">
+          <SettingsToggle
+            enabled={config.profitTakeEnabled}
+            onToggle={() => onUpdate({ profitTakeEnabled: !config.profitTakeEnabled })}
+          />
+          <div>
+            <p className="text-sm font-semibold text-[hsl(var(--foreground))]">Profit Taking</p>
+            <p className="text-xs text-[hsl(var(--muted-foreground))]">Auto trim long-term positions on rallies</p>
+          </div>
+        </div>
+        {config.profitTakeEnabled && (
+          <div className="space-y-3 pl-14">
+            <div className="grid grid-cols-3 gap-3">
+              <div className="text-xs text-[hsl(var(--muted-foreground))] font-medium">Tier</div>
+              <div className="text-xs text-[hsl(var(--muted-foreground))] font-medium">Gain %</div>
+              <div className="text-xs text-[hsl(var(--muted-foreground))] font-medium">Trim %</div>
+            </div>
+            {[
+              { label: 'Tier 1', gainKey: 'profitTakeTier1Pct' as const, trimKey: 'profitTakeTier1TrimPct' as const },
+              { label: 'Tier 2', gainKey: 'profitTakeTier2Pct' as const, trimKey: 'profitTakeTier2TrimPct' as const },
+              { label: 'Tier 3', gainKey: 'profitTakeTier3Pct' as const, trimKey: 'profitTakeTier3TrimPct' as const },
+            ].map(tier => (
+              <div key={tier.label} className="grid grid-cols-3 gap-3 items-center">
+                <span className="text-xs font-medium">{tier.label}</span>
+                <input type="number" value={config[tier.gainKey]}
+                  onChange={e => onUpdate({ [tier.gainKey]: Number(e.target.value) })}
+                  className="px-2 py-1.5 border border-[hsl(var(--border))] rounded-lg text-xs w-full"
+                  min={5} max={200} step={5} />
+                <input type="number" value={config[tier.trimKey]}
+                  onChange={e => onUpdate({ [tier.trimKey]: Number(e.target.value) })}
+                  className="px-2 py-1.5 border border-[hsl(var(--border))] rounded-lg text-xs w-full"
+                  min={5} max={50} step={5} />
+              </div>
+            ))}
+            <SettingsInput label="Min Hold %" value={config.minHoldPct}
+              onChange={v => onUpdate({ minHoldPct: v })} min={10} max={80} step={5}
+              help="Never sell below this % of original position" />
+          </div>
+        )}
+      </div>
+
+      {/* Risk Management */}
+      <div className="border-t border-[hsl(var(--border))] pt-6 mt-2">
+        <h4 className="text-sm font-semibold text-[hsl(var(--foreground))] mb-4">Risk Management</h4>
+        <div className="space-y-4">
+          <div className="flex items-center gap-3">
+            <SettingsToggle enabled={config.marketRegimeEnabled}
+              onToggle={() => onUpdate({ marketRegimeEnabled: !config.marketRegimeEnabled })} />
+            <div>
+              <p className="text-sm font-medium text-[hsl(var(--foreground))]">Market Regime Awareness</p>
+              <p className="text-xs text-[hsl(var(--muted-foreground))]">Reduce sizing when VIX is high / SPY trending down</p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-3">
+            <SettingsToggle enabled={config.earningsAvoidEnabled}
+              onToggle={() => onUpdate({ earningsAvoidEnabled: !config.earningsAvoidEnabled })} />
+            <div className="flex-1">
+              <p className="text-sm font-medium text-[hsl(var(--foreground))]">Earnings Blackout</p>
+              <p className="text-xs text-[hsl(var(--muted-foreground))]">Skip new entries near earnings announcements</p>
+            </div>
+            {config.earningsAvoidEnabled && (
+              <input type="number" value={config.earningsBlackoutDays}
+                onChange={e => onUpdate({ earningsBlackoutDays: Number(e.target.value) })}
+                className="w-16 px-2 py-1.5 border border-[hsl(var(--border))] rounded-lg text-xs text-right"
+                min={1} max={14} />
+            )}
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <SettingsInput label="Max Sector %" value={config.maxSectorPct}
+              onChange={v => onUpdate({ maxSectorPct: v })} min={10} max={100} step={5}
+              help="Max portfolio allocation to one sector" />
+          </div>
+
+          <div className="flex items-center gap-3">
+            <SettingsToggle enabled={config.kellyAdaptiveEnabled}
+              onToggle={() => onUpdate({ kellyAdaptiveEnabled: !config.kellyAdaptiveEnabled })} />
+            <div>
+              <p className="text-sm font-medium text-[hsl(var(--foreground))]">Adaptive Sizing (Half-Kelly)</p>
+              <p className="text-xs text-[hsl(var(--muted-foreground))]">Auto-adjust sizing based on actual win rate (needs 10+ completed trades)</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
       {/* Risk Warning */}
       <div className="flex items-start gap-2 rounded-lg bg-amber-50 border border-amber-200/70 px-4 py-3 mt-4">
         <AlertTriangle className="w-4 h-4 text-amber-500 mt-0.5 flex-shrink-0" />
         <div>
-          <p className="text-sm font-medium text-amber-800">Paper Trading Only</p>
+          <p className="text-sm font-medium text-amber-800">Paper Trading — Signal Quality Test</p>
           <p className="text-xs text-amber-700 mt-0.5">
+            Testing AI signal quality with ${config.maxTotalAllocation.toLocaleString()} budget over 1 month.
             Orders are placed on your IB paper account with simulated money.
-            No real funds are at risk. This is for testing AI signal quality only.
           </p>
         </div>
       </div>
+    </div>
+  );
+}
+
+// ── Settings Helper Components ───────────────────────────
+
+function SettingsToggle({ enabled, onToggle }: { enabled: boolean; onToggle: () => void }) {
+  return (
+    <button
+      onClick={onToggle}
+      className={cn(
+        'relative inline-flex h-6 w-11 items-center rounded-full transition-colors flex-shrink-0',
+        enabled ? 'bg-emerald-600' : 'bg-slate-300'
+      )}
+    >
+      <span className={cn(
+        'inline-block h-4 w-4 rounded-full bg-white transition-transform',
+        enabled ? 'translate-x-6' : 'translate-x-1'
+      )} />
+    </button>
+  );
+}
+
+function SettingsInput({ label, value, onChange, min, max, step, help }: {
+  label: string;
+  value: number;
+  onChange: (v: number) => void;
+  min?: number;
+  max?: number;
+  step?: number;
+  help?: string;
+}) {
+  return (
+    <div>
+      <label className="block text-xs font-medium text-[hsl(var(--foreground))] mb-1">
+        {label}
+      </label>
+      <input
+        type="number"
+        value={value}
+        onChange={e => onChange(Number(e.target.value))}
+        className="w-full px-2 py-1.5 border border-[hsl(var(--border))] rounded-lg text-xs"
+        min={min}
+        max={max}
+        step={step}
+      />
+      {help && <p className="text-[10px] text-[hsl(var(--muted-foreground))] mt-0.5">{help}</p>}
+    </div>
+  );
+}
+
+// ── Performance Breakdown (Signal Quality) ───────────────
+
+function PerformanceBreakdown({ categories, totalDeployed, maxAllocation }: {
+  categories: CategoryPerformance[];
+  totalDeployed: number;
+  maxAllocation: number;
+}) {
+  const sf = categories.find(c => c.category === 'suggested_finds');
+  const dt = categories.find(c => c.category === 'day_trade');
+  const sw = categories.find(c => c.category === 'swing_trade');
+  const dipBuy = categories.find(c => c.category === 'dip_buy');
+  const profitTake = categories.find(c => c.category === 'profit_take');
+
+  const deployedPct = maxAllocation > 0 ? (totalDeployed / maxAllocation) * 100 : 0;
+  const deployedColor = deployedPct < 60 ? 'bg-emerald-500' : deployedPct < 85 ? 'bg-amber-500' : 'bg-red-500';
+
+  const hasData = categories.some(c => c.totalTrades > 0);
+  if (!hasData) return null;
+
+  return (
+    <div className="space-y-3">
+      {/* Allocation Meter */}
+      <div className="rounded-xl border border-[hsl(var(--border))] bg-white p-4">
+        <div className="flex items-center justify-between mb-2">
+          <span className="text-xs font-semibold text-[hsl(var(--foreground))]">
+            Capital Deployed
+          </span>
+          <span className="text-xs font-bold tabular-nums">
+            ${totalDeployed.toLocaleString(undefined, { maximumFractionDigits: 0 })} / ${maxAllocation.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+          </span>
+        </div>
+        <div className="w-full h-2.5 rounded-full bg-slate-100 overflow-hidden">
+          <div
+            className={cn('h-full rounded-full transition-all', deployedColor)}
+            style={{ width: `${Math.min(100, deployedPct)}%` }}
+          />
+        </div>
+        <p className="text-[10px] text-[hsl(var(--muted-foreground))] mt-1">{deployedPct.toFixed(1)}% of testing budget allocated</p>
+      </div>
+
+      {/* Signal Quality Scorecards */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <SignalScorecard
+          title="Suggested Finds"
+          subtitle="Long-term picks"
+          data={sf}
+          color="indigo"
+        />
+        <SignalScorecard
+          title="Day Trades"
+          subtitle="Scanner signals"
+          data={dt}
+          color="blue"
+        />
+        <SignalScorecard
+          title="Swing Trades"
+          subtitle="Scanner signals"
+          data={sw}
+          color="violet"
+        />
+      </div>
+
+      {/* Portfolio Management (dip buy + profit take) */}
+      {((dipBuy?.totalTrades ?? 0) > 0 || (profitTake?.totalTrades ?? 0) > 0) && (
+        <div className="flex gap-3 text-xs">
+          {(dipBuy?.totalTrades ?? 0) > 0 && (
+            <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-50 border border-blue-100">
+              <TrendingDown className="w-3 h-3 text-blue-600" />
+              <span className="text-blue-700 font-medium">Dip Buys: {dipBuy!.totalTrades}</span>
+              {dipBuy!.totalPnl !== 0 && (
+                <span className={cn('font-bold', dipBuy!.totalPnl > 0 ? 'text-emerald-600' : 'text-red-600')}>
+                  {dipBuy!.totalPnl >= 0 ? '+' : ''}${dipBuy!.totalPnl.toFixed(0)}
+                </span>
+              )}
+            </div>
+          )}
+          {(profitTake?.totalTrades ?? 0) > 0 && (
+            <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-50 border border-emerald-100">
+              <TrendingUp className="w-3 h-3 text-emerald-600" />
+              <span className="text-emerald-700 font-medium">Profit Takes: {profitTake!.totalTrades}</span>
+              {profitTake!.totalPnl !== 0 && (
+                <span className={cn('font-bold', profitTake!.totalPnl > 0 ? 'text-emerald-600' : 'text-red-600')}>
+                  {profitTake!.totalPnl >= 0 ? '+' : ''}${profitTake!.totalPnl.toFixed(0)}
+                </span>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SignalScorecard({ title, subtitle, data, color }: {
+  title: string;
+  subtitle: string;
+  data: CategoryPerformance | undefined;
+  color: 'indigo' | 'blue' | 'violet';
+}) {
+  const colorClasses = {
+    indigo: 'border-indigo-200 bg-indigo-50',
+    blue: 'border-blue-200 bg-blue-50',
+    violet: 'border-violet-200 bg-violet-50',
+  };
+  const textColors = {
+    indigo: 'text-indigo-700',
+    blue: 'text-blue-700',
+    violet: 'text-violet-700',
+  };
+
+  if (!data || data.totalTrades === 0) {
+    return (
+      <div className={cn('rounded-xl border p-4', colorClasses[color])}>
+        <p className={cn('text-sm font-semibold', textColors[color])}>{title}</p>
+        <p className="text-[10px] text-[hsl(var(--muted-foreground))]">{subtitle}</p>
+        <p className="text-xs text-[hsl(var(--muted-foreground))] mt-3 opacity-60">No trades yet</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className={cn('rounded-xl border p-4', colorClasses[color])}>
+      <div className="flex items-center justify-between mb-1">
+        <div>
+          <p className={cn('text-sm font-semibold', textColors[color])}>{title}</p>
+          <p className="text-[10px] text-[hsl(var(--muted-foreground))]">{subtitle}</p>
+        </div>
+        <div className={cn('text-right')}>
+          <p className={cn(
+            'text-lg font-bold tabular-nums',
+            data.totalPnl > 0 ? 'text-emerald-600' : data.totalPnl < 0 ? 'text-red-600' : textColors[color]
+          )}>
+            {data.totalPnl >= 0 ? '+' : ''}${data.totalPnl.toFixed(0)}
+          </p>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-3 gap-2 mt-3">
+        <div>
+          <p className="text-[10px] text-[hsl(var(--muted-foreground))]">Trades</p>
+          <p className={cn('text-sm font-bold tabular-nums', textColors[color])}>{data.totalTrades}</p>
+        </div>
+        <div>
+          <p className="text-[10px] text-[hsl(var(--muted-foreground))]">Win Rate</p>
+          <p className={cn('text-sm font-bold tabular-nums', data.winRate >= 50 ? 'text-emerald-600' : 'text-red-600')}>
+            {data.winRate.toFixed(0)}%
+          </p>
+        </div>
+        <div>
+          <p className="text-[10px] text-[hsl(var(--muted-foreground))]">Active</p>
+          <p className={cn('text-sm font-bold tabular-nums', textColors[color])}>{data.activeTrades}</p>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-2 mt-2 pt-2 border-t border-[hsl(var(--border))]/30">
+        <div>
+          <p className="text-[10px] text-[hsl(var(--muted-foreground))]">Avg P&L</p>
+          <p className={cn('text-xs font-bold tabular-nums', data.avgPnl >= 0 ? 'text-emerald-600' : 'text-red-600')}>
+            {data.avgPnl >= 0 ? '+' : ''}${data.avgPnl.toFixed(0)}
+          </p>
+        </div>
+        <div>
+          <p className="text-[10px] text-[hsl(var(--muted-foreground))]">Avg Return</p>
+          <p className={cn('text-xs font-bold tabular-nums', data.avgReturnPct >= 0 ? 'text-emerald-600' : 'text-red-600')}>
+            {data.avgReturnPct >= 0 ? '+' : ''}{data.avgReturnPct.toFixed(1)}%
+          </p>
+        </div>
+      </div>
+
+      {(data.bestTrade || data.worstTrade) && (
+        <div className="grid grid-cols-2 gap-2 mt-2 pt-2 border-t border-[hsl(var(--border))]/30">
+          {data.bestTrade && (
+            <div>
+              <p className="text-[10px] text-[hsl(var(--muted-foreground))]">Best</p>
+              <p className="text-xs font-bold text-emerald-600 tabular-nums truncate">
+                {data.bestTrade.ticker} +${data.bestTrade.pnl.toFixed(0)}
+              </p>
+            </div>
+          )}
+          {data.worstTrade && (
+            <div>
+              <p className="text-[10px] text-[hsl(var(--muted-foreground))]">Worst</p>
+              <p className="text-xs font-bold text-red-600 tabular-nums truncate">
+                {data.worstTrade.ticker} ${data.worstTrade.pnl.toFixed(0)}
+              </p>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
