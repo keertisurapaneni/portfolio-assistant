@@ -51,8 +51,9 @@ A personal investing decision-support tool that combines automated conviction sc
 *Requires authentication*
 
 - **IB Portfolio** — Live view of all positions in your IB paper account (shares, avg cost, cost basis, market value, P&L) plus all open/working orders with bracket order grouping
-- **Auto-Execution** — Scanner ideas (confidence 7+) automatically run full analysis → place bracket orders on IB paper account
-- **Suggested Finds Auto-Buy** — Quiet Compounders and Gold Mines with conviction 7+ are auto-bought if "Undervalued" or "Deep Value" (or conviction 9+ regardless of valuation)
+- **IB Portfolio** — Live view of all positions (shares, avg cost, cost basis, market value, P&L) + open orders with bracket order grouping
+- **Auto-Execution** — Scanner ideas automatically run full analysis → place bracket orders on IB paper account
+- **Suggested Finds Auto-Buy** — Quiet Compounders and Gold Mines auto-bought based on the filter below
 - **Manual Execution** — Research any ticker; if FA confidence is 7+ with a BUY/SELL recommendation, prompts to execute on IB
 - **IB Integration** — Bracket orders (entry + stop-loss + target) via Interactive Brokers Gateway with IBC auto-login (hands-off)
 - **Position Tracking** — Active positions, fill prices, P&L synced from IB to Supabase
@@ -60,6 +61,17 @@ A personal investing decision-support tool that combines automated conviction sc
 - **Performance Dashboard** — Win rate, average P&L, best/worst trades, pattern analysis
 - **Enable/Disable Toggle** — Turn auto-trading on/off; persists across sessions via localStorage
 - **Activity Log** — Live event stream of what the auto-trader is doing
+
+#### Auto-Buy Filter (Suggested Finds)
+
+| Condition | Auto-Buy? | Example |
+|---|---|---|
+| Conviction 8+ (any valuation) | Yes | Conviction 9, "Fair Value" → buys |
+| Conviction 7 + "Undervalued" | Yes | Conviction 7, "Undervalued" → buys |
+| Conviction 7 + "Deep Value" | Yes | Conviction 7, "Deep Value" → buys |
+| Conviction 7 + "Fair Value" | No | Conviction 7, "Fair Value" → skips |
+| Conviction 7 + "Fully Valued" | No | Conviction 7, "Fully Valued" → skips |
+| Conviction 6 or below | No | Always skipped regardless of valuation |
 
 ### Market Movers (`/movers`)
 

@@ -453,7 +453,7 @@ async function processSingleIdea(
 
 /**
  * Process Suggested Finds (Quiet Compounders + Gold Mines) for auto-buying.
- * Stocks with conviction >= 7 get a full swing analysis → bracket order.
+ * Auto-buy filter: conviction 7+ AND (Undervalued/Deep Value OR conviction 8+).
  *
  * These are long-term positions: always SWING_TRADE mode, GTC orders.
  */
@@ -492,14 +492,20 @@ export async function processSuggestedFinds(
     return [];
   }
 
-  // Filter by conviction >= 7
-  const qualified = stocks.filter(s => (s.conviction ?? 0) >= cfg.minScannerConfidence);
+  // Filter: conviction 7+ AND (Undervalued/Deep Value OR conviction 8+)
+  const qualified = stocks.filter(s => {
+    const conv = s.conviction ?? 0;
+    if (conv < cfg.minScannerConfidence) return false;
+    const tag = (s.valuationTag ?? '').toLowerCase();
+    const isUndervalued = tag === 'deep value' || tag === 'undervalued';
+    return isUndervalued || conv >= 8;
+  });
   if (qualified.length === 0) {
-    logEvent('*', 'info', 'No Suggested Finds meet conviction threshold');
+    logEvent('*', 'info', 'No Suggested Finds meet conviction + valuation threshold');
     return [];
   }
 
-  logEvent('*', 'info', `Processing ${qualified.length} Suggested Finds with conviction 7+...`);
+  logEvent('*', 'info', `Processing ${qualified.length} Suggested Finds (undervalued/deep value or conviction 8+)...`);
 
   const toProcess = qualified.slice(0, slotsAvailable);
 
