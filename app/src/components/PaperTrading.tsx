@@ -15,6 +15,7 @@ import {
   Settings,
   BarChart3,
   Activity,
+  Zap,
   Briefcase,
   TrendingUp,
   TrendingDown,
@@ -50,7 +51,7 @@ import { analyzeUnreviewedTrades, updatePerformancePatterns } from '../lib/aiFee
 
 // ── Main Component ──────────────────────────────────────
 
-type Tab = 'portfolio' | 'history' | 'settings';
+type Tab = 'portfolio' | 'today' | 'history' | 'settings';
 
 export function PaperTrading() {
   const [config, setConfig] = useState<AutoTraderConfig>(getAutoTraderConfig);
@@ -308,6 +309,7 @@ export function PaperTrading() {
       <div className="flex gap-1 bg-white/60 p-1 rounded-xl border border-[hsl(var(--border))]">
         {[
           { id: 'portfolio' as Tab, label: 'IB Portfolio', icon: Briefcase, count: ibPositions.length },
+          { id: 'today' as Tab, label: "Today's Activity", icon: Zap, count: todaysExecuted.length },
           { id: 'history' as Tab, label: 'Trade History', icon: Clock, count: completedTrades.length },
           { id: 'settings' as Tab, label: 'Settings', icon: Settings },
         ].map(t => (
@@ -350,6 +352,9 @@ export function PaperTrading() {
               onRefresh={loadIBData}
             />
           )}
+          {tab === 'today' && (
+            <TodaysActivityTab events={todaysExecuted} />
+          )}
           {tab === 'history' && (
             <HistoryTab trades={completedTrades} />
           )}
@@ -357,49 +362,6 @@ export function PaperTrading() {
             <SettingsTab config={config} onUpdate={updateConfig} />
           )}
         </>
-      )}
-
-      {/* Today's Activity */}
-      {todaysExecuted.length > 0 && (
-        <div className="rounded-xl border border-[hsl(var(--border))] bg-white overflow-hidden">
-          <div className="px-4 py-2.5 border-b border-[hsl(var(--border))] bg-[hsl(var(--secondary))] flex items-center justify-between">
-            <h3 className="text-sm font-semibold text-[hsl(var(--foreground))]">Today&apos;s Trades</h3>
-            <span className="text-xs text-emerald-600 font-medium">{todaysExecuted.length} executed</span>
-          </div>
-          <div className="divide-y divide-[hsl(var(--border))]">
-            {todaysExecuted.map((event) => (
-              <div key={event.id} className="flex items-center gap-3 px-4 py-2.5">
-                <CheckCircle className="w-4 h-4 text-emerald-500 flex-shrink-0" />
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2">
-                    <span className="font-bold text-sm text-[hsl(var(--foreground))]">{event.ticker}</span>
-                    <span className={cn(
-                      'inline-flex px-1.5 py-0.5 rounded text-[10px] font-bold',
-                      event.scanner_signal === 'SELL' ? 'bg-red-100 text-red-700' : 'bg-emerald-100 text-emerald-700'
-                    )}>
-                      {event.scanner_signal ?? 'BUY'}
-                    </span>
-                    {event.mode && (
-                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 font-medium">
-                        {event.mode === 'DAY_TRADE' ? 'Day' : event.mode === 'LONG_TERM' ? 'Long Term' : 'Swing'}
-                      </span>
-                    )}
-                    {event.source === 'suggested_finds' && event.scanner_confidence != null && (
-                      <span className="text-[10px] text-[hsl(var(--muted-foreground))]">Conviction: {event.scanner_confidence}</span>
-                    )}
-                    {event.source === 'scanner' && event.scanner_confidence != null && event.fa_confidence != null && (
-                      <span className="text-[10px] text-[hsl(var(--muted-foreground))]">Scanner: {event.scanner_confidence}, FA: {event.fa_confidence}</span>
-                    )}
-                  </div>
-                  <p className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5 truncate">{event.message}</p>
-                </div>
-                <span className="text-xs text-[hsl(var(--muted-foreground))] tabular-nums flex-shrink-0">
-                  {new Date(event.created_at).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}
-                </span>
-              </div>
-            ))}
-          </div>
-        </div>
       )}
 
       {/* Activity Log — shows session events + persisted history */}
@@ -741,6 +703,60 @@ function PortfolioTab({ positions, orders, connected, onRefresh }: {
 }
 
 // ── Positions Tab ────────────────────────────────────────
+
+// ── History Tab ──────────────────────────────────────────
+
+function TodaysActivityTab({ events }: { events: AutoTradeEventRecord[] }) {
+  if (events.length === 0) {
+    return (
+      <div className="text-center py-12">
+        <Zap className="w-10 h-10 text-[hsl(var(--muted-foreground))] opacity-40 mx-auto" />
+        <p className="mt-3 text-sm text-[hsl(var(--muted-foreground))]">No trades executed today</p>
+        <p className="text-xs text-[hsl(var(--muted-foreground))] opacity-70 mt-1">
+          Scanner runs at 10 AM and 3:30 PM ET
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-xl border border-[hsl(var(--border))] bg-white overflow-hidden">
+      <div className="divide-y divide-[hsl(var(--border))]">
+        {events.map((event) => (
+          <div key={event.id} className="flex items-center gap-3 px-4 py-3">
+            <CheckCircle className="w-4 h-4 text-emerald-500 flex-shrink-0" />
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="font-bold text-sm text-[hsl(var(--foreground))]">{event.ticker}</span>
+                <span className={cn(
+                  'inline-flex px-1.5 py-0.5 rounded text-[10px] font-bold',
+                  event.scanner_signal === 'SELL' ? 'bg-red-100 text-red-700' : 'bg-emerald-100 text-emerald-700'
+                )}>
+                  {event.scanner_signal ?? 'BUY'}
+                </span>
+                {event.mode && (
+                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 font-medium">
+                    {event.mode === 'DAY_TRADE' ? 'Day' : event.mode === 'LONG_TERM' ? 'Long Term' : 'Swing'}
+                  </span>
+                )}
+                {event.source === 'suggested_finds' && event.scanner_confidence != null && (
+                  <span className="text-[10px] text-[hsl(var(--muted-foreground))]">Conviction: {event.scanner_confidence}</span>
+                )}
+                {event.source === 'scanner' && event.scanner_confidence != null && event.fa_confidence != null && (
+                  <span className="text-[10px] text-[hsl(var(--muted-foreground))]">Scanner: {event.scanner_confidence}, FA: {event.fa_confidence}</span>
+                )}
+              </div>
+              <p className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5 truncate">{event.message}</p>
+            </div>
+            <span className="text-xs text-[hsl(var(--muted-foreground))] tabular-nums flex-shrink-0">
+              {new Date(event.created_at).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 // ── History Tab ──────────────────────────────────────────
 
