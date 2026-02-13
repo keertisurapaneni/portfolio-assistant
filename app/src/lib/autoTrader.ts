@@ -535,8 +535,8 @@ async function processSingleIdea(
 
 /**
  * Process Suggested Finds (Quiet Compounders + Gold Mines) for auto-buying.
- * Auto-buy filter: conviction >= minSuggestedFindsConviction (default 8),
- * OR conviction 7+ with "Undervalued"/"Deep Value" valuation tag.
+ * Auto-buy filter: conviction >= minSuggestedFindsConviction (default 8)
+ * AND valuation must be "Undervalued" or "Deep Value".
  *
  * These are long-term positions: always SWING_TRADE mode, GTC orders.
  */
@@ -575,22 +575,21 @@ export async function processSuggestedFinds(
     return [];
   }
 
-  // Filter: conviction >= minSuggestedFindsConviction (default 8),
-  // OR conviction 7+ with Undervalued/Deep Value valuation tag
+  // Filter: conviction >= minSuggestedFindsConviction (default 8)
+  // AND valuation must be Undervalued or Deep Value
   const minConv = cfg.minSuggestedFindsConviction;
   const qualified = stocks.filter(s => {
     const conv = s.conviction ?? 0;
-    if (conv < 7) return false; // absolute minimum
+    if (conv < minConv) return false;
     const tag = (s.valuationTag ?? '').toLowerCase();
-    const isUndervalued = tag === 'deep value' || tag === 'undervalued';
-    return conv >= minConv || (isUndervalued && conv >= 7);
+    return tag === 'deep value' || tag === 'undervalued';
   });
   if (qualified.length === 0) {
     logEvent('*', 'info', 'No Suggested Finds meet conviction + valuation threshold');
     return [];
   }
 
-  logEvent('*', 'info', `Processing ${qualified.length} Suggested Finds (undervalued/deep value or conviction 8+)...`);
+  logEvent('*', 'info', `Processing ${qualified.length} Suggested Finds (conviction ${minConv}+ and undervalued/deep value)...`);
 
   const toProcess = qualified.slice(0, slotsAvailable);
 

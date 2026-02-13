@@ -966,10 +966,10 @@ function SettingsTab({ config, onUpdate }: {
             value={config.minSuggestedFindsConviction}
             onChange={e => onUpdate({ minSuggestedFindsConviction: Number(e.target.value) })}
             className="w-full px-3 py-2 border border-[hsl(var(--border))] rounded-lg text-sm"
-            min={7}
+            min={1}
             max={10}
           />
-          <p className="text-xs text-[hsl(var(--muted-foreground))] mt-1">Auto-buy at this conviction (or 7+ if Undervalued/Deep Value)</p>
+          <p className="text-xs text-[hsl(var(--muted-foreground))] mt-1">Only Undervalued/Deep Value stocks at this conviction or higher</p>
         </div>
 
         {/* IB Account */}
