@@ -146,7 +146,7 @@ A personal investing decision-support tool that combines automated conviction sc
 
 ### Prerequisites
 
-- Node.js 18+ (LTS recommended)
+- Node.js 22+ (required by Vite 7 — `nvm install 22`)
 - Supabase account + CLI (with Auth enabled — email provider, confirm email OFF)
 - Finnhub API key (free: [finnhub.io](https://finnhub.io/register))
 - Groq API key (free: [console.groq.com](https://console.groq.com))
