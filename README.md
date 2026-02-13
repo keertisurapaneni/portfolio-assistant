@@ -10,7 +10,7 @@ AI-powered stock signals — skip the noise, catch the plays.
 |---|---|
 | **My Portfolio** `/` | Conviction scoring (0-100), AI BUY/SELL signals, risk profiles, brokerage sync (SnapTrade), CSV import, news, daily P&L |
 | **Trade Signals** `/signals` | AI scanner finds day/swing setups → full analysis with indicators, scenarios, dual targets, charts, long-term outlook |
-| **Suggested Finds** `/finds` | Quiet Compounders (quality + valuation ranked) and Gold Mines (macro-theme opportunities) discovered daily by AI |
+| **Suggested Finds** `/finds` | Quiet Compounders (quality + valuation ranked) and Gold Mines (macro-theme opportunities) discovered daily by AI, with "Owned" badge for stocks in portfolio |
 | **Paper Trading** `/paper-trading` | Auto-executes high-confidence signals on IB paper account, tracks P&L, AI learns from outcomes |
 | **Market Movers** `/movers` | Top 25 gainers/losers from Yahoo Finance |
 
@@ -45,12 +45,13 @@ AI-powered stock signals — skip the noise, catch the plays.
 
 *Auth required — connects to IB paper account via IB Gateway + IBC (hands-off, no daily login)*
 
-- **IB Portfolio** — Live positions (shares, cost, P&L) and open orders with bracket grouping
-- **Auto-Trade** — Scanner ideas and Suggested Finds auto-execute as bracket orders (entry + stop + target)
-- **Manual Trade** — Research any ticker → prompted to execute if confidence 7+ and BUY/SELL
+- **IB Portfolio** — Live positions (shares, cost, P&L, market value) and open orders with bracket grouping
+- **Today's Activity** — All trades executed today with ticker, signal, mode, confidence, and time
+- **Trade History** — Completed trades with entry/close price and P&L
+- **Auto-Trade** — Scanner ideas execute as bracket orders (entry + stop + target); Suggested Finds execute as market buys (long-term holds, no stop/target)
 - **AI Feedback Loop** — Analyzes wins/losses, stores lessons, identifies patterns
-- **Performance Dashboard** — Win rate, total P&L, best/worst trades
-- **Enable/Disable** — Toggle auto-trading anytime; persists via localStorage
+- **Performance Stats** — Win rate, total P&L, avg P&L per trade
+- **Settings** — Toggle auto-trading, configure position size, confidence thresholds; persists via Supabase
 
 #### Auto-Trade Filters
 
@@ -85,9 +86,10 @@ Browser (React 19 · Vite 7 · TypeScript 5.9 · Tailwind CSS 4)
 ├─► Supabase PostgreSQL (RLS)
 │   ├ portfolios          ├ trade_scans
 │   ├ broker_connections  ├ daily_suggestions
-│   ├ user_settings       ├ paper_trades
-│   └ (guest: localStorage)  ├ trade_learnings
-│                         └ trade_performance
+│   ├ user_settings       ├ paper_trades (DAY_TRADE/SWING_TRADE/LONG_TERM)
+│   ├ auto_trade_events   ├ trade_learnings
+│   ├ auto_trader_config  ├ trade_performance
+│   ├ portfolio_snapshots └ (guest: localStorage)
 │
 └─► auto-trader/ (local Node.js service, port 3001)
     ├ @stoqey/ib → IB Gateway (port 4002)
