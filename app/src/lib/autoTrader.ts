@@ -31,27 +31,16 @@ import {
 } from './paperTradesApi';
 import { analyzeCompletedTrade, updatePerformancePatterns } from './aiFeedback';
 
-// ── Lightweight price lookup (via Supabase edge function — key stays server-side) ──
-const _SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || '';
-const _SUPABASE_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
+// ── Lightweight price lookup (via auto-trader service — Finnhub key stays server-side) ──
+const _IB_BASE = 'http://localhost:3001/api';
 
 /** Get the current market price for a ticker (for position sizing). Returns null on failure. */
 async function getQuotePrice(ticker: string): Promise<number | null> {
   try {
-    const res = await fetch(
-      `${_SUPABASE_URL}/functions/v1/fetch-stock-data`,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${_SUPABASE_KEY}`,
-        },
-        body: JSON.stringify({ symbol: ticker.toUpperCase(), endpoint: 'quote' }),
-      }
-    );
+    const res = await fetch(`${_IB_BASE}/quote/${ticker.toUpperCase()}`);
     if (!res.ok) return null;
     const data = await res.json();
-    return data.c > 0 ? data.c : null; // c = current price
+    return data.price > 0 ? data.price : null;
   } catch {
     return null;
   }

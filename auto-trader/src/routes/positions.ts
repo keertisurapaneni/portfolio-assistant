@@ -72,4 +72,17 @@ router.get('/positions', async (_req, res) => {
   }
 });
 
+// ── GET /api/quote/:symbol — lightweight price lookup for position sizing ──
+router.get('/quote/:symbol', async (req, res) => {
+  const symbol = req.params.symbol?.toUpperCase();
+  if (!symbol) return res.status(400).json({ error: 'Missing symbol' });
+
+  const price = await getQuotePrice(symbol);
+  if (price === null) {
+    return res.status(404).json({ error: `Could not fetch price for ${symbol}` });
+  }
+
+  res.json({ symbol, price });
+});
+
 export default router;
