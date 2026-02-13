@@ -47,7 +47,13 @@ Before shipping UI changes, walk through these scenarios mentally:
 Always run `npx tsc --noEmit` AND visually scan for logic errors before committing.
 A passing type-check doesn't catch wrong data sources or formatting bugs.
 
-## 6. Filter Accuracy
+## 6. Use Playwright to Verify UI
+
+You have Playwright browser tools available. **Use them** to visually verify changes
+after deploying or when investigating issues — don't just query APIs and guess.
+Check the deployed Vercel URL or local dev server to confirm what the user actually sees.
+
+## 7. Filter Accuracy
 
 Performance metrics must only count executed trades:
 - Exclude CANCELLED, REJECTED, EXPIRED statuses
