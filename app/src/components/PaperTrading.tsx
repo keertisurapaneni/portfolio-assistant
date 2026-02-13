@@ -956,6 +956,22 @@ function SettingsTab({ config, onUpdate }: {
           <p className="text-xs text-[hsl(var(--muted-foreground))] mt-1">Both scanner AND FA must meet threshold</p>
         </div>
 
+        {/* Min Suggested Finds Conviction */}
+        <div>
+          <label className="block text-sm font-medium text-[hsl(var(--foreground))] mb-1.5">
+            Suggested Finds Min Conviction
+          </label>
+          <input
+            type="number"
+            value={config.minSuggestedFindsConviction}
+            onChange={e => onUpdate({ minSuggestedFindsConviction: Number(e.target.value) })}
+            className="w-full px-3 py-2 border border-[hsl(var(--border))] rounded-lg text-sm"
+            min={7}
+            max={10}
+          />
+          <p className="text-xs text-[hsl(var(--muted-foreground))] mt-1">Auto-buy at this conviction (or 7+ if Undervalued/Deep Value)</p>
+        </div>
+
         {/* IB Account */}
         <div>
           <label className="block text-sm font-medium text-[hsl(var(--foreground))] mb-1.5">

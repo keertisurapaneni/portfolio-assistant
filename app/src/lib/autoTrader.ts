@@ -38,6 +38,7 @@ export interface AutoTraderConfig {
   positionSize: number;          // $ per position (paper money)
   minScannerConfidence: number;  // min scanner confidence to consider
   minFAConfidence: number;       // min FA confidence to execute
+  minSuggestedFindsConviction: number; // min conviction for Suggested Finds auto-buy
   accountId: string | null;      // IB paper account ID
   dayTradeAutoClose: boolean;    // auto-close day trades at 3:55 PM ET
 }
@@ -50,6 +51,7 @@ const DEFAULT_CONFIG: AutoTraderConfig = {
   positionSize: 1000,
   minScannerConfidence: 7,
   minFAConfidence: 7,
+  minSuggestedFindsConviction: 8,
   accountId: null,
   dayTradeAutoClose: true,
 };
@@ -533,7 +535,8 @@ async function processSingleIdea(
 
 /**
  * Process Suggested Finds (Quiet Compounders + Gold Mines) for auto-buying.
- * Auto-buy filter: conviction 7+ AND (Undervalued/Deep Value OR conviction 8+).
+ * Auto-buy filter: conviction >= minSuggestedFindsConviction (default 8),
+ * OR conviction 7+ with "Undervalued"/"Deep Value" valuation tag.
  *
  * These are long-term positions: always SWING_TRADE mode, GTC orders.
  */
@@ -572,13 +575,15 @@ export async function processSuggestedFinds(
     return [];
   }
 
-  // Filter: conviction 7+ AND (Undervalued/Deep Value OR conviction 8+)
+  // Filter: conviction >= minSuggestedFindsConviction (default 8),
+  // OR conviction 7+ with Undervalued/Deep Value valuation tag
+  const minConv = cfg.minSuggestedFindsConviction;
   const qualified = stocks.filter(s => {
     const conv = s.conviction ?? 0;
-    if (conv < cfg.minScannerConfidence) return false;
+    if (conv < 7) return false; // absolute minimum
     const tag = (s.valuationTag ?? '').toLowerCase();
     const isUndervalued = tag === 'deep value' || tag === 'undervalued';
-    return isUndervalued || conv >= 8;
+    return conv >= minConv || (isUndervalued && conv >= 7);
   });
   if (qualified.length === 0) {
     logEvent('*', 'info', 'No Suggested Finds meet conviction + valuation threshold');
