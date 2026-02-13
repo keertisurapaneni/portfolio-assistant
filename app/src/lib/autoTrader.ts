@@ -617,7 +617,7 @@ async function processSuggestedFind(
       status: 'SUBMITTED',
       scanner_reason: `${source}: ${stock.reason}`,
       fa_rationale: fa.trade.rationale,
-      notes: `Source: ${source} | Conviction: ${conviction}/10 | ${stock.valuationTag ?? ''} | ${stock.aiImpact ?? ''}`,
+      notes: `Source: ${source} | Conviction: ${conviction}/10 | ${stock.valuationTag ?? ''}`,
     });
 
     logEvent(ticker, 'success', `${source} order placed! BUY ${quantity} shares @ $${entryPrice}`);

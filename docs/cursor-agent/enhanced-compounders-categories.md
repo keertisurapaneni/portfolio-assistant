@@ -57,7 +57,6 @@ flowchart TD
 **Analysis prompt** — Now returns 3-8 stocks (not fixed 6), with:
 - `conviction` (1-10): Buy recommendation strength considering business quality AND current valuation
 - `valuationTag`: "Deep Value" | "Undervalued" | "Fair Value" | "Fully Valued"
-- `aiImpact`: "Strong Tailwind" | "Tailwind" | "Neutral"
 - `category`: Industry classification (e.g., "Industrial Services", "HVAC & Building Services")
 - Valuation rules: "A great business at a bad price is not a great buy. P/E must be one of the 3 visible metrics."
 - Sorted by conviction descending
@@ -94,7 +93,6 @@ const COMPOUNDER_CATEGORIES = [
 - **Conviction badge** (top-right): Green (7-10) / amber (4-6) / red (1-3)
 - **Category badge**: Industry tag (blue for Compounders, amber for Gold Mines)
 - **Valuation pill**: Green for Deep Value/Undervalued, gray for Fair Value, orange for Fully Valued
-- **AI impact pill**: Blue for Tailwind, gray for Neutral
 - **"Top Pick" label**: First card with conviction >= 8 gets a special indicator
 
 ## Files Changed
@@ -102,7 +100,7 @@ const COMPOUNDER_CATEGORIES = [
 | File | Changes |
 |---|---|
 | `app/src/lib/aiSuggestedFinds.ts` | Updated prompts, new category prompt, category discovery function, per-category caching, PROMPT_VERSION 8 |
-| `app/src/data/suggestedFinds.ts` | Added `conviction`, `valuationTag`, `aiImpact` to `EnhancedSuggestedStock` |
+| `app/src/data/suggestedFinds.ts` | Added `conviction`, `valuationTag` to `EnhancedSuggestedStock` |
 | `app/src/hooks/useSuggestedFinds.ts` | Category state, `displayedCompounders`, `discoverCategory()` |
 | `app/src/components/SuggestedFinds.tsx` | Category dropdown, conviction badge, valuation/AI pills, Top Pick, Find More button |
 | `supabase/functions/daily-suggestions/index.ts` | Per-category GET/POST/DELETE support |

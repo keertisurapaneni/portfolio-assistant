@@ -36,14 +36,13 @@ A personal investing decision-support tool that combines automated conviction sc
 
 ### Suggested Finds (`/finds`)
 
-- **Quiet Compounders** — AI-discovered quality stocks ranked by buy conviction, with valuation and AI-impact assessment
+- **Quiet Compounders** — AI-discovered quality stocks ranked by buy conviction, with valuation assessment
   - **Conviction Score** (1-10) — How strongly the AI recommends buying NOW, based on business quality + valuation
   - **Valuation Tags** — "Deep Value", "Undervalued", "Fair Value", "Fully Valued" based on P/E-to-growth
-  - **AI Impact** — "Strong Tailwind", "Tailwind", "Neutral" — how AI affects the business
   - **Industry Categories** — Each stock tagged with its industry (HVAC, Distribution, Waste Management, etc.)
   - **Category Dropdown** — Filter by industry or discover new stocks in a specific category
   - **Top Pick** — Highest conviction stock highlighted with special badge
-- **Gold Mines** — Macro-theme-driven opportunities diversified across the value chain
+- **Gold Mines** — Macro-theme-driven opportunities diversified across the value chain, with conviction scores and valuation tags
 - Powered by HuggingFace Inference API with model cascade (Qwen2.5-72B → Mixtral-8x7B → Llama-3.1-8B)
 - Server-side daily cache per category — same picks for everyone each day, saves AI tokens
 
@@ -51,13 +50,15 @@ A personal investing decision-support tool that combines automated conviction sc
 
 *Requires authentication*
 
+- **IB Portfolio** — Live view of all positions in your IB paper account (shares, avg cost, cost basis, market value, P&L) plus all open/working orders with bracket order grouping
 - **Auto-Execution** — Scanner ideas (confidence 7+) automatically run full analysis → place bracket orders on IB paper account
+- **Suggested Finds Auto-Buy** — Quiet Compounders and Gold Mines with conviction 7+ are auto-bought if "Undervalued" or "Deep Value" (or conviction 9+ regardless of valuation)
 - **Manual Execution** — Research any ticker; if FA confidence is 7+ with a BUY/SELL recommendation, prompts to execute on IB
-- **IB Integration** — Bracket orders (entry + stop-loss + target) via Interactive Brokers Gateway
-- **Position Tracking** — Active positions, fill prices, P&L in real-time from Supabase
+- **IB Integration** — Bracket orders (entry + stop-loss + target) via Interactive Brokers Gateway with IBC auto-login (hands-off)
+- **Position Tracking** — Active positions, fill prices, P&L synced from IB to Supabase
 - **AI Feedback Loop** — Analyzes completed trades (wins/losses), stores lessons, identifies winning/losing patterns
 - **Performance Dashboard** — Win rate, average P&L, best/worst trades, pattern analysis
-- **Enable/Disable Toggle** — Turn auto-trading on/off at any time
+- **Enable/Disable Toggle** — Turn auto-trading on/off; persists across sessions via localStorage
 - **Activity Log** — Live event stream of what the auto-trader is doing
 
 ### Market Movers (`/movers`)

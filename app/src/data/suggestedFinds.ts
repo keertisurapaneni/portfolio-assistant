@@ -19,7 +19,6 @@ export interface EnhancedSuggestedStock extends SuggestedStock {
   category?: string; // Industry category (Compounders) or value chain position (Gold Mines)
   conviction?: number; // 1-10 buy conviction score
   valuationTag?: string; // "Deep Value" | "Undervalued" | "Fair Value" | "Fully Valued"
-  aiImpact?: string; // "Strong Tailwind" | "Tailwind" | "Neutral"
   metrics?: {
     label: string;
     value: string;
