@@ -22,13 +22,14 @@
     <array>
         <string>/bin/bash</string>
         <string>-c</string>
-        <!-- UPDATE this path to match your checkout location -->
-        <string>cd ~/Git-RV/portfolio-assistant/auto-trader && ./start.sh</string>
+        <string>cd ~/Git-RV/portfolio-assistant/auto-trader &amp;&amp; ./start.sh</string>
     </array>
 
+    <!-- Start whenever user logs in — no time restriction -->
     <key>RunAtLoad</key>
     <true/>
 
+    <!-- Don't restart if it exits (start.sh handles its own lifecycle) -->
     <key>KeepAlive</key>
     <false/>
 
@@ -37,37 +38,5 @@
 
     <key>StandardErrorPath</key>
     <string>/tmp/auto-trader-stderr.log</string>
-
-    <!-- Only run on weekdays during market hours (ET: 9 AM - 4:30 PM) -->
-    <!-- Remove this section to run all day -->
-    <key>StartCalendarInterval</key>
-    <array>
-        <!-- Monday through Friday at 9:00 AM -->
-        <dict>
-            <key>Weekday</key><integer>1</integer>
-            <key>Hour</key><integer>9</integer>
-            <key>Minute</key><integer>0</integer>
-        </dict>
-        <dict>
-            <key>Weekday</key><integer>2</integer>
-            <key>Hour</key><integer>9</integer>
-            <key>Minute</key><integer>0</integer>
-        </dict>
-        <dict>
-            <key>Weekday</key><integer>3</integer>
-            <key>Hour</key><integer>9</integer>
-            <key>Minute</key><integer>0</integer>
-        </dict>
-        <dict>
-            <key>Weekday</key><integer>4</integer>
-            <key>Hour</key><integer>9</integer>
-            <key>Minute</key><integer>0</integer>
-        </dict>
-        <dict>
-            <key>Weekday</key><integer>5</integer>
-            <key>Hour</key><integer>9</integer>
-            <key>Minute</key><integer>0</integer>
-        </dict>
-    </array>
 </dict>
 </plist>
