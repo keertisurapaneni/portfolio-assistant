@@ -67,10 +67,15 @@ export function SuggestedFinds({ existingTickers }: SuggestedFindsProps) {
     const allStocks = [...displayedCompounders, ...displayedGoldMines];
     if (allStocks.length === 0) return;
 
-    // Filter stocks with conviction >= 7 that haven't been processed yet
-    const newStocks = allStocks.filter(
-      s => (s.conviction ?? 0) >= 7 && !processedFindsRef.current.has(s.ticker)
-    );
+    // Filter: conviction 7+ AND (Undervalued/Deep Value OR conviction 8+), not already processed
+    const newStocks = allStocks.filter(s => {
+      if (processedFindsRef.current.has(s.ticker)) return false;
+      const conv = s.conviction ?? 0;
+      if (conv < 7) return false;
+      const tag = (s.valuationTag ?? '').toLowerCase();
+      const isUndervalued = tag === 'deep value' || tag === 'undervalued';
+      return isUndervalued || conv >= 8;
+    });
     if (newStocks.length === 0) return;
 
     // Mark as processed to avoid duplicates
