@@ -26,6 +26,7 @@ import {
   type AutoTraderConfig,
   type AutoTradeEvent,
   getAutoTraderConfig,
+  loadAutoTraderConfig,
   saveAutoTraderConfig,
   isIBConnected,
   onConnectionChange,
@@ -111,6 +112,11 @@ export function PaperTrading() {
   useEffect(() => { loadData(); }, [loadData]);
   useEffect(() => { loadIBData(); }, [loadIBData]);
 
+  // Load config from Supabase on mount (overrides stale localStorage)
+  useEffect(() => {
+    loadAutoTraderConfig().then(setConfig);
+  }, []);
+
   // Auto-analyze unreviewed trades on page load
   useEffect(() => {
     analyzeUnreviewedTrades()
@@ -153,7 +159,7 @@ export function PaperTrading() {
       try {
         const accounts = await getAccounts();
         if (accounts.length > 0) {
-          const updated = saveAutoTraderConfig({ accountId: accounts[0], enabled: true });
+          const updated = await saveAutoTraderConfig({ accountId: accounts[0], enabled: true });
           setConfig(updated);
           return;
         }
@@ -162,7 +168,7 @@ export function PaperTrading() {
       }
     }
 
-    const updated = saveAutoTraderConfig({ enabled: !config.enabled });
+    const updated = await saveAutoTraderConfig({ enabled: !config.enabled });
     setConfig(updated);
   };
 
@@ -183,8 +189,8 @@ export function PaperTrading() {
   };
 
   // Update config
-  const updateConfig = (updates: Partial<AutoTraderConfig>) => {
-    const updated = saveAutoTraderConfig(updates);
+  const updateConfig = async (updates: Partial<AutoTraderConfig>) => {
+    const updated = await saveAutoTraderConfig(updates);
     setConfig(updated);
   };
 

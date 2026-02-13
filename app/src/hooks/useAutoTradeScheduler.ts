@@ -15,6 +15,7 @@ import { useEffect, useRef } from 'react';
 import { fetchTradeIdeas } from '../lib/tradeScannerApi';
 import {
   getAutoTraderConfig,
+  loadAutoTraderConfig,
   processTradeIdeas,
   syncPositions,
 } from '../lib/autoTrader';
@@ -88,7 +89,8 @@ export function useAutoTradeScheduler() {
     if (!isAuthed) return;
 
     const runScannerAutoTrade = async () => {
-      const config = getAutoTraderConfig();
+      // Load fresh config from Supabase (in case settings changed from another tab/device)
+      const config = await loadAutoTraderConfig();
       if (!config.enabled) return;
       if (!isMarketHoursET()) return;
 

@@ -30,6 +30,7 @@ import {
   type PaperTrade,
 } from './paperTradesApi';
 import { analyzeCompletedTrade, updatePerformancePatterns } from './aiFeedback';
+import { supabase } from './supabaseClient';
 
 // ── Lightweight price lookup (via auto-trader service — Finnhub key stays server-side) ──
 const _IB_BASE = 'http://localhost:3001/api';
@@ -72,6 +73,10 @@ const DEFAULT_CONFIG: AutoTraderConfig = {
   dayTradeAutoClose: true,
 };
 
+/**
+ * Get config synchronously from localStorage cache.
+ * Call loadAutoTraderConfig() on app startup to sync from Supabase.
+ */
 export function getAutoTraderConfig(): AutoTraderConfig {
   try {
     const stored = localStorage.getItem(CONFIG_KEY);
@@ -80,10 +85,65 @@ export function getAutoTraderConfig(): AutoTraderConfig {
   return DEFAULT_CONFIG;
 }
 
-export function saveAutoTraderConfig(config: Partial<AutoTraderConfig>): AutoTraderConfig {
+/** Load config from Supabase and cache in localStorage. Call on app startup. */
+export async function loadAutoTraderConfig(): Promise<AutoTraderConfig> {
+  try {
+    const { data, error } = await supabase
+      .from('auto_trader_config')
+      .select('*')
+      .eq('id', 'default')
+      .single();
+
+    if (!error && data) {
+      const config: AutoTraderConfig = {
+        enabled: data.enabled ?? DEFAULT_CONFIG.enabled,
+        maxPositions: data.max_positions ?? DEFAULT_CONFIG.maxPositions,
+        positionSize: Number(data.position_size) || DEFAULT_CONFIG.positionSize,
+        minScannerConfidence: data.min_scanner_confidence ?? DEFAULT_CONFIG.minScannerConfidence,
+        minFAConfidence: data.min_fa_confidence ?? DEFAULT_CONFIG.minFAConfidence,
+        minSuggestedFindsConviction: data.min_suggested_finds_conviction ?? DEFAULT_CONFIG.minSuggestedFindsConviction,
+        accountId: data.account_id ?? DEFAULT_CONFIG.accountId,
+        dayTradeAutoClose: data.day_trade_auto_close ?? DEFAULT_CONFIG.dayTradeAutoClose,
+      };
+      localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
+      return config;
+    }
+  } catch (err) {
+    console.warn('[AutoTrader] Failed to load config from Supabase:', err);
+  }
+
+  // Fallback: use localStorage or defaults
+  return getAutoTraderConfig();
+}
+
+/** Save config to both Supabase (persistent) and localStorage (fast cache). */
+export async function saveAutoTraderConfig(config: Partial<AutoTraderConfig>): Promise<AutoTraderConfig> {
   const current = getAutoTraderConfig();
   const updated = { ...current, ...config };
+
+  // Cache locally for immediate use
   localStorage.setItem(CONFIG_KEY, JSON.stringify(updated));
+
+  // Persist to Supabase (non-blocking for UI, but we await for callers that care)
+  try {
+    await supabase
+      .from('auto_trader_config')
+      .upsert({
+        id: 'default',
+        enabled: updated.enabled,
+        max_positions: updated.maxPositions,
+        position_size: updated.positionSize,
+        min_scanner_confidence: updated.minScannerConfidence,
+        min_fa_confidence: updated.minFAConfidence,
+        min_suggested_finds_conviction: updated.minSuggestedFindsConviction,
+        account_id: updated.accountId,
+        day_trade_auto_close: updated.dayTradeAutoClose,
+        updated_at: new Date().toISOString(),
+      });
+  } catch (err) {
+    console.warn('[AutoTrader] Failed to save config to Supabase:', err);
+  }
+
   return updated;
 }
 
