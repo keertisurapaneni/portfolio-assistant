@@ -858,14 +858,27 @@ Deno.serve(async (req) => {
 
           // ── Pass 2: Full shared indicator analysis ──
           if (pass1.length > 0) {
-            dayIdeas = await runPass2(pass1, quoteMap, 'DAY_TRADE', GEMINI_KEYS);
+            const newIdeas = await runPass2(pass1, quoteMap, 'DAY_TRADE', GEMINI_KEYS);
+            // Merge new ideas with existing — don't overwrite the day's earlier picks
+            const existingTickers = new Set(dayIdeas.map(d => d.ticker));
+            for (const idea of newIdeas) {
+              if (existingTickers.has(idea.ticker)) {
+                // Update existing idea with fresh data
+                const idx = dayIdeas.findIndex(d => d.ticker === idea.ticker);
+                if (idx >= 0) dayIdeas[idx] = idea;
+              } else {
+                dayIdeas.push(idea);
+              }
+            }
           }
         } catch (err) {
           console.error('[Trade Scanner] Day AI eval failed:', err);
         }
       }
 
-      await writeToDB(sb, 'day_trades', dayIdeas, 30);
+      // Keep day ideas for the full trading day (not just 30 min)
+      // They expire at end of day (use longer TTL, scanner refresh logic handles staleness)
+      await writeToDB(sb, 'day_trades', dayIdeas, 390);
     }
 
     // ── Refresh swing trades ──
@@ -895,7 +908,17 @@ Deno.serve(async (req) => {
 
           // ── Pass 2: Full shared indicator analysis ──
           if (pass1.length > 0) {
-            swingIdeas = await runPass2(pass1, quoteMap, 'SWING_TRADE', GEMINI_KEYS);
+            const newIdeas = await runPass2(pass1, quoteMap, 'SWING_TRADE', GEMINI_KEYS);
+            // Merge new ideas with existing — don't overwrite earlier picks
+            const existingTickers = new Set(swingIdeas.map(d => d.ticker));
+            for (const idea of newIdeas) {
+              if (existingTickers.has(idea.ticker)) {
+                const idx = swingIdeas.findIndex(d => d.ticker === idea.ticker);
+                if (idx >= 0) swingIdeas[idx] = idea;
+              } else {
+                swingIdeas.push(idea);
+              }
+            }
           } else {
             console.log(`[Trade Scanner] Swing: ${candidates.length} candidates → 0 passed pass 1, skipping pass 2`);
           }
