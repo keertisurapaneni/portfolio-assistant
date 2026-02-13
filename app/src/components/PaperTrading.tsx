@@ -54,7 +54,7 @@ import { analyzeUnreviewedTrades, updatePerformancePatterns } from '../lib/aiFee
 
 // ── Main Component ──────────────────────────────────────
 
-type Tab = 'portfolio' | 'today' | 'history' | 'settings';
+type Tab = 'portfolio' | 'today' | 'signals' | 'history' | 'settings';
 
 export function PaperTrading() {
   const [config, setConfig] = useState<AutoTraderConfig>(getAutoTraderConfig);
@@ -314,18 +314,12 @@ export function PaperTrading() {
         />
       </div>
 
-      {/* Signal Quality / Performance Breakdown */}
-      <PerformanceBreakdown
-        categories={categoryPerf}
-        totalDeployed={totalDeployed}
-        maxAllocation={config.maxTotalAllocation}
-      />
-
       {/* Tabs */}
       <div className="flex gap-1 bg-white/60 p-1 rounded-xl border border-[hsl(var(--border))]">
         {[
           { id: 'portfolio' as Tab, label: 'IB Portfolio', icon: Briefcase, count: ibPositions.length },
           { id: 'today' as Tab, label: "Today's Activity", icon: Zap, count: todaysExecuted.length },
+          { id: 'signals' as Tab, label: 'Signal Quality', icon: Target },
           { id: 'history' as Tab, label: 'Trade History', icon: Clock, count: completedTrades.length },
           { id: 'settings' as Tab, label: 'Settings', icon: Settings },
         ].map(t => (
@@ -370,6 +364,13 @@ export function PaperTrading() {
           )}
           {tab === 'today' && (
             <TodaysActivityTab events={todaysExecuted} />
+          )}
+          {tab === 'signals' && (
+            <PerformanceBreakdown
+              categories={categoryPerf}
+              totalDeployed={totalDeployed}
+              maxAllocation={config.maxTotalAllocation}
+            />
           )}
           {tab === 'history' && (
             <HistoryTab trades={completedTrades} />

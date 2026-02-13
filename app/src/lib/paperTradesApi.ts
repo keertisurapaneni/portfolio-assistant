@@ -453,12 +453,16 @@ export async function recalculatePerformanceByCategory(): Promise<CategoryPerfor
 
   for (const cat of categories) {
     const catTrades = trades.filter(cat.filter);
+    // Exclude cancelled/rejected — these never executed, no money at risk
+    const excludedStatuses = ['CANCELLED', 'REJECTED'];
+    const meaningful = catTrades.filter(t => !excludedStatuses.includes(t.status));
+
     const activeStatuses = ['PENDING', 'SUBMITTED', 'FILLED', 'PARTIAL'];
     const closedStatuses = ['STOPPED', 'TARGET_HIT', 'CLOSED'];
 
-    const active = catTrades.filter(t => activeStatuses.includes(t.status));
+    const active = meaningful.filter(t => activeStatuses.includes(t.status));
     // Only count completed trades that actually filled
-    const completed = catTrades.filter(
+    const completed = meaningful.filter(
       t => closedStatuses.includes(t.status) && t.fill_price != null
     );
     const wins = completed.filter(t => (t.pnl ?? 0) > 0);
@@ -487,7 +491,7 @@ export async function recalculatePerformanceByCategory(): Promise<CategoryPerfor
 
     results.push({
       category: cat.key,
-      totalTrades: catTrades.length,
+      totalTrades: meaningful.length,
       activeTrades: active.length,
       wins: wins.length,
       losses: losses.length,
