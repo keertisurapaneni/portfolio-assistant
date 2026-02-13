@@ -1,7 +1,7 @@
 /**
  * Auto-Trader — orchestrates the full flow:
  *   Scanner idea → Full Analysis → Risk check → IB bracket order → Log trade
- *   Suggested Finds → Full Analysis → Risk check → IB bracket order → Log trade
+ *   Suggested Finds → Market buy (long-term hold, no FA needed) → Log trade
  *
  * Runs entirely in the browser. No backend polling needed.
  */
@@ -29,6 +29,24 @@ import {
   createAutoTradeEvent,
   type PaperTrade,
 } from './paperTradesApi';
+
+// ── Lightweight price lookup (Finnhub quote) ─────────────
+const _FINNHUB_BASE = 'https://finnhub.io/api/v1';
+const _FINNHUB_KEY = import.meta.env.VITE_FINNHUB_API_KEY || '';
+
+/** Get the current market price for a ticker (for position sizing). Returns null on failure. */
+async function getQuotePrice(ticker: string): Promise<number | null> {
+  try {
+    const res = await fetch(
+      `${_FINNHUB_BASE}/quote?symbol=${ticker.toUpperCase()}&token=${_FINNHUB_KEY}`
+    );
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data.c > 0 ? data.c : null; // c = current price
+  } catch {
+    return null;
+  }
+}
 
 // ── Configuration ────────────────────────────────────────
 
@@ -611,7 +629,7 @@ export async function processSuggestedFinds(
   return results;
 }
 
-/** Process a single Suggested Find stock */
+/** Process a single Suggested Find stock — long-term buy, no swing/day analysis */
 async function processSuggestedFind(
   stock: EnhancedSuggestedStock,
   config: AutoTraderConfig
@@ -633,149 +651,86 @@ async function processSuggestedFind(
     return { ticker, action: 'skipped', reason: 'Duplicate position' };
   }
 
-  // ── 2. Run Full Swing Analysis ──
-  logEvent(ticker, 'info', `Running swing analysis for ${source} (conviction: ${conviction}/10)...`);
-  let fa: TradingSignalsResponse;
-  try {
-    fa = await fetchTradingSignal(ticker, 'SWING_TRADE');
-  } catch (err) {
-    const msg = `FA failed: ${err instanceof Error ? err.message : 'Unknown'}`;
+  // ── 2. Get current price for position sizing ──
+  // For long-term holds we skip swing/day analysis — conviction + valuation already vetted.
+  logEvent(ticker, 'info', `${source} — conviction ${conviction}/10, buying at market (long-term hold)`);
+
+  const currentPrice = await getQuotePrice(ticker);
+  if (!currentPrice) {
+    const msg = `Could not fetch current price for ${source}`;
     logEvent(ticker, 'error', msg);
     persistEvent(ticker, 'error', msg, {
-      action: 'failed', source: 'suggested_finds', mode: 'SWING_TRADE',
+      action: 'failed', source: 'suggested_finds',
       scanner_signal: 'BUY', scanner_confidence: conviction,
-      skip_reason: 'Full analysis failed', metadata: sfMeta,
+      skip_reason: 'Price lookup failed', metadata: sfMeta,
     });
-    return { ticker, action: 'failed', reason: 'Full analysis failed' };
+    return { ticker, action: 'failed', reason: 'Price lookup failed' };
   }
 
-  // ── 3. Confidence Gate (use FA confidence) ──
-  const faConf = fa.trade.confidence;
-  const faRec = fa.trade.recommendation;
+  const quantity = Math.max(1, Math.floor(config.positionSize / currentPrice));
 
-  if (faConf < config.minFAConfidence) {
-    const msg = `FA confidence too low: ${faConf}/10 (need ${config.minFAConfidence}+) for ${source}`;
-    logEvent(ticker, 'info', msg);
-    persistEvent(ticker, 'info', msg, {
-      action: 'skipped', source: 'suggested_finds', mode: 'SWING_TRADE',
-      scanner_signal: 'BUY', scanner_confidence: conviction,
-      fa_recommendation: faRec, fa_confidence: faConf,
-      skip_reason: `FA confidence ${faConf} < ${config.minFAConfidence}`, metadata: sfMeta,
-    });
-    return { ticker, action: 'skipped', reason: `FA confidence ${faConf} < ${config.minFAConfidence}` };
-  }
-
-  // Suggested Finds are always BUY candidates — skip if FA says SELL or HOLD
-  if (faRec !== 'BUY') {
-    const msg = `FA says ${faRec} for ${source} — skipping (only buying)`;
-    logEvent(ticker, 'info', msg);
-    persistEvent(ticker, 'info', msg, {
-      action: 'skipped', source: 'suggested_finds', mode: 'SWING_TRADE',
-      scanner_signal: 'BUY', scanner_confidence: conviction,
-      fa_recommendation: faRec, fa_confidence: faConf,
-      skip_reason: `FA recommendation is ${faRec}, not BUY`, metadata: sfMeta,
-    });
-    return { ticker, action: 'skipped', reason: `FA recommendation is ${faRec}, not BUY` };
-  }
-
-  // ── 4. Entry/Stop/Target validation ──
-  const { entryPrice, stopLoss, targetPrice } = fa.trade;
-  if (!entryPrice || !stopLoss || !targetPrice) {
-    logEvent(ticker, 'warning', `FA missing entry/stop/target for ${source} — skipping`);
-    persistEvent(ticker, 'warning', `FA missing entry/stop/target for ${source} — skipping`, {
-      action: 'skipped', source: 'suggested_finds', mode: 'SWING_TRADE',
-      scanner_signal: 'BUY', scanner_confidence: conviction,
-      fa_recommendation: faRec, fa_confidence: faConf,
-      skip_reason: 'Missing price levels from FA', metadata: sfMeta,
-    });
-    return { ticker, action: 'skipped', reason: 'Missing price levels from FA' };
-  }
-
-  // ── 5. Position Sizing ──
-  const quantity = Math.floor(config.positionSize / entryPrice);
-  if (quantity < 1) {
-    const msg = `Position size too small for ${source}: $${config.positionSize} / $${entryPrice}`;
-    logEvent(ticker, 'warning', msg);
-    persistEvent(ticker, 'warning', msg, {
-      action: 'skipped', source: 'suggested_finds', mode: 'SWING_TRADE',
-      scanner_signal: 'BUY', scanner_confidence: conviction,
-      fa_recommendation: faRec, fa_confidence: faConf,
-      skip_reason: 'Position size too small for 1 share', metadata: sfMeta,
-    });
-    return { ticker, action: 'skipped', reason: 'Position size too small for 1 share' };
-  }
-
-  // ── 6. Search IB Contract ──
-  logEvent(ticker, 'info', `Searching IB contract for ${source}...`);
+  // ── 3. Search IB Contract ──
   const contract = await searchContract(ticker);
   if (!contract) {
     logEvent(ticker, 'error', `Stock not found on IB (${source})`);
     persistEvent(ticker, 'error', `Stock not found on IB (${source})`, {
-      action: 'failed', source: 'suggested_finds', mode: 'SWING_TRADE',
+      action: 'failed', source: 'suggested_finds',
       scanner_signal: 'BUY', scanner_confidence: conviction,
-      fa_recommendation: faRec, fa_confidence: faConf,
       skip_reason: 'IB contract not found', metadata: sfMeta,
     });
     return { ticker, action: 'failed', reason: 'IB contract not found' };
   }
 
-  // ── 7. Place Bracket Order (always GTC for long-term holds) ──
-  logEvent(ticker, 'info', `Placing bracket order: BUY ${quantity} @ $${entryPrice} (SL: $${stopLoss}, TP: $${targetPrice}) [${source}]`);
+  // ── 4. Place Market Buy (no bracket — long-term hold, no stop loss/target) ──
+  logEvent(ticker, 'info', `Placing market BUY: ${quantity} shares (~$${(quantity * currentPrice).toFixed(0)}) [${source}]`);
 
   try {
-    const orderReplies = await placeBracketOrder({
+    const orderReplies = await placeMarketOrder({
       accountId: config.accountId!,
       conid: contract.conid,
-      symbol: ticker,
       side: 'BUY',
       quantity,
-      entryPrice,
-      stopLoss,
-      takeProfit: targetPrice,
-      tif: 'GTC',
+      symbol: ticker,
     });
 
     const finalReplies = await handleOrderConfirmations(orderReplies);
     const orderId = finalReplies[0]?.order_id ?? null;
 
-    // ── 8. Log Trade ──
+    // ── 5. Log Trade ──
     const trade = await createPaperTrade({
       ticker,
       mode: 'SWING_TRADE',
       signal: 'BUY',
       scanner_confidence: conviction,
-      fa_confidence: faConf,
-      fa_recommendation: faRec,
-      entry_price: entryPrice,
-      stop_loss: stopLoss,
-      target_price: targetPrice,
-      target_price2: fa.trade.targetPrice2,
-      risk_reward: fa.trade.riskReward,
+      fa_confidence: conviction,        // no FA — use conviction as confidence proxy
+      fa_recommendation: 'BUY',
+      entry_price: currentPrice,
+      stop_loss: null,                  // no stop loss for long-term holds
+      target_price: null,               // no target — hold indefinitely
       quantity,
-      position_size: quantity * entryPrice,
+      position_size: quantity * currentPrice,
       ib_order_id: orderId,
       status: 'SUBMITTED',
       scanner_reason: `${source}: ${stock.reason}`,
-      fa_rationale: fa.trade.rationale,
-      notes: `Source: ${source} | Conviction: ${conviction}/10 | ${stock.valuationTag ?? ''}`,
+      fa_rationale: null,
+      notes: `Long-term hold | ${source} | Conviction: ${conviction}/10 | ${stock.valuationTag ?? ''}`,
     });
 
-    const msg = `${source} order placed! BUY ${quantity} shares @ $${entryPrice}`;
+    const msg = `${source} market BUY placed! ${quantity} shares of ${ticker} @ ~$${currentPrice.toFixed(2)}`;
     logEvent(ticker, 'success', msg);
     persistEvent(ticker, 'success', msg, {
       action: 'executed', source: 'suggested_finds', mode: 'SWING_TRADE',
       scanner_signal: 'BUY', scanner_confidence: conviction,
-      fa_recommendation: faRec, fa_confidence: faConf,
-      metadata: { ...sfMeta, entry_price: entryPrice, stop_loss: stopLoss, target_price: targetPrice, quantity },
+      fa_recommendation: 'BUY', fa_confidence: conviction,
+      metadata: { ...sfMeta, current_price: currentPrice, quantity, order_type: 'MARKET' },
     });
-    return { ticker, action: 'executed', reason: 'Order placed successfully', trade };
+    return { ticker, action: 'executed', reason: 'Market order placed successfully', trade };
   } catch (err) {
     const msg = `Order failed for ${source}: ${err instanceof Error ? err.message : 'Unknown'}`;
     logEvent(ticker, 'error', msg);
     persistEvent(ticker, 'error', msg, {
-      action: 'failed', source: 'suggested_finds', mode: 'SWING_TRADE',
+      action: 'failed', source: 'suggested_finds',
       scanner_signal: 'BUY', scanner_confidence: conviction,
-      fa_recommendation: faRec, fa_confidence: faConf,
       skip_reason: 'Order rejected by IB', metadata: sfMeta,
     });
 
@@ -784,13 +739,13 @@ async function processSuggestedFind(
       mode: 'SWING_TRADE',
       signal: 'BUY',
       scanner_confidence: conviction,
-      fa_confidence: faConf,
-      fa_recommendation: faRec,
-      entry_price: entryPrice,
-      stop_loss: stopLoss,
-      target_price: targetPrice,
+      fa_confidence: conviction,
+      fa_recommendation: 'BUY',
+      entry_price: currentPrice,
+      stop_loss: null,
+      target_price: null,
       quantity,
-      position_size: quantity * entryPrice,
+      position_size: quantity * currentPrice,
       status: 'REJECTED',
       notes: `${source} order rejected: ${err instanceof Error ? err.message : 'Unknown error'}`,
     });
