@@ -13,6 +13,7 @@ import { generateAIInsights } from './lib/aiInsights';
 import { getRiskProfile, setRiskProfile } from './lib/settingsStorage';
 import { cn } from './lib/utils';
 import { AuthProvider, useAuth } from './lib/auth';
+import { useAutoTradeScheduler } from './hooks/useAutoTradeScheduler';
 
 // Components
 import { Dashboard } from './components/Dashboard';
@@ -73,6 +74,9 @@ function AppContent() {
   const { user, loading: authLoading, signOut } = useAuth();
   const isAuthed = !!user;
   const activeTab = location.pathname === '/finds' ? 'suggested' : location.pathname === '/movers' ? 'movers' : location.pathname === '/signals' ? 'signals' : 'portfolio';
+
+  // Background auto-trade scheduler — runs scanner every 30 min during market hours
+  useAutoTradeScheduler();
   const [stocks, setStocks] = useState<StockWithConviction[]>([]);
   const [selectedStock, setSelectedStock] = useState<StockWithConviction | null>(null);
   const [showAddModal, setShowAddModal] = useState(false);
