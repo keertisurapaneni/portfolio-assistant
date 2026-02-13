@@ -296,9 +296,9 @@ export function PaperTrading() {
         />
         <StatCard
           icon={<Activity className="w-4 h-4" />}
-          label="Holdings"
-          value={String(ibPositions.length)}
-          color="amber"
+          label="Avg P&L"
+          value={`$${((performance?.total_pnl ?? 0) / Math.max(performance?.total_trades ?? 1, 1)).toFixed(2)}`}
+          color={((performance?.total_pnl ?? 0) / Math.max(performance?.total_trades ?? 1, 1)) >= 0 ? 'green' : 'red'}
         />
       </div>
 
