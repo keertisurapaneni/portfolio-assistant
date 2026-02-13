@@ -28,7 +28,6 @@ import {
   type LongTermOutlook,
 } from '../lib/tradingSignalsApi';
 import {
-  getAutoTraderConfig,
   processTradeIdeas,
   type ProcessResult,
 } from '../lib/autoTrader';
@@ -520,12 +519,10 @@ export function TradingSignals() {
       setResult(data);
       setFromCache(false);
 
-      // Show execute prompt if authenticated, auto-trading enabled, and signal is strong
-      const config = getAutoTraderConfig();
+      // Show execute prompt if authenticated and signal is strong (manual — always ask, no auto-trade)
       if (
         isAuthed &&
-        config.enabled &&
-        data.trade.confidence >= config.minFAConfidence &&
+        data.trade.confidence >= 7 &&
         data.trade.recommendation !== 'HOLD' &&
         (data.trade.entryPrice != null)
       ) {
