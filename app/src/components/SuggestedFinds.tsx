@@ -58,7 +58,7 @@ export function SuggestedFinds({ existingTickers }: SuggestedFindsProps) {
   const { user } = useAuth();
   const isAuthed = !!user;
 
-  // ── Auto-buy Suggested Finds with conviction 7+ ──
+  // ── Auto-buy Suggested Finds ──
   useEffect(() => {
     const config = getAutoTraderConfig();
     if (!config.enabled || !isAuthed) return;
@@ -67,14 +67,16 @@ export function SuggestedFinds({ existingTickers }: SuggestedFindsProps) {
     const allStocks = [...displayedCompounders, ...displayedGoldMines];
     if (allStocks.length === 0) return;
 
-    // Filter: conviction 7+ AND (Undervalued/Deep Value OR conviction 8+), not already processed
+    // Filter: conviction >= minSuggestedFindsConviction (default 8),
+    // OR conviction 7+ with Undervalued/Deep Value — not already processed
+    const minConv = config.minSuggestedFindsConviction;
     const newStocks = allStocks.filter(s => {
       if (processedFindsRef.current.has(s.ticker)) return false;
       const conv = s.conviction ?? 0;
       if (conv < 7) return false;
       const tag = (s.valuationTag ?? '').toLowerCase();
       const isUndervalued = tag === 'deep value' || tag === 'undervalued';
-      return isUndervalued || conv >= 8;
+      return conv >= minConv || (isUndervalued && conv >= 7);
     });
     if (newStocks.length === 0) return;
 
@@ -205,8 +207,8 @@ export function SuggestedFinds({ existingTickers }: SuggestedFindsProps) {
         )}>
           <Zap className={cn('w-3.5 h-3.5', isAutoTrading && 'animate-pulse')} />
           {isAutoTrading
-            ? 'Auto-buying suggested finds with conviction 7+...'
-            : 'Auto-buy enabled — stocks with conviction 7+ will be purchased on IB paper'
+            ? 'Auto-buying qualifying suggested finds...'
+            : `Auto-buy enabled — conviction ${getAutoTraderConfig().minSuggestedFindsConviction}+ (or 7+ if undervalued)`
           }
         </div>
       )}
