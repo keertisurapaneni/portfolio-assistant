@@ -17,9 +17,11 @@ import {
   loadAutoTraderConfig,
   saveAutoTraderConfig,
   processTradeIdeas,
+  processSuggestedFinds,
   syncPositions,
   checkDipBuyOpportunities,
   checkProfitTakeOpportunities,
+  getAutoTraderConfig,
 } from '../lib/autoTrader';
 import { getPositions } from '../lib/ibClient';
 import {
@@ -29,6 +31,7 @@ import {
   recalculatePerformanceByCategory,
 } from '../lib/paperTradesApi';
 import { analyzeUnreviewedTrades, updatePerformancePatterns } from '../lib/aiFeedback';
+import { discoverStocks } from '../lib/aiSuggestedFinds';
 import { useAuth } from '../lib/auth';
 
 /** Check if we're in US market hours (9:30 AM - 4:00 PM ET, weekdays) */
@@ -93,6 +96,53 @@ function isPastMarketCloseET(): boolean {
   return mins >= 16 * 60 + 15;
 }
 
+/** Pre-generate Suggested Finds + auto-trade qualifying picks — once daily at ~9 AM ET */
+let _lastSuggestedFindsDate = '';
+async function preGenerateSuggestedFinds() {
+  const today = new Date().toISOString().slice(0, 10);
+  if (_lastSuggestedFindsDate === today) return;
+
+  // Only run around 9 AM ET (between 8:55 and 9:30 AM ET, or later if first check of the day)
+  const now = new Date();
+  const et = new Date(now.toLocaleString('en-US', { timeZone: 'America/New_York' }));
+  const mins = et.getHours() * 60 + et.getMinutes();
+  // Run if it's 9 AM+ ET and we haven't run today yet
+  if (mins < 9 * 60) return;
+
+  try {
+    console.log('[AutoTradeScheduler] Pre-generating Suggested Finds for today...');
+    // discoverStocks with forceRefresh=false — uses server cache if available,
+    // otherwise generates fresh and caches for all users
+    const result = await discoverStocks([], false);
+    console.log(
+      `[AutoTradeScheduler] Suggested Finds ready: ${result.compounders.length} compounders, ${result.goldMines.length} gold mines`
+    );
+
+    // Auto-trade qualifying Suggested Finds
+    const config = await loadAutoTraderConfig();
+    if (config.enabled && config.accountId) {
+      const allStocks = [...result.compounders, ...result.goldMines];
+
+      // Identify top picks (first in each list with conviction 8+)
+      const topPickTickers = new Set<string>();
+      const firstCompounder = result.compounders[0];
+      const firstGoldMine = result.goldMines[0];
+      if (firstCompounder && (firstCompounder.conviction ?? 0) >= 8) topPickTickers.add(firstCompounder.ticker);
+      if (firstGoldMine && (firstGoldMine.conviction ?? 0) >= 8) topPickTickers.add(firstGoldMine.ticker);
+
+      const results = await processSuggestedFinds(allStocks, config, topPickTickers);
+      const executed = results.filter(r => r.action === 'executed');
+      if (executed.length > 0) {
+        console.log(`[AutoTradeScheduler] Auto-traded ${executed.length} Suggested Finds: ${executed.map(r => r.ticker).join(', ')}`);
+      }
+    }
+
+    _lastSuggestedFindsDate = today;
+  } catch (err) {
+    console.warn('[AutoTradeScheduler] Suggested Finds pre-generation failed:', err);
+  }
+}
+
 /** Daily rehydration — run once per day after market close */
 let _lastRehydrationDate = '';
 async function runDailyRehydration(accountId: string) {
@@ -132,6 +182,11 @@ export function useAutoTradeScheduler() {
       // Load fresh config from Supabase (in case settings changed from another tab/device)
       const config = await loadAutoTraderConfig();
       if (!config.enabled) return;
+
+      // Pre-generate Suggested Finds daily at 9 AM ET (runs before market open)
+      // This has its own once-per-day guard; safe to call every loop
+      preGenerateSuggestedFinds().catch(() => {});
+
       if (!isMarketHoursET()) return;
 
       // Throttle: don't run more than once per 15 minutes
