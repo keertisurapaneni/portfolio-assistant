@@ -1998,35 +1998,30 @@ function SignalScorecard({ title, subtitle, data, color }: {
 
       <div className="grid grid-cols-3 gap-2 mt-3">
         <div>
-          <p className="text-[10px] text-[hsl(var(--muted-foreground))]">Placed</p>
-          <p className={cn('text-sm font-bold tabular-nums', textColors[color])}>{data.totalTrades}</p>
-        </div>
-        <div>
           <p className="text-[10px] text-[hsl(var(--muted-foreground))]">Executed</p>
-          <p className={cn('text-sm font-bold tabular-nums', textColors[color])}>{data.activeTrades}</p>
+          <p className={cn('text-sm font-bold tabular-nums', textColors[color])}>
+            {data.activeTrades + data.wins + data.losses}
+          </p>
+          <p className="text-[9px] text-[hsl(var(--muted-foreground))] opacity-60">
+            {data.activeTrades > 0 ? `${data.activeTrades} active` : `${data.wins + data.losses} closed`}
+          </p>
         </div>
         <div>
           <p className="text-[10px] text-[hsl(var(--muted-foreground))]">Win Rate</p>
           <p className={cn('text-sm font-bold tabular-nums', data.winRate >= 50 ? 'text-emerald-600' : 'text-red-600')}>
             {data.winRate.toFixed(0)}%
-            <span className="text-[9px] font-normal opacity-60 ml-0.5">
-              ({data.wins}/{data.wins + data.losses})
-            </span>
+          </p>
+          <p className="text-[9px] text-[hsl(var(--muted-foreground))] opacity-60">
+            {data.wins}W / {data.losses}L
           </p>
         </div>
-      </div>
-
-      <div className="grid grid-cols-2 gap-2 mt-2 pt-2 border-t border-[hsl(var(--border))]/30">
         <div>
           <p className="text-[10px] text-[hsl(var(--muted-foreground))]">Avg P&L</p>
-          <p className={cn('text-xs font-bold tabular-nums', data.avgPnl >= 0 ? 'text-emerald-600' : 'text-red-600')}>
+          <p className={cn('text-sm font-bold tabular-nums', data.avgPnl >= 0 ? 'text-emerald-600' : 'text-red-600')}>
             {fmtUsd(data.avgPnl, 0, true)}
           </p>
-        </div>
-        <div>
-          <p className="text-[10px] text-[hsl(var(--muted-foreground))]">Avg Return</p>
-          <p className={cn('text-xs font-bold tabular-nums', data.avgReturnPct >= 0 ? 'text-emerald-600' : 'text-red-600')}>
-            {data.avgReturnPct >= 0 ? '+' : ''}{data.avgReturnPct.toFixed(1)}%
+          <p className="text-[9px] text-[hsl(var(--muted-foreground))] opacity-60">
+            {data.avgReturnPct >= 0 ? '+' : ''}{data.avgReturnPct.toFixed(1)}% avg
           </p>
         </div>
       </div>
