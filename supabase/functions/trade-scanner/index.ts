@@ -773,12 +773,24 @@ Deno.serve(async (req) => {
     const marketOpen = isMarketOpen();
     const swingWindow = isSwingRefreshWindow();
 
-    const dayNeverScanned = !dayRow || (Date.now() - new Date(dayRow.scanned_at).getTime() > 24 * 60 * 60 * 1000);
-    const swingNeverScanned = !swingRow || (Date.now() - new Date(swingRow.scanned_at).getTime() > 24 * 60 * 60 * 1000);
-    const needDayRefresh = forceRefresh || (dayStale && marketOpen) || dayNeverScanned;
+    // Check if scan data is from a PREVIOUS trading day (needs fresh start)
+    const todayET = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/New_York' })).toISOString().slice(0, 10);
+    const dayScannedDate = dayRow?.scanned_at
+      ? new Date(new Date(dayRow.scanned_at).toLocaleString('en-US', { timeZone: 'America/New_York' })).toISOString().slice(0, 10)
+      : '';
+    const swingScannedDate = swingRow?.scanned_at
+      ? new Date(new Date(swingRow.scanned_at).toLocaleString('en-US', { timeZone: 'America/New_York' })).toISOString().slice(0, 10)
+      : '';
+    const dayFromPreviousDay = dayScannedDate !== todayET;
+    const swingFromPreviousDay = swingScannedDate !== todayET;
+
+    // Day trades: ONLY refresh during market hours — pre-market Yahoo movers are stale
+    const needDayRefresh = forceRefresh || (marketOpen && (dayStale || dayFromPreviousDay));
+    // Swing trades: allow refresh in swing windows or if never scanned today
+    const swingNeverScanned = !swingRow || swingFromPreviousDay;
     const needSwingRefresh = forceRefresh || (swingStale && (swingWindow || swingNeverScanned)) || swingNeverScanned;
 
-    console.log(`[Trade Scanner] day=${dayStale ? 'STALE' : 'FRESH'} swing=${swingStale ? 'STALE' : 'FRESH'} market=${marketOpen ? 'OPEN' : 'CLOSED'} swingWindow=${swingWindow} refreshDay=${needDayRefresh} refreshSwing=${needSwingRefresh}`);
+    console.log(`[Trade Scanner] day=${dayStale ? 'STALE' : 'FRESH'} dayPrevDay=${dayFromPreviousDay} swing=${swingStale ? 'STALE' : 'FRESH'} swingPrevDay=${swingFromPreviousDay} market=${marketOpen ? 'OPEN' : 'CLOSED'} swingWindow=${swingWindow} refreshDay=${needDayRefresh} refreshSwing=${needSwingRefresh}`);
 
     if (!needDayRefresh && !needSwingRefresh) {
       return new Response(JSON.stringify({
@@ -800,7 +812,8 @@ Deno.serve(async (req) => {
     }
 
     // ── Refresh day trades ──
-    let dayIdeas: TradeIdea[] = dayRow?.data ?? [];
+    // Start fresh each new trading day — don't carry over yesterday's picks
+    let dayIdeas: TradeIdea[] = dayFromPreviousDay ? [] : (dayRow?.data ?? []);
     if (needDayRefresh) {
       console.log('[Trade Scanner] Refreshing day trades...');
       const [gainers, losers] = await Promise.all([
@@ -882,7 +895,8 @@ Deno.serve(async (req) => {
     }
 
     // ── Refresh swing trades ──
-    let swingIdeas: TradeIdea[] = swingRow?.data ?? [];
+    // Start fresh each new trading day for swing too — prevents week-old picks lingering
+    let swingIdeas: TradeIdea[] = swingFromPreviousDay ? [] : (swingRow?.data ?? []);
     if (needSwingRefresh) {
       console.log('[Trade Scanner] Refreshing swing trades...');
       const swingSymbols = [...new Set([...SWING_UNIVERSE, ...portfolioTickers])];

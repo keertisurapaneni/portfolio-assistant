@@ -21,7 +21,6 @@ import {
   syncPositions,
   checkDipBuyOpportunities,
   checkProfitTakeOpportunities,
-  getAutoTraderConfig,
 } from '../lib/autoTrader';
 import { getPositions } from '../lib/ibClient';
 import {
