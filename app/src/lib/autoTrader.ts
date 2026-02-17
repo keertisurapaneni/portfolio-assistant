@@ -634,22 +634,32 @@ export function calculatePositionSize(
   }
 
   const pv = config.portfolioValue;
-  const maxDollar = pv * (config.maxPositionPct / 100);
+  const alloc = config.maxTotalAllocation;
+
+  // Max single-position cap: the SMALLER of:
+  //   - max_position_pct of portfolio (e.g. 5% of $1M = $50K)
+  //   - 10% of allocation cap (e.g. 10% of $250K = $25K)
+  // This prevents one stock from eating 20%+ of the allocation.
+  const maxDollar = Math.min(
+    pv * (config.maxPositionPct / 100),
+    alloc * 0.10,
+  );
   let dollarSize: number;
 
   if (mode === 'LONG_TERM' && conviction != null) {
     // Conviction-weighted: base allocation * conviction multiplier
-    const base = pv * (config.baseAllocationPct / 100);
+    const base = alloc * (config.baseAllocationPct / 100);
     dollarSize = base * convictionMultiplier(conviction);
   } else if (stopLoss && entryPrice && Math.abs(entryPrice - stopLoss) > 0) {
     // Risk-based: risk budget / risk per share
-    const riskBudget = pv * (config.riskPerTradePct / 100);
+    // Use ALLOCATION cap as base, not portfolio value, to keep trades reasonable
+    const riskBudget = alloc * (config.riskPerTradePct / 100);
     const riskPerShare = Math.abs(entryPrice - stopLoss);
     const qty = Math.floor(riskBudget / riskPerShare);
     dollarSize = qty * price;
   } else {
-    // Fallback: base allocation
-    dollarSize = pv * (config.baseAllocationPct / 100);
+    // Fallback: use flat position size from config
+    dollarSize = config.positionSize;
   }
 
   // Apply regime + Kelly multipliers
@@ -658,7 +668,7 @@ export function calculatePositionSize(
   // Cap at max position size
   dollarSize = Math.min(dollarSize, maxDollar);
 
-  // Also cap at fallback positionSize if dynamic result is unreasonable
+  // Floor
   dollarSize = Math.max(dollarSize, 100); // minimum $100
 
   const quantity = Math.max(1, Math.floor(dollarSize / price));
@@ -928,11 +938,14 @@ export async function checkDipBuyOpportunities(
       }
     }
 
-    // Max position check
+    // Max position check — use the tighter of portfolio% or 10% of allocation
     const currentPositionValue = Math.abs(ibPos.position) * ibPos.mktPrice;
-    const maxPositionValue = config.portfolioValue * (config.maxPositionPct / 100);
+    const maxPositionValue = Math.min(
+      config.portfolioValue * (config.maxPositionPct / 100),
+      config.maxTotalAllocation * 0.10,
+    );
     if (currentPositionValue >= maxPositionValue) {
-      logEvent(trade.ticker, 'info', `Position already at max (${config.maxPositionPct}% of portfolio)`);
+      logEvent(trade.ticker, 'info', `Position already at max ($${maxPositionValue.toFixed(0)} cap)`);
       continue;
     }
 
