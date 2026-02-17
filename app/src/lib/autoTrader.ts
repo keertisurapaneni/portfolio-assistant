@@ -1448,7 +1448,7 @@ export async function processSuggestedFinds(
   return results;
 }
 
-/** Process a single Suggested Find stock — long-term buy, no swing/day analysis */
+/** Process a single Suggested Find stock — verifies conviction freshness, then long-term buy */
 async function processSuggestedFind(
   stock: EnhancedSuggestedStock,
   config: AutoTraderConfig
@@ -1470,8 +1470,47 @@ async function processSuggestedFind(
     return { ticker, action: 'skipped', reason: 'Duplicate position' };
   }
 
-  // ── 2. Get current price for position sizing ──
-  // For long-term holds we skip swing/day analysis — conviction + valuation already vetted.
+  // ── 2. Fresh conviction verification ──
+  // Run a quick swing analysis to verify the AI still recommends this stock.
+  // Prevents buying a stock where cached conviction is 9 but real-time says 6.
+  try {
+    logEvent(ticker, 'info', `${source} — verifying conviction (cached: ${conviction}/10)...`);
+    const freshFA = await fetchTradingSignal(ticker, 'SWING_TRADE');
+    const freshConf = freshFA.trade?.confidence ?? 0;
+    const freshRec = freshFA.trade?.recommendation ?? 'HOLD';
+    const convDrop = conviction - freshConf;
+
+    if (freshRec === 'SELL') {
+      const msg = `Conviction verification FAILED: FA says SELL (conf ${freshConf}) — skipping ${source}`;
+      logEvent(ticker, 'warning', msg);
+      persistEvent(ticker, 'warning', msg, {
+        action: 'skipped', source: 'suggested_finds', mode: 'LONG_TERM',
+        scanner_signal: 'BUY', scanner_confidence: conviction,
+        fa_recommendation: freshRec, fa_confidence: freshConf,
+        skip_reason: 'Fresh FA says SELL', metadata: { ...sfMeta, fresh_confidence: freshConf, conviction_drop: convDrop },
+      });
+      return { ticker, action: 'skipped', reason: `Fresh FA says SELL (conf ${freshConf})` };
+    }
+
+    if (convDrop >= 3) {
+      const msg = `Conviction dropped ${convDrop} points (cached: ${conviction} → fresh: ${freshConf}) — skipping ${source}`;
+      logEvent(ticker, 'warning', msg);
+      persistEvent(ticker, 'warning', msg, {
+        action: 'skipped', source: 'suggested_finds', mode: 'LONG_TERM',
+        scanner_signal: 'BUY', scanner_confidence: conviction,
+        fa_recommendation: freshRec, fa_confidence: freshConf,
+        skip_reason: `Conviction dropped ${convDrop}pts`, metadata: { ...sfMeta, fresh_confidence: freshConf, conviction_drop: convDrop },
+      });
+      return { ticker, action: 'skipped', reason: `Conviction dropped ${convDrop}pts (${conviction}→${freshConf})` };
+    }
+
+    logEvent(ticker, 'info', `Conviction verified: ${freshRec}/${freshConf} (cached: ${conviction}, drop: ${convDrop}) — proceeding`);
+  } catch (err) {
+    // If verification fails (API error), proceed with cached conviction — don't block the trade
+    logEvent(ticker, 'warning', `Conviction verification failed (${err instanceof Error ? err.message : 'unknown'}) — using cached conviction ${conviction}`);
+  }
+
+  // ── 3. Get current price for position sizing ──
   logEvent(ticker, 'info', `${source} — conviction ${conviction}/10, buying at market (long-term hold)`);
 
   const currentPrice = await getQuotePrice(ticker);
@@ -1504,7 +1543,7 @@ async function processSuggestedFind(
     return { ticker, action: 'skipped', reason: 'Pre-trade check failed (allocation/sector/earnings)' };
   }
 
-  // ── 3. Search IB Contract ──
+  // ── 4. Search IB Contract ──
   const contract = await searchContract(ticker);
   if (!contract) {
     logEvent(ticker, 'error', `Stock not found on IB (${source})`);
@@ -1516,7 +1555,7 @@ async function processSuggestedFind(
     return { ticker, action: 'failed', reason: 'IB contract not found' };
   }
 
-  // ── 4. Place Market Buy (no bracket — long-term hold, no stop loss/target) ──
+  // ── 5. Place Market Buy (no bracket — long-term hold, no stop loss/target) ──
   logEvent(ticker, 'info', `Placing market BUY: ${quantity} shares (~$${(quantity * currentPrice).toFixed(0)}) [${source}]`);
 
   try {
@@ -1531,7 +1570,7 @@ async function processSuggestedFind(
     const finalReplies = await handleOrderConfirmations(orderReplies);
     const orderId = finalReplies[0]?.order_id ?? null;
 
-    // ── 5. Log Trade ──
+    // ── 6. Log Trade ──
     const trade = await createPaperTrade({
       ticker,
       mode: 'LONG_TERM',
