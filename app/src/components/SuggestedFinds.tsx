@@ -414,30 +414,9 @@ export function SuggestedFinds({ existingTickers }: SuggestedFindsProps) {
           />
         ) : (
           <>
-            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-              {displayedGoldMines.map((stock, idx) => (
-                <StockCard
-                  key={stock.ticker}
-                  stock={stock}
-                  accentColor="amber"
-                  isTopPick={idx === 0 && (stock.conviction ?? 0) >= 8}
-                  isOwned={ownedTickers.has(stock.ticker)}
-                />
-              ))}
-            </div>
-            {selectedGoldMineCategory && displayedGoldMines.length <= 2 && displayedGoldMines.length > 0 && (
-              <button
-                onClick={() => discoverGoldMineCategory(selectedGoldMineCategory)}
-                className="mt-4 inline-flex items-center gap-1.5 text-sm text-amber-600 hover:text-amber-700 font-medium transition-colors"
-              >
-                <Sparkles className="w-3.5 h-3.5" />
-                Discover more {selectedGoldMineCategory} stocks
-              </button>
-            )}
-
-            {/* Auto-trade prompt for category picks */}
+            {/* Auto-trade prompt — shown at top before cards so it's immediately visible */}
             {selectedGoldMineCategory && catAutoTradeOffer === 'offered' && (
-              <div className="mt-4 flex items-center gap-3 rounded-lg bg-amber-50 border border-amber-200 px-4 py-3">
+              <div className="mb-4 flex items-center gap-3 rounded-lg bg-amber-50 border border-amber-200 px-4 py-3">
                 <Zap className="w-4 h-4 text-amber-600 flex-shrink-0" />
                 <p className="text-sm text-amber-800 flex-1">
                   Auto-trade qualifying <span className="font-semibold">{selectedGoldMineCategory}</span> picks? Only conviction 8+ and undervalued stocks will be bought.
@@ -457,13 +436,13 @@ export function SuggestedFinds({ existingTickers }: SuggestedFindsProps) {
               </div>
             )}
             {catAutoTradeOffer === 'trading' && (
-              <div className="mt-4 flex items-center gap-2 text-sm text-amber-700">
+              <div className="mb-4 flex items-center gap-2 text-sm text-amber-700">
                 <RefreshCw className="w-3.5 h-3.5 animate-spin" />
                 Auto-trading qualifying picks...
               </div>
             )}
             {catAutoTradeOffer === 'done' && catAutoTradeResults.length > 0 && (
-              <div className="mt-4 flex flex-wrap items-center gap-2 text-xs">
+              <div className="mb-4 flex flex-wrap items-center gap-2 text-xs">
                 {catAutoTradeResults.map(r => (
                   <span key={r.ticker} className={cn(
                     'inline-flex items-center gap-1 px-2 py-1 rounded-full border font-medium',
@@ -474,6 +453,27 @@ export function SuggestedFinds({ existingTickers }: SuggestedFindsProps) {
                   </span>
                 ))}
               </div>
+            )}
+
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+              {displayedGoldMines.map((stock, idx) => (
+                <StockCard
+                  key={stock.ticker}
+                  stock={stock}
+                  accentColor="amber"
+                  isTopPick={idx === 0 && (stock.conviction ?? 0) >= 8}
+                  isOwned={ownedTickers.has(stock.ticker)}
+                />
+              ))}
+            </div>
+            {selectedGoldMineCategory && displayedGoldMines.length <= 2 && displayedGoldMines.length > 0 && (
+              <button
+                onClick={() => discoverGoldMineCategory(selectedGoldMineCategory)}
+                className="mt-4 inline-flex items-center gap-1.5 text-sm text-amber-600 hover:text-amber-700 font-medium transition-colors"
+              >
+                <Sparkles className="w-3.5 h-3.5" />
+                Discover more {selectedGoldMineCategory} stocks
+              </button>
             )}
           </>
         )}
