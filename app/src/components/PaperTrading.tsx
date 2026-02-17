@@ -1998,18 +1998,21 @@ function SignalScorecard({ title, subtitle, data, color }: {
 
       <div className="grid grid-cols-3 gap-2 mt-3">
         <div>
-          <p className="text-[10px] text-[hsl(var(--muted-foreground))]">Trades</p>
+          <p className="text-[10px] text-[hsl(var(--muted-foreground))]">Placed</p>
           <p className={cn('text-sm font-bold tabular-nums', textColors[color])}>{data.totalTrades}</p>
+        </div>
+        <div>
+          <p className="text-[10px] text-[hsl(var(--muted-foreground))]">Executed</p>
+          <p className={cn('text-sm font-bold tabular-nums', textColors[color])}>{data.activeTrades}</p>
         </div>
         <div>
           <p className="text-[10px] text-[hsl(var(--muted-foreground))]">Win Rate</p>
           <p className={cn('text-sm font-bold tabular-nums', data.winRate >= 50 ? 'text-emerald-600' : 'text-red-600')}>
             {data.winRate.toFixed(0)}%
+            <span className="text-[9px] font-normal opacity-60 ml-0.5">
+              ({data.wins}/{data.wins + data.losses})
+            </span>
           </p>
-        </div>
-        <div>
-          <p className="text-[10px] text-[hsl(var(--muted-foreground))]">Active</p>
-          <p className={cn('text-sm font-bold tabular-nums', textColors[color])}>{data.activeTrades}</p>
         </div>
       </div>
 
