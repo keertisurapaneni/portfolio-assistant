@@ -396,7 +396,7 @@ export function PaperTrading() {
             />
           )}
           {tab === 'today' && (
-            <TodaysActivityTab events={todaysExecuted} />
+            <TodaysActivityTab events={todaysExecuted} trades={completedTrades} />
           )}
           {tab === 'smart' && (
             <SmartTradingTab
@@ -729,7 +729,15 @@ function PortfolioTab({ positions, orders, connected, onRefresh }: {
 
 // ── History Tab ──────────────────────────────────────────
 
-function TodaysActivityTab({ events }: { events: AutoTradeEventRecord[] }) {
+function TodaysActivityTab({ events, trades }: { events: AutoTradeEventRecord[]; trades: PaperTrade[] }) {
+  // Match events with paper_trades to show P&L for closed trades
+  const tradesByTicker = new Map<string, PaperTrade[]>();
+  for (const t of trades) {
+    const arr = tradesByTicker.get(t.ticker) || [];
+    arr.push(t);
+    tradesByTicker.set(t.ticker, arr);
+  }
+
   if (events.length === 0) {
     return (
       <div className="text-center py-12">
@@ -742,40 +750,88 @@ function TodaysActivityTab({ events }: { events: AutoTradeEventRecord[] }) {
     );
   }
 
+  // Calculate today's total P&L
+  const todayPnl = events.reduce((sum, ev) => {
+    const matched = tradesByTicker.get(ev.ticker)?.find(t => t.pnl != null && t.close_price != null);
+    return sum + (matched?.pnl ?? 0);
+  }, 0);
+
   return (
-    <div className="rounded-xl border border-[hsl(var(--border))] bg-white overflow-hidden">
-      <div className="divide-y divide-[hsl(var(--border))]">
-        {events.map((event) => (
-          <div key={event.id} className="flex items-center gap-3 px-4 py-3">
-            <CheckCircle className="w-4 h-4 text-emerald-500 flex-shrink-0" />
-            <div className="flex-1 min-w-0">
-              <div className="flex items-center gap-2 flex-wrap">
-                <span className="font-bold text-sm text-[hsl(var(--foreground))]">{event.ticker}</span>
-                <span className={cn(
-                  'inline-flex px-1.5 py-0.5 rounded text-[10px] font-bold',
-                  event.scanner_signal === 'SELL' ? 'bg-red-100 text-red-700' : 'bg-emerald-100 text-emerald-700'
-                )}>
-                  {event.scanner_signal ?? 'BUY'}
-                </span>
-                {event.mode && (
-                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 font-medium">
-                    {event.mode === 'DAY_TRADE' ? 'Day' : event.mode === 'LONG_TERM' ? 'Long Term' : 'Swing'}
-                  </span>
-                )}
-                {event.source === 'suggested_finds' && event.scanner_confidence != null && (
-                  <span className="text-[10px] text-[hsl(var(--muted-foreground))]">Conviction: {event.scanner_confidence}</span>
-                )}
-                {event.source === 'scanner' && event.scanner_confidence != null && event.fa_confidence != null && (
-                  <span className="text-[10px] text-[hsl(var(--muted-foreground))]">Scanner: {event.scanner_confidence}, FA: {event.fa_confidence}</span>
-                )}
-              </div>
-              <p className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5 truncate">{event.message}</p>
-            </div>
-            <span className="text-xs text-[hsl(var(--muted-foreground))] tabular-nums flex-shrink-0">
-              {new Date(event.created_at).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}
-            </span>
-          </div>
-        ))}
+    <div className="space-y-3">
+      {/* Today's summary */}
+      {todayPnl !== 0 && (
+        <div className="flex items-center justify-between rounded-lg bg-[hsl(var(--secondary))] px-4 py-2.5">
+          <span className="text-sm font-medium text-[hsl(var(--muted-foreground))]">Today&apos;s Realized P&L</span>
+          <span className={cn('text-sm font-bold tabular-nums', todayPnl > 0 ? 'text-emerald-600' : todayPnl < 0 ? 'text-red-600' : '')}>
+            {fmtUsd(todayPnl, 2, true)}
+          </span>
+        </div>
+      )}
+
+      <div className="rounded-xl border border-[hsl(var(--border))] bg-white overflow-hidden">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="bg-[hsl(var(--secondary))] text-[hsl(var(--muted-foreground))] text-xs">
+              <th className="text-left px-4 py-2.5 font-medium">Ticker</th>
+              <th className="text-left px-4 py-2.5 font-medium">Signal</th>
+              <th className="text-left px-4 py-2.5 font-medium">Type</th>
+              <th className="text-left px-4 py-2.5 font-medium">Details</th>
+              <th className="text-right px-4 py-2.5 font-medium">P&L</th>
+              <th className="text-left px-4 py-2.5 font-medium">Status</th>
+              <th className="text-right px-4 py-2.5 font-medium">Time</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-[hsl(var(--border))]">
+            {events.map((event) => {
+              const matched = tradesByTicker.get(event.ticker)?.find(t =>
+                t.pnl != null || t.status === 'FILLED' || t.status === 'TARGET_HIT' || t.status === 'STOPPED' || t.status === 'CLOSED'
+              );
+              const pnl = matched?.pnl;
+              const isClosed = matched?.close_price != null;
+              const msg = event.message;
+              // Extract qty/price from message like "96 shares of POOL @ ~$259.95" or "SELL 1722 shares @ $29.03"
+              const qtyMatch = msg.match(/(\d+)\s+shares.*?@\s*~?\$?([\d.]+)/i);
+
+              return (
+                <tr key={event.id} className="hover:bg-[hsl(var(--secondary))]/50">
+                  <td className="px-4 py-3 font-bold">{event.ticker}</td>
+                  <td className="px-4 py-3">
+                    <span className={cn(
+                      'inline-flex px-1.5 py-0.5 rounded text-[10px] font-bold',
+                      event.scanner_signal === 'SELL' ? 'bg-red-100 text-red-700' : 'bg-emerald-100 text-emerald-700'
+                    )}>
+                      {event.scanner_signal ?? 'BUY'}
+                    </span>
+                  </td>
+                  <td className="px-4 py-3">
+                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 font-medium">
+                      {event.mode === 'DAY_TRADE' ? 'Day' : event.mode === 'LONG_TERM' ? 'Long Term' : 'Swing'}
+                    </span>
+                  </td>
+                  <td className="px-4 py-3 text-xs text-[hsl(var(--muted-foreground))]">
+                    {qtyMatch ? `${qtyMatch[1]} shares @ $${qtyMatch[2]}` : event.message.slice(0, 50)}
+                  </td>
+                  <td className={cn(
+                    'px-4 py-3 text-right tabular-nums font-semibold',
+                    pnl != null && pnl > 0 ? 'text-emerald-600' : pnl != null && pnl < 0 ? 'text-red-600' : ''
+                  )}>
+                    {pnl != null ? fmtUsd(pnl, 2, true) : '—'}
+                  </td>
+                  <td className="px-4 py-3">
+                    {isClosed ? (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-50 text-blue-700 font-medium">Closed</span>
+                    ) : (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-50 text-amber-700 font-medium">Open</span>
+                    )}
+                  </td>
+                  <td className="px-4 py-3 text-right text-xs text-[hsl(var(--muted-foreground))] tabular-nums">
+                    {new Date(event.created_at).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
       </div>
     </div>
   );
@@ -783,7 +839,12 @@ function TodaysActivityTab({ events }: { events: AutoTradeEventRecord[] }) {
 
 // ── History Tab ──────────────────────────────────────────
 
+type HistorySortKey = 'date' | 'ticker' | 'pnl' | 'signal' | 'status';
+
 function HistoryTab({ trades }: { trades: PaperTrade[] }) {
+  const [sortKey, setSortKey] = useState<HistorySortKey>('date');
+  const [sortAsc, setSortAsc] = useState(false);
+
   if (trades.length === 0) {
     return (
       <div className="text-center py-12">
@@ -793,58 +854,109 @@ function HistoryTab({ trades }: { trades: PaperTrade[] }) {
     );
   }
 
+  const sorted = [...trades].sort((a, b) => {
+    let cmp = 0;
+    switch (sortKey) {
+      case 'date': cmp = new Date(a.opened_at).getTime() - new Date(b.opened_at).getTime(); break;
+      case 'ticker': cmp = a.ticker.localeCompare(b.ticker); break;
+      case 'pnl': cmp = (a.pnl ?? 0) - (b.pnl ?? 0); break;
+      case 'signal': cmp = (a.signal ?? '').localeCompare(b.signal ?? ''); break;
+      case 'status': cmp = (a.status ?? '').localeCompare(b.status ?? ''); break;
+    }
+    return sortAsc ? cmp : -cmp;
+  });
+
+  const handleSort = (key: HistorySortKey) => {
+    if (sortKey === key) setSortAsc(!sortAsc);
+    else { setSortKey(key); setSortAsc(key === 'ticker'); }
+  };
+
+  const SortHeader = ({ label, col, align = 'left' }: { label: string; col: HistorySortKey; align?: 'left' | 'right' }) => (
+    <th
+      className={cn('px-4 py-2.5 font-medium cursor-pointer select-none hover:text-[hsl(var(--foreground))] transition-colors', align === 'right' ? 'text-right' : 'text-left')}
+      onClick={() => handleSort(col)}
+    >
+      <span className="inline-flex items-center gap-1">
+        {label}
+        {sortKey === col ? (
+          <span className="text-[10px]">{sortAsc ? '▲' : '▼'}</span>
+        ) : (
+          <span className="text-[10px] opacity-30">⇅</span>
+        )}
+      </span>
+    </th>
+  );
+
+  // Summary row
+  const totalPnl = trades.reduce((s, t) => s + (t.pnl ?? 0), 0);
+  const wins = trades.filter(t => (t.pnl ?? 0) > 0).length;
+  const losses = trades.filter(t => (t.pnl ?? 0) < 0).length;
+
   return (
-    <div className="rounded-xl border border-[hsl(var(--border))] bg-white overflow-hidden">
-      <table className="w-full text-sm">
-        <thead>
-          <tr className="bg-[hsl(var(--secondary))] text-[hsl(var(--muted-foreground))] text-xs">
-            <th className="text-left px-4 py-2.5 font-medium">Ticker</th>
-            <th className="text-left px-4 py-2.5 font-medium">Signal</th>
-            <th className="text-right px-4 py-2.5 font-medium">Entry</th>
-            <th className="text-right px-4 py-2.5 font-medium">Close</th>
-            <th className="text-right px-4 py-2.5 font-medium">P&L</th>
-            <th className="text-left px-4 py-2.5 font-medium">Result</th>
-            <th className="text-left px-4 py-2.5 font-medium">Reason</th>
-            <th className="text-left px-4 py-2.5 font-medium">Date</th>
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-[hsl(var(--border))]">
-          {trades.map(trade => (
-            <tr key={trade.id} className="hover:bg-[hsl(var(--secondary))]/50">
-              <td className="px-4 py-3 font-bold">{trade.ticker}</td>
-              <td className="px-4 py-3">
-                <span className={cn(
-                  'inline-flex px-2 py-0.5 rounded text-[10px] font-bold',
-                  trade.signal === 'BUY' ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'
-                )}>
-                  {trade.signal}
-                </span>
-              </td>
-              <td className="px-4 py-3 text-right tabular-nums">
-                ${trade.fill_price?.toFixed(2) ?? trade.entry_price?.toFixed(2)}
-              </td>
-              <td className="px-4 py-3 text-right tabular-nums">
-                {trade.close_price ? `$${trade.close_price.toFixed(2)}` : '—'}
-              </td>
-              <td className={cn(
-                'px-4 py-3 text-right tabular-nums font-semibold',
-                (trade.pnl ?? 0) > 0 ? 'text-emerald-600' : (trade.pnl ?? 0) < 0 ? 'text-red-600' : ''
-              )}>
-                {trade.pnl != null ? fmtUsd(trade.pnl, 2, true) : '—'}
-              </td>
-              <td className="px-4 py-3">
-                <StatusBadge status={trade.status} />
-              </td>
-              <td className="px-4 py-3 text-xs text-[hsl(var(--muted-foreground))]">
-                {trade.close_reason ?? '—'}
-              </td>
-              <td className="px-4 py-3 text-xs text-[hsl(var(--muted-foreground))] tabular-nums">
-                {new Date(trade.opened_at).toLocaleDateString()}
-              </td>
+    <div className="space-y-3">
+      <div className="flex items-center justify-between rounded-lg bg-[hsl(var(--secondary))] px-4 py-2.5">
+        <div className="flex items-center gap-4 text-xs text-[hsl(var(--muted-foreground))]">
+          <span>{trades.length} trades</span>
+          <span className="text-emerald-600">{wins}W</span>
+          <span className="text-red-500">{losses}L</span>
+        </div>
+        <span className={cn('text-sm font-bold tabular-nums', totalPnl > 0 ? 'text-emerald-600' : totalPnl < 0 ? 'text-red-600' : '')}>
+          Total: {fmtUsd(totalPnl, 2, true)}
+        </span>
+      </div>
+
+      <div className="rounded-xl border border-[hsl(var(--border))] bg-white overflow-hidden">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="bg-[hsl(var(--secondary))] text-[hsl(var(--muted-foreground))] text-xs">
+              <SortHeader label="Ticker" col="ticker" />
+              <SortHeader label="Signal" col="signal" />
+              <th className="text-right px-4 py-2.5 font-medium">Entry</th>
+              <th className="text-right px-4 py-2.5 font-medium">Close</th>
+              <SortHeader label="P&L" col="pnl" align="right" />
+              <SortHeader label="Result" col="status" />
+              <th className="text-left px-4 py-2.5 font-medium">Reason</th>
+              <SortHeader label="Date" col="date" />
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody className="divide-y divide-[hsl(var(--border))]">
+            {sorted.map(trade => (
+              <tr key={trade.id} className="hover:bg-[hsl(var(--secondary))]/50">
+                <td className="px-4 py-3 font-bold">{trade.ticker}</td>
+                <td className="px-4 py-3">
+                  <span className={cn(
+                    'inline-flex px-2 py-0.5 rounded text-[10px] font-bold',
+                    trade.signal === 'BUY' ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'
+                  )}>
+                    {trade.signal}
+                  </span>
+                </td>
+                <td className="px-4 py-3 text-right tabular-nums">
+                  ${trade.fill_price?.toFixed(2) ?? trade.entry_price?.toFixed(2)}
+                </td>
+                <td className="px-4 py-3 text-right tabular-nums">
+                  {trade.close_price ? `$${trade.close_price.toFixed(2)}` : '—'}
+                </td>
+                <td className={cn(
+                  'px-4 py-3 text-right tabular-nums font-semibold',
+                  (trade.pnl ?? 0) > 0 ? 'text-emerald-600' : (trade.pnl ?? 0) < 0 ? 'text-red-600' : ''
+                )}>
+                  {trade.pnl != null ? fmtUsd(trade.pnl, 2, true) : '—'}
+                </td>
+                <td className="px-4 py-3">
+                  <StatusBadge status={trade.status} />
+                </td>
+                <td className="px-4 py-3 text-xs text-[hsl(var(--muted-foreground))]">
+                  {trade.close_reason ?? '—'}
+                </td>
+                <td className="px-4 py-3 text-xs text-[hsl(var(--muted-foreground))] tabular-nums">
+                  {new Date(trade.opened_at).toLocaleDateString()}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }
