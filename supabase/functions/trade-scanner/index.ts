@@ -94,7 +94,7 @@ interface YahooQuote {
 // AI response shape for one stock
 interface AIEval {
   ticker: string;
-  signal: 'BUY' | 'SELL' | 'SKIP';
+  signal: 'BUY' | 'SELL' | 'SKIP' | 'HOLD';
   confidence: number;  // 0-10
   reason: string;
 }
@@ -470,11 +470,44 @@ async function callGemini(
 }
 
 function cleanJson(text: string): string {
-  return text
+  let cleaned = text
     .replace(/<think>[\s\S]*?<\/think>/gi, '')
     .replace(/```json?\s*/g, '')
     .replace(/```/g, '')
     .trim();
+
+  // Fix common AI JSON issues: trailing commas, single quotes
+  cleaned = cleaned
+    .replace(/,\s*([}\]])/g, '$1')        // trailing commas
+    .replace(/'/g, '"');                    // single quotes → double quotes
+
+  return cleaned;
+}
+
+/** Parse JSON array from AI with fallback repair */
+function parseAIJsonArray(text: string): AIEval[] {
+  const cleaned = cleanJson(text);
+  try {
+    return JSON.parse(cleaned);
+  } catch {
+    // Try to extract individual JSON objects from malformed array
+    const items: AIEval[] = [];
+    const regex = /\{[^{}]*"ticker"\s*:\s*"([^"]+)"[^{}]*"signal"\s*:\s*"([^"]+)"[^{}]*"confidence"\s*:\s*(\d+)[^{}]*"reason"\s*:\s*"([^"]*)"[^{}]*\}/g;
+    let match;
+    while ((match = regex.exec(cleaned)) !== null) {
+      items.push({
+        ticker: match[1],
+        signal: match[2] as AIEval['signal'],
+        confidence: parseInt(match[3], 10),
+        reason: match[4],
+      });
+    }
+    if (items.length > 0) {
+      console.log(`[Trade Scanner] Repaired malformed JSON: extracted ${items.length} items`);
+      return items;
+    }
+    throw new Error(`Failed to parse AI response as JSON array`);
+  }
 }
 
 // ── AI prompts (Pass 1 only — Pass 2 uses shared prompts from _shared/prompts.ts) ────
@@ -484,8 +517,10 @@ NOTE: You only have indicators (no candle data). For extreme movers (>20%), max 
 
 ${DAY_TRADE_RULES}
 
-- SKIP anything without a clear edge — a stock moving 3% on average volume is noise.
-- Better to SKIP 80% and return 2-3 great picks than recommend 10 mediocre ones.
+- This is a SCREENING pass — a deeper analysis with full candle data will validate later.
+- SKIP stocks moving < 3% on average volume (noise) or with no clear setup.
+- For everything else, give a directional call with honest confidence. The next pass will filter further.
+- Aim to surface 3-5 actionable ideas from this list.
 
 Respond with a JSON array ONLY (no markdown, no backticks):
 [{"ticker":"AAPL","signal":"BUY"|"SELL"|"SKIP","confidence":0-10,"reason":"1 sentence"}]
@@ -498,8 +533,13 @@ NOTE: You only have indicators (no candle data). For extreme movers (>20%), max 
 
 ${SWING_TRADE_RULES}
 
-- SKIP anything without a clear edge or in no-man's-land (between SMA50 and SMA200, RSI 45-55).
-- Better to SKIP 80% and return 3-5 solid picks than recommend 10 mediocre ones.
+- This is a SCREENING pass — be generous with BUY/SELL signals. A deeper analysis with full candle data will validate later.
+- Look for: pullbacks to support in uptrends, oversold bounces, breakout setups, breakdown setups, mean-reversion plays.
+- Even in a bearish market, quality stocks at support with good risk/reward are valid BUY candidates.
+- SELL (short) setups are equally valid — stocks breaking below SMA50/SMA200, bearish MACD crossovers.
+- SKIP only when there is truly no setup (flat, no volume, no catalyst, stuck in the middle of a range with no direction).
+- Aim to identify 6-10 actionable ideas from this list. The next pass will filter further.
+- Confidence reflects how promising the SETUP looks, not certainty of outcome.
 
 Respond with a JSON array ONLY (no markdown, no backticks):
 [{"ticker":"AAPL","signal":"BUY"|"SELL"|"SKIP","confidence":0-10,"reason":"1 sentence"}]
@@ -714,10 +754,11 @@ async function runPass2(
     }
   }
 
-  // 7+ for both modes — balances quantity with FA direction consistency
-  const minConfidence = 7;
+  // Day: 7+ (strict — auto-traded). Swing: 6+ (surfacing opportunities for user to review via FA).
+  const minConfidence = mode === 'DAY_TRADE' ? 7 : 6;
   const ideas = results
-    .filter(e => e.signal !== 'SKIP' && e.confidence >= minConfidence)
+    .filter(e => e.signal === 'BUY' || e.signal === 'SELL')
+    .filter(e => e.confidence >= minConfidence)
     .map(e => {
       const q = quoteMap.get(e.ticker);
       return q ? buildIdea(e, q, mode) : null;
@@ -859,13 +900,13 @@ Deno.serve(async (req) => {
         try {
           // ── Pass 1: Quick scan with lightweight indicators ──
           const raw = await callGemini(GEMINI_KEYS, DAY_TRADE_SYSTEM, prompt, 0.15, 2000);
-          const evals: AIEval[] = JSON.parse(cleanJson(raw));
+          const evals: AIEval[] = parseAIJsonArray(raw);
           const quoteMap = new Map(candidates.map(q => [q.symbol, q]));
 
           const pass1 = evals
-            .filter(e => e.signal !== 'SKIP' && e.confidence >= 6)
+            .filter(e => e.signal !== 'SKIP' && e.signal !== 'HOLD' && e.confidence >= 6)
             .sort((a, b) => b.confidence - a.confidence)
-            .slice(0, 3);
+            .slice(0, 5);
 
           console.log(`[Trade Scanner] Day Pass 1: ${candidates.length} → ${pass1.length} shortlisted (${pass1.map(e => `${e.ticker}:${e.signal}/${e.confidence}`).join(', ')})`);
 
@@ -904,21 +945,34 @@ Deno.serve(async (req) => {
       const candidates = swingQuotes.filter(preSwingFilter);
 
       if (candidates.length > 0) {
-        const stockData = candidates.map((q, i) => formatQuoteForAI(q, i)).join('\n');
-        const prompt = SWING_SCAN_USER.replace('{{STOCK_DATA}}', stockData);
 
         try {
           // ── Pass 1: Quick scan with lightweight indicators ──
-          const raw = await callGemini(GEMINI_KEYS, SWING_TRADE_SYSTEM, prompt, 0.15, 3000);
-          const evals: AIEval[] = JSON.parse(cleanJson(raw));
+          // Split into batches of 20 to keep AI JSON output manageable
+          const SWING_BATCH = 20;
+          const evals: AIEval[] = [];
+          for (let bi = 0; bi < candidates.length; bi += SWING_BATCH) {
+            const batch = candidates.slice(bi, bi + SWING_BATCH);
+            const stockData = batch.map((q, i) => formatQuoteForAI(q, bi + i)).join('\n');
+            const prompt = SWING_SCAN_USER.replace('{{STOCK_DATA}}', stockData);
+            const raw = await callGemini(GEMINI_KEYS, SWING_TRADE_SYSTEM, prompt, 0.15, 3000);
+            const batchEvals = parseAIJsonArray(raw);
+            evals.push(...batchEvals);
+          }
           const quoteMap = new Map(candidates.map(q => [q.symbol, q]));
 
-          const nonSkip = evals.filter(e => e.signal !== 'SKIP').sort((a, b) => b.confidence - a.confidence);
-          console.log(`[Trade Scanner] Swing Pass 1 non-SKIP: ${nonSkip.slice(0, 5).map(e => `${e.ticker}:${e.signal}/${e.confidence}`).join(', ') || 'none'}`);
+          // Log ALL Pass 1 results for diagnostics
+          const allSignals = evals.map(e => `${e.ticker}:${e.signal}/${e.confidence}`);
+          console.log(`[Trade Scanner] Swing Pass 1 ALL (${evals.length}): ${allSignals.join(', ')}`);
+
+          const nonSkip = evals.filter(e => e.signal !== 'SKIP' && e.signal !== 'HOLD').sort((a, b) => b.confidence - a.confidence);
+          console.log(`[Trade Scanner] Swing Pass 1 non-SKIP (${nonSkip.length}): ${nonSkip.map(e => `${e.ticker}:${e.signal}/${e.confidence}`).join(', ') || 'none'}`);
 
           const pass1 = nonSkip
             .filter(e => e.confidence >= 5)
-            .slice(0, 3);
+            .slice(0, 8);
+
+          console.log(`[Trade Scanner] Swing Pass 1 → Pass 2 (${pass1.length}): ${pass1.map(e => `${e.ticker}:${e.signal}/${e.confidence}`).join(', ') || 'none'}`);
 
           // ── Pass 2: Full shared indicator analysis ──
           if (pass1.length > 0) {

@@ -73,11 +73,13 @@ ${DAY_TRADE_RULES}
 
 - Factor in news sentiment: negative headlines = lower confidence or flip direction. Positive news already priced in if stock is extended.
 - Factor in market context (in indicators section): if SPY bearish and VIX elevated, be more cautious on long setups.
-- Factor in earnings proximity: if earnings within 3 days, SKIP unless explicitly an earnings play.
-- SKIP when indicators genuinely conflict. Better to SKIP than give a wrong direction.
+- Factor in earnings proximity: if earnings within 3 days, HOLD unless explicitly an earnings play.
+- HOLD when indicators genuinely conflict or there is no clear edge. Better to HOLD than give a wrong direction.
+- HOLD is NOT a failure — it means "wait for a better setup." Use it freely.
+- Only signal BUY or SELL when you would actually put money on the trade right now.
 
 Output: JSON ONLY (no markdown, no backticks).
-{"signal":"BUY"|"SELL"|"SKIP","confidence":0-10,"reason":"1-2 sentences"}
+{"signal":"BUY"|"SELL"|"HOLD","confidence":0-10,"reason":"1-2 sentences"}
 
 ---
 {{INDICATOR_SUMMARY}}
@@ -95,11 +97,13 @@ ${SWING_TRADE_RULES}
 - Factor in fundamentals: high P/E with no growth = caution. Attractive valuation + good setup = higher confidence.
 - Factor in news sentiment: negative headlines = lower confidence or flip direction. Positive news already priced in if stock is extended.
 - Factor in market context (in indicators section): if SPY bearish and VIX elevated, be more cautious on long setups.
-- Factor in earnings proximity: if earnings within 7 days, reduce confidence. Within 3 days, SKIP unless explicitly an earnings play.
-- SKIP when indicators genuinely conflict. Better to SKIP than give a wrong direction.
+- Factor in earnings proximity: if earnings within 7 days, reduce confidence. Within 3 days, HOLD unless explicitly an earnings play.
+- HOLD when indicators genuinely conflict or there is no clear edge. Better to HOLD than give a wrong direction.
+- HOLD is NOT a failure — it means "wait for a better setup." Use it freely.
+- Only signal BUY or SELL when you would actually put money on the trade right now.
 
 Output: JSON ONLY (no markdown, no backticks).
-{"signal":"BUY"|"SELL"|"SKIP","confidence":0-10,"reason":"1-2 sentences"}
+{"signal":"BUY"|"SELL"|"HOLD","confidence":0-10,"reason":"1-2 sentences"}
 
 ---
 {{INDICATOR_SUMMARY}}
