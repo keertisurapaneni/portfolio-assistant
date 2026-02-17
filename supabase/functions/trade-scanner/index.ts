@@ -97,23 +97,192 @@ interface AIEval {
   reason: string;
 }
 
-// ── Curated swing universe ──────────────────────────────
+// ── Swing universe: Core (always scanned) + Dynamic (refreshed daily) ──
+// Hybrid approach: blue chips always covered, dynamic layer catches emerging opportunities
 
-const SWING_UNIVERSE = [
-  // Mega-cap tech
-  'AAPL', 'MSFT', 'NVDA', 'GOOG', 'AMZN', 'META', 'TSLA', 'AVGO', 'ORCL', 'CRM',
-  'ADBE', 'AMD', 'NFLX', 'INTC', 'QCOM', 'AMAT', 'MU',
-  // Finance
-  'JPM', 'V', 'MA', 'BAC', 'GS',
+const SWING_CORE = [
+  // Mega-cap tech (always liquid, always swingable)
+  'AAPL', 'MSFT', 'NVDA', 'GOOG', 'AMZN', 'META', 'TSLA', 'AVGO',
+  // Finance leaders
+  'JPM', 'V', 'GS',
   // Healthcare
-  'UNH', 'LLY', 'JNJ', 'ABBV', 'MRK', 'PFE',
+  'UNH', 'LLY', 'ABBV',
   // Consumer
-  'COST', 'WMT', 'HD', 'NKE', 'MCD', 'SBUX',
-  // Industrial & Energy
-  'CAT', 'BA', 'GE', 'XOM', 'CVX',
-  // Growth & trending
-  'COIN', 'PLTR', 'SOFI', 'SNOW', 'SHOP', 'SQ', 'ROKU', 'NET', 'CRWD', 'PANW',
+  'COST', 'WMT', 'HD',
+  // Energy & Industrial
+  'XOM', 'CAT',
+  // Top growth
+  'CRWD', 'PLTR',
 ];
+
+// Sector ETFs for momentum rotation
+const SECTOR_ETFS = ['XLK', 'XLF', 'XLV', 'XLE', 'XLI', 'XLC', 'XLY', 'XLP', 'XLU', 'XLRE', 'XLB'];
+
+// Mapping: sector ETF → representative large-cap stocks to add when sector is hot
+const SECTOR_STOCKS: Record<string, string[]> = {
+  XLK: ['CRM', 'ORCL', 'ADBE', 'AMD', 'INTC', 'QCOM', 'AMAT', 'MU', 'NOW', 'PANW'],
+  XLF: ['BAC', 'MA', 'C', 'WFC', 'SCHW', 'BLK', 'AXP'],
+  XLV: ['JNJ', 'MRK', 'PFE', 'TMO', 'ABT', 'ISRG', 'VRTX'],
+  XLE: ['CVX', 'COP', 'SLB', 'EOG', 'OXY', 'PSX'],
+  XLI: ['BA', 'GE', 'RTX', 'HON', 'UPS', 'LMT', 'DE'],
+  XLC: ['NFLX', 'DIS', 'CMCSA', 'TMUS', 'EA'],
+  XLY: ['NKE', 'MCD', 'SBUX', 'TJX', 'LULU', 'BKNG'],
+  XLP: ['PG', 'KO', 'PEP', 'PM', 'CL', 'MDLZ'],
+  XLU: ['NEE', 'DUK', 'SO', 'D', 'AEP'],
+  XLRE: ['PLD', 'AMT', 'EQIX', 'SPG', 'O'],
+  XLB: ['LIN', 'APD', 'SHW', 'FCX', 'NEM'],
+};
+
+/**
+ * Build the dynamic swing universe — called once per swing scan refresh.
+ *
+ * Layers:
+ *   1. CORE (~20 blue chips) — always included
+ *   2. SECTOR MOMENTUM — top 2-3 performing sectors contribute their stocks
+ *   3. YAHOO MOST ACTIVE — high volume names making big moves
+ *   4. EARNINGS PLAYS — stocks with earnings 5-14 days out
+ *   5. AI SUGGESTIONS — tickers from today's Suggested Finds cache
+ *   6. PORTFOLIO — always include user's existing holdings
+ *
+ * Result: deduplicated list of ~40-60 tickers, refreshed each scan.
+ */
+async function buildDynamicSwingUniverse(
+  sb: ReturnType<typeof createClient>,
+  portfolioTickers: string[],
+): Promise<{ symbols: string[]; sources: Record<string, string[]> }> {
+  const sources: Record<string, string[]> = { core: [...SWING_CORE] };
+
+  // ── 1. Sector momentum: fetch ETF chart data, rank by 5-day performance ──
+  try {
+    const etfPerf: { symbol: string; changePct: number }[] = [];
+    const etfResults = await Promise.all(
+      SECTOR_ETFS.map(async (sym) => {
+        try {
+          const url = `https://query1.finance.yahoo.com/v8/finance/chart/${sym}?range=5d&interval=1d&includePrePost=false`;
+          const res = await fetch(url, { headers: YAHOO_HEADERS });
+          if (!res.ok) return null;
+          const data = await res.json();
+          const closes = data?.chart?.result?.[0]?.indicators?.quote?.[0]?.close?.filter((c: number | null) => c != null) as number[] | undefined;
+          if (closes && closes.length >= 2) {
+            const changePct = ((closes[closes.length - 1] - closes[0]) / closes[0]) * 100;
+            return { symbol: sym, changePct };
+          }
+          return null;
+        } catch { return null; }
+      })
+    );
+    for (const r of etfResults) { if (r) etfPerf.push(r); }
+
+    // Pick top 3 sectors by absolute 5-day move (both rallying and selling sectors are interesting)
+    const ranked = etfPerf
+      .sort((a, b) => Math.abs(b.changePct) - Math.abs(a.changePct))
+      .slice(0, 3);
+
+    const sectorPicks: string[] = [];
+    for (const etf of ranked) {
+      const stocks = SECTOR_STOCKS[etf.symbol] ?? [];
+      sectorPicks.push(...stocks.slice(0, 4));
+    }
+    if (sectorPicks.length > 0) {
+      sources.sector_momentum = sectorPicks;
+      console.log(`[Swing Universe] Sector momentum: top sectors ${ranked.map(e => `${e.symbol}(${e.changePct.toFixed(1)}%)`).join(', ')} → ${sectorPicks.length} stocks`);
+    }
+  } catch (err) {
+    console.warn('[Swing Universe] Sector momentum fetch failed:', err);
+  }
+
+  // ── 2. Yahoo Most Active + Trending (high volume movers) ──
+  try {
+    const [activeRes, trendRes] = await Promise.all([
+      fetchMovers('most_actives'),
+      fetchMovers('day_gainers'),
+    ]);
+    const movers = [...activeRes, ...trendRes]
+      .filter(q => {
+        const price = rawVal(q.regularMarketPrice);
+        const vol = rawVal(q.regularMarketVolume);
+        const avgVol = rawVal(q.averageDailyVolume10Day);
+        const absPct = Math.abs(rawVal(q.regularMarketChangePercent));
+        return price >= 10 && vol >= 1_000_000 && (avgVol > 0 ? vol / avgVol >= 1.5 : false) && absPct >= 2;
+      })
+      .map(q => q.symbol)
+      .filter((s): s is string => !!s);
+    const uniqueMovers = [...new Set(movers)].slice(0, 15);
+    if (uniqueMovers.length > 0) {
+      sources.yahoo_movers = uniqueMovers;
+      console.log(`[Swing Universe] Yahoo movers: ${uniqueMovers.length} stocks with high volume+movement`);
+    }
+  } catch (err) {
+    console.warn('[Swing Universe] Yahoo movers fetch failed:', err);
+  }
+
+  // ── 3. Earnings plays: stocks with earnings 5-14 days out ──
+  try {
+    const earningsWatchlist = [
+      ...SWING_CORE,
+      ...Object.values(SECTOR_STOCKS).flat(),
+    ];
+    const uniqueEarnings = [...new Set(earningsWatchlist)];
+    const fundMap = await fetchFundamentalsBatch(uniqueEarnings);
+    const earningsPicks: string[] = [];
+    for (const [sym, fund] of fundMap.entries()) {
+      if (fund.daysToEarnings != null && fund.daysToEarnings >= 5 && fund.daysToEarnings <= 14) {
+        earningsPicks.push(sym);
+      }
+    }
+    if (earningsPicks.length > 0) {
+      sources.earnings_plays = earningsPicks;
+      console.log(`[Swing Universe] Earnings plays: ${earningsPicks.join(', ')} (5-14 days out)`);
+    }
+  } catch (err) {
+    console.warn('[Swing Universe] Earnings calendar fetch failed:', err);
+  }
+
+  // ── 4. AI Suggested Finds: tickers from today's cache ──
+  try {
+    const today = new Date().toISOString().split('T')[0];
+    const { data: rows } = await sb
+      .from('daily_suggestions')
+      .select('data')
+      .eq('suggestion_date', today);
+
+    if (rows && rows.length > 0) {
+      const aiTickers: string[] = [];
+      for (const row of rows) {
+        const suggestions = row.data as { ticker?: string }[];
+        if (Array.isArray(suggestions)) {
+          for (const s of suggestions) {
+            if (s.ticker) aiTickers.push(s.ticker.toUpperCase());
+          }
+        }
+      }
+      const unique = [...new Set(aiTickers)].slice(0, 10);
+      if (unique.length > 0) {
+        sources.ai_suggestions = unique;
+        console.log(`[Swing Universe] AI suggestions: ${unique.length} tickers from daily cache`);
+      }
+    }
+  } catch (err) {
+    console.warn('[Swing Universe] AI suggestions fetch failed:', err);
+  }
+
+  // ── 5. Portfolio holdings: always include ──
+  if (portfolioTickers.length > 0) {
+    sources.portfolio = portfolioTickers;
+  }
+
+  // ── Combine & deduplicate ──
+  const allTickers = new Set<string>();
+  for (const arr of Object.values(sources)) {
+    for (const t of arr) allTickers.add(t.toUpperCase());
+  }
+
+  const symbols = [...allTickers];
+  console.log(`[Swing Universe] Final: ${symbols.length} unique tickers (core: ${SWING_CORE.length}, dynamic: ${symbols.length - SWING_CORE.length})`);
+  console.log(`[Swing Universe] Sources: ${Object.entries(sources).map(([k, v]) => `${k}(${v.length})`).join(', ')}`);
+
+  return { symbols, sources };
+}
 
 // ── Helpers ─────────────────────────────────────────────
 
@@ -232,7 +401,7 @@ function isSwingRefreshWindow(): boolean {
 
 // ── Yahoo Finance data fetchers (Pass 1 discovery) ──────
 
-async function fetchMovers(type: 'day_gainers' | 'day_losers'): Promise<YahooQuote[]> {
+async function fetchMovers(type: 'day_gainers' | 'day_losers' | 'most_actives'): Promise<YahooQuote[]> {
   try {
     const url = new URL('https://query1.finance.yahoo.com/v1/finance/screener/predefined/saved');
     url.searchParams.set('formatted', 'false');
@@ -998,9 +1167,14 @@ Deno.serve(async (req) => {
     // ── Refresh swing trades ──
     // Start fresh each new trading day for swing too — prevents week-old picks lingering
     let swingIdeas: TradeIdea[] = (swingFromPreviousDay || forceRefresh) ? [] : (swingRow?.data ?? []);
+    let swingUniverseInfo: { total: number; sources: Record<string, number> } | undefined;
     if (needSwingRefresh) {
-      console.log('[Trade Scanner] Refreshing swing trades...');
-      const swingSymbols = [...new Set([...SWING_UNIVERSE, ...portfolioTickers])];
+      console.log('[Trade Scanner] Refreshing swing trades (dynamic universe)...');
+      const { symbols: swingSymbols, sources: swingSources } = await buildDynamicSwingUniverse(sb, portfolioTickers);
+      swingUniverseInfo = {
+        total: swingSymbols.length,
+        sources: Object.fromEntries(Object.entries(swingSources).map(([k, v]) => [k, v.length])),
+      };
       const swingQuotes = await fetchSwingQuotes(swingSymbols);
       const candidates = swingQuotes.filter(preSwingFilter);
 
@@ -1062,6 +1236,7 @@ Deno.serve(async (req) => {
       dayTrades: dayIdeas,
       swingTrades: swingIdeas,
       timestamp: Date.now(),
+      ...(swingUniverseInfo ? { swingUniverse: swingUniverseInfo } : {}),
     }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Unknown error';
