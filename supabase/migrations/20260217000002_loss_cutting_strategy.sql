@@ -1,11 +1,4 @@
--- Add daily deployment limit, loss cutting, and update allocation cap to $500K
-
--- Daily deployment limit: max NEW capital deployed in a single day
-ALTER TABLE auto_trader_config ADD COLUMN IF NOT EXISTS max_daily_deployment NUMERIC NOT NULL DEFAULT 50000;
-
--- Update allocation cap default and current value to $500K
-ALTER TABLE auto_trader_config ALTER COLUMN max_total_allocation SET DEFAULT 500000;
-UPDATE auto_trader_config SET max_total_allocation = 500000 WHERE id = 'default' AND max_total_allocation = 250000;
+-- Loss Cutting + aggressive income strategy update
 
 -- Loss Cutting — auto-sell losers to protect capital
 ALTER TABLE auto_trader_config ADD COLUMN IF NOT EXISTS loss_cut_enabled BOOLEAN NOT NULL DEFAULT true;
@@ -17,7 +10,7 @@ ALTER TABLE auto_trader_config ADD COLUMN IF NOT EXISTS loss_cut_tier3_pct NUMER
 ALTER TABLE auto_trader_config ADD COLUMN IF NOT EXISTS loss_cut_tier3_sell_pct NUMERIC NOT NULL DEFAULT 100;
 ALTER TABLE auto_trader_config ADD COLUMN IF NOT EXISTS loss_cut_min_hold_days INT NOT NULL DEFAULT 2;
 
--- Update profit-taking defaults to be more aggressive (generate income)
+-- Update profit-taking defaults to be more aggressive (generate income sooner)
 UPDATE auto_trader_config SET
   profit_take_tier1_pct = 8,
   profit_take_tier1_trim_pct = 25,
@@ -28,7 +21,7 @@ UPDATE auto_trader_config SET
   min_hold_pct = 15
 WHERE id = 'default';
 
--- Update dip-buying defaults to be more conservative
+-- Update dip-buying defaults to be more conservative (don't throw good money after bad)
 UPDATE auto_trader_config SET
   dip_buy_tier1_pct = 10,
   dip_buy_tier1_size_pct = 25,
@@ -44,7 +37,6 @@ ALTER TABLE auto_trade_events DROP CONSTRAINT IF EXISTS auto_trade_events_source
 ALTER TABLE auto_trade_events ADD CONSTRAINT auto_trade_events_source_check
   CHECK (source IN ('scanner', 'suggested_finds', 'manual', 'system', 'dip_buy', 'profit_take', 'loss_cut'));
 
-COMMENT ON COLUMN auto_trader_config.max_daily_deployment IS 'Max new capital deployed per day to prevent budget blowouts';
 COMMENT ON COLUMN auto_trader_config.loss_cut_enabled IS 'Auto-sell losing positions to protect capital';
 COMMENT ON COLUMN auto_trader_config.loss_cut_tier1_pct IS 'Loss % threshold for first partial sell';
 COMMENT ON COLUMN auto_trader_config.loss_cut_min_hold_days IS 'Min days held before loss-cutting (avoids intraday noise)';

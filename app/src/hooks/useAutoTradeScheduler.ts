@@ -21,6 +21,7 @@ import {
   syncPositions,
   checkDipBuyOpportunities,
   checkProfitTakeOpportunities,
+  checkLossCutOpportunities,
   resetPendingOrders,
 } from '../lib/autoTrader';
 import { getPositions } from '../lib/ibClient';
@@ -232,6 +233,7 @@ export function useAutoTradeScheduler() {
             // Layer 2 & 3: Dip buying and profit taking
             await checkDipBuyOpportunities(config, positions);
             await checkProfitTakeOpportunities(config, positions);
+            await checkLossCutOpportunities(config, positions);
           } catch (err) {
             console.warn('[AutoTradeScheduler] Smart trading checks failed:', err);
           }

@@ -122,6 +122,16 @@ export interface AutoTraderConfig {
   profitTakeTier3TrimPct: number;
   minHoldPct: number;            // never sell below this % of original qty
 
+  // ── Layer 3b: Loss Cutting ──
+  lossCutEnabled: boolean;       // auto-sell losers to protect capital
+  lossCutTier1Pct: number;       // loss % to trigger tier 1 (e.g. 8%)
+  lossCutTier1SellPct: number;   // sell % of position at tier 1
+  lossCutTier2Pct: number;       // loss % for tier 2
+  lossCutTier2SellPct: number;
+  lossCutTier3Pct: number;       // loss % for tier 3 (full exit)
+  lossCutTier3SellPct: number;
+  lossCutMinHoldDays: number;    // minimum days held before loss-cutting (avoid intraday noise)
+
   // ── Layer 4: Risk Management ──
   marketRegimeEnabled: boolean;  // adjust sizing for VIX/SPY conditions
   maxSectorPct: number;          // max portfolio % in one sector
@@ -153,25 +163,35 @@ const DEFAULT_CONFIG: AutoTraderConfig = {
   maxPositionPct: 5.0,
   riskPerTradePct: 1.0,
 
-  // Layer 2: Dip Buying
+  // Layer 2: Dip Buying (conservative — don't throw good money after bad)
   dipBuyEnabled: true,
-  dipBuyTier1Pct: 5,
-  dipBuyTier1SizePct: 50,
-  dipBuyTier2Pct: 10,
-  dipBuyTier2SizePct: 75,
-  dipBuyTier3Pct: 15,
-  dipBuyTier3SizePct: 100,
-  dipBuyCooldownHours: 24,
+  dipBuyTier1Pct: 10,
+  dipBuyTier1SizePct: 25,
+  dipBuyTier2Pct: 20,
+  dipBuyTier2SizePct: 50,
+  dipBuyTier3Pct: 30,
+  dipBuyTier3SizePct: 75,
+  dipBuyCooldownHours: 72,
 
-  // Layer 3: Profit Taking
+  // Layer 3: Profit Taking (aggressive — generate income, trim winners early)
   profitTakeEnabled: true,
-  profitTakeTier1Pct: 25,
-  profitTakeTier1TrimPct: 20,
-  profitTakeTier2Pct: 50,
-  profitTakeTier2TrimPct: 25,
-  profitTakeTier3Pct: 75,
-  profitTakeTier3TrimPct: 25,
-  minHoldPct: 30,
+  profitTakeTier1Pct: 8,
+  profitTakeTier1TrimPct: 25,
+  profitTakeTier2Pct: 15,
+  profitTakeTier2TrimPct: 30,
+  profitTakeTier3Pct: 25,
+  profitTakeTier3TrimPct: 30,
+  minHoldPct: 15,
+
+  // Layer 3b: Loss Cutting (protect capital — sell losers before they get worse)
+  lossCutEnabled: true,
+  lossCutTier1Pct: 8,
+  lossCutTier1SellPct: 30,
+  lossCutTier2Pct: 15,
+  lossCutTier2SellPct: 50,
+  lossCutTier3Pct: 25,
+  lossCutTier3SellPct: 100,
+  lossCutMinHoldDays: 2,
 
   // Layer 4: Risk Management
   marketRegimeEnabled: true,
@@ -244,6 +264,16 @@ export async function loadAutoTraderConfig(): Promise<AutoTraderConfig> {
         profitTakeTier3TrimPct: Number(data.profit_take_tier3_trim_pct) || DEFAULT_CONFIG.profitTakeTier3TrimPct,
         minHoldPct: Number(data.min_hold_pct) || DEFAULT_CONFIG.minHoldPct,
 
+        // Layer 3b: Loss Cutting
+        lossCutEnabled: data.loss_cut_enabled ?? DEFAULT_CONFIG.lossCutEnabled,
+        lossCutTier1Pct: Number(data.loss_cut_tier1_pct) || DEFAULT_CONFIG.lossCutTier1Pct,
+        lossCutTier1SellPct: Number(data.loss_cut_tier1_sell_pct) || DEFAULT_CONFIG.lossCutTier1SellPct,
+        lossCutTier2Pct: Number(data.loss_cut_tier2_pct) || DEFAULT_CONFIG.lossCutTier2Pct,
+        lossCutTier2SellPct: Number(data.loss_cut_tier2_sell_pct) || DEFAULT_CONFIG.lossCutTier2SellPct,
+        lossCutTier3Pct: Number(data.loss_cut_tier3_pct) || DEFAULT_CONFIG.lossCutTier3Pct,
+        lossCutTier3SellPct: Number(data.loss_cut_tier3_sell_pct) || DEFAULT_CONFIG.lossCutTier3SellPct,
+        lossCutMinHoldDays: data.loss_cut_min_hold_days ?? DEFAULT_CONFIG.lossCutMinHoldDays,
+
         // Layer 4
         marketRegimeEnabled: data.market_regime_enabled ?? DEFAULT_CONFIG.marketRegimeEnabled,
         maxSectorPct: Number(data.max_sector_pct) || DEFAULT_CONFIG.maxSectorPct,
@@ -311,6 +341,15 @@ export async function saveAutoTraderConfig(config: Partial<AutoTraderConfig>): P
         profit_take_tier3_pct: updated.profitTakeTier3Pct,
         profit_take_tier3_trim_pct: updated.profitTakeTier3TrimPct,
         min_hold_pct: updated.minHoldPct,
+        // Layer 3b: Loss Cutting
+        loss_cut_enabled: updated.lossCutEnabled,
+        loss_cut_tier1_pct: updated.lossCutTier1Pct,
+        loss_cut_tier1_sell_pct: updated.lossCutTier1SellPct,
+        loss_cut_tier2_pct: updated.lossCutTier2Pct,
+        loss_cut_tier2_sell_pct: updated.lossCutTier2SellPct,
+        loss_cut_tier3_pct: updated.lossCutTier3Pct,
+        loss_cut_tier3_sell_pct: updated.lossCutTier3SellPct,
+        loss_cut_min_hold_days: updated.lossCutMinHoldDays,
         // Layer 4
         market_regime_enabled: updated.marketRegimeEnabled,
         max_sector_pct: updated.maxSectorPct,
@@ -578,7 +617,7 @@ function persistEvent(
   message: string,
   extra?: {
     action?: 'executed' | 'skipped' | 'failed';
-    source?: 'scanner' | 'suggested_finds' | 'manual' | 'system' | 'dip_buy' | 'profit_take';
+    source?: 'scanner' | 'suggested_finds' | 'manual' | 'system' | 'dip_buy' | 'profit_take' | 'loss_cut';
     mode?: 'DAY_TRADE' | 'SWING_TRADE' | 'LONG_TERM';
     scanner_signal?: string;
     scanner_confidence?: number;
@@ -1241,6 +1280,138 @@ export async function checkProfitTakeOpportunities(
   }
 
   return results;
+}
+
+// ── Smart Trading: Layer 3b — Loss Cutting ────────────────
+
+/**
+ * Check all long-term positions for loss-cutting.
+ * Sells positions when losses exceed tier thresholds to protect capital.
+ * Only acts on positions held longer than lossCutMinHoldDays.
+ */
+export async function checkLossCutOpportunities(
+  config: AutoTraderConfig,
+  ibPositions: IBPosition[],
+): Promise<ProcessResult[]> {
+  if (!config.lossCutEnabled || !config.accountId) return [];
+
+  const results: ProcessResult[] = [];
+  const activeTrades = await getActiveTrades();
+  // Apply to ALL active positions (long-term, swing, filled/partial)
+  const eligibleTrades = activeTrades.filter(t =>
+    (t.mode === 'LONG_TERM' || t.mode === 'SWING_TRADE') &&
+    (t.status === 'FILLED' || t.status === 'PARTIAL')
+  );
+
+  const tiers = [
+    { pct: config.lossCutTier3Pct, sellPct: config.lossCutTier3SellPct, label: 'Tier 3 (full exit)' },
+    { pct: config.lossCutTier2Pct, sellPct: config.lossCutTier2SellPct, label: 'Tier 2' },
+    { pct: config.lossCutTier1Pct, sellPct: config.lossCutTier1SellPct, label: 'Tier 1' },
+  ];
+
+  for (const trade of eligibleTrades) {
+    const ibPos = ibPositions.find(p => p.contractDesc.toUpperCase() === trade.ticker.toUpperCase());
+    if (!ibPos || ibPos.mktPrice <= 0 || ibPos.avgCost <= 0) continue;
+
+    const lossPct = ((ibPos.avgCost - ibPos.mktPrice) / ibPos.avgCost) * 100;
+    if (lossPct <= 0) continue; // not in a loss
+
+    // Min hold period check — don't cut on intraday noise
+    if (trade.created_at) {
+      const createdAt = new Date(trade.created_at).getTime();
+      const holdDays = (Date.now() - createdAt) / (1000 * 60 * 60 * 24);
+      if (holdDays < config.lossCutMinHoldDays) {
+        continue;
+      }
+    }
+
+    // Find highest triggered tier
+    const triggered = tiers.find(t => lossPct >= t.pct);
+    if (!triggered) continue;
+
+    // Check if we already cut at this tier
+    const { data: pastCutEvents } = await supabase
+      .from('auto_trade_events')
+      .select('metadata')
+      .eq('ticker', trade.ticker)
+      .eq('source', 'loss_cut')
+      .eq('action', 'executed');
+
+    const alreadyCutAtTier = pastCutEvents?.some(
+      e => (e.metadata as Record<string, unknown>)?.tier === triggered.label
+    );
+    if (alreadyCutAtTier) continue;
+
+    const currentQty = Math.abs(ibPos.position);
+    const sellQty = triggered.sellPct >= 100
+      ? currentQty
+      : Math.max(1, Math.floor(currentQty * (triggered.sellPct / 100)));
+
+    if (sellQty < 1) continue;
+
+    const sellDollar = sellQty * ibPos.mktPrice;
+
+    logEvent(trade.ticker, 'info', `Loss cut ${triggered.label}: selling ${sellQty} shares at -${lossPct.toFixed(1)}%`);
+
+    try {
+      const contract = await searchContract(trade.ticker);
+      if (!contract) continue;
+
+      const side = ibPos.position > 0 ? 'SELL' : 'BUY'; // close the position direction
+      const orderReplies = await placeMarketOrder({
+        accountId: config.accountId,
+        conid: contract.conid,
+        side,
+        quantity: sellQty,
+        symbol: trade.ticker,
+      });
+      await handleOrderConfirmations(orderReplies);
+      const orderId = orderReplies[0]?.order_id ?? null;
+
+      await createPaperTrade({
+        ticker: trade.ticker,
+        mode: trade.mode as 'LONG_TERM' | 'SWING_TRADE',
+        signal: 'SELL',
+        scanner_confidence: trade.scanner_confidence,
+        fa_confidence: trade.fa_confidence,
+        fa_recommendation: 'SELL',
+        entry_price: ibPos.mktPrice,
+        quantity: sellQty,
+        position_size: sellDollar,
+        ib_order_id: orderId,
+        status: 'SUBMITTED',
+        notes: `Loss cut ${triggered.label} at -${lossPct.toFixed(1)}% | Sold ${sellQty} of ${currentQty} shares`,
+      });
+
+      const realizedLoss = sellQty * (ibPos.mktPrice - ibPos.avgCost);
+      const msg = `Loss cut ${triggered.label}: sold ${sellQty} shares at $${ibPos.mktPrice.toFixed(2)} (-${lossPct.toFixed(1)}%, ~${fmtUsdSimple(realizedLoss)})`;
+      logEvent(trade.ticker, 'success', msg);
+      persistEvent(trade.ticker, 'success', msg, {
+        action: 'executed', source: 'loss_cut', mode: trade.mode as 'LONG_TERM',
+        scanner_signal: 'SELL', scanner_confidence: trade.scanner_confidence ?? undefined,
+        metadata: { tier: triggered.label, lossPct, sellQty, sellDollar, mktPrice: ibPos.mktPrice, realizedLoss },
+      });
+
+      results.push({ ticker: trade.ticker, action: 'executed', reason: `Loss cut ${triggered.label}` });
+    } catch (err) {
+      const msg = `Loss cut failed: ${err instanceof Error ? err.message : 'Unknown'}`;
+      logEvent(trade.ticker, 'error', msg);
+      persistEvent(trade.ticker, 'error', msg, {
+        action: 'failed', source: 'loss_cut', mode: trade.mode as 'LONG_TERM',
+        skip_reason: 'Loss cut order failed',
+        metadata: { tier: triggered.label, lossPct },
+      });
+      results.push({ ticker: trade.ticker, action: 'failed', reason: msg });
+    }
+  }
+
+  return results;
+}
+
+/** Simple USD format for log messages */
+function fmtUsdSimple(val: number): string {
+  const sign = val >= 0 ? '+' : '-';
+  return `${sign}$${Math.abs(val).toFixed(0)}`;
 }
 
 // ── Smart Trading: Pre-Trade Checks ──────────────────────

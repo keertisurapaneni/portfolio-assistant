@@ -1351,6 +1351,49 @@ function SettingsTab({ config, onUpdate }: {
         )}
       </div>
 
+      {/* Loss Cutting */}
+      <div className="border-t border-[hsl(var(--border))] pt-6 mt-2">
+        <div className="flex items-center gap-3 mb-4">
+          <SettingsToggle
+            enabled={config.lossCutEnabled}
+            onToggle={() => onUpdate({ lossCutEnabled: !config.lossCutEnabled })}
+          />
+          <div>
+            <p className="text-sm font-semibold text-[hsl(var(--foreground))]">Loss Cutting</p>
+            <p className="text-xs text-[hsl(var(--muted-foreground))]">Auto-sell losers to protect capital</p>
+          </div>
+        </div>
+        {config.lossCutEnabled && (
+          <div className="space-y-3 pl-14">
+            <div className="grid grid-cols-3 gap-3">
+              <div className="text-xs text-[hsl(var(--muted-foreground))] font-medium">Tier</div>
+              <div className="text-xs text-[hsl(var(--muted-foreground))] font-medium">Loss %</div>
+              <div className="text-xs text-[hsl(var(--muted-foreground))] font-medium">Sell %</div>
+            </div>
+            {[
+              { label: 'Tier 1', lossKey: 'lossCutTier1Pct' as const, sellKey: 'lossCutTier1SellPct' as const },
+              { label: 'Tier 2', lossKey: 'lossCutTier2Pct' as const, sellKey: 'lossCutTier2SellPct' as const },
+              { label: 'Tier 3 (exit)', lossKey: 'lossCutTier3Pct' as const, sellKey: 'lossCutTier3SellPct' as const },
+            ].map(tier => (
+              <div key={tier.label} className="grid grid-cols-3 gap-3 items-center">
+                <span className="text-xs font-medium">{tier.label}</span>
+                <input type="number" value={config[tier.lossKey]}
+                  onChange={e => onUpdate({ [tier.lossKey]: Number(e.target.value) })}
+                  className="px-2 py-1.5 border border-[hsl(var(--border))] rounded-lg text-xs w-full"
+                  min={3} max={50} step={1} />
+                <input type="number" value={config[tier.sellKey]}
+                  onChange={e => onUpdate({ [tier.sellKey]: Number(e.target.value) })}
+                  className="px-2 py-1.5 border border-[hsl(var(--border))] rounded-lg text-xs w-full"
+                  min={10} max={100} step={5} />
+              </div>
+            ))}
+            <SettingsInput label="Min Hold Days" value={config.lossCutMinHoldDays}
+              onChange={v => onUpdate({ lossCutMinHoldDays: v })} min={0} max={14} step={1}
+              help="Must hold at least this many days before cutting (avoids intraday noise)" />
+          </div>
+        )}
+      </div>
+
       {/* Risk Management */}
       <div className="border-t border-[hsl(var(--border))] pt-6 mt-2">
         <h4 className="text-sm font-semibold text-[hsl(var(--foreground))] mb-4">Risk Management</h4>
@@ -1588,6 +1631,13 @@ function SmartTradingTab({ config, regime, kellyMultiplier, totalDeployed, event
             enabled={config.profitTakeEnabled}
             detail={config.profitTakeEnabled
               ? `Tiers: +${config.profitTakeTier1Pct}% / +${config.profitTakeTier2Pct}% / +${config.profitTakeTier3Pct}%`
+              : undefined}
+          />
+          <FeatureCard
+            label="Loss Cutting"
+            enabled={config.lossCutEnabled}
+            detail={config.lossCutEnabled
+              ? `Tiers: -${config.lossCutTier1Pct}% / -${config.lossCutTier2Pct}% / -${config.lossCutTier3Pct}%`
               : undefined}
           />
           <FeatureCard
