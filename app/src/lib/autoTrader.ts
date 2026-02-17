@@ -32,6 +32,38 @@ import {
 import { analyzeCompletedTrade, updatePerformancePatterns } from './aiFeedback';
 import { supabase } from './supabaseClient';
 
+// ── In-memory pending order tracker ──────────────────────
+// After placing an order, IB takes seconds to reflect the new position.
+// Track pending dollar amounts here to prevent concurrent allocation cap bypasses.
+let _pendingDeployedDollar = 0;
+const _pendingOrders: { ticker: string; dollarSize: number; ts: number }[] = [];
+const PENDING_ORDER_TTL_MS = 5 * 60 * 1000; // Forget after 5 minutes (IB will have reflected by then)
+
+/** Record a pending order so getTotalDeployed() includes it */
+function recordPendingOrder(ticker: string, dollarSize: number) {
+  _pendingOrders.push({ ticker, dollarSize, ts: Date.now() });
+  _pendingDeployedDollar += dollarSize;
+  // Also track daily deployment
+  recordDailyDeployment(dollarSize);
+}
+
+/** Expire old pending orders (IB should have reflected them by now) */
+function expirePendingOrders() {
+  const cutoff = Date.now() - PENDING_ORDER_TTL_MS;
+  while (_pendingOrders.length > 0 && _pendingOrders[0].ts < cutoff) {
+    const expired = _pendingOrders.shift()!;
+    _pendingDeployedDollar -= expired.dollarSize;
+  }
+  // Safety: never go negative
+  if (_pendingDeployedDollar < 0) _pendingDeployedDollar = 0;
+}
+
+/** Reset pending orders (call when syncing positions from IB — IB is now the source of truth) */
+export function resetPendingOrders() {
+  _pendingOrders.length = 0;
+  _pendingDeployedDollar = 0;
+}
+
 // ── Lightweight price lookup (via auto-trader service — Finnhub key stays server-side) ──
 const _IB_BASE = 'http://localhost:3001/api';
 
@@ -60,7 +92,8 @@ export interface AutoTraderConfig {
   dayTradeAutoClose: boolean;    // auto-close day trades at 3:55 PM ET
 
   // ── Allocation Cap ──
-  maxTotalAllocation: number;    // hard cap on total deployed capital ($250K default)
+  maxTotalAllocation: number;    // hard cap on total deployed capital ($400K default)
+  maxDailyDeployment: number;    // max NEW capital deployed in a single day ($50K default)
 
   // ── Layer 1: Dynamic Position Sizing ──
   useDynamicSizing: boolean;     // use conviction-weighted + risk-based sizing
@@ -110,7 +143,8 @@ const DEFAULT_CONFIG: AutoTraderConfig = {
   dayTradeAutoClose: true,
 
   // Allocation Cap
-  maxTotalAllocation: 250_000,
+  maxTotalAllocation: 500_000,
+  maxDailyDeployment: 50_000,
 
   // Layer 1: Dynamic Sizing
   useDynamicSizing: true,
@@ -181,6 +215,7 @@ export async function loadAutoTraderConfig(): Promise<AutoTraderConfig> {
 
         // Allocation cap
         maxTotalAllocation: Number(data.max_total_allocation) || DEFAULT_CONFIG.maxTotalAllocation,
+        maxDailyDeployment: Number(data.max_daily_deployment) || DEFAULT_CONFIG.maxDailyDeployment,
 
         // Layer 1
         useDynamicSizing: data.use_dynamic_sizing ?? DEFAULT_CONFIG.useDynamicSizing,
@@ -251,6 +286,7 @@ export async function saveAutoTraderConfig(config: Partial<AutoTraderConfig>): P
         day_trade_auto_close: updated.dayTradeAutoClose,
         // Allocation cap
         max_total_allocation: updated.maxTotalAllocation,
+        max_daily_deployment: updated.maxDailyDeployment,
         // Layer 1
         use_dynamic_sizing: updated.useDynamicSizing,
         portfolio_value: updated.portfolioValue,
@@ -566,38 +602,100 @@ function persistEvent(
  *  Uses IB positions (shares × avgCost = real cost basis) as source of truth.
  *  Falls back to paper_trades.position_size when IB is unreachable. */
 export async function getTotalDeployed(): Promise<number> {
+  // Expire stale pending orders first
+  expirePendingOrders();
+
+  let ibDeployed = 0;
   try {
     const positions = await getPositions('');
     if (positions && positions.length > 0) {
-      return positions.reduce((sum, p) => {
+      ibDeployed = positions.reduce((sum, p) => {
         const costBasis = Math.abs(p.position) * (p.avgCost ?? 0);
         return sum + costBasis;
       }, 0);
+      // Include pending orders that IB hasn't reflected yet
+      return ibDeployed + _pendingDeployedDollar;
     }
   } catch {
     // IB not connected — fall back to paper_trades
   }
   const trades = await getActiveTrades();
-  return trades.reduce((sum, t) => sum + (t.position_size ?? 0), 0);
+  const dbDeployed = trades.reduce((sum, t) => sum + (t.position_size ?? 0), 0);
+  return dbDeployed + _pendingDeployedDollar;
 }
 
-/** Check if a new position fits within the allocation cap */
+// ── Daily deployment tracking ────────────────────────────
+// Tracks how much NEW capital was deployed today (resets at midnight).
+let _dailyDeployedDollar = 0;
+let _dailyDeployedDate = '';
+
+/** Record daily deployment for daily limit enforcement */
+function recordDailyDeployment(dollarSize: number) {
+  const today = new Date().toISOString().slice(0, 10);
+  if (_dailyDeployedDate !== today) {
+    _dailyDeployedDollar = 0;
+    _dailyDeployedDate = today;
+  }
+  _dailyDeployedDollar += dollarSize;
+}
+
+/** Get today's total deployment (in-memory — fast, no DB query) */
+function getTodayDeployed(): number {
+  const today = new Date().toISOString().slice(0, 10);
+  if (_dailyDeployedDate !== today) {
+    _dailyDeployedDollar = 0;
+    _dailyDeployedDate = today;
+  }
+  return _dailyDeployedDollar;
+}
+
+/** Check if a new position fits within the allocation cap AND daily limit */
 async function checkAllocationCap(
   config: AutoTraderConfig,
   positionSize: number,
   ticker: string,
 ): Promise<boolean> {
   const deployed = await getTotalDeployed();
-  if (deployed + positionSize > config.maxTotalAllocation) {
-    const msg = `Allocation cap: $${deployed.toFixed(0)} + $${positionSize.toFixed(0)} > $${config.maxTotalAllocation.toFixed(0)} limit`;
+  const cap = config.maxTotalAllocation;
+
+  // CIRCUIT BREAKER: if already at or above 95% of cap, STOP all new trades
+  if (deployed >= cap * 0.95) {
+    const msg = `CIRCUIT BREAKER: Already at $${deployed.toFixed(0)} (${((deployed / cap) * 100).toFixed(1)}% of $${cap.toFixed(0)} cap) — blocking ALL new trades`;
+    logEvent(ticker, 'warning', msg);
+    persistEvent(ticker, 'warning', msg, {
+      action: 'skipped', source: 'system',
+      skip_reason: 'Circuit breaker: at cap limit',
+      metadata: { deployed, positionSize, cap, percentUsed: ((deployed / cap) * 100) },
+    });
+    return false;
+  }
+
+  // TOTAL ALLOCATION CHECK
+  if (deployed + positionSize > cap) {
+    const msg = `Allocation cap: $${deployed.toFixed(0)} + $${positionSize.toFixed(0)} > $${cap.toFixed(0)} limit`;
     logEvent(ticker, 'warning', msg);
     persistEvent(ticker, 'warning', msg, {
       action: 'skipped', source: 'system',
       skip_reason: 'Allocation cap reached',
-      metadata: { deployed, positionSize, cap: config.maxTotalAllocation },
+      metadata: { deployed, positionSize, cap },
     });
     return false;
   }
+
+  // DAILY DEPLOYMENT LIMIT — prevents blowing through the budget in one day
+  const dailyLimit = config.maxDailyDeployment;
+  const todayDeployed = getTodayDeployed();
+  if (todayDeployed + positionSize > dailyLimit) {
+    const msg = `Daily limit: $${todayDeployed.toFixed(0)} + $${positionSize.toFixed(0)} > $${dailyLimit.toFixed(0)}/day — waiting until tomorrow`;
+    logEvent(ticker, 'warning', msg);
+    persistEvent(ticker, 'warning', msg, {
+      action: 'skipped', source: 'system',
+      skip_reason: 'Daily deployment limit reached',
+      metadata: { todayDeployed, positionSize, dailyLimit },
+    });
+    return false;
+  }
+
   return true;
 }
 
@@ -627,14 +725,21 @@ export function calculatePositionSize(
 ): { quantity: number; dollarSize: number } {
   const { price, mode, conviction, entryPrice, stopLoss, regimeMultiplier = 1.0, kellyMultiplier = 1.0 } = params;
 
+  const alloc = config.maxTotalAllocation;
+
+  // HARD max single-position cap: 10% of allocation cap (e.g. 10% of $250K = $25K).
+  // This applies ALWAYS — even when dynamic sizing is off — to prevent
+  // a single trade from eating a huge chunk of the budget.
+  const hardMaxDollar = alloc * 0.10;
+
   if (!config.useDynamicSizing || price <= 0) {
-    // Fallback: flat position sizing
-    const qty = Math.max(1, Math.floor(config.positionSize / price));
+    // Fallback: flat position sizing, but STILL capped by allocation
+    const cappedSize = Math.min(config.positionSize, hardMaxDollar);
+    const qty = Math.max(1, Math.floor(cappedSize / price));
     return { quantity: qty, dollarSize: qty * price };
   }
 
   const pv = config.portfolioValue;
-  const alloc = config.maxTotalAllocation;
 
   // Max single-position cap: the SMALLER of:
   //   - max_position_pct of portfolio (e.g. 5% of $1M = $50K)
@@ -642,7 +747,7 @@ export function calculatePositionSize(
   // This prevents one stock from eating 20%+ of the allocation.
   const maxDollar = Math.min(
     pv * (config.maxPositionPct / 100),
-    alloc * 0.10,
+    hardMaxDollar,
   );
   let dollarSize: number;
 
@@ -989,6 +1094,9 @@ export async function checkDipBuyOpportunities(
         notes: `Dip buy ${triggered.label} at -${absDip.toFixed(1)}% | Added ${addOnQty} shares`,
       });
 
+      // Track pending order for allocation cap enforcement
+      recordPendingOrder(trade.ticker, addOnDollar);
+
       const msg = `Dip buy ${triggered.label}: +${addOnQty} shares at $${ibPos.mktPrice.toFixed(2)} (-${absDip.toFixed(1)}%)`;
       logEvent(trade.ticker, 'success', msg);
       persistEvent(trade.ticker, 'success', msg, {
@@ -1329,6 +1437,9 @@ async function processSingleIdea(
       fa_rationale: fa.trade.rationale,
     });
 
+    // Track pending order for allocation cap enforcement
+    recordPendingOrder(ticker, quantity * entryPrice);
+
     const msg = `Order placed! ${signal} ${quantity} shares @ $${entryPrice}`;
     logEvent(ticker, 'success', msg);
     persistEvent(ticker, 'success', msg, {
@@ -1589,6 +1700,9 @@ async function processSuggestedFind(
       fa_rationale: null,
       notes: `Long-term hold | ${source} | Conviction: ${conviction}/10 | ${stock.valuationTag ?? ''}`,
     });
+
+    // Track pending order for allocation cap enforcement
+    recordPendingOrder(ticker, quantity * currentPrice);
 
     const msg = `${source} market BUY placed! ${quantity} shares of ${ticker} @ ~$${currentPrice.toFixed(2)}`;
     logEvent(ticker, 'success', msg);

@@ -24,6 +24,9 @@ import {
   ShieldAlert,
   ShieldCheck,
   Gauge,
+  ArrowUpDown,
+  ChevronUp,
+  ChevronDown,
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import {
@@ -52,6 +55,7 @@ import {
   recalculatePerformance,
   recalculatePerformanceByCategory,
   getAutoTradeEvents,
+  getTodaysExecutedEvents,
 } from '../lib/paperTradesApi';
 import { getTotalDeployed, getMarketRegime, calculateKellyMultiplier, type MarketRegime } from '../lib/autoTrader';
 import { Spinner } from './Spinner';
@@ -76,6 +80,7 @@ export function PaperTrading() {
   const [ibPositions, setIbPositions] = useState<IBPosition[]>([]);
   const [ibOrders, setIbOrders] = useState<IBLiveOrder[]>([]);
   const [persistedEvents, setPersistedEvents] = useState<AutoTradeEventRecord[]>([]);
+  const [todaysExecuted, setTodaysExecuted] = useState<AutoTradeEventRecord[]>([]);
   const [categoryPerf, setCategoryPerf] = useState<CategoryPerformance[]>([]);
   const [totalDeployed, setTotalDeployed] = useState(0);
   const [marketRegime, setMarketRegime] = useState<MarketRegime | null>(null);
@@ -88,10 +93,11 @@ export function PaperTrading() {
   const loadData = useCallback(async () => {
     setLoading(true);
     try {
-      const [all, perf, savedEvents, catPerf, deployed, regime, kelly] = await Promise.all([
+      const [all, perf, savedEvents, todayEvents, catPerf, deployed, regime, kelly] = await Promise.all([
         getAllTrades(50),
         getPerformance(),
         getAutoTradeEvents(100),
+        getTodaysExecutedEvents(),
         recalculatePerformanceByCategory(),
         getTotalDeployed(),
         getMarketRegime(config),
@@ -100,6 +106,7 @@ export function PaperTrading() {
       setAllTrades(all);
       setPerformance(perf);
       setPersistedEvents(savedEvents);
+      setTodaysExecuted(todayEvents);
       setCategoryPerf(catPerf);
       setTotalDeployed(deployed);
       setMarketRegime(regime);
@@ -211,11 +218,8 @@ export function PaperTrading() {
     setConfig(updated);
   };
 
-  // Today's executed trades from activity log
-  const todayStr = new Date().toDateString();
-  const todaysExecuted = persistedEvents.filter(e =>
-    e.action === 'executed' && new Date(e.created_at).toDateString() === todayStr
-  );
+  // todaysExecuted is loaded directly from Supabase (server-side filter for today + action=executed)
+  // This ensures ALL today's trades show up regardless of total event count
 
   // Portfolio totals (for consolidated stats row)
   const totalCostBasis = ibPositions.reduce((sum, p) => sum + Math.abs(p.position) * p.avgCost, 0);
@@ -517,12 +521,67 @@ function StatCard({ icon, label, value, subtitle, color }: {
 
 // ── Portfolio Tab (Live IB Data) ─────────────────────────
 
+type PortfolioSortKey = 'symbol' | 'shares' | 'avgCost' | 'costBasis' | 'mktPrice' | 'mktValue' | 'pnl' | 'pnlPct';
+type SortDir = 'asc' | 'desc';
+
+function getPortfolioSortValue(pos: IBPosition, key: PortfolioSortKey): number | string {
+  switch (key) {
+    case 'symbol': return pos.contractDesc;
+    case 'shares': return Math.abs(pos.position);
+    case 'avgCost': return pos.avgCost;
+    case 'costBasis': return Math.abs(pos.position) * pos.avgCost;
+    case 'mktPrice': return pos.mktPrice;
+    case 'mktValue': return Math.abs(pos.mktValue);
+    case 'pnl': return pos.unrealizedPnl;
+    case 'pnlPct': {
+      const cost = Math.abs(pos.position) * pos.avgCost;
+      return cost > 0 ? (pos.unrealizedPnl / cost) * 100 : 0;
+    }
+    default: return 0;
+  }
+}
+
 function PortfolioTab({ positions, orders, connected, onRefresh }: {
   positions: IBPosition[];
   orders: IBLiveOrder[];
   connected: boolean;
   onRefresh: () => void;
 }) {
+  const [sortKey, setSortKey] = useState<PortfolioSortKey>('costBasis');
+  const [sortDir, setSortDir] = useState<SortDir>('desc');
+
+  const handleSort = (key: PortfolioSortKey) => {
+    if (sortKey === key) {
+      setSortDir(d => d === 'asc' ? 'desc' : 'asc');
+    } else {
+      setSortKey(key);
+      setSortDir(key === 'symbol' ? 'asc' : 'desc');
+    }
+  };
+
+  const SortIcon = ({ col }: { col: PortfolioSortKey }) => {
+    if (sortKey !== col) return <ArrowUpDown className="w-3 h-3 opacity-30" />;
+    return sortDir === 'asc'
+      ? <ChevronUp className="w-3 h-3 text-blue-600" />
+      : <ChevronDown className="w-3 h-3 text-blue-600" />;
+  };
+
+  const SortHeader = ({ col, label, align = 'right' }: { col: PortfolioSortKey; label: string; align?: 'left' | 'right' }) => (
+    <th className={cn('px-4 py-2.5 font-medium', align === 'right' ? 'text-right' : 'text-left')}>
+      <button
+        onClick={() => handleSort(col)}
+        className={cn(
+          'inline-flex items-center gap-1 hover:text-[hsl(var(--foreground))] transition-colors',
+          sortKey === col ? 'text-blue-600 font-semibold' : ''
+        )}
+      >
+        {align === 'right' && <SortIcon col={col} />}
+        {label}
+        {align === 'left' && <SortIcon col={col} />}
+      </button>
+    </th>
+  );
+
   if (!connected) {
     return (
       <div className="text-center py-12">
@@ -539,6 +598,15 @@ function PortfolioTab({ positions, orders, connected, onRefresh }: {
   const totalMktValue = positions.reduce((sum, p) => sum + p.mktValue, 0);
   const totalUnrealizedPnl = positions.reduce((sum, p) => sum + p.unrealizedPnl, 0);
 
+  const sorted = [...positions].sort((a, b) => {
+    const aVal = getPortfolioSortValue(a, sortKey);
+    const bVal = getPortfolioSortValue(b, sortKey);
+    const cmp = typeof aVal === 'string' && typeof bVal === 'string'
+      ? aVal.localeCompare(bVal)
+      : (aVal as number) - (bVal as number);
+    return sortDir === 'asc' ? cmp : -cmp;
+  });
+
   return (
     <div className="space-y-4">
       {/* Positions Table */}
@@ -553,21 +621,21 @@ function PortfolioTab({ positions, orders, connected, onRefresh }: {
           <table className="w-full text-sm">
             <thead>
               <tr className="bg-[hsl(var(--secondary))]/50 text-[hsl(var(--muted-foreground))] text-xs">
-                <th className="text-left px-4 py-2.5 font-medium">Symbol</th>
-                <th className="text-right px-4 py-2.5 font-medium">Shares</th>
-                <th className="text-right px-4 py-2.5 font-medium">Avg Cost</th>
-                <th className="text-right px-4 py-2.5 font-medium">Cost Basis</th>
-                <th className="text-right px-4 py-2.5 font-medium">Mkt Price</th>
-                <th className="text-right px-4 py-2.5 font-medium">Mkt Value</th>
-                <th className="text-right px-4 py-2.5 font-medium">Unrealized P&L</th>
+                <SortHeader col="symbol" label="Symbol" align="left" />
+                <SortHeader col="shares" label="Shares" />
+                <SortHeader col="avgCost" label="Avg Cost" />
+                <SortHeader col="costBasis" label="Cost Basis" />
+                <SortHeader col="mktPrice" label="Mkt Price" />
+                <SortHeader col="mktValue" label="Mkt Value" />
+                <SortHeader col="pnl" label="P&L" />
+                <SortHeader col="pnlPct" label="P&L %" />
               </tr>
             </thead>
             <tbody className="divide-y divide-[hsl(var(--border))]">
-              {positions
-                .sort((a, b) => Math.abs(b.position * b.avgCost) - Math.abs(a.position * a.avgCost))
-                .map((pos, i) => {
+              {sorted.map((pos, i) => {
                   const costBasis = Math.abs(pos.position) * pos.avgCost;
                   const pnl = pos.unrealizedPnl;
+                  const pnlPct = costBasis > 0 ? (pnl / costBasis) * 100 : 0;
                   const hasMktData = pos.mktPrice > 0;
                   return (
                     <tr key={`${pos.conid}-${i}`} className="hover:bg-[hsl(var(--secondary))]/50">
@@ -602,6 +670,12 @@ function PortfolioTab({ positions, orders, connected, onRefresh }: {
                           </span>
                         ) : <span className="text-[hsl(var(--muted-foreground))] opacity-50">—</span>}
                       </td>
+                      <td className={cn(
+                        'px-4 py-3 text-right tabular-nums text-xs font-medium',
+                        pnlPct > 0 ? 'text-emerald-600' : pnlPct < 0 ? 'text-red-600' : ''
+                      )}>
+                        {hasMktData ? `${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}%` : <span className="text-[hsl(var(--muted-foreground))] opacity-50">—</span>}
+                      </td>
                     </tr>
                   );
                 })}
@@ -618,6 +692,12 @@ function PortfolioTab({ positions, orders, connected, onRefresh }: {
                     totalUnrealizedPnl > 0 ? 'text-emerald-600' : totalUnrealizedPnl < 0 ? 'text-red-600' : ''
                   )}>
                     {fmtUsd(totalUnrealizedPnl, 2, true)}
+                  </td>
+                  <td className={cn(
+                    'px-4 py-2.5 text-right tabular-nums text-xs',
+                    totalUnrealizedPnl > 0 ? 'text-emerald-600' : totalUnrealizedPnl < 0 ? 'text-red-600' : ''
+                  )}>
+                    {totalCostBasis > 0 ? `${totalUnrealizedPnl >= 0 ? '+' : ''}${((totalUnrealizedPnl / totalCostBasis) * 100).toFixed(1)}%` : ''}
                   </td>
                 </tr>
               </tfoot>
@@ -1137,6 +1217,23 @@ function SettingsTab({ config, onUpdate }: {
               />
             </div>
             <p className="text-xs text-[hsl(var(--muted-foreground))] mt-1">Hard cap on total deployed capital</p>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-[hsl(var(--foreground))] mb-1.5">
+              Daily Deployment Limit
+            </label>
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-[hsl(var(--muted-foreground))]">$</span>
+              <input
+                type="number"
+                value={config.maxDailyDeployment}
+                onChange={e => onUpdate({ maxDailyDeployment: Number(e.target.value) })}
+                className="w-full px-3 py-2 border border-[hsl(var(--border))] rounded-lg text-sm"
+                min={5000}
+                step={5000}
+              />
+            </div>
+            <p className="text-xs text-[hsl(var(--muted-foreground))] mt-1">Max new capital per day (prevents budget blowouts)</p>
           </div>
         </div>
       </div>

@@ -267,6 +267,26 @@ export async function getAutoTradeEvents(limit = 100): Promise<AutoTradeEventRec
   return (data ?? []) as AutoTradeEventRecord[];
 }
 
+/** Get today's executed events (all modes — day, swing, long-term, system closes) */
+export async function getTodaysExecutedEvents(): Promise<AutoTradeEventRecord[]> {
+  const todayStart = new Date();
+  todayStart.setHours(0, 0, 0, 0);
+
+  // Fetch executed trades + system close events (both profit and loss)
+  const { data, error } = await supabase
+    .from('auto_trade_events')
+    .select('*')
+    .in('action', ['executed', 'failed'])
+    .gte('created_at', todayStart.toISOString())
+    .order('created_at', { ascending: false });
+
+  if (error) return [];
+  // Filter out non-system 'failed' events (only keep system closes + all executed)
+  return ((data ?? []) as AutoTradeEventRecord[]).filter(
+    e => e.action === 'executed' || e.source === 'system'
+  );
+}
+
 /** Get auto-trade events for a specific ticker */
 export async function getAutoTradeEventsByTicker(
   ticker: string,

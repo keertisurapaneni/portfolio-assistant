@@ -21,6 +21,7 @@ import {
   syncPositions,
   checkDipBuyOpportunities,
   checkProfitTakeOpportunities,
+  resetPendingOrders,
 } from '../lib/autoTrader';
 import { getPositions } from '../lib/ibClient';
 import {
@@ -183,8 +184,13 @@ export function useAutoTradeScheduler() {
       if (!config.enabled) return;
 
       // Pre-generate Suggested Finds daily at 9 AM ET (runs before market open)
-      // This has its own once-per-day guard; safe to call every loop
-      preGenerateSuggestedFinds().catch(() => {});
+      // IMPORTANT: Await this — do NOT fire-and-forget, otherwise it races with
+      // scanner processing and both check the allocation cap against stale IB data.
+      try {
+        await preGenerateSuggestedFinds();
+      } catch (err) {
+        console.warn('[AutoTradeScheduler] Suggested Finds pre-generation failed:', err);
+      }
 
       if (!isMarketHoursET()) return;
 
@@ -200,6 +206,8 @@ export function useAutoTradeScheduler() {
         // Always sync positions first — detect fills, closes, and update P&L
         if (config.accountId) {
           await syncPositions(config.accountId);
+          // IB positions are now up-to-date — reset pending order tracker
+          resetPendingOrders();
 
           // Save daily portfolio snapshot (non-blocking)
           savePortfolioSnapshotQuiet(config.accountId).catch(() => {});
