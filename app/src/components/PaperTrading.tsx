@@ -211,10 +211,6 @@ export function PaperTrading() {
     setConfig(updated);
   };
 
-  const completedTrades = allTrades.filter(t =>
-    ['STOPPED', 'TARGET_HIT', 'CLOSED', 'CANCELLED', 'REJECTED'].includes(t.status)
-  );
-
   // Today's executed trades from activity log
   const todayStr = new Date().toDateString();
   const todaysExecuted = persistedEvents.filter(e =>
@@ -351,7 +347,7 @@ export function PaperTrading() {
         {[
           { id: 'portfolio' as Tab, label: 'IB Portfolio', icon: Briefcase, count: ibPositions.length },
           { id: 'today' as Tab, label: "Today's Activity", icon: Zap, count: todaysExecuted.length },
-          { id: 'history' as Tab, label: 'Trade History', icon: Clock, count: completedTrades.length },
+          { id: 'history' as Tab, label: 'Trade History', icon: Clock, count: allTrades.length },
           { id: 'signals' as Tab, label: 'Signal Quality', icon: Target },
           { id: 'smart' as Tab, label: 'Smart Trading', icon: Brain },
           { id: 'settings' as Tab, label: 'Settings', icon: Settings },
@@ -396,7 +392,7 @@ export function PaperTrading() {
             />
           )}
           {tab === 'today' && (
-            <TodaysActivityTab events={todaysExecuted} trades={completedTrades} />
+            <TodaysActivityTab events={todaysExecuted} trades={allTrades} />
           )}
           {tab === 'smart' && (
             <SmartTradingTab
@@ -416,7 +412,7 @@ export function PaperTrading() {
             />
           )}
           {tab === 'history' && (
-            <HistoryTab trades={completedTrades} />
+            <HistoryTab trades={allTrades} />
           )}
           {tab === 'settings' && (
             <SettingsTab config={config} onUpdate={updateConfig} />
@@ -750,9 +746,11 @@ function TodaysActivityTab({ events, trades }: { events: AutoTradeEventRecord[];
     );
   }
 
-  // Calculate today's total P&L
+  // Calculate today's total P&L (realized from closed + unrealized from active)
   const todayPnl = events.reduce((sum, ev) => {
-    const matched = tradesByTicker.get(ev.ticker)?.find(t => t.pnl != null && t.close_price != null);
+    const matched = tradesByTicker.get(ev.ticker)?.find(t =>
+      t.pnl != null || t.status === 'FILLED' || t.status === 'TARGET_HIT' || t.status === 'STOPPED' || t.status === 'CLOSED'
+    );
     return sum + (matched?.pnl ?? 0);
   }, 0);
 
@@ -788,6 +786,7 @@ function TodaysActivityTab({ events, trades }: { events: AutoTradeEventRecord[];
               );
               const pnl = matched?.pnl;
               const isClosed = matched?.close_price != null;
+              const isActive = matched && !isClosed && ['FILLED', 'PARTIAL'].includes(matched.status);
               const msg = event.message;
               // Extract qty/price from message like "96 shares of POOL @ ~$259.95" or "SELL 1722 shares @ $29.03"
               const qtyMatch = msg.match(/(\d+)\s+shares.*?@\s*~?\$?([\d.]+)/i);
@@ -820,8 +819,10 @@ function TodaysActivityTab({ events, trades }: { events: AutoTradeEventRecord[];
                   <td className="px-4 py-3">
                     {isClosed ? (
                       <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-50 text-blue-700 font-medium">Closed</span>
+                    ) : isActive ? (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 font-medium">Active</span>
                     ) : (
-                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-50 text-amber-700 font-medium">Open</span>
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-50 text-amber-700 font-medium">Pending</span>
                     )}
                   </td>
                   <td className="px-4 py-3 text-right text-xs text-[hsl(var(--muted-foreground))] tabular-nums">
@@ -849,7 +850,7 @@ function HistoryTab({ trades }: { trades: PaperTrade[] }) {
     return (
       <div className="text-center py-12">
         <Clock className="w-10 h-10 text-[hsl(var(--muted-foreground))] opacity-40 mx-auto" />
-        <p className="mt-3 text-sm text-[hsl(var(--muted-foreground))]">No completed trades yet</p>
+        <p className="mt-3 text-sm text-[hsl(var(--muted-foreground))]">No trades yet</p>
       </div>
     );
   }
@@ -887,7 +888,8 @@ function HistoryTab({ trades }: { trades: PaperTrade[] }) {
     </th>
   );
 
-  // Summary row
+  // Summary stats
+  const activeTrades = trades.filter(t => ['SUBMITTED', 'FILLED', 'PARTIAL', 'PENDING'].includes(t.status));
   const totalPnl = trades.reduce((s, t) => s + (t.pnl ?? 0), 0);
   const wins = trades.filter(t => (t.pnl ?? 0) > 0).length;
   const losses = trades.filter(t => (t.pnl ?? 0) < 0).length;
@@ -897,6 +899,9 @@ function HistoryTab({ trades }: { trades: PaperTrade[] }) {
       <div className="flex items-center justify-between rounded-lg bg-[hsl(var(--secondary))] px-4 py-2.5">
         <div className="flex items-center gap-4 text-xs text-[hsl(var(--muted-foreground))]">
           <span>{trades.length} trades</span>
+          {activeTrades.length > 0 && (
+            <span className="text-blue-600">{activeTrades.length} active</span>
+          )}
           <span className="text-emerald-600">{wins}W</span>
           <span className="text-red-500">{losses}L</span>
         </div>
@@ -911,6 +916,7 @@ function HistoryTab({ trades }: { trades: PaperTrade[] }) {
             <tr className="bg-[hsl(var(--secondary))] text-[hsl(var(--muted-foreground))] text-xs">
               <SortHeader label="Ticker" col="ticker" />
               <SortHeader label="Signal" col="signal" />
+              <th className="text-right px-4 py-2.5 font-medium">Shares</th>
               <th className="text-right px-4 py-2.5 font-medium">Entry</th>
               <th className="text-right px-4 py-2.5 font-medium">Close</th>
               <SortHeader label="P&L" col="pnl" align="right" />
@@ -920,40 +926,46 @@ function HistoryTab({ trades }: { trades: PaperTrade[] }) {
             </tr>
           </thead>
           <tbody className="divide-y divide-[hsl(var(--border))]">
-            {sorted.map(trade => (
-              <tr key={trade.id} className="hover:bg-[hsl(var(--secondary))]/50">
-                <td className="px-4 py-3 font-bold">{trade.ticker}</td>
-                <td className="px-4 py-3">
-                  <span className={cn(
-                    'inline-flex px-2 py-0.5 rounded text-[10px] font-bold',
-                    trade.signal === 'BUY' ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'
+            {sorted.map(trade => {
+              const isActive = ['SUBMITTED', 'FILLED', 'PARTIAL', 'PENDING'].includes(trade.status);
+              return (
+                <tr key={trade.id} className={cn('hover:bg-[hsl(var(--secondary))]/50', isActive && 'bg-blue-50/30')}>
+                  <td className="px-4 py-3 font-bold">{trade.ticker}</td>
+                  <td className="px-4 py-3">
+                    <span className={cn(
+                      'inline-flex px-2 py-0.5 rounded text-[10px] font-bold',
+                      trade.signal === 'BUY' ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'
+                    )}>
+                      {trade.signal}
+                    </span>
+                  </td>
+                  <td className="px-4 py-3 text-right tabular-nums text-[hsl(var(--muted-foreground))]">
+                    {trade.quantity != null ? trade.quantity.toLocaleString() : '—'}
+                  </td>
+                  <td className="px-4 py-3 text-right tabular-nums">
+                    ${trade.fill_price?.toFixed(2) ?? trade.entry_price?.toFixed(2)}
+                  </td>
+                  <td className="px-4 py-3 text-right tabular-nums">
+                    {trade.close_price ? `$${trade.close_price.toFixed(2)}` : '—'}
+                  </td>
+                  <td className={cn(
+                    'px-4 py-3 text-right tabular-nums font-semibold',
+                    (trade.pnl ?? 0) > 0 ? 'text-emerald-600' : (trade.pnl ?? 0) < 0 ? 'text-red-600' : ''
                   )}>
-                    {trade.signal}
-                  </span>
-                </td>
-                <td className="px-4 py-3 text-right tabular-nums">
-                  ${trade.fill_price?.toFixed(2) ?? trade.entry_price?.toFixed(2)}
-                </td>
-                <td className="px-4 py-3 text-right tabular-nums">
-                  {trade.close_price ? `$${trade.close_price.toFixed(2)}` : '—'}
-                </td>
-                <td className={cn(
-                  'px-4 py-3 text-right tabular-nums font-semibold',
-                  (trade.pnl ?? 0) > 0 ? 'text-emerald-600' : (trade.pnl ?? 0) < 0 ? 'text-red-600' : ''
-                )}>
-                  {trade.pnl != null ? fmtUsd(trade.pnl, 2, true) : '—'}
-                </td>
-                <td className="px-4 py-3">
-                  <StatusBadge status={trade.status} />
-                </td>
-                <td className="px-4 py-3 text-xs text-[hsl(var(--muted-foreground))]">
-                  {trade.close_reason ?? '—'}
-                </td>
-                <td className="px-4 py-3 text-xs text-[hsl(var(--muted-foreground))] tabular-nums">
-                  {new Date(trade.opened_at).toLocaleDateString()}
-                </td>
-              </tr>
-            ))}
+                    {trade.pnl != null ? fmtUsd(trade.pnl, 2, true) : '—'}
+                  </td>
+                  <td className="px-4 py-3">
+                    <StatusBadge status={trade.status} />
+                  </td>
+                  <td className="px-4 py-3 text-xs text-[hsl(var(--muted-foreground))]">
+                    {trade.close_reason ?? (isActive ? trade.mode?.replace('_', ' ').toLowerCase() : '—')}
+                  </td>
+                  <td className="px-4 py-3 text-xs text-[hsl(var(--muted-foreground))] tabular-nums">
+                    {new Date(trade.opened_at).toLocaleDateString()}
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>

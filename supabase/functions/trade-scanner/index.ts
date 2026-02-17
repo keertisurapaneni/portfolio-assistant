@@ -1,12 +1,12 @@
-// Portfolio Assistant — Trade Scanner Edge Function (v5)
+// Portfolio Assistant — Trade Scanner Edge Function (v6)
 //
 // Architecture (two-pass):
 //   1. DISCOVERY  — Yahoo Finance screener finds movers (free, fast)
 //   2. PASS 1     — Gemini AI batch-evaluates candidates on lightweight indicators (quick filter)
-//   3. PASS 2     — Top picks get full 13-indicator analysis using the SAME shared
-//                   computeAllIndicators + formatIndicatorsForPrompt code as full analysis.
-//                   Day trades: fresh 15min candles for indicators (matches FA).
-//                   Swing trades: reuse daily chart data (matches FA).
+//   3. PASS 2     — Top picks get FA-GRADE PROMPT analysis — uses the IDENTICAL prompt
+//                   format as Full Analysis (scenarios, entry/stop/target, rationale) which
+//                   forces the AI to think deeper. Efficient data pipeline (15min candles
+//                   for day, daily Yahoo OHLCV for swing) keeps execution fast.
 //   4. CACHING    — Results stored in Supabase DB, shared across ALL users
 //
 // Refresh cadence:
@@ -22,8 +22,6 @@ import {
   DAY_TRADE_RULES,
   SWING_TRADE_SYSTEM,
   SWING_TRADE_RULES,
-  DAY_REFINE_USER,
-  SWING_REFINE_USER,
 } from '../_shared/prompts.ts';
 import {
   fetchCandles,
@@ -648,12 +646,46 @@ function preSwingFilter(q: YahooQuote): boolean {
   return true;
 }
 
-// ── Pass 2: Full indicator analysis ─────────────────────
-// Uses the EXACT SAME computeAllIndicators + formatIndicatorsForPrompt
-// from _shared/indicators.ts as full analysis.
-//
-// Day trades:  fetch 15min candles (1 API call per ticker) → compute indicators → same as FA
-// Swing trades: reuse daily OHLCV from chart enrichment (zero fetches) → compute indicators → same as FA
+// ── Pass 2: FA-grade prompt analysis ────────────────────
+// Uses the IDENTICAL prompt format as Full Analysis (scenarios, entry/stop/target,
+// rationale) which forces the AI to reason through bull/bear/neutral cases before
+// committing to a signal. Data pipeline stays efficient (15min for day, daily Yahoo
+// for swing) but the rich prompt eliminates scanner↔FA signal divergence.
+
+// FA prompt templates — identical to trading-signals/index.ts
+const FA_DAY_USER = `Inputs: (1) Pre-computed indicators (primary), (2) 1m/15m/1h candles (validation), (3) News headlines (confirmation only).
+
+${DAY_TRADE_RULES}
+
+Output (STRICT JSON only, no markdown):
+{"mode":"DAY_TRADE","recommendation":"BUY"|"SELL"|"HOLD","bias":"short phrase","entryPrice":number|null,"stopLoss":number|null,"targetPrice":number|null,"targetPrice2":number|null,"riskReward":"1:x"|null,"rationale":{"technical":"2-3 sentences","sentiment":"1 sentence","risk":"1-2 sentences"},"confidence":0-10,"scenarios":{"bullish":{"probability":0-100,"summary":"1 sentence"},"neutral":{"probability":0-100,"summary":"1 sentence"},"bearish":{"probability":0-100,"summary":"1 sentence"}}}
+Scenario probabilities must sum to 100.
+
+---
+{{INDICATOR_SUMMARY}}
+
+Candles:
+{{TECHNICAL_DATA}}
+
+News:
+{{SENTIMENT_DATA}}`;
+
+const FA_SWING_USER = `Inputs: (1) Pre-computed indicators (primary), (2) 4h/1d/1w candles (validation), (3) News headlines (must not contradict technicals).
+
+${SWING_TRADE_RULES}
+
+Output (STRICT JSON only, no markdown):
+{"mode":"SWING_TRADE","recommendation":"BUY"|"SELL"|"HOLD","bias":"short phrase","entryPrice":number|null,"stopLoss":number|null,"targetPrice":number|null,"targetPrice2":number|null,"riskReward":"1:x"|null,"rationale":{"technical":"2-3 sentences","sentiment":"1 sentence","risk":"1-2 sentences"},"confidence":0-10,"scenarios":{"bullish":{"probability":0-100,"summary":"1 sentence"},"neutral":{"probability":0-100,"summary":"1 sentence"},"bearish":{"probability":0-100,"summary":"1 sentence"}}}
+Scenario probabilities must sum to 100.
+
+---
+{{INDICATOR_SUMMARY}}
+
+Candles:
+{{TECHNICAL_DATA}}
+
+News:
+{{SENTIMENT_DATA}}`;
 
 async function runPass2(
   pass1: AIEval[],
@@ -662,100 +694,128 @@ async function runPass2(
   geminiKeys: string[],
 ): Promise<TradeIdea[]> {
   const tickers = pass1.map(e => e.ticker);
-  console.log(`[Trade Scanner] Pass 2: ${tickers.length} ${mode === 'DAY_TRADE' ? 'day' : 'swing'} candidates...`);
+  console.log(`[Trade Scanner] Pass 2 (FA-prompt): ${tickers.length} ${mode === 'DAY_TRADE' ? 'day' : 'swing'} candidates...`);
 
-  // Fetch market snapshot + feedback context in parallel
-  const [marketSnapshot, feedbackCtx] = await Promise.all([
+  // ── Shared data: market snapshot + feedback + news + fundamentals ──
+  const [marketSnapshot, feedbackCtx, ...newsArrays] = await Promise.all([
     fetchMarketSnapshot(),
     buildFeedbackContext(),
+    ...tickers.map(t => fetchYahooNews(t)),
   ]);
+  const newsMap = new Map(tickers.map((t, i) => [t, newsArrays[i]]));
+
   const marketCtxStr = marketSnapshot
     ? `SPY: ${marketSnapshot.spyTrend} | VIX: ${marketSnapshot.vix} (${marketSnapshot.volatility} fear)`
     : undefined;
 
-  // ── Evaluate each stock INDIVIDUALLY (same depth as FA) ──
-  const systemPrompt = mode === 'DAY_TRADE' ? DAY_TRADE_SYSTEM : SWING_TRADE_SYSTEM;
-  const refineTemplate = mode === 'DAY_TRADE' ? DAY_REFINE_USER : SWING_REFINE_USER;
-  const results: AIEval[] = [];
+  // Fetch fundamentals for all swing tickers in ONE batch
+  const fundMap = mode === 'SWING_TRADE'
+    ? await fetchFundamentalsBatch(tickers)
+    : new Map();
 
-  for (const ticker of tickers) {
-    const quote = quoteMap.get(ticker);
+  // ── Data: fetch candles (day = 15min from Twelve Data, swing = reuse daily Yahoo) ──
+  const candleMap = new Map<string, { ohlcvBars: OHLCV[]; trimmed: Record<string, unknown> }>();
 
-    // ── Fetch all timeframes matching FA — same candles the AI sees ──
-    let ohlcvBars: OHLCV[] | null = null;
-    const trimmedTimeframes: Record<string, unknown> = {};
-
-    if (mode === 'DAY_TRADE') {
-      // Fetch 15min candles — same timeframe FA uses for indicators
-      const c15m = await fetchCandles(ticker, '15min', 150);
-      if (c15m?.values?.length) {
-        ohlcvBars = c15m.values.map(v => ({
-          o: parseFloat(v.open), h: parseFloat(v.high),
-          l: parseFloat(v.low), c: parseFloat(v.close),
-          v: v.volume ? parseFloat(v.volume) : 0,
-        }));
-        trimmedTimeframes['15min'] = c15m.values.slice(0, 40).map(v => ({
-          t: v.datetime, o: parseFloat(v.open), h: parseFloat(v.high),
-          l: parseFloat(v.low), c: parseFloat(v.close),
-          v: v.volume ? parseFloat(v.volume) : 0,
-        }));
+  if (mode === 'DAY_TRADE') {
+    const candleResults = await Promise.all(
+      tickers.map(async (ticker) => {
+        try {
+          const c15m = await fetchCandles(ticker, '15min', 150);
+          if (!c15m?.values?.length) return { ticker, data: null };
+          const ohlcvBars = c15m.values.map(v => ({
+            o: parseFloat(v.open), h: parseFloat(v.high),
+            l: parseFloat(v.low), c: parseFloat(v.close),
+            v: v.volume ? parseFloat(v.volume) : 0,
+          }));
+          const trimmed = {
+            '15min': c15m.values.slice(0, 40).map(v => ({
+              t: v.datetime, o: parseFloat(v.open), h: parseFloat(v.high),
+              l: parseFloat(v.low), c: parseFloat(v.close),
+              v: v.volume ? parseFloat(v.volume) : 0,
+            })),
+          };
+          return { ticker, data: { ohlcvBars, trimmed } };
+        } catch { return { ticker, data: null }; }
+      })
+    );
+    for (const { ticker, data } of candleResults) {
+      if (data) candleMap.set(ticker, data);
+    }
+  } else {
+    for (const ticker of tickers) {
+      const quote = quoteMap.get(ticker);
+      const ohlcvBars = quote?._ohlcvBars ?? null;
+      if (ohlcvBars && ohlcvBars.length >= 30) {
+        candleMap.set(ticker, {
+          ohlcvBars,
+          trimmed: { '1day': ohlcvBars.slice(0, 40).map(b => ({ o: b.o, h: b.h, l: b.l, c: b.c, v: b.v })) },
+        });
       }
-    } else {
-      // Swing: reuse daily OHLCV from chart enrichment (zero fetches)
-      ohlcvBars = quote?._ohlcvBars ?? null;
-      if (ohlcvBars && ohlcvBars.length > 0) {
-        trimmedTimeframes['1day'] = ohlcvBars.slice(0, 40).map(b => ({
-          o: b.o, h: b.h, l: b.l, c: b.c, v: b.v,
-        }));
-      }
-    }
-
-    if (!ohlcvBars || ohlcvBars.length < 30) {
-      console.log(`[Trade Scanner] ${ticker}: insufficient data, skipping`);
-      continue;
-    }
-
-    // ── Compute full indicators — SAME code as full analysis ──
-    const indicators = computeAllIndicators(ohlcvBars);
-    const currentPrice = ohlcvBars[0]?.c ?? rawVal(quote?.regularMarketPrice);
-    const indicatorText = formatIndicatorsForPrompt(indicators, currentPrice, marketCtxStr);
-
-    // ── News + Fundamentals (swing only) ──
-    const news = await fetchYahooNews(ticker);
-    let extraContext = '';
-    if (mode === 'SWING_TRADE') {
-      const fundMap = await fetchFundamentalsBatch([ticker]);
-      const fund = fundMap.get(ticker);
-      if (fund) extraContext += `\n\nFundamentals: ${formatFundamentalsForAI(fund)}`;
-    }
-
-    const candleJson = JSON.stringify({ timeframes: trimmedTimeframes, currentPrice });
-
-    // ── Build prompt in the EXACT SAME format as FA ──
-    const userPrompt = refineTemplate
-      .replace('{{INDICATOR_SUMMARY}}', indicatorText + extraContext + feedbackCtx)
-      .replace('{{TECHNICAL_DATA}}', candleJson)
-      .replace('{{SENTIMENT_DATA}}', JSON.stringify(news.length > 0
-        ? news.map(n => ({ headline: n.headline, source: n.source }))
-        : [{ headline: 'No recent news available', source: '' }]));
-
-    try {
-      const raw = await callGemini(geminiKeys, systemPrompt, userPrompt, 0.15, 1000);
-      const parsed = JSON.parse(cleanJson(raw));
-      results.push({
-        ticker,
-        signal: parsed.signal ?? 'SKIP',
-        confidence: parsed.confidence ?? 0,
-        reason: parsed.reason ?? '',
-      });
-      console.log(`[Trade Scanner] ${ticker}: ${parsed.signal}/${parsed.confidence}`);
-    } catch (err) {
-      console.warn(`[Trade Scanner] ${ticker} Pass 2 failed:`, err);
     }
   }
 
-  // Day: 7+ (strict — auto-traded). Swing: 6+ (surfacing opportunities for user to review via FA).
-  const minConfidence = mode === 'DAY_TRADE' ? 7 : 6;
+  // ── Run ALL Gemini calls in PARALLEL using FA prompt format ──
+  const systemPrompt = mode === 'DAY_TRADE' ? DAY_TRADE_SYSTEM : SWING_TRADE_SYSTEM;
+  const faTemplate = mode === 'DAY_TRADE' ? FA_DAY_USER : FA_SWING_USER;
+
+  const evalResults = await Promise.all(
+    tickers.map(async (ticker) => {
+      const candles = candleMap.get(ticker);
+      if (!candles || candles.ohlcvBars.length < 30) {
+        console.log(`[Trade Scanner] ${ticker}: insufficient candle data`);
+        return null;
+      }
+
+      try {
+        const indicators = computeAllIndicators(candles.ohlcvBars);
+        const currentPrice = candles.ohlcvBars[0]?.c ?? rawVal(quoteMap.get(ticker)?.regularMarketPrice);
+        const indicatorText = formatIndicatorsForPrompt(indicators, currentPrice, marketCtxStr);
+
+        let extraContext = '';
+        if (mode === 'SWING_TRADE') {
+          const fund = fundMap.get(ticker);
+          if (fund) extraContext += `\n\nFundamentals: ${formatFundamentalsForAI(fund)}`;
+        }
+
+        const news = newsMap.get(ticker) ?? [];
+        const newsForPrompt = news.length > 0
+          ? news.map(n => ({ headline: n.headline, source: n.source }))
+          : [{ headline: 'No recent news available', source: '' }];
+
+        const technicalData = { timeframes: candles.trimmed, currentPrice };
+
+        // Use the FULL FA prompt — forces scenario analysis + entry/stop/target
+        const userPrompt = faTemplate
+          .replace('{{INDICATOR_SUMMARY}}', indicatorText + extraContext + feedbackCtx)
+          .replace('{{TECHNICAL_DATA}}', JSON.stringify(technicalData))
+          .replace('{{SENTIMENT_DATA}}', JSON.stringify(newsForPrompt));
+
+        const raw = await callGemini(geminiKeys, systemPrompt, userPrompt, 0.15, 2000);
+        const parsed = JSON.parse(cleanJson(raw));
+
+        // Extract recommendation from FA-format response
+        const recommendation = parsed.recommendation ?? parsed.signal ?? 'HOLD';
+        const confidence = parsed.confidence ?? 0;
+        const reason = parsed.rationale?.technical ?? parsed.reason ?? '';
+
+        console.log(`[Trade Scanner] ${ticker}: ${recommendation}/${confidence} (FA-prompt)`);
+        return {
+          ticker,
+          signal: recommendation as AIEval['signal'],
+          confidence,
+          reason: typeof reason === 'string' ? reason : '',
+        } as AIEval;
+      } catch (err) {
+        console.warn(`[Trade Scanner] ${ticker} Pass 2 failed:`, err);
+        return null;
+      }
+    })
+  );
+
+  const results = evalResults.filter((r): r is AIEval => r !== null);
+
+  // Both day and swing: 7+ (FA-grade prompt, so consistent with full analysis).
+  const minConfidence = 7;
   const ideas = results
     .filter(e => e.signal === 'BUY' || e.signal === 'SELL')
     .filter(e => e.confidence >= minConfidence)
@@ -854,7 +914,7 @@ Deno.serve(async (req) => {
 
     // ── Refresh day trades ──
     // Start fresh each new trading day — don't carry over yesterday's picks
-    let dayIdeas: TradeIdea[] = dayFromPreviousDay ? [] : (dayRow?.data ?? []);
+    let dayIdeas: TradeIdea[] = (dayFromPreviousDay || forceRefresh) ? [] : (dayRow?.data ?? []);
     if (needDayRefresh) {
       console.log('[Trade Scanner] Refreshing day trades...');
       const [gainers, losers] = await Promise.all([
@@ -937,7 +997,7 @@ Deno.serve(async (req) => {
 
     // ── Refresh swing trades ──
     // Start fresh each new trading day for swing too — prevents week-old picks lingering
-    let swingIdeas: TradeIdea[] = swingFromPreviousDay ? [] : (swingRow?.data ?? []);
+    let swingIdeas: TradeIdea[] = (swingFromPreviousDay || forceRefresh) ? [] : (swingRow?.data ?? []);
     if (needSwingRefresh) {
       console.log('[Trade Scanner] Refreshing swing trades...');
       const swingSymbols = [...new Set([...SWING_UNIVERSE, ...portfolioTickers])];
