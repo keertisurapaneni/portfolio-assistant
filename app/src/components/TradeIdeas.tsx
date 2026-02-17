@@ -36,6 +36,16 @@ interface TradeIdeasProps {
 
 type Tab = 'day' | 'swing';
 
+function formatScanAge(ts: number): string {
+  const diffMs = Date.now() - ts;
+  const mins = Math.floor(diffMs / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(diffMs / 3600000);
+  if (hours < 24) return `${hours}h ago`;
+  return new Date(ts).toLocaleDateString();
+}
+
 // ── Main Component ──────────────────────────────────────
 
 export function TradeIdeas({ onSelectTicker }: TradeIdeasProps) {
@@ -126,6 +136,12 @@ export function TradeIdeas({ onSelectTicker }: TradeIdeasProps) {
           {totalCount > 0 && (
             <span className="text-[10px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200 px-1.5 py-0.5 rounded-full">
               {totalCount} setups
+            </span>
+          )}
+          {data?.timestamp && !loading && (
+            <span className="text-[10px] text-[hsl(var(--muted-foreground))]/60">
+              &middot; Scanned {formatScanAge(data.timestamp)}
+              {data.cached && ' (cached)'}
             </span>
           )}
           {loading && <Spinner size="xs" className="text-amber-500" />}

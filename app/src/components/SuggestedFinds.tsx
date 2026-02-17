@@ -58,6 +58,9 @@ export function SuggestedFinds({ existingTickers }: SuggestedFindsProps) {
   const [isAutoTrading, setIsAutoTrading] = useState(false);
   const [ownedTickers, setOwnedTickers] = useState<Set<string>>(new Set());
   const processedFindsRef = useRef<Set<string>>(new Set());
+  const [catAutoTradeOffer, setCatAutoTradeOffer] = useState<'idle' | 'offered' | 'trading' | 'done'>('idle');
+  const [catAutoTradeResults, setCatAutoTradeResults] = useState<ProcessResult[]>([]);
+  const catAutoTradedRef = useRef<Set<string>>(new Set());
   const { user } = useAuth();
   const isAuthed = !!user;
 
@@ -110,6 +113,37 @@ export function SuggestedFinds({ existingTickers }: SuggestedFindsProps) {
       })
       .catch(() => setIsAutoTrading(false));
   }, [displayedCompounders, displayedGoldMines, isAuthed]);
+
+  // Show auto-trade offer when Gold Mine category results load
+  useEffect(() => {
+    if (!selectedGoldMineCategory || isGoldMineCategoryLoading) return;
+    if (displayedGoldMines.length === 0) return;
+    const config = getAutoTraderConfig();
+    if (!config.enabled || !isAuthed) return;
+    // Only offer if we haven't already for this category
+    if (catAutoTradedRef.current.has(selectedGoldMineCategory)) return;
+    setCatAutoTradeOffer('offered');
+    setCatAutoTradeResults([]);
+  }, [selectedGoldMineCategory, displayedGoldMines, isGoldMineCategoryLoading, isAuthed]);
+
+  const handleCategoryAutoTrade = async () => {
+    if (!selectedGoldMineCategory) return;
+    setCatAutoTradeOffer('trading');
+    catAutoTradedRef.current.add(selectedGoldMineCategory);
+    try {
+      const config = getAutoTraderConfig();
+      const topPick = displayedGoldMines[0];
+      const topPickTickers = new Set<string>();
+      if (topPick && (topPick.conviction ?? 0) >= 8) topPickTickers.add(topPick.ticker);
+      const results = await processSuggestedFinds(displayedGoldMines, config, topPickTickers);
+      setCatAutoTradeResults(results);
+      setCatAutoTradeOffer('done');
+      // Refresh owned tickers
+      getActiveTrades().then(trades => setOwnedTickers(new Set(trades.map(t => t.ticker)))).catch(() => {});
+    } catch {
+      setCatAutoTradeOffer('done');
+    }
+  };
 
   const handleRefresh = async () => {
     setIsRefreshing(true);
@@ -399,6 +433,47 @@ export function SuggestedFinds({ existingTickers }: SuggestedFindsProps) {
                 <Sparkles className="w-3.5 h-3.5" />
                 Discover more {selectedGoldMineCategory} stocks
               </button>
+            )}
+
+            {/* Auto-trade prompt for category picks */}
+            {selectedGoldMineCategory && catAutoTradeOffer === 'offered' && (
+              <div className="mt-4 flex items-center gap-3 rounded-lg bg-amber-50 border border-amber-200 px-4 py-3">
+                <Zap className="w-4 h-4 text-amber-600 flex-shrink-0" />
+                <p className="text-sm text-amber-800 flex-1">
+                  Auto-trade qualifying <span className="font-semibold">{selectedGoldMineCategory}</span> picks? Only conviction 8+ and undervalued stocks will be bought.
+                </p>
+                <button
+                  onClick={handleCategoryAutoTrade}
+                  className="px-3 py-1.5 text-xs font-semibold rounded-lg bg-amber-600 text-white hover:bg-amber-700 transition-colors"
+                >
+                  Auto-Trade
+                </button>
+                <button
+                  onClick={() => { setCatAutoTradeOffer('idle'); catAutoTradedRef.current.add(selectedGoldMineCategory); }}
+                  className="text-xs text-amber-600 hover:text-amber-800 font-medium"
+                >
+                  Dismiss
+                </button>
+              </div>
+            )}
+            {catAutoTradeOffer === 'trading' && (
+              <div className="mt-4 flex items-center gap-2 text-sm text-amber-700">
+                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                Auto-trading qualifying picks...
+              </div>
+            )}
+            {catAutoTradeOffer === 'done' && catAutoTradeResults.length > 0 && (
+              <div className="mt-4 flex flex-wrap items-center gap-2 text-xs">
+                {catAutoTradeResults.map(r => (
+                  <span key={r.ticker} className={cn(
+                    'inline-flex items-center gap-1 px-2 py-1 rounded-full border font-medium',
+                    r.action === 'executed' ? 'bg-emerald-50 border-emerald-200 text-emerald-700' : 'bg-slate-50 border-slate-200 text-slate-600'
+                  )}>
+                    {r.action === 'executed' && <CheckCircle2 className="w-3 h-3" />}
+                    {r.ticker}: {r.action === 'executed' ? 'Bought' : r.reason ?? 'Skipped'}
+                  </span>
+                ))}
+              </div>
             )}
           </>
         )}
