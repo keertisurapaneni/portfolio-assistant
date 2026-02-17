@@ -1513,11 +1513,14 @@ function SmartTradingTab({ config, regime, kellyMultiplier, totalDeployed, event
 }) {
   // Recent smart actions (dip buys, profit takes, blocked trades)
   const smartEvents = events.filter(e =>
-    e.source === 'dip_buy' || e.source === 'profit_take' ||
+    e.source === 'dip_buy' || e.source === 'profit_take' || e.source === 'loss_cut' ||
     (e.skip_reason && (
       e.skip_reason.toLowerCase().includes('sector') ||
       e.skip_reason.toLowerCase().includes('earnings') ||
-      e.skip_reason.toLowerCase().includes('allocation')
+      e.skip_reason.toLowerCase().includes('allocation') ||
+      e.skip_reason.toLowerCase().includes('drawdown') ||
+      e.skip_reason.toLowerCase().includes('daily') ||
+      e.skip_reason.toLowerCase().includes('circuit')
     ))
   );
 
@@ -1598,19 +1601,32 @@ function SmartTradingTab({ config, regime, kellyMultiplier, totalDeployed, event
           </p>
         </div>
 
-        {/* Dynamic Sizing */}
-        <div className={cn('rounded-xl border p-4', config.useDynamicSizing ? 'bg-blue-50 border-blue-200 text-blue-700' : 'bg-slate-50 border-slate-200 text-slate-500')}>
-          <div className="flex items-center gap-2 mb-2">
-            <BarChart3 className="w-4 h-4" />
-            <span className="text-xs font-medium opacity-75">Position Sizing</span>
-          </div>
-          <p className="text-xl font-bold">{config.useDynamicSizing ? 'Dynamic' : 'Fixed'}</p>
-          <p className="text-[10px] mt-0.5 opacity-60">
-            {config.useDynamicSizing
-              ? `${config.baseAllocationPct}% base, ${config.maxPositionPct}% max`
-              : `$${config.positionSize.toLocaleString()} per trade`}
-          </p>
-        </div>
+        {/* Portfolio Health / Drawdown */}
+        {(() => {
+          const totalPnl = positions.reduce((s, p) => s + p.unrealizedPnl, 0);
+          const totalCost = positions.reduce((s, p) => s + Math.abs(p.position) * p.avgCost, 0);
+          const pnlPct = totalCost > 0 ? (totalPnl / totalCost) * 100 : 0;
+          const level = pnlPct <= -5 ? 'critical' : pnlPct <= -3 ? 'defensive' : pnlPct <= -1 ? 'caution' : 'normal';
+          const levelColors: Record<string, string> = {
+            normal: 'bg-emerald-50 border-emerald-200 text-emerald-700',
+            caution: 'bg-amber-50 border-amber-200 text-amber-700',
+            defensive: 'bg-orange-50 border-orange-200 text-orange-700',
+            critical: 'bg-red-50 border-red-200 text-red-700',
+          };
+          const mult = level === 'critical' ? 0 : level === 'defensive' ? 0.5 : level === 'caution' ? 0.75 : 1.0;
+          return (
+            <div className={cn('rounded-xl border p-4', levelColors[level])}>
+              <div className="flex items-center gap-2 mb-2">
+                <Activity className="w-4 h-4" />
+                <span className="text-xs font-medium opacity-75">Drawdown Guard</span>
+              </div>
+              <p className="text-xl font-bold capitalize">{level}</p>
+              <p className="text-[10px] mt-0.5 opacity-60">
+                P&L: {pnlPct >= 0 ? '+' : ''}{pnlPct.toFixed(1)}% &middot; Sizing: {(mult * 100).toFixed(0)}%
+              </p>
+            </div>
+          );
+        })()}
       </div>
 
       {/* Feature Status Grid */}

@@ -760,9 +760,10 @@ export function calculatePositionSize(
     stopLoss?: number;        // for scanner trades (risk-based sizing)
     regimeMultiplier?: number; // from market regime check
     kellyMultiplier?: number;  // from Half-Kelly
+    drawdownMultiplier?: number; // from portfolio health (1.0 = normal, <1 = reduce)
   }
 ): { quantity: number; dollarSize: number } {
-  const { price, mode, conviction, entryPrice, stopLoss, regimeMultiplier = 1.0, kellyMultiplier = 1.0 } = params;
+  const { price, mode, conviction, entryPrice, stopLoss, regimeMultiplier = 1.0, kellyMultiplier = 1.0, drawdownMultiplier = 1.0 } = params;
 
   const alloc = config.maxTotalAllocation;
 
@@ -806,8 +807,8 @@ export function calculatePositionSize(
     dollarSize = config.positionSize;
   }
 
-  // Apply regime + Kelly multipliers
-  dollarSize = dollarSize * regimeMultiplier * kellyMultiplier;
+  // Apply regime + Kelly + drawdown multipliers
+  dollarSize = dollarSize * regimeMultiplier * kellyMultiplier * drawdownMultiplier;
 
   // Cap at max position size
   dollarSize = Math.min(dollarSize, maxDollar);
@@ -817,6 +818,137 @@ export function calculatePositionSize(
 
   const quantity = Math.max(1, Math.floor(dollarSize / price));
   return { quantity, dollarSize: quantity * price };
+}
+
+// ── Smart Trading: Drawdown Protection ───────────────────
+
+export interface PortfolioHealth {
+  totalUnrealizedPnl: number;
+  totalUnrealizedPnlPct: number;
+  totalCostBasis: number;
+  biggestLoser: { ticker: string; pnl: number; pnlPct: number } | null;
+  biggestWinner: { ticker: string; pnl: number; pnlPct: number } | null;
+  positionsInLoss: number;
+  positionsInGain: number;
+  drawdownMultiplier: number;    // 1.0 = normal, 0.5 = half size, 0 = stop trading
+  drawdownLevel: 'normal' | 'caution' | 'defensive' | 'critical';
+  nearLossCut: { ticker: string; lossPct: number }[];
+}
+
+/** Cache health for 5 min to avoid recalculating on every call */
+let _healthCache: { data: PortfolioHealth; ts: number } | null = null;
+const HEALTH_CACHE_MS = 5 * 60 * 1000;
+
+/**
+ * Analyze current portfolio health and determine drawdown protection level.
+ *
+ * Drawdown levels:
+ *   normal:    P&L > -1% → trade at full size
+ *   caution:   P&L -1% to -3% → reduce new positions to 75%
+ *   defensive: P&L -3% to -5% → reduce new positions to 50%, raise min confidence
+ *   critical:  P&L > -5% → STOP all new entries, only manage existing positions
+ */
+export async function assessPortfolioHealth(config: AutoTraderConfig): Promise<PortfolioHealth> {
+  if (_healthCache && Date.now() - _healthCache.ts < HEALTH_CACHE_MS) {
+    return _healthCache.data;
+  }
+
+  let positions: IBPosition[] = [];
+  try {
+    positions = await getPositions('');
+  } catch {
+    // IB not available
+  }
+
+  if (positions.length === 0) {
+    const neutral: PortfolioHealth = {
+      totalUnrealizedPnl: 0, totalUnrealizedPnlPct: 0, totalCostBasis: 0,
+      biggestLoser: null, biggestWinner: null,
+      positionsInLoss: 0, positionsInGain: 0,
+      drawdownMultiplier: 1.0, drawdownLevel: 'normal', nearLossCut: [],
+    };
+    _healthCache = { data: neutral, ts: Date.now() };
+    return neutral;
+  }
+
+  let totalPnl = 0;
+  let totalCost = 0;
+  let biggestLoser: PortfolioHealth['biggestLoser'] = null;
+  let biggestWinner: PortfolioHealth['biggestWinner'] = null;
+  let inLoss = 0;
+  let inGain = 0;
+  const nearLossCut: PortfolioHealth['nearLossCut'] = [];
+
+  for (const pos of positions) {
+    if (pos.mktPrice <= 0 || pos.avgCost <= 0) continue;
+    const costBasis = Math.abs(pos.position) * pos.avgCost;
+    const pnl = pos.unrealizedPnl;
+    const pnlPct = costBasis > 0 ? (pnl / costBasis) * 100 : 0;
+
+    totalPnl += pnl;
+    totalCost += costBasis;
+
+    if (pnl < 0) {
+      inLoss++;
+      if (!biggestLoser || pnl < biggestLoser.pnl) {
+        biggestLoser = { ticker: pos.contractDesc, pnl, pnlPct };
+      }
+      // Check if near loss-cut threshold
+      const absPct = Math.abs(pnlPct);
+      if (absPct >= config.lossCutTier1Pct * 0.6) {
+        nearLossCut.push({ ticker: pos.contractDesc, lossPct: absPct });
+      }
+    } else if (pnl > 0) {
+      inGain++;
+      if (!biggestWinner || pnl > biggestWinner.pnl) {
+        biggestWinner = { ticker: pos.contractDesc, pnl, pnlPct };
+      }
+    }
+  }
+
+  const totalPnlPct = totalCost > 0 ? (totalPnl / totalCost) * 100 : 0;
+
+  // Determine drawdown level
+  let drawdownLevel: PortfolioHealth['drawdownLevel'] = 'normal';
+  let drawdownMultiplier = 1.0;
+
+  if (totalPnlPct <= -5) {
+    drawdownLevel = 'critical';
+    drawdownMultiplier = 0; // STOP new entries
+  } else if (totalPnlPct <= -3) {
+    drawdownLevel = 'defensive';
+    drawdownMultiplier = 0.5;
+  } else if (totalPnlPct <= -1) {
+    drawdownLevel = 'caution';
+    drawdownMultiplier = 0.75;
+  }
+
+  const health: PortfolioHealth = {
+    totalUnrealizedPnl: totalPnl,
+    totalUnrealizedPnlPct: totalPnlPct,
+    totalCostBasis: totalCost,
+    biggestLoser, biggestWinner,
+    positionsInLoss: inLoss, positionsInGain: inGain,
+    drawdownMultiplier, drawdownLevel, nearLossCut,
+  };
+
+  _healthCache = { data: health, ts: Date.now() };
+
+  // Log health summary
+  const emoji = drawdownLevel === 'normal' ? 'OK' : drawdownLevel.toUpperCase();
+  logEvent('*', drawdownLevel === 'normal' ? 'info' : 'warning',
+    `Portfolio health [${emoji}]: ${totalPnlPct >= 0 ? '+' : ''}${totalPnlPct.toFixed(2)}% ($${totalPnl.toFixed(0)}) | ${inGain}W/${inLoss}L` +
+    (biggestLoser ? ` | Worst: ${biggestLoser.ticker} ${biggestLoser.pnlPct.toFixed(1)}%` : '') +
+    (biggestWinner ? ` | Best: ${biggestWinner.ticker} +${biggestWinner.pnlPct.toFixed(1)}%` : '') +
+    (drawdownMultiplier < 1 ? ` | Sizing: ${(drawdownMultiplier * 100).toFixed(0)}%` : '')
+  );
+
+  return health;
+}
+
+/** Reset health cache (call when positions change) */
+export function resetHealthCache() {
+  _healthCache = null;
 }
 
 // ── Smart Trading: Layer 4a — Market Regime ──────────────
@@ -1425,6 +1557,19 @@ async function runPreTradeChecks(
   ticker: string,
   positionSize: number,
 ): Promise<boolean> {
+  // 0. Drawdown protection — block new entries when portfolio is in critical drawdown
+  const health = await assessPortfolioHealth(config);
+  if (health.drawdownLevel === 'critical') {
+    const msg = `DRAWDOWN PROTECTION: Portfolio at ${health.totalUnrealizedPnlPct.toFixed(1)}% — blocking all new entries`;
+    logEvent(ticker, 'warning', msg);
+    persistEvent(ticker, 'warning', msg, {
+      action: 'skipped', source: 'system',
+      skip_reason: 'Critical drawdown — no new entries',
+      metadata: { drawdownLevel: health.drawdownLevel, pnlPct: health.totalUnrealizedPnlPct },
+    });
+    return false;
+  }
+
   // 1. Allocation cap
   const capOk = await checkAllocationCap(config, positionSize, ticker);
   if (!capOk) return false;
@@ -1526,6 +1671,7 @@ async function processSingleIdea(
   // ── 6. Dynamic Position Sizing ──
   const regime = await getMarketRegime(config);
   const kellyMult = await calculateKellyMultiplier(config);
+  const health = await assessPortfolioHealth(config);
   const sizing = calculatePositionSize(config, {
     price: entryPrice,
     mode,
@@ -1533,6 +1679,7 @@ async function processSingleIdea(
     stopLoss,
     regimeMultiplier: regime.multiplier,
     kellyMultiplier: kellyMult,
+    drawdownMultiplier: health.drawdownMultiplier,
   });
   const quantity = sizing.quantity;
 
@@ -1810,12 +1957,14 @@ async function processSuggestedFind(
   // Dynamic position sizing for long-term holds
   const regime = await getMarketRegime(config);
   const kellyMult = await calculateKellyMultiplier(config);
+  const health = await assessPortfolioHealth(config);
   const sizing = calculatePositionSize(config, {
     price: currentPrice,
     mode: 'LONG_TERM',
     conviction,
     regimeMultiplier: regime.multiplier,
     kellyMultiplier: kellyMult,
+    drawdownMultiplier: health.drawdownMultiplier,
   });
   const quantity = sizing.quantity;
 

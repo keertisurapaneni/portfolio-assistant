@@ -23,6 +23,8 @@ import {
   checkProfitTakeOpportunities,
   checkLossCutOpportunities,
   resetPendingOrders,
+  assessPortfolioHealth,
+  resetHealthCache,
 } from '../lib/autoTrader';
 import { getPositions } from '../lib/ibClient';
 import {
@@ -230,13 +232,30 @@ export function useAutoTradeScheduler() {
               }
             }
 
-            // Layer 2 & 3: Dip buying and profit taking
+            // Portfolio health check — logs status + sets drawdown multiplier
+            resetHealthCache(); // force fresh check with latest positions
+            const health = await assessPortfolioHealth(config);
+            if (health.drawdownLevel !== 'normal') {
+              console.log(`[AutoTradeScheduler] Drawdown protection: ${health.drawdownLevel} (${health.totalUnrealizedPnlPct.toFixed(1)}%, multiplier: ${health.drawdownMultiplier})`);
+            }
+
+            // Layer 2 & 3: Dip buying, profit taking, loss cutting
             await checkDipBuyOpportunities(config, positions);
             await checkProfitTakeOpportunities(config, positions);
             await checkLossCutOpportunities(config, positions);
           } catch (err) {
             console.warn('[AutoTradeScheduler] Smart trading checks failed:', err);
           }
+
+          // Mid-day analysis: run performance analysis during market hours too
+          // (not just after close) so we can learn faster
+          try {
+            const analyzed = await analyzeUnreviewedTrades();
+            if (analyzed > 0) {
+              await updatePerformancePatterns();
+              console.log(`[AutoTradeScheduler] Mid-day analysis: ${analyzed} trades reviewed`);
+            }
+          } catch { /* non-critical */ }
 
           // Daily rehydration (after 4:15 PM ET)
           runDailyRehydration(config.accountId).catch(() => {});
