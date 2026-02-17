@@ -784,31 +784,45 @@ function TodaysActivityTab({ events, trades }: { events: AutoTradeEventRecord[];
               const matched = tradesByTicker.get(event.ticker)?.find(t =>
                 t.pnl != null || t.status === 'FILLED' || t.status === 'TARGET_HIT' || t.status === 'STOPPED' || t.status === 'CLOSED'
               );
-              const pnl = matched?.pnl;
-              const isClosed = matched?.close_price != null;
-              const isActive = matched && !isClosed && ['FILLED', 'PARTIAL'].includes(matched.status);
+              const isSystemClose = event.source === 'system' && !event.mode;
+              const metaPnl = isSystemClose && event.metadata ? (event.metadata as { pnl?: number }).pnl : undefined;
+              const eventPnl = metaPnl ?? matched?.pnl;
+              const pnl = eventPnl ?? null;
+              const isClosed = isSystemClose || (matched?.close_price != null);
+              const isActive = !isSystemClose && matched && !matched.close_price && ['FILLED', 'PARTIAL'].includes(matched.status);
               const msg = event.message;
-              // Extract qty/price from message like "96 shares of POOL @ ~$259.95" or "SELL 1722 shares @ $29.03"
               const qtyMatch = msg.match(/(\d+)\s+shares.*?@\s*~?\$?([\d.]+)/i);
 
+              // Determine display mode: system events (target_hit, eod_close) don't have a mode
+              const modeLabel = event.mode === 'DAY_TRADE' ? 'Day'
+                : event.mode === 'SWING_TRADE' ? 'Swing'
+                : event.mode === 'LONG_TERM' ? 'Long Term'
+                : isSystemClose ? 'Close' : '—';
+
+              // Signal: system close events don't have a scanner_signal
+              const signalLabel = event.scanner_signal ?? (isSystemClose ? '—' : 'BUY');
+              const signalColor = event.scanner_signal === 'SELL' ? 'bg-red-100 text-red-700'
+                : isSystemClose ? 'bg-slate-100 text-slate-600'
+                : 'bg-emerald-100 text-emerald-700';
+
               return (
-                <tr key={event.id} className="hover:bg-[hsl(var(--secondary))]/50">
+                <tr key={event.id} className={cn('hover:bg-[hsl(var(--secondary))]/50', isSystemClose && 'bg-slate-50/50')}>
                   <td className="px-4 py-3 font-bold">{event.ticker}</td>
                   <td className="px-4 py-3">
-                    <span className={cn(
-                      'inline-flex px-1.5 py-0.5 rounded text-[10px] font-bold',
-                      event.scanner_signal === 'SELL' ? 'bg-red-100 text-red-700' : 'bg-emerald-100 text-emerald-700'
-                    )}>
-                      {event.scanner_signal ?? 'BUY'}
+                    <span className={cn('inline-flex px-1.5 py-0.5 rounded text-[10px] font-bold', signalColor)}>
+                      {signalLabel}
                     </span>
                   </td>
                   <td className="px-4 py-3">
-                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 font-medium">
-                      {event.mode === 'DAY_TRADE' ? 'Day' : event.mode === 'LONG_TERM' ? 'Long Term' : 'Swing'}
+                    <span className={cn(
+                      'text-[10px] px-1.5 py-0.5 rounded font-medium',
+                      isSystemClose ? 'bg-purple-50 text-purple-600' : 'bg-slate-100 text-slate-600'
+                    )}>
+                      {modeLabel}
                     </span>
                   </td>
                   <td className="px-4 py-3 text-xs text-[hsl(var(--muted-foreground))]">
-                    {qtyMatch ? `${qtyMatch[1]} shares @ $${qtyMatch[2]}` : event.message.slice(0, 50)}
+                    {qtyMatch ? `${qtyMatch[1]} shares @ $${qtyMatch[2]}` : event.message.slice(0, 60)}
                   </td>
                   <td className={cn(
                     'px-4 py-3 text-right tabular-nums font-semibold',
