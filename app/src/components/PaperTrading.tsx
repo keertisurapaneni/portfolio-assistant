@@ -220,23 +220,30 @@ export function PaperTrading() {
 
   // Deduplicate today's events: remove redundant system close events and near-duplicate executions
   const dedupedToday = useMemo(() => {
+    // 1. Separate system close events from real executions
     const executions = todaysExecuted.filter(e => !(e.source === 'system' && !e.mode));
     const systemCloses = todaysExecuted.filter(e => e.source === 'system' && !e.mode);
     const executedTickers = new Set(executions.map(e => e.ticker));
     const uniqueCloses = systemCloses.filter(sc => !executedTickers.has(sc.ticker));
 
+    // 2. Dedup executions: same ticker + same signal direction = keep only the latest.
+    //    Multiple scanner passes can log separate "executed" events for the same trade.
     const finalExecs: AutoTradeEventRecord[] = [];
     const seen = new Map<string, number>();
     for (const e of executions) {
-      const key = `${e.ticker}|${e.scanner_signal ?? ''}|${e.mode ?? ''}|${e.source ?? ''}`;
+      // Key by ticker + signal direction (BUY/SELL). This ensures that if a stock was
+      // genuinely bought AND sold on the same day, both show up. But two BUY events
+      // for the same ticker (from different scanner passes) collapse into one.
+      const signal = (e.scanner_signal ?? 'BUY').toUpperCase();
+      const key = `${e.ticker}|${signal}`;
       const existingIdx = seen.get(key);
       if (existingIdx != null) {
+        // Keep the more recent event (has latest fill/P&L info)
         const existing = finalExecs[existingIdx];
-        const diff = Math.abs(new Date(e.created_at).getTime() - new Date(existing.created_at).getTime());
-        if (diff < 120_000) {
-          if (new Date(e.created_at) > new Date(existing.created_at)) finalExecs[existingIdx] = e;
-          continue;
+        if (new Date(e.created_at) > new Date(existing.created_at)) {
+          finalExecs[existingIdx] = e;
         }
+        continue;
       }
       seen.set(key, finalExecs.length);
       finalExecs.push(e);
