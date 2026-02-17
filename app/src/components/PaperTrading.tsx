@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   Bot,
   Wifi,
@@ -218,8 +218,33 @@ export function PaperTrading() {
     setConfig(updated);
   };
 
-  // todaysExecuted is loaded directly from Supabase (server-side filter for today + action=executed)
-  // This ensures ALL today's trades show up regardless of total event count
+  // Deduplicate today's events: remove redundant system close events and near-duplicate executions
+  const dedupedToday = useMemo(() => {
+    const executions = todaysExecuted.filter(e => !(e.source === 'system' && !e.mode));
+    const systemCloses = todaysExecuted.filter(e => e.source === 'system' && !e.mode);
+    const executedTickers = new Set(executions.map(e => e.ticker));
+    const uniqueCloses = systemCloses.filter(sc => !executedTickers.has(sc.ticker));
+
+    const finalExecs: AutoTradeEventRecord[] = [];
+    const seen = new Map<string, number>();
+    for (const e of executions) {
+      const key = `${e.ticker}|${e.scanner_signal ?? ''}|${e.mode ?? ''}|${e.source ?? ''}`;
+      const existingIdx = seen.get(key);
+      if (existingIdx != null) {
+        const existing = finalExecs[existingIdx];
+        const diff = Math.abs(new Date(e.created_at).getTime() - new Date(existing.created_at).getTime());
+        if (diff < 120_000) {
+          if (new Date(e.created_at) > new Date(existing.created_at)) finalExecs[existingIdx] = e;
+          continue;
+        }
+      }
+      seen.set(key, finalExecs.length);
+      finalExecs.push(e);
+    }
+    return [...finalExecs, ...uniqueCloses].sort(
+      (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+    );
+  }, [todaysExecuted]);
 
   // Portfolio totals (for consolidated stats row)
   const totalCostBasis = ibPositions.reduce((sum, p) => sum + Math.abs(p.position) * p.avgCost, 0);
@@ -350,7 +375,7 @@ export function PaperTrading() {
       <div className="flex gap-1 bg-white/60 p-1 rounded-xl border border-[hsl(var(--border))]">
         {[
           { id: 'portfolio' as Tab, label: 'IB Portfolio', icon: Briefcase, count: ibPositions.length },
-          { id: 'today' as Tab, label: "Today's Activity", icon: Zap, count: todaysExecuted.length },
+          { id: 'today' as Tab, label: "Today's Activity", icon: Zap, count: dedupedToday.length },
           { id: 'history' as Tab, label: 'Trade History', icon: Clock, count: allTrades.length },
           { id: 'signals' as Tab, label: 'Signal Quality', icon: Target },
           { id: 'smart' as Tab, label: 'Smart Trading', icon: Brain },
@@ -396,7 +421,7 @@ export function PaperTrading() {
             />
           )}
           {tab === 'today' && (
-            <TodaysActivityTab events={todaysExecuted} trades={allTrades} />
+            <TodaysActivityTab events={dedupedToday} trades={allTrades} />
           )}
           {tab === 'smart' && (
             <SmartTradingTab
@@ -806,7 +831,7 @@ function PortfolioTab({ positions, orders, connected, onRefresh }: {
 // ── History Tab ──────────────────────────────────────────
 
 function TodaysActivityTab({ events, trades }: { events: AutoTradeEventRecord[]; trades: PaperTrade[] }) {
-  // Match events with paper_trades to show P&L for closed trades
+  // Events are already deduplicated by the parent component
   const tradesByTicker = new Map<string, PaperTrade[]>();
   for (const t of trades) {
     const arr = tradesByTicker.get(t.ticker) || [];
@@ -826,13 +851,28 @@ function TodaysActivityTab({ events, trades }: { events: AutoTradeEventRecord[];
     );
   }
 
-  // Calculate today's total P&L (realized from closed + unrealized from active)
-  const todayPnl = events.reduce((sum, ev) => {
-    const matched = tradesByTicker.get(ev.ticker)?.find(t =>
-      t.pnl != null || t.status === 'FILLED' || t.status === 'TARGET_HIT' || t.status === 'STOPPED' || t.status === 'CLOSED'
-    );
-    return sum + (matched?.pnl ?? 0);
-  }, 0);
+  // Calculate today's total P&L — use unique trade IDs to avoid double-counting
+  const todayPnl = (() => {
+    const countedTradeIds = new Set<string>();
+    let sum = 0;
+    for (const ev of events) {
+      const matched = tradesByTicker.get(ev.ticker)?.find(t =>
+        (t.pnl != null || ['FILLED', 'TARGET_HIT', 'STOPPED', 'CLOSED'].includes(t.status))
+        && !countedTradeIds.has(t.id)
+      );
+      if (matched) {
+        countedTradeIds.add(matched.id);
+        sum += matched.pnl ?? 0;
+      } else {
+        const isSystemClose = ev.source === 'system' && !ev.mode;
+        if (isSystemClose && ev.metadata) {
+          const metaPnl = (ev.metadata as { pnl?: number }).pnl;
+          if (metaPnl != null) sum += metaPnl;
+        }
+      }
+    }
+    return sum;
+  })();
 
   return (
     <div className="space-y-3">
