@@ -2506,11 +2506,6 @@ function StrategyPerformanceTab({ sources, videos, statuses }: {
                                             </a>
                                           </div>
                                         ) : null}
-                                        {tradesLabel && (
-                                          <p className="text-[10px] text-[hsl(var(--muted-foreground))] truncate mt-0.5" title={tradesLabel}>
-                                            Trades: {tradesLabel}
-                                          </p>
-                                        )}
                                       </div>
                                     </td>
                                     <td className="py-2 text-right tabular-nums">
@@ -2519,7 +2514,14 @@ function StrategyPerformanceTab({ sources, videos, statuses }: {
                                         <div className="text-[10px] text-[hsl(var(--muted-foreground))]">applicable</div>
                                       )}
                                     </td>
-                                    <td className="py-2 text-right tabular-nums">{video.totalTrades}</td>
+                                    <td className="py-2 text-right tabular-nums">
+                                      {video.totalTrades}
+                                      {tradesLabel && (
+                                        <p className="text-[10px] text-[hsl(var(--muted-foreground))] truncate mt-0.5" title={tradesLabel}>
+                                          {tradesLabel}
+                                        </p>
+                                      )}
+                                    </td>
                                     <td className={cn(
                                       'py-2 text-right tabular-nums font-medium',
                                       video.winRate >= 50 ? 'text-emerald-600' : video.winRate > 0 ? 'text-red-600' : 'text-[hsl(var(--muted-foreground))]'
