@@ -54,6 +54,7 @@ import {
   type StrategyVideoPerformance,
   type StrategySignalStatusSummary,
   type PendingStrategySignal,
+  type TradeStatus,
   getAllTrades,
   getPerformance,
   recalculatePerformance,
@@ -2069,6 +2070,9 @@ function StrategyPerformanceTab({ sources, videos, statuses }: {
       ticker: string;
       signal: 'BUY' | 'SELL';
       openedAt: string | null;
+      pnl: number | null;
+      pnlPercent: number | null;
+      status: TradeStatus;
     }>;
     latestSignalStatus: string | null;
   };
@@ -2468,7 +2472,10 @@ function StrategyPerformanceTab({ sources, videos, statuses }: {
                               <tr className="text-[hsl(var(--muted-foreground))]">
                                 <th className="text-left py-1.5 font-medium">Strategy</th>
                                 <th className="text-right py-1.5 font-medium">Date</th>
-                                <th className="text-right py-1.5 font-medium">Trades</th>
+                                <th className="text-right py-1.5 font-medium">Trade Count</th>
+                                <th className="text-left py-1.5 font-medium">Trade 1</th>
+                                <th className="text-left py-1.5 font-medium">Trade 2</th>
+                                <th className="text-left py-1.5 font-medium">Trade 3</th>
                                 <th className="text-right py-1.5 font-medium">Win Rate</th>
                                 <th className="text-right py-1.5 font-medium">Avg %</th>
                                 <th className="text-right py-1.5 font-medium">Total P&L</th>
@@ -2477,13 +2484,10 @@ function StrategyPerformanceTab({ sources, videos, statuses }: {
                             </thead>
                             <tbody className="divide-y divide-[hsl(var(--border))]">
                               {sourceVideos.map(video => {
-                                const tradesLabelRaw = video.recentTrades
-                                  .map(t => `${t.ticker} ${t.signal} (${toEtIsoDate(t.openedAt) ?? '—'})`)
-                                  .join(' | ');
-                                const extraCount = Math.max(0, video.totalTrades - video.recentTrades.length);
-                                const tradesLabel = tradesLabelRaw
-                                  ? `${tradesLabelRaw}${extraCount > 0 ? ` | +${extraCount} more` : ''}`
-                                  : '';
+                                const recentTrades = [...video.recentTrades]
+                                  .sort((a, b) => (b.openedAt ?? '').localeCompare(a.openedAt ?? ''));
+                                const tradeSlots = [recentTrades[0] ?? null, recentTrades[1] ?? null, recentTrades[2] ?? null];
+                                const extraCount = Math.max(0, video.totalTrades - tradeSlots.filter(Boolean).length);
                                 const lastTradeDate = toEtIsoDate(video.lastTradeAt);
                                 const displayDate = video.totalTrades > 0
                                   ? lastTradeDate
@@ -2516,12 +2520,47 @@ function StrategyPerformanceTab({ sources, videos, statuses }: {
                                     </td>
                                     <td className="py-2 text-right tabular-nums">
                                       {video.totalTrades}
-                                      {tradesLabel && (
-                                        <p className="text-[10px] text-[hsl(var(--muted-foreground))] truncate mt-0.5" title={tradesLabel}>
-                                          {tradesLabel}
+                                      {extraCount > 0 && (
+                                        <p className="text-[10px] text-[hsl(var(--muted-foreground))] mt-0.5">
+                                          +{extraCount} more
                                         </p>
                                       )}
                                     </td>
+                                    {tradeSlots.map((trade, idx) => (
+                                      <td key={`${video.videoId ?? video.videoHeading}-trade-slot-${idx}`} className="py-2 align-top">
+                                        {trade ? (
+                                          <div className="rounded-md border border-[hsl(var(--border))] bg-white px-2 py-1">
+                                            <div className="flex items-center gap-1.5">
+                                              <span className="font-medium">{trade.ticker}</span>
+                                              <span className={cn(
+                                                'inline-flex px-1 py-0.5 rounded text-[9px] font-bold',
+                                                trade.signal === 'BUY' ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'
+                                              )}>
+                                                {trade.signal}
+                                              </span>
+                                            </div>
+                                            <p className="text-[10px] text-[hsl(var(--muted-foreground))]">
+                                              {toEtIsoDate(trade.openedAt) ?? '—'}
+                                            </p>
+                                            <p className={cn(
+                                              'text-[10px] font-semibold tabular-nums',
+                                              (trade.pnl ?? 0) > 0 ? 'text-emerald-600' : (trade.pnl ?? 0) < 0 ? 'text-red-600' : 'text-[hsl(var(--muted-foreground))]'
+                                            )}>
+                                              {trade.pnl == null
+                                                ? 'Open'
+                                                : fmtUsd(trade.pnl, 2, true)}
+                                              {trade.pnlPercent != null && (
+                                                <span className="text-[hsl(var(--muted-foreground))] ml-1">
+                                                  ({trade.pnlPercent >= 0 ? '+' : ''}{trade.pnlPercent.toFixed(2)}%)
+                                                </span>
+                                              )}
+                                            </p>
+                                          </div>
+                                        ) : (
+                                          <span className="text-[10px] text-[hsl(var(--muted-foreground))]">—</span>
+                                        )}
+                                      </td>
+                                    ))}
                                     <td className={cn(
                                       'py-2 text-right tabular-nums font-medium',
                                       video.winRate >= 50 ? 'text-emerald-600' : video.winRate > 0 ? 'text-red-600' : 'text-[hsl(var(--muted-foreground))]'

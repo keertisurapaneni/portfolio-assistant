@@ -469,6 +469,9 @@ export interface StrategyVideoPerformance {
     ticker: string;
     signal: 'BUY' | 'SELL';
     openedAt: string | null;
+    pnl: number | null;
+    pnlPercent: number | null;
+    status: TradeStatus;
   }>;
 }
 
@@ -735,6 +738,9 @@ export async function recalculatePerformanceByStrategyVideo(): Promise<StrategyV
       ticker: string;
       signal: 'BUY' | 'SELL';
       openedAt: string | null;
+      pnl: number | null;
+      pnlPercent: number | null;
+      status: TradeStatus;
     }>;
   }>();
 
@@ -777,6 +783,9 @@ export async function recalculatePerformanceByStrategyVideo(): Promise<StrategyV
       ticker: trade.ticker,
       signal: trade.signal,
       openedAt: trade.opened_at ?? null,
+      pnl: trade.pnl ?? null,
+      pnlPercent: trade.pnl_percent ?? null,
+      status: trade.status,
     });
 
     curr.totalTrades += 1;
