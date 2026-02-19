@@ -130,6 +130,7 @@ let _pendingDeployedDollar = 0;
 let _dailyDeployedDollar = 0;
 let _dailyDeployedDate = '';
 const _processedTickers = new Set<string>();
+let _processedTickersDate = '';
 
 const FINNHUB_BASE = 'https://finnhub.io/api/v1';
 const FINNHUB_KEY = process.env.FINNHUB_API_KEY ?? '';
@@ -139,6 +140,7 @@ const STRATEGY_VIDEOS_FILES = [
   resolve(process.cwd(), 'strategy-videos.json'),
 ];
 const STRATEGY_X_CONSECUTIVE_LOSS_LIMIT = 2;
+const MAX_GENERIC_SIGNALS_PER_VIDEO_TIMEFRAME = 2;
 let _lastDailyVideoQueueLogDate = '';
 
 // ── Public API ───────────────────────────────────────────
@@ -250,6 +252,14 @@ function formatDateToEtIso(date: Date): string {
 
 function getETDateString(): string {
   return formatDateToEtIso(new Date());
+}
+
+function resetProcessedTickersIfNewDay(): void {
+  const todayET = getETDateString();
+  if (_processedTickersDate !== todayET) {
+    _processedTickers.clear();
+    _processedTickersDate = todayET;
+  }
 }
 
 function normalizeDateToEtIso(value: string | null | undefined): string | null {
@@ -436,6 +446,7 @@ async function autoQueueGenericSignalsFromTrackedVideos(
         )
         .sort((a, b) => b.confidence - a.confidence);
 
+      let queuedForTimeframe = 0;
       for (const candidate of candidates) {
         const ticker = candidate.ticker.trim().toUpperCase();
         if (!ticker) continue;
@@ -472,7 +483,10 @@ async function autoQueueGenericSignalsFromTrackedVideos(
         });
         created += 1;
         queuedTickers.add(ticker);
-        break;
+        queuedForTimeframe += 1;
+        if (queuedForTimeframe >= MAX_GENERIC_SIGNALS_PER_VIDEO_TIMEFRAME) {
+          break;
+        }
       }
     }
   }
@@ -1685,6 +1699,7 @@ async function runSchedulerCycle(): Promise<void> {
 
   try {
     log(`═══ Cycle #${_runCount} starting ═══`);
+    resetProcessedTickersIfNewDay();
 
     if (!isConnected()) {
       log('IB Gateway not connected — skipping cycle');
@@ -1784,6 +1799,7 @@ async function runSchedulerCycle(): Promise<void> {
       if (slots > 0) {
         const qualified = newIdeas
           .filter(i => i.confidence >= config.minScannerConfidence)
+          .sort((a, b) => b.confidence - a.confidence)
           .slice(0, slots);
 
         for (const idea of qualified) {

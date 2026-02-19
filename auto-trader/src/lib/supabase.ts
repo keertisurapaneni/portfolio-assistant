@@ -253,6 +253,19 @@ export interface StrategyClosedTradeOutcome {
   opened_at: string | null;
 }
 
+function formatDateToEtIso(date: Date): string {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(date);
+  const year = parts.find(p => p.type === 'year')?.value ?? '0000';
+  const month = parts.find(p => p.type === 'month')?.value ?? '00';
+  const day = parts.find(p => p.type === 'day')?.value ?? '00';
+  return `${year}-${month}-${day}`;
+}
+
 export async function getActiveTrades(): Promise<PaperTrade[]> {
   const sb = getSupabase();
   const { data, error } = await sb
@@ -372,7 +385,7 @@ export async function getDueExternalStrategySignals(
   now = new Date()
 ): Promise<ExternalStrategySignal[]> {
   const sb = getSupabase();
-  const today = now.toISOString().slice(0, 10);
+  const today = formatDateToEtIso(now);
   const { data, error } = await sb
     .from('external_strategy_signals')
     .select('*')

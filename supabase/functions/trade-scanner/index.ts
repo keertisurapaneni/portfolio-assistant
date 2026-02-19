@@ -193,11 +193,12 @@ async function buildDynamicSwingUniverse(
 
   // ── 2. Yahoo Most Active + Trending (high volume movers) ──
   try {
-    const [activeRes, trendRes] = await Promise.all([
+    const [activeRes, gainersRes, losersRes] = await Promise.all([
       fetchMovers('most_actives'),
       fetchMovers('day_gainers'),
+      fetchMovers('day_losers'),
     ]);
-    const movers = [...activeRes, ...trendRes]
+    const movers = [...activeRes, ...gainersRes, ...losersRes]
       .filter(q => {
         const price = rawVal(q.regularMarketPrice);
         const vol = rawVal(q.regularMarketVolume);
@@ -240,7 +241,7 @@ async function buildDynamicSwingUniverse(
 
   // ── 4. AI Suggested Finds: tickers from today's cache ──
   try {
-    const today = new Date().toISOString().split('T')[0];
+    const today = formatDateToEtIso(new Date());
     const { data: rows } = await sb
       .from('daily_suggestions')
       .select('data')
@@ -382,6 +383,19 @@ function getETNow(): { hour: number; minute: number; dayOfWeek: number } {
   const now = new Date();
   const et = new Date(now.toLocaleString('en-US', { timeZone: 'America/New_York' }));
   return { hour: et.getHours(), minute: et.getMinutes(), dayOfWeek: et.getDay() };
+}
+
+function formatDateToEtIso(date: Date): string {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(date);
+  const year = parts.find(p => p.type === 'year')?.value ?? '0000';
+  const month = parts.find(p => p.type === 'month')?.value ?? '00';
+  const day = parts.find(p => p.type === 'day')?.value ?? '00';
+  return `${year}-${month}-${day}`;
 }
 
 function isMarketOpen(): boolean {
@@ -983,11 +997,17 @@ async function runPass2(
 
   const results = evalResults.filter((r): r is AIEval => r !== null);
 
-  // Both day and swing: 7+ (FA-grade prompt, so consistent with full analysis).
-  const minConfidence = 7;
-  const ideas = results
+  const withDirection = results.filter(e => e.signal === 'BUY' || e.signal === 'SELL');
+  // Keep day strict. For swing, fall back to 6 if strict threshold yields no ideas.
+  const strictMinConfidence = 7;
+  const fallbackMinConfidence = mode === 'SWING_TRADE' ? 6 : strictMinConfidence;
+  const strictCandidates = withDirection.filter(e => e.confidence >= strictMinConfidence);
+  const selectedCandidates = strictCandidates.length > 0
+    ? strictCandidates
+    : withDirection.filter(e => e.confidence >= fallbackMinConfidence);
+
+  const ideas = selectedCandidates
     .filter(e => e.signal === 'BUY' || e.signal === 'SELL')
-    .filter(e => e.confidence >= minConfidence)
     .map(e => {
       const q = quoteMap.get(e.ticker);
       return q ? buildIdea(e, q, mode) : null;
@@ -1044,21 +1064,25 @@ Deno.serve(async (req) => {
     const swingWindow = isSwingRefreshWindow();
 
     // Check if scan data is from a PREVIOUS trading day (needs fresh start)
-    const todayET = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/New_York' })).toISOString().slice(0, 10);
+    const todayET = formatDateToEtIso(new Date());
     const dayScannedDate = dayRow?.scanned_at
-      ? new Date(new Date(dayRow.scanned_at).toLocaleString('en-US', { timeZone: 'America/New_York' })).toISOString().slice(0, 10)
+      ? formatDateToEtIso(new Date(dayRow.scanned_at))
       : '';
     const swingScannedDate = swingRow?.scanned_at
-      ? new Date(new Date(swingRow.scanned_at).toLocaleString('en-US', { timeZone: 'America/New_York' })).toISOString().slice(0, 10)
+      ? formatDateToEtIso(new Date(swingRow.scanned_at))
       : '';
     const dayFromPreviousDay = dayScannedDate !== todayET;
     const swingFromPreviousDay = swingScannedDate !== todayET;
 
     // Day trades: ONLY refresh during market hours — pre-market Yahoo movers are stale
     const needDayRefresh = forceRefresh || (marketOpen && (dayStale || dayFromPreviousDay));
-    // Swing trades: allow refresh in swing windows or if never scanned today
+    // Swing trades: refresh in windows, or any market-hour cycle when today's list is empty.
     const swingNeverScanned = !swingRow || swingFromPreviousDay;
-    const needSwingRefresh = forceRefresh || (swingStale && (swingWindow || swingNeverScanned)) || swingNeverScanned;
+    const swingEmpty = (swingRow?.data?.length ?? 0) === 0;
+    const needSwingRefresh = forceRefresh ||
+      swingNeverScanned ||
+      (swingStale && swingWindow) ||
+      (marketOpen && swingEmpty);
 
     console.log(`[Trade Scanner] day=${dayStale ? 'STALE' : 'FRESH'} dayPrevDay=${dayFromPreviousDay} swing=${swingStale ? 'STALE' : 'FRESH'} swingPrevDay=${swingFromPreviousDay} market=${marketOpen ? 'OPEN' : 'CLOSED'} swingWindow=${swingWindow} refreshDay=${needDayRefresh} refreshSwing=${needSwingRefresh}`);
 
