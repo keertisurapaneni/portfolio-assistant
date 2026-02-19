@@ -32,6 +32,8 @@ export interface PaperTrade {
   signal: 'BUY' | 'SELL';
   strategy_source: string | null;
   strategy_source_url: string | null;
+  strategy_video_id: string | null;
+  strategy_video_heading: string | null;
   scanner_confidence: number | null;
   fa_confidence: number | null;
   fa_recommendation: string | null;
@@ -238,6 +240,8 @@ export interface AutoTradeEventRecord {
   message: string;
   strategy_source: string | null;
   strategy_source_url: string | null;
+  strategy_video_id: string | null;
+  strategy_video_heading: string | null;
   scanner_signal: string | null;
   scanner_confidence: number | null;
   fa_recommendation: string | null;
@@ -440,6 +444,36 @@ export interface StrategySourcePerformance {
   winRate: number;
   totalPnl: number;
   avgPnl: number;
+  consecutiveLosses: number;
+  isMarkedX: boolean;
+}
+
+export interface StrategyVideoPerformance {
+  source: string;
+  sourceUrl: string | null;
+  videoId: string | null;
+  videoHeading: string;
+  totalTrades: number;
+  activeTrades: number;
+  wins: number;
+  losses: number;
+  winRate: number;
+  totalPnl: number;
+  avgPnl: number;
+  avgReturnPct: number;
+  consecutiveLosses: number;
+  isMarkedX: boolean;
+  firstTradeAt: string | null;
+  lastTradeAt: string | null;
+}
+
+export interface StrategySignalStatusSummary {
+  source: string;
+  sourceUrl: string | null;
+  videoId: string | null;
+  videoHeading: string | null;
+  applicableDate: string | null;
+  latestSignalStatus: string | null;
 }
 
 /**
@@ -565,6 +599,7 @@ export async function recalculatePerformanceByStrategySource(): Promise<Strategy
     closedCount: number;
     closedPnl: number;
     activeUnrealizedPnl: number;
+    closedOutcomes: Array<{ pnl: number; at: string }>;
   }>();
 
   for (const trade of trades) {
@@ -580,6 +615,7 @@ export async function recalculatePerformanceByStrategySource(): Promise<Strategy
       closedCount: 0,
       closedPnl: 0,
       activeUnrealizedPnl: 0,
+      closedOutcomes: [],
     };
 
     if (!curr.sourceUrl && trade.strategy_source_url) {
@@ -600,24 +636,206 @@ export async function recalculatePerformanceByStrategySource(): Promise<Strategy
       curr.closedPnl += pnl;
       if (pnl > 0) curr.wins += 1;
       if (pnl < 0) curr.losses += 1;
+      curr.closedOutcomes.push({
+        pnl,
+        at: trade.closed_at ?? trade.opened_at ?? '',
+      });
     }
 
     groups.set(source, curr);
   }
 
   return [...groups.entries()]
-    .map(([source, s]) => ({
-      source,
-      sourceUrl: s.sourceUrl,
-      totalTrades: s.totalTrades,
-      activeTrades: s.activeTrades,
-      wins: s.wins,
-      losses: s.losses,
-      winRate: s.closedCount > 0 ? (s.wins / s.closedCount) * 100 : 0,
-      totalPnl: s.closedPnl + s.activeUnrealizedPnl,
-      avgPnl: s.closedCount > 0 ? s.closedPnl / s.closedCount : 0,
-    }))
+    .map(([source, s]) => {
+      const sortedClosed = [...s.closedOutcomes].sort((a, b) => b.at.localeCompare(a.at));
+      let consecutiveLosses = 0;
+      for (const outcome of sortedClosed) {
+        if (outcome.pnl < 0) consecutiveLosses += 1;
+        else break;
+      }
+      return {
+        source,
+        sourceUrl: s.sourceUrl,
+        totalTrades: s.totalTrades,
+        activeTrades: s.activeTrades,
+        wins: s.wins,
+        losses: s.losses,
+        winRate: s.closedCount > 0 ? (s.wins / s.closedCount) * 100 : 0,
+        totalPnl: s.closedPnl + s.activeUnrealizedPnl,
+        avgPnl: s.closedCount > 0 ? s.closedPnl / s.closedCount : 0,
+        consecutiveLosses,
+        isMarkedX: consecutiveLosses >= 2,
+      };
+    })
     .sort((a, b) => b.totalPnl - a.totalPnl);
+}
+
+export async function recalculatePerformanceByStrategyVideo(): Promise<StrategyVideoPerformance[]> {
+  const { data: allTrades, error } = await supabase
+    .from('paper_trades')
+    .select('*')
+    .not('strategy_source', 'is', null)
+    .not('strategy_video_heading', 'is', null);
+
+  if (error || !allTrades) return [];
+  const trades = allTrades as PaperTrade[];
+
+  const activeStatuses = new Set(['PENDING', 'SUBMITTED', 'FILLED', 'PARTIAL']);
+  const closedStatuses = new Set(['STOPPED', 'TARGET_HIT', 'CLOSED']);
+
+  const groups = new Map<string, {
+    source: string;
+    sourceUrl: string | null;
+    videoId: string | null;
+    videoHeading: string;
+    totalTrades: number;
+    activeTrades: number;
+    wins: number;
+    losses: number;
+    closedCount: number;
+    closedPnl: number;
+    activeUnrealizedPnl: number;
+    returns: number[];
+    closedOutcomes: Array<{ pnl: number; at: string }>;
+    firstTradeAt: string | null;
+    lastTradeAt: string | null;
+  }>();
+
+  for (const trade of trades) {
+    const source = (trade.strategy_source ?? '').trim();
+    const heading = (trade.strategy_video_heading ?? '').trim();
+    if (!source || !heading) continue;
+
+    const videoId = (trade.strategy_video_id ?? '').trim() || null;
+    const key = `${source}::${videoId ?? heading}`;
+    const curr = groups.get(key) ?? {
+      source,
+      sourceUrl: trade.strategy_source_url ?? null,
+      videoId,
+      videoHeading: heading,
+      totalTrades: 0,
+      activeTrades: 0,
+      wins: 0,
+      losses: 0,
+      closedCount: 0,
+      closedPnl: 0,
+      activeUnrealizedPnl: 0,
+      returns: [],
+      closedOutcomes: [],
+      firstTradeAt: trade.opened_at ?? null,
+      lastTradeAt: trade.opened_at ?? null,
+    };
+
+    if (!curr.sourceUrl && trade.strategy_source_url) curr.sourceUrl = trade.strategy_source_url;
+    if (!curr.videoId && videoId) curr.videoId = videoId;
+
+    const openedAt = trade.opened_at ?? null;
+    if (openedAt) {
+      if (!curr.firstTradeAt || openedAt < curr.firstTradeAt) curr.firstTradeAt = openedAt;
+      if (!curr.lastTradeAt || openedAt > curr.lastTradeAt) curr.lastTradeAt = openedAt;
+    }
+
+    curr.totalTrades += 1;
+    if (activeStatuses.has(trade.status)) {
+      curr.activeTrades += 1;
+      if (trade.status === 'FILLED' && trade.pnl != null) {
+        curr.activeUnrealizedPnl += trade.pnl;
+      }
+    }
+
+    if (closedStatuses.has(trade.status) && trade.fill_price != null) {
+      curr.closedCount += 1;
+      const pnl = trade.pnl ?? 0;
+      curr.closedPnl += pnl;
+      if (pnl > 0) curr.wins += 1;
+      if (pnl < 0) curr.losses += 1;
+      curr.closedOutcomes.push({
+        pnl,
+        at: trade.closed_at ?? trade.opened_at ?? '',
+      });
+      if (trade.fill_price && trade.quantity) {
+        curr.returns.push((pnl / (trade.fill_price * trade.quantity)) * 100);
+      }
+    }
+
+    groups.set(key, curr);
+  }
+
+  return [...groups.values()]
+    .map(g => {
+      const sortedClosed = [...g.closedOutcomes].sort((a, b) => b.at.localeCompare(a.at));
+      let consecutiveLosses = 0;
+      for (const outcome of sortedClosed) {
+        if (outcome.pnl < 0) consecutiveLosses += 1;
+        else break;
+      }
+      return {
+        source: g.source,
+        sourceUrl: g.sourceUrl,
+        videoId: g.videoId,
+        videoHeading: g.videoHeading,
+        totalTrades: g.totalTrades,
+        activeTrades: g.activeTrades,
+        wins: g.wins,
+        losses: g.losses,
+        winRate: g.closedCount > 0 ? (g.wins / g.closedCount) * 100 : 0,
+        totalPnl: g.closedPnl + g.activeUnrealizedPnl,
+        avgPnl: g.closedCount > 0 ? g.closedPnl / g.closedCount : 0,
+        avgReturnPct: g.returns.length > 0 ? g.returns.reduce((a, b) => a + b, 0) / g.returns.length : 0,
+        consecutiveLosses,
+        isMarkedX: consecutiveLosses >= 2,
+        firstTradeAt: g.firstTradeAt,
+        lastTradeAt: g.lastTradeAt,
+      };
+    })
+    .sort((a, b) => b.totalPnl - a.totalPnl);
+}
+
+export async function getStrategySignalStatusSummaries(): Promise<StrategySignalStatusSummary[]> {
+  const { data, error } = await supabase
+    .from('external_strategy_signals')
+    .select('source_name, source_url, strategy_video_id, strategy_video_heading, execute_on_date, status, created_at')
+    .not('source_name', 'is', null)
+    .order('created_at', { ascending: false })
+    .limit(1000);
+
+  if (error || !data) return [];
+
+  const grouped = new Map<string, StrategySignalStatusSummary & { sortKey: string }>();
+  for (const row of data as Array<{
+    source_name: string | null;
+    source_url: string | null;
+    strategy_video_id: string | null;
+    strategy_video_heading: string | null;
+    execute_on_date: string | null;
+    status: string | null;
+    created_at: string | null;
+  }>) {
+    const source = (row.source_name ?? '').trim();
+    if (!source) continue;
+    const videoId = (row.strategy_video_id ?? '').trim() || null;
+    const videoHeading = (row.strategy_video_heading ?? '').trim() || null;
+    if (!videoId && !videoHeading) continue;
+
+    const key = `${source}::${videoId ?? videoHeading}`;
+    const sortKey = `${row.execute_on_date ?? ''}|${row.created_at ?? ''}`;
+    const existing = grouped.get(key);
+    if (!existing || sortKey > existing.sortKey) {
+      grouped.set(key, {
+        source,
+        sourceUrl: row.source_url ?? null,
+        videoId,
+        videoHeading,
+        applicableDate: row.execute_on_date ?? null,
+        latestSignalStatus: row.status ?? null,
+        sortKey,
+      });
+    }
+  }
+
+  return [...grouped.values()]
+    .map(({ sortKey: _sortKey, ...summary }) => summary)
+    .sort((a, b) => (b.applicableDate ?? '').localeCompare(a.applicableDate ?? ''));
 }
 
 // ── Portfolio Snapshots ──────────────────────────────────

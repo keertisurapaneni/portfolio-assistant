@@ -44,6 +44,8 @@ router.post('/strategy-signals', async (req, res) => {
   try {
     const sourceName = String(req.body?.sourceName ?? '').trim();
     const sourceUrl = req.body?.sourceUrl ? String(req.body.sourceUrl).trim() : null;
+    const strategyVideoId = req.body?.strategyVideoId ? String(req.body.strategyVideoId).trim() : null;
+    const strategyVideoHeading = req.body?.strategyVideoHeading ? String(req.body.strategyVideoHeading).trim() : null;
     const ticker = String(req.body?.ticker ?? '').trim().toUpperCase();
     const signal = String(req.body?.signal ?? '').trim().toUpperCase();
     const mode = String(req.body?.mode ?? 'SWING_TRADE').trim().toUpperCase();
@@ -81,6 +83,8 @@ router.post('/strategy-signals', async (req, res) => {
     const created = await createExternalStrategySignal({
       source_name: sourceName,
       source_url: sourceUrl,
+      strategy_video_id: strategyVideoId,
+      strategy_video_heading: strategyVideoHeading,
       ticker,
       signal,
       mode,

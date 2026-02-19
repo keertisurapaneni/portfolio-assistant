@@ -10,6 +10,9 @@
  */
 
 import cron from 'node-cron';
+import { readFile } from 'node:fs/promises';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   isConnected,
   requestPositions,
@@ -33,6 +36,9 @@ import {
   getRecentDipBuyEvents,
   getPastTrimEvents,
   getPastLossCutEvents,
+  getRecentClosedStrategyOutcomes,
+  createExternalStrategySignal,
+  findExternalStrategySignal,
   getDueExternalStrategySignals,
   updateExternalStrategySignal,
   savePortfolioSnapshot,
@@ -88,6 +94,28 @@ interface SuggestedStock {
   reason: string;
 }
 
+interface DailyVideoSignal {
+  ticker: string;
+  longTriggerAbove?: number;
+  longTargets?: number[];
+  shortTriggerBelow?: number;
+  shortTargets?: number[];
+}
+
+interface StrategyVideoRecord {
+  videoId: string;
+  sourceHandle?: string;
+  sourceName?: string;
+  reelUrl?: string;
+  canonicalUrl?: string;
+  videoHeading?: string;
+  strategyType?: 'daily_signal' | 'generic_strategy';
+  timeframe?: 'DAY_TRADE' | 'SWING_TRADE' | 'LONG_TERM';
+  applicableTimeframes?: Array<'DAY_TRADE' | 'SWING_TRADE' | 'LONG_TERM'>;
+  tradeDate?: string;
+  extractedSignals?: DailyVideoSignal[];
+}
+
 // ── State ────────────────────────────────────────────────
 
 let _cronJob: cron.ScheduledTask | null = null;
@@ -105,6 +133,13 @@ const _processedTickers = new Set<string>();
 
 const FINNHUB_BASE = 'https://finnhub.io/api/v1';
 const FINNHUB_KEY = process.env.FINNHUB_API_KEY ?? '';
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const STRATEGY_VIDEOS_FILES = [
+  resolve(__dirname, '../strategy-videos.json'),
+  resolve(process.cwd(), 'strategy-videos.json'),
+];
+const STRATEGY_X_CONSECUTIVE_LOSS_LIMIT = 2;
+let _lastDailyVideoQueueLogDate = '';
 
 // ── Public API ───────────────────────────────────────────
 
@@ -198,6 +233,218 @@ function isPastMarketCloseET(): boolean {
 function getETMinutes(): number {
   const et = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }));
   return et.getHours() * 60 + et.getMinutes();
+}
+
+function formatDateToEtIso(date: Date): string {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(date);
+  const year = parts.find(p => p.type === 'year')?.value ?? '0000';
+  const month = parts.find(p => p.type === 'month')?.value ?? '00';
+  const day = parts.find(p => p.type === 'day')?.value ?? '00';
+  return `${year}-${month}-${day}`;
+}
+
+function getETDateString(): string {
+  return formatDateToEtIso(new Date());
+}
+
+function normalizeDateToEtIso(value: string | null | undefined): string | null {
+  const raw = (value ?? '').trim();
+  if (!raw) return null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return formatDateToEtIso(parsed);
+}
+
+function inferSourceUrl(video: StrategyVideoRecord): string | null {
+  const handle = (video.sourceHandle ?? '').trim().replace(/^@+/, '');
+  if (handle) {
+    return `https://www.instagram.com/${handle}/`;
+  }
+  const base = video.canonicalUrl ?? video.reelUrl ?? '';
+  const m = base.match(/instagram\.com\/([^/]+)\/reel\//i);
+  if (!m?.[1]) return null;
+  return `https://www.instagram.com/${m[1]}/`;
+}
+
+async function loadStrategyVideos(): Promise<StrategyVideoRecord[]> {
+  for (const file of STRATEGY_VIDEOS_FILES) {
+    try {
+      const raw = await readFile(file, 'utf8');
+      const parsed = JSON.parse(raw) as unknown;
+      if (!Array.isArray(parsed)) {
+        log(`Strategy videos file is not an array: ${file}`);
+        return [];
+      }
+      return parsed as StrategyVideoRecord[];
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT') continue;
+      log(`Failed to load strategy videos (${file}): ${err instanceof Error ? err.message : 'unknown'}`);
+      return [];
+    }
+  }
+  log(`Strategy videos file not found. Checked: ${STRATEGY_VIDEOS_FILES.join(', ')}`);
+  return [];
+}
+
+async function autoQueueDailySignalsFromTrackedVideos(): Promise<void> {
+  const todayET = getETDateString();
+  const videos = await loadStrategyVideos();
+  const dailyVideos = videos.filter(v =>
+    v.strategyType === 'daily_signal' &&
+    normalizeDateToEtIso(v.tradeDate) === todayET &&
+    Array.isArray(v.extractedSignals) &&
+    (v.extractedSignals?.length ?? 0) > 0
+  );
+  if (dailyVideos.length === 0) {
+    if (_lastDailyVideoQueueLogDate !== todayET) {
+      const knownTradeDates = [...new Set(
+        videos.map(v => normalizeDateToEtIso(v.tradeDate)).filter(Boolean) as string[]
+      )];
+      log(`No daily strategy videos matched ET date ${todayET} (videos:${videos.length}, tradeDates:${knownTradeDates.join(', ') || 'none'})`);
+      _lastDailyVideoQueueLogDate = todayET;
+    }
+    return;
+  }
+
+  let created = 0;
+  let deduped = 0;
+
+  for (const video of dailyVideos) {
+    const sourceName = (video.sourceName ?? '').trim();
+    if (!sourceName) continue;
+    const sourceUrl = inferSourceUrl(video);
+    const heading = (video.videoHeading ?? video.videoId).trim();
+    const mode = video.timeframe ?? 'DAY_TRADE';
+
+    for (const setup of (video.extractedSignals ?? [])) {
+      const ticker = String(setup.ticker ?? '').trim().toUpperCase();
+      if (!ticker) continue;
+
+      if (setup.longTriggerAbove && Array.isArray(setup.longTargets) && setup.longTargets[0]) {
+        const exists = await findExternalStrategySignal({
+          sourceName,
+          ticker,
+          signal: 'BUY',
+          mode,
+          executeOnDate: todayET,
+          strategyVideoId: video.videoId,
+        });
+        if (!exists) {
+          await createExternalStrategySignal({
+            source_name: sourceName,
+            source_url: sourceUrl,
+            strategy_video_id: video.videoId,
+            strategy_video_heading: heading,
+            ticker,
+            signal: 'BUY',
+            mode,
+            confidence: 8,
+            entry_price: setup.longTriggerAbove,
+            stop_loss: setup.shortTriggerBelow ?? null,
+            target_price: setup.longTargets[0],
+            execute_on_date: todayET,
+            notes: `Auto from video ${video.videoId} | ${heading} | long breakout`,
+          });
+          created += 1;
+        } else {
+          deduped += 1;
+        }
+      }
+
+      if (setup.shortTriggerBelow && Array.isArray(setup.shortTargets) && setup.shortTargets[0]) {
+        const exists = await findExternalStrategySignal({
+          sourceName,
+          ticker,
+          signal: 'SELL',
+          mode,
+          executeOnDate: todayET,
+          strategyVideoId: video.videoId,
+        });
+        if (!exists) {
+          await createExternalStrategySignal({
+            source_name: sourceName,
+            source_url: sourceUrl,
+            strategy_video_id: video.videoId,
+            strategy_video_heading: heading,
+            ticker,
+            signal: 'SELL',
+            mode,
+            confidence: 8,
+            entry_price: setup.shortTriggerBelow,
+            stop_loss: setup.longTriggerAbove ?? null,
+            target_price: setup.shortTargets[0],
+            execute_on_date: todayET,
+            notes: `Auto from video ${video.videoId} | ${heading} | short breakdown`,
+          });
+          created += 1;
+        } else {
+          deduped += 1;
+        }
+      }
+    }
+  }
+
+  if (created > 0) {
+    log(`Auto-queued ${created} daily strategy signals from tracked videos`);
+  } else if (deduped > 0) {
+    log(`Daily strategy signals already queued (${deduped} duplicates skipped)`);
+  }
+}
+
+function countConsecutiveLosses(outcomes: Array<{ pnl: number | null }>): number {
+  let losses = 0;
+  for (const outcome of outcomes) {
+    const pnl = outcome.pnl ?? 0;
+    if (pnl < 0) {
+      losses += 1;
+      continue;
+    }
+    break;
+  }
+  return losses;
+}
+
+async function shouldMarkStrategyX(signal: ExternalStrategySignal): Promise<{
+  blocked: boolean;
+  scope: 'video' | 'source' | null;
+  consecutiveLosses: number;
+}> {
+  const sourceName = (signal.source_name ?? '').trim();
+  if (!sourceName) {
+    return { blocked: false, scope: null, consecutiveLosses: 0 };
+  }
+
+  if (signal.strategy_video_id) {
+    const videoOutcomes = await getRecentClosedStrategyOutcomes({
+      sourceName,
+      mode: signal.mode,
+      strategyVideoId: signal.strategy_video_id,
+      limit: 10,
+    });
+    const videoLosses = countConsecutiveLosses(videoOutcomes);
+    if (videoLosses >= STRATEGY_X_CONSECUTIVE_LOSS_LIMIT) {
+      return { blocked: true, scope: 'video', consecutiveLosses: videoLosses };
+    }
+  }
+
+  const sourceOutcomes = await getRecentClosedStrategyOutcomes({
+    sourceName,
+    mode: signal.mode,
+    limit: 10,
+  });
+  const sourceLosses = countConsecutiveLosses(sourceOutcomes);
+  if (sourceLosses >= STRATEGY_X_CONSECUTIVE_LOSS_LIMIT) {
+    return { blocked: true, scope: 'source', consecutiveLosses: sourceLosses };
+  }
+
+  return { blocked: false, scope: null, consecutiveLosses: sourceLosses };
 }
 
 async function getQuotePrice(symbol: string): Promise<number | null> {
@@ -683,8 +930,32 @@ async function executeExternalStrategySignal(
   signal: ExternalStrategySignal,
   config: AutoTraderConfig,
   positions: EnrichedPosition[],
-): Promise<'executed' | 'skipped' | 'failed'> {
+): Promise<'executed' | 'skipped' | 'failed' | 'waiting'> {
   const ticker = signal.ticker.toUpperCase();
+  const markX = await shouldMarkStrategyX(signal);
+  if (markX.blocked) {
+    const reason = `Strategy marked X after ${markX.consecutiveLosses} consecutive losses (${markX.scope})`;
+    await updateExternalStrategySignal(signal.id, {
+      status: 'SKIPPED',
+      failure_reason: reason,
+    });
+    persistEvent(ticker, 'warning', `External signal skipped: ${reason}`, {
+      action: 'skipped',
+      source: 'external_signal',
+      mode: signal.mode,
+      strategy_source: signal.source_name,
+      strategy_source_url: signal.source_url,
+      strategy_video_id: signal.strategy_video_id,
+      strategy_video_heading: signal.strategy_video_heading,
+      skip_reason: 'strategy_marked_x',
+      metadata: {
+        external_signal_id: signal.id,
+        scope: markX.scope,
+        consecutive_losses: markX.consecutiveLosses,
+      },
+    });
+    return 'skipped';
+  }
 
   if (await hasActiveTrade(ticker)) {
     await updateExternalStrategySignal(signal.id, {
@@ -703,6 +974,19 @@ async function executeExternalStrategySignal(
   }
 
   const quote = await getQuotePrice(ticker);
+  if (signal.entry_price != null && quote == null) {
+    return 'waiting';
+  }
+
+  if (signal.entry_price != null && quote != null) {
+    if (signal.signal === 'BUY' && quote < signal.entry_price) {
+      return 'waiting';
+    }
+    if (signal.signal === 'SELL' && quote > signal.entry_price) {
+      return 'waiting';
+    }
+  }
+
   const referencePrice = quote ?? signal.entry_price ?? null;
   if (!referencePrice || referencePrice <= 0) {
     await updateExternalStrategySignal(signal.id, {
@@ -797,6 +1081,8 @@ async function executeExternalStrategySignal(
       signal: side,
       strategy_source: signal.source_name,
       strategy_source_url: signal.source_url,
+      strategy_video_id: signal.strategy_video_id,
+      strategy_video_heading: signal.strategy_video_heading,
       scanner_confidence: signal.confidence,
       fa_confidence: signal.confidence,
       fa_recommendation: side,
@@ -825,6 +1111,8 @@ async function executeExternalStrategySignal(
       mode: signal.mode,
       strategy_source: signal.source_name,
       strategy_source_url: signal.source_url,
+      strategy_video_id: signal.strategy_video_id,
+      strategy_video_heading: signal.strategy_video_heading,
       scanner_signal: side,
       scanner_confidence: signal.confidence,
       metadata: { external_signal_id: signal.id },
@@ -842,6 +1130,8 @@ async function executeExternalStrategySignal(
       mode: signal.mode,
       strategy_source: signal.source_name,
       strategy_source_url: signal.source_url,
+      strategy_video_id: signal.strategy_video_id,
+      strategy_video_heading: signal.strategy_video_heading,
       scanner_signal: signal.signal,
       scanner_confidence: signal.confidence,
       metadata: { external_signal_id: signal.id },
@@ -861,6 +1151,7 @@ async function processExternalStrategySignals(
   let skipped = 0;
   let failed = 0;
   let expired = 0;
+  let waiting = 0;
   const nowMs = Date.now();
 
   for (const signal of pending) {
@@ -883,11 +1174,12 @@ async function processExternalStrategySignals(
     if (result === 'executed') executed += 1;
     if (result === 'skipped') skipped += 1;
     if (result === 'failed') failed += 1;
+    if (result === 'waiting') waiting += 1;
     await new Promise(r => setTimeout(r, 1500));
   }
 
-  if (executed + skipped + failed + expired > 0) {
-    log(`External signals processed — executed:${executed} skipped:${skipped} failed:${failed} expired:${expired}`);
+  if (executed + skipped + failed + expired + waiting > 0) {
+    log(`External signals processed — executed:${executed} waiting:${waiting} skipped:${skipped} failed:${failed} expired:${expired}`);
   }
 }
 
@@ -1372,10 +1664,13 @@ async function runSchedulerCycle(): Promise<void> {
     await checkProfitTakeOpportunities(config, positions);
     await checkLossCutOpportunities(config, positions);
 
-    // 7. Process externally supplied strategy signals (date/time gated)
+    // 7. Auto-queue daily signals from tracked strategy videos (no manual posting needed)
+    await autoQueueDailySignalsFromTrackedVideos();
+
+    // 8. Process externally supplied strategy signals (date/time gated)
     await processExternalStrategySignals(config, positions);
 
-    // 8. Fetch + process scanner trade ideas
+    // 9. Fetch + process scanner trade ideas
     try {
       const data = await fetchTradeIdeas();
       const allIdeas = [...(data.dayTrades ?? []), ...(data.swingTrades ?? [])];
@@ -1406,7 +1701,7 @@ async function runSchedulerCycle(): Promise<void> {
       log(`Scanner fetch failed: ${err instanceof Error ? err.message : 'unknown'}`);
     }
 
-    // 9. Daily rehydration (after 4:15 PM ET)
+    // 10. Daily rehydration (after 4:15 PM ET)
     await runDailyRehydration(config);
 
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);

@@ -176,6 +176,8 @@ export interface PaperTrade {
   signal: 'BUY' | 'SELL';
   strategy_source: string | null;
   strategy_source_url: string | null;
+  strategy_video_id: string | null;
+  strategy_video_heading: string | null;
   scanner_confidence: number | null;
   fa_confidence: number | null;
   fa_recommendation: string | null;
@@ -211,6 +213,8 @@ export interface ExternalStrategySignal {
   id: string;
   source_name: string;
   source_url: string | null;
+  strategy_video_id: string | null;
+  strategy_video_heading: string | null;
   ticker: string;
   signal: 'BUY' | 'SELL';
   mode: 'DAY_TRADE' | 'SWING_TRADE' | 'LONG_TERM';
@@ -241,6 +245,12 @@ export interface StrategySourcePerformance {
   winRate: number;
   totalPnl: number;
   avgPnl: number;
+}
+
+export interface StrategyClosedTradeOutcome {
+  pnl: number | null;
+  closed_at: string | null;
+  opened_at: string | null;
 }
 
 export async function getActiveTrades(): Promise<PaperTrade[]> {
@@ -327,6 +337,35 @@ export async function getExternalStrategySignals(
   const { data, error } = await query;
   if (error) throw new Error(`getExternalStrategySignals: ${error.message}`);
   return (data ?? []) as ExternalStrategySignal[];
+}
+
+export async function findExternalStrategySignal(params: {
+  sourceName: string;
+  ticker: string;
+  signal: 'BUY' | 'SELL';
+  mode: 'DAY_TRADE' | 'SWING_TRADE' | 'LONG_TERM';
+  executeOnDate: string;
+  strategyVideoId?: string;
+}): Promise<ExternalStrategySignal | null> {
+  const sb = getSupabase();
+  let query = sb
+    .from('external_strategy_signals')
+    .select('*')
+    .eq('source_name', params.sourceName)
+    .eq('ticker', params.ticker.toUpperCase())
+    .eq('signal', params.signal)
+    .eq('mode', params.mode)
+    .eq('execute_on_date', params.executeOnDate)
+    .order('created_at', { ascending: false });
+
+  if (params.strategyVideoId) {
+    query = query.eq('strategy_video_id', params.strategyVideoId);
+  }
+
+  const { data, error } = await query.limit(1);
+
+  if (error) throw new Error(`findExternalStrategySignal: ${error.message}`);
+  return ((data ?? [])[0] as ExternalStrategySignal | undefined) ?? null;
 }
 
 export async function getDueExternalStrategySignals(
@@ -446,6 +485,35 @@ export async function getStrategySourcePerformance(): Promise<StrategySourcePerf
       };
     })
     .sort((a, b) => b.totalPnl - a.totalPnl);
+}
+
+export async function getRecentClosedStrategyOutcomes(params: {
+  sourceName: string;
+  mode?: 'DAY_TRADE' | 'SWING_TRADE' | 'LONG_TERM';
+  strategyVideoId?: string | null;
+  limit?: number;
+}): Promise<StrategyClosedTradeOutcome[]> {
+  const sb = getSupabase();
+  let query = sb
+    .from('paper_trades')
+    .select('pnl, closed_at, opened_at')
+    .eq('strategy_source', params.sourceName)
+    .in('status', ['STOPPED', 'TARGET_HIT', 'CLOSED'])
+    .not('fill_price', 'is', null)
+    .order('closed_at', { ascending: false, nullsFirst: false })
+    .order('opened_at', { ascending: false });
+
+  if (params.mode) {
+    query = query.eq('mode', params.mode);
+  }
+
+  if (params.strategyVideoId) {
+    query = query.eq('strategy_video_id', params.strategyVideoId);
+  }
+
+  const { data, error } = await query.limit(Math.max(1, Math.min(50, params.limit ?? 10)));
+  if (error) throw new Error(`getRecentClosedStrategyOutcomes: ${error.message}`);
+  return (data ?? []) as StrategyClosedTradeOutcome[];
 }
 
 // ── Auto Trade Events ────────────────────────────────────

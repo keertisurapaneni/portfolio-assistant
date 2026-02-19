@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { Fragment, useState, useEffect, useCallback, useMemo } from 'react';
 import {
   Bot,
   Wifi,
@@ -51,11 +51,15 @@ import {
   type AutoTradeEventRecord,
   type CategoryPerformance,
   type StrategySourcePerformance,
+  type StrategyVideoPerformance,
+  type StrategySignalStatusSummary,
   getAllTrades,
   getPerformance,
   recalculatePerformance,
   recalculatePerformanceByCategory,
   recalculatePerformanceByStrategySource,
+  recalculatePerformanceByStrategyVideo,
+  getStrategySignalStatusSummaries,
   getAutoTradeEvents,
   getTodaysExecutedEvents,
 } from '../lib/paperTradesApi';
@@ -85,6 +89,8 @@ export function PaperTrading() {
   const [todaysExecuted, setTodaysExecuted] = useState<AutoTradeEventRecord[]>([]);
   const [categoryPerf, setCategoryPerf] = useState<CategoryPerformance[]>([]);
   const [sourcePerf, setSourcePerf] = useState<StrategySourcePerformance[]>([]);
+  const [videoPerf, setVideoPerf] = useState<StrategyVideoPerformance[]>([]);
+  const [strategyStatuses, setStrategyStatuses] = useState<StrategySignalStatusSummary[]>([]);
   const [totalDeployed, setTotalDeployed] = useState(0);
   const [marketRegime, setMarketRegime] = useState<MarketRegime | null>(null);
   const [kellyMultiplier, setKellyMultiplier] = useState<number>(1.0);
@@ -96,13 +102,15 @@ export function PaperTrading() {
   const loadData = useCallback(async () => {
     setLoading(true);
     try {
-      const [all, perf, savedEvents, todayEvents, catPerf, srcPerf, deployed, regime, kelly] = await Promise.all([
+      const [all, perf, savedEvents, todayEvents, catPerf, srcPerf, vidPerf, signalStatuses, deployed, regime, kelly] = await Promise.all([
         getAllTrades(50),
         getPerformance(),
         getAutoTradeEvents(100),
         getTodaysExecutedEvents(),
         recalculatePerformanceByCategory(),
         recalculatePerformanceByStrategySource(),
+        recalculatePerformanceByStrategyVideo(),
+        getStrategySignalStatusSummaries(),
         getTotalDeployed(),
         getMarketRegime(config),
         calculateKellyMultiplier(config),
@@ -113,6 +121,8 @@ export function PaperTrading() {
       setTodaysExecuted(todayEvents);
       setCategoryPerf(catPerf);
       setSourcePerf(srcPerf);
+      setVideoPerf(vidPerf);
+      setStrategyStatuses(signalStatuses);
       setTotalDeployed(deployed);
       setMarketRegime(regime);
       setKellyMultiplier(kelly);
@@ -455,7 +465,7 @@ export function PaperTrading() {
             />
           )}
           {tab === 'strategies' && (
-            <StrategyPerformanceTab sources={sourcePerf} />
+            <StrategyPerformanceTab sources={sourcePerf} videos={videoPerf} statuses={strategyStatuses} />
           )}
           {tab === 'history' && (
             <HistoryTab trades={allTrades} />
@@ -1876,32 +1886,199 @@ function FeatureCard({ label, enabled, detail }: { label: string; enabled: boole
 
 // ── Strategy Performance Tab ─────────────────────────────
 
-function StrategyPerformanceTab({ sources }: {
+function StrategyPerformanceTab({ sources, videos, statuses }: {
   sources: StrategySourcePerformance[];
+  videos: StrategyVideoPerformance[];
+  statuses: StrategySignalStatusSummary[];
 }) {
-  const totalTrades = sources.reduce((sum, s) => sum + s.totalTrades, 0);
-  const totalActive = sources.reduce((sum, s) => sum + s.activeTrades, 0);
-  const totalPnl = sources.reduce((sum, s) => sum + s.totalPnl, 0);
+  type StrategyRow = {
+    source: string;
+    sourceUrl: string | null;
+    videoId: string | null;
+    videoHeading: string;
+    totalTrades: number;
+    activeTrades: number;
+    winRate: number;
+    avgReturnPct: number;
+    totalPnl: number;
+    isMarkedX: boolean;
+    applicableDate: string | null;
+    latestSignalStatus: string | null;
+  };
+
+  const [expandedSource, setExpandedSource] = useState<string | null>(null);
+  const todayET = useMemo(() => {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/New_York',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).formatToParts(new Date());
+    const year = parts.find(p => p.type === 'year')?.value ?? '0000';
+    const month = parts.find(p => p.type === 'month')?.value ?? '00';
+    const day = parts.find(p => p.type === 'day')?.value ?? '00';
+    return `${year}-${month}-${day}`;
+  }, []);
+
+  const sourcePerfByName = useMemo(() => {
+    return new Map(sources.map(source => [source.source, source]));
+  }, [sources]);
+
+  const rowsBySource = useMemo(() => {
+    const bySource = new Map<string, StrategyRow[]>();
+    const statusByKey = new Map<string, StrategySignalStatusSummary>();
+
+    for (const status of statuses) {
+      const key = `${status.source}::${status.videoId ?? status.videoHeading ?? ''}`;
+      statusByKey.set(key, status);
+    }
+
+    const upsertRow = (row: StrategyRow) => {
+      const key = `${row.source}::${row.videoId ?? row.videoHeading}`;
+      const list = bySource.get(row.source) ?? [];
+      const existingIdx = list.findIndex(r => `${r.source}::${r.videoId ?? r.videoHeading}` === key);
+      if (existingIdx >= 0) {
+        list[existingIdx] = {
+          ...list[existingIdx],
+          ...row,
+        };
+      } else {
+        list.push(row);
+      }
+      bySource.set(row.source, list);
+    };
+
+    for (const video of videos) {
+      const key = `${video.source}::${video.videoId ?? video.videoHeading}`;
+      const status = statusByKey.get(key);
+      const sourceMarkedX = sourcePerfByName.get(video.source)?.isMarkedX ?? false;
+      upsertRow({
+        source: video.source,
+        sourceUrl: video.sourceUrl,
+        videoId: video.videoId,
+        videoHeading: video.videoHeading,
+        totalTrades: video.totalTrades,
+        activeTrades: video.activeTrades,
+        winRate: video.winRate,
+        avgReturnPct: video.avgReturnPct,
+        totalPnl: video.totalPnl,
+        isMarkedX: video.isMarkedX || sourceMarkedX,
+        applicableDate: status?.applicableDate ?? null,
+        latestSignalStatus: status?.latestSignalStatus ?? null,
+      });
+    }
+
+    for (const status of statuses) {
+      const key = `${status.source}::${status.videoId ?? status.videoHeading ?? ''}`;
+      const hasRow = (bySource.get(status.source) ?? [])
+        .some(row => `${row.source}::${row.videoId ?? row.videoHeading}` === key);
+      if (hasRow) continue;
+
+      const sourceMarkedX = sourcePerfByName.get(status.source)?.isMarkedX ?? false;
+      upsertRow({
+        source: status.source,
+        sourceUrl: status.sourceUrl,
+        videoId: status.videoId,
+        videoHeading: status.videoHeading ?? status.videoId ?? 'Untitled strategy',
+        totalTrades: 0,
+        activeTrades: 0,
+        winRate: 0,
+        avgReturnPct: 0,
+        totalPnl: 0,
+        isMarkedX: sourceMarkedX,
+        applicableDate: status.applicableDate,
+        latestSignalStatus: status.latestSignalStatus,
+      });
+    }
+
+    for (const [source, rows] of bySource.entries()) {
+      bySource.set(source, [...rows].sort((a, b) => b.totalPnl - a.totalPnl));
+    }
+
+    return bySource;
+  }, [videos, statuses, sourcePerfByName]);
+
+  const sourceNames = useMemo(() => {
+    const names = new Set<string>([
+      ...sources.map(s => s.source),
+      ...statuses.map(s => s.source),
+    ]);
+    return [...names].sort((a, b) => {
+      const aPnl = sourcePerfByName.get(a)?.totalPnl ?? 0;
+      const bPnl = sourcePerfByName.get(b)?.totalPnl ?? 0;
+      return bPnl - aPnl;
+    });
+  }, [sources, statuses, sourcePerfByName]);
+
+  const totalTrades = sourceNames.reduce((sum, source) => {
+    const perf = sourcePerfByName.get(source);
+    if (perf) return sum + perf.totalTrades;
+    return sum + (rowsBySource.get(source) ?? []).reduce((s, row) => s + row.totalTrades, 0);
+  }, 0);
+  const totalActive = sourceNames.reduce((sum, source) => {
+    const perf = sourcePerfByName.get(source);
+    if (perf) return sum + perf.activeTrades;
+    return sum + (rowsBySource.get(source) ?? []).reduce((s, row) => s + row.activeTrades, 0);
+  }, 0);
+  const totalPnl = sourceNames.reduce((sum, source) => {
+    const perf = sourcePerfByName.get(source);
+    if (perf) return sum + perf.totalPnl;
+    return sum + (rowsBySource.get(source) ?? []).reduce((s, row) => s + row.totalPnl, 0);
+  }, 0);
+  const markedXCount = sourceNames.filter(source => {
+    const perf = sourcePerfByName.get(source);
+    if (perf?.isMarkedX) return true;
+    return (rowsBySource.get(source) ?? []).some(row => row.isMarkedX);
+  }).length;
+
+  const getStrategyState = (row: StrategyRow): { label: string; tone: 'green' | 'amber' | 'red' } => {
+    if (row.isMarkedX) return { label: 'deactivated X --', tone: 'red' };
+    const isExpired = row.latestSignalStatus === 'EXPIRED' || (
+      !!row.applicableDate && row.applicableDate < todayET
+    );
+    if (isExpired) return { label: 'expired', tone: 'amber' };
+    return { label: 'active ✓', tone: 'green' };
+  };
 
   return (
     <div className="space-y-3">
-      <div className="grid grid-cols-3 gap-3">
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
         <div className="rounded-xl border border-blue-200 bg-blue-50 p-4">
           <p className="text-[10px] text-blue-700/80 font-medium">Tracked Sources</p>
-          <p className="text-xl font-bold text-blue-700 tabular-nums">{sources.length}</p>
+          <p className="text-xl font-bold text-blue-700 tabular-nums">{sourceNames.length}</p>
         </div>
         <div className="rounded-xl border border-indigo-200 bg-indigo-50 p-4">
-          <p className="text-[10px] text-indigo-700/80 font-medium">Source Trades</p>
-          <p className="text-xl font-bold text-indigo-700 tabular-nums">{totalTrades}</p>
+          <p className="text-[10px] text-indigo-700/80 font-medium">Tracked Videos</p>
+          <p className="text-xl font-bold text-indigo-700 tabular-nums">{statuses.length > videos.length ? statuses.length : videos.length}</p>
+        </div>
+        <div className="rounded-xl border border-cyan-200 bg-cyan-50 p-4">
+          <p className="text-[10px] text-cyan-700/80 font-medium">Source Trades</p>
+          <p className="text-xl font-bold text-cyan-700 tabular-nums">{totalTrades}</p>
           {totalActive > 0 && (
-            <p className="text-[10px] text-indigo-700/70">{totalActive} active</p>
+            <p className="text-[10px] text-cyan-700/70">{totalActive} active</p>
           )}
         </div>
         <div className={cn(
           'rounded-xl border p-4',
-          totalPnl >= 0
-            ? 'border-emerald-200 bg-emerald-50'
-            : 'border-red-200 bg-red-50'
+          markedXCount > 0 ? 'border-red-200 bg-red-50' : 'border-emerald-200 bg-emerald-50'
+        )}>
+          <p className={cn(
+            'text-[10px] font-medium',
+            markedXCount > 0 ? 'text-red-700/80' : 'text-emerald-700/80'
+          )}>Marked X</p>
+          <p className={cn(
+            'text-xl font-bold tabular-nums',
+            markedXCount > 0 ? 'text-red-700' : 'text-emerald-700'
+          )}>
+            {markedXCount}
+          </p>
+          {markedXCount > 0 && (
+            <p className="text-[10px] text-red-700/70">Paused after 2 consecutive losses</p>
+          )}
+        </div>
+        <div className={cn(
+          'rounded-xl border p-4',
+          totalPnl >= 0 ? 'border-emerald-200 bg-emerald-50' : 'border-red-200 bg-red-50'
         )}>
           <p className={cn(
             'text-[10px] font-medium',
@@ -1916,7 +2093,7 @@ function StrategyPerformanceTab({ sources }: {
         </div>
       </div>
 
-      {sources.length === 0 ? (
+      {sourceNames.length === 0 ? (
         <div className="rounded-xl border border-[hsl(var(--border))] bg-white p-8 text-center">
           <BarChart3 className="w-10 h-10 text-[hsl(var(--muted-foreground))] opacity-40 mx-auto" />
           <p className="mt-3 text-sm text-[hsl(var(--muted-foreground))]">No strategy-source performance yet</p>
@@ -1927,7 +2104,7 @@ function StrategyPerformanceTab({ sources }: {
       ) : (
         <div className="rounded-xl border border-[hsl(var(--border))] bg-white overflow-hidden">
           <div className="px-4 py-2.5 border-b border-[hsl(var(--border))] bg-[hsl(var(--secondary))]">
-            <h3 className="text-sm font-semibold text-[hsl(var(--foreground))]">Source Leaderboard</h3>
+            <h3 className="text-sm font-semibold text-[hsl(var(--foreground))]">Source Leaderboard (Drill Down by Video)</h3>
           </div>
           <table className="w-full text-sm">
             <thead>
@@ -1937,54 +2114,177 @@ function StrategyPerformanceTab({ sources }: {
                 <th className="text-right px-4 py-2.5 font-medium">Win Rate</th>
                 <th className="text-right px-4 py-2.5 font-medium">Avg P&L</th>
                 <th className="text-right px-4 py-2.5 font-medium">Total P&L</th>
+                <th className="text-right px-4 py-2.5 font-medium">Videos</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-[hsl(var(--border))]">
-              {sources.map(source => (
-                <tr key={source.source} className="hover:bg-[hsl(var(--secondary))]/50">
-                  <td className="px-4 py-2.5">
-                    <div className="min-w-0">
-                      <p className="font-semibold truncate">{source.source}</p>
-                      {source.sourceUrl && (
-                        <a
-                          href={source.sourceUrl}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="text-[10px] text-blue-600 hover:text-blue-700 truncate block"
-                        >
-                          {source.sourceUrl}
-                        </a>
-                      )}
-                    </div>
-                  </td>
-                  <td className="px-4 py-2.5 text-right tabular-nums">
-                    {source.totalTrades}
-                    {source.activeTrades > 0 && (
-                      <span className="text-[10px] text-[hsl(var(--muted-foreground))] ml-1">
-                        ({source.activeTrades} active)
-                      </span>
+              {sourceNames.map(sourceName => {
+                const perf = sourcePerfByName.get(sourceName);
+                const sourceVideos = rowsBySource.get(sourceName) ?? [];
+                const expanded = expandedSource === sourceName;
+                const sourceUrl = perf?.sourceUrl ?? sourceVideos.find(v => v.sourceUrl)?.sourceUrl ?? null;
+                const sourceIsMarkedX = perf?.isMarkedX ?? sourceVideos.some(v => v.isMarkedX);
+                const sourceTrades = perf?.totalTrades ?? sourceVideos.reduce((sum, row) => sum + row.totalTrades, 0);
+                const sourceActive = perf?.activeTrades ?? sourceVideos.reduce((sum, row) => sum + row.activeTrades, 0);
+                const sourceWinRate = perf?.winRate ?? 0;
+                const sourceAvgPnl = perf?.avgPnl ?? 0;
+                const sourceTotalPnl = perf?.totalPnl ?? sourceVideos.reduce((sum, row) => sum + row.totalPnl, 0);
+                const counts = sourceVideos.reduce((acc, row) => {
+                  const state = getStrategyState(row);
+                  if (state.tone === 'green') acc.active += 1;
+                  if (state.tone === 'amber') acc.expired += 1;
+                  if (state.tone === 'red') acc.deactivated += 1;
+                  return acc;
+                }, { active: 0, expired: 0, deactivated: 0 });
+                return (
+                  <Fragment key={sourceName}>
+                    <tr className="hover:bg-[hsl(var(--secondary))]/50">
+                      <td className="px-4 py-2.5">
+                        <div className="min-w-0">
+                          <p className="font-semibold truncate flex items-center gap-2">
+                            <span>{sourceName}</span>
+                            {sourceIsMarkedX && (
+                              <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-red-100 text-red-700">
+                                X --
+                              </span>
+                            )}
+                          </p>
+                          {sourceUrl && (
+                            <a
+                              href={sourceUrl}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="text-[10px] text-blue-600 hover:text-blue-700 truncate block"
+                            >
+                              {sourceUrl}
+                            </a>
+                          )}
+                        </div>
+                      </td>
+                      <td className="px-4 py-2.5 text-right tabular-nums">
+                        {sourceTrades}
+                        {sourceActive > 0 && (
+                          <span className="text-[10px] text-[hsl(var(--muted-foreground))] ml-1">
+                            ({sourceActive} active)
+                          </span>
+                        )}
+                      </td>
+                      <td className={cn(
+                        'px-4 py-2.5 text-right tabular-nums font-medium',
+                        sourceWinRate >= 50 ? 'text-emerald-600' : sourceWinRate > 0 ? 'text-red-600' : 'text-[hsl(var(--muted-foreground))]'
+                      )}>
+                        {sourceWinRate > 0 ? `${sourceWinRate.toFixed(0)}%` : '—'}
+                      </td>
+                      <td className={cn(
+                        'px-4 py-2.5 text-right tabular-nums font-medium',
+                        sourceAvgPnl >= 0 ? 'text-emerald-600' : 'text-red-600'
+                      )}>
+                        {fmtUsd(sourceAvgPnl, 0, true)}
+                      </td>
+                      <td className={cn(
+                        'px-4 py-2.5 text-right tabular-nums font-bold',
+                        sourceTotalPnl >= 0 ? 'text-emerald-600' : 'text-red-600'
+                      )}>
+                        {fmtUsd(sourceTotalPnl, 0, true)}
+                      </td>
+                      <td className="px-4 py-2.5 text-right">
+                        {sourceVideos.length > 0 ? (
+                          <div className="flex flex-col items-end">
+                            <button
+                              onClick={() => setExpandedSource(expanded ? null : sourceName)}
+                              className="text-xs text-blue-600 hover:text-blue-700 font-medium"
+                            >
+                              {expanded ? 'Hide' : `View (${sourceVideos.length})`}
+                            </button>
+                            <span className="text-[10px] text-[hsl(var(--muted-foreground))]">
+                              {counts.active}✓ {counts.deactivated}x {counts.expired} exp
+                            </span>
+                          </div>
+                        ) : (
+                          <span className="text-[10px] text-[hsl(var(--muted-foreground))]">—</span>
+                        )}
+                      </td>
+                    </tr>
+                    {expanded && sourceVideos.length > 0 && (
+                      <tr className="bg-[hsl(var(--secondary))]/30">
+                        <td colSpan={6} className="px-4 py-3">
+                          <table className="w-full text-xs">
+                            <thead>
+                              <tr className="text-[hsl(var(--muted-foreground))]">
+                                <th className="text-left py-1.5 font-medium">Strategy</th>
+                                <th className="text-right py-1.5 font-medium">Applicable Date</th>
+                                <th className="text-right py-1.5 font-medium">Trades</th>
+                                <th className="text-right py-1.5 font-medium">Win Rate</th>
+                                <th className="text-right py-1.5 font-medium">Avg %</th>
+                                <th className="text-right py-1.5 font-medium">Total P&L</th>
+                                <th className="text-right py-1.5 font-medium">Status</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-[hsl(var(--border))]">
+                              {sourceVideos.map(video => (
+                                <tr key={`${sourceName}::${video.videoId ?? video.videoHeading}`}>
+                                  <td className="py-2">
+                                    <div className="min-w-0">
+                                      <p className="truncate">{video.videoHeading}</p>
+                                      {video.videoId && (
+                                        <p className="text-[10px] text-[hsl(var(--muted-foreground))]">{video.videoId}</p>
+                                      )}
+                                    </div>
+                                  </td>
+                                  <td className="py-2 text-right tabular-nums">
+                                    {video.applicableDate ?? '—'}
+                                  </td>
+                                  <td className="py-2 text-right tabular-nums">{video.totalTrades}</td>
+                                  <td className={cn(
+                                    'py-2 text-right tabular-nums font-medium',
+                                    video.winRate >= 50 ? 'text-emerald-600' : video.winRate > 0 ? 'text-red-600' : 'text-[hsl(var(--muted-foreground))]'
+                                  )}>
+                                    {video.winRate > 0 ? `${video.winRate.toFixed(0)}%` : '—'}
+                                  </td>
+                                  <td className={cn(
+                                    'py-2 text-right tabular-nums',
+                                    video.avgReturnPct >= 0 ? 'text-emerald-600' : 'text-red-600'
+                                  )}>
+                                    {video.avgReturnPct >= 0 ? '+' : ''}{video.avgReturnPct.toFixed(2)}%
+                                  </td>
+                                  <td className={cn(
+                                    'py-2 text-right tabular-nums font-semibold',
+                                    video.totalPnl >= 0 ? 'text-emerald-600' : 'text-red-600'
+                                  )}>
+                                    {fmtUsd(video.totalPnl, 0, true)}
+                                  </td>
+                                  <td className="py-2 text-right">
+                                    {(() => {
+                                      const state = getStrategyState(video);
+                                      const badgeClass = state.tone === 'green'
+                                        ? 'bg-emerald-100 text-emerald-700'
+                                        : state.tone === 'amber'
+                                          ? 'bg-amber-100 text-amber-700'
+                                          : 'bg-red-100 text-red-700';
+                                      return (
+                                        <div className="flex flex-col items-end">
+                                          <span className={`px-1.5 py-0.5 rounded text-[10px] font-semibold ${badgeClass}`}>
+                                            {state.label}
+                                          </span>
+                                          {video.latestSignalStatus && (
+                                            <span className="text-[10px] text-[hsl(var(--muted-foreground))] mt-0.5">
+                                              {video.latestSignalStatus}
+                                            </span>
+                                          )}
+                                        </div>
+                                      );
+                                    })()}
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </td>
+                      </tr>
                     )}
-                  </td>
-                  <td className={cn(
-                    'px-4 py-2.5 text-right tabular-nums font-medium',
-                    source.winRate >= 50 ? 'text-emerald-600' : source.winRate > 0 ? 'text-red-600' : 'text-[hsl(var(--muted-foreground))]'
-                  )}>
-                    {source.winRate > 0 ? `${source.winRate.toFixed(0)}%` : '—'}
-                  </td>
-                  <td className={cn(
-                    'px-4 py-2.5 text-right tabular-nums font-medium',
-                    source.avgPnl >= 0 ? 'text-emerald-600' : 'text-red-600'
-                  )}>
-                    {fmtUsd(source.avgPnl, 0, true)}
-                  </td>
-                  <td className={cn(
-                    'px-4 py-2.5 text-right tabular-nums font-bold',
-                    source.totalPnl >= 0 ? 'text-emerald-600' : 'text-red-600'
-                  )}>
-                    {fmtUsd(source.totalPnl, 0, true)}
-                  </td>
-                </tr>
-              ))}
+                  </Fragment>
+                );
+              })}
             </tbody>
           </table>
         </div>
