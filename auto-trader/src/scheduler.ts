@@ -123,6 +123,7 @@ interface StrategyVideoRecord {
 // ── State ────────────────────────────────────────────────
 
 let _cronJob: cron.ScheduledTask | null = null;
+let _firstCandleCronJob: cron.ScheduledTask | null = null;
 let _running = false;
 let _lastRun: Date | null = null;
 let _lastRunResult: string = 'never';
@@ -149,7 +150,7 @@ let _lastDailyVideoQueueLogDate = '';
 // ── Public API ───────────────────────────────────────────
 
 export function startScheduler(): void {
-  if (_cronJob) {
+  if (_cronJob || _firstCandleCronJob) {
     console.log('[Scheduler] Already running');
     return;
   }
@@ -171,7 +172,17 @@ export function startScheduler(): void {
     timezone: 'America/New_York',
   });
 
-  console.log('[Scheduler] Started — every 30 min, 9:00-16:30 ET, weekdays');
+  // Extra one-shot daily pass right after opening range finalizes (first-candle setups).
+  _firstCandleCronJob = cron.schedule('36 9 * * 1-5', () => {
+    runSchedulerCycle().catch(err => {
+      console.error('[Scheduler] First-candle cycle failed:', err);
+      _lastRunResult = `error: ${err instanceof Error ? err.message : 'unknown'}`;
+    });
+  }, {
+    timezone: 'America/New_York',
+  });
+
+  console.log('[Scheduler] Started — every 30 min + 9:36 ET first-candle pass (weekdays)');
 
   // Run once on startup (delayed 10s to let IB connect)
   setTimeout(() => {
@@ -185,17 +196,23 @@ export function stopScheduler(): void {
   if (_cronJob) {
     _cronJob.stop();
     _cronJob = null;
+  }
+  if (_firstCandleCronJob) {
+    _firstCandleCronJob.stop();
+    _firstCandleCronJob = null;
+  }
+  if (!_cronJob && !_firstCandleCronJob) {
     console.log('[Scheduler] Stopped');
   }
 }
 
 export function isSchedulerRunning(): boolean {
-  return !!_cronJob;
+  return !!_cronJob || !!_firstCandleCronJob;
 }
 
 export function getSchedulerStatus() {
   return {
-    running: !!_cronJob,
+    running: !!_cronJob || !!_firstCandleCronJob,
     executing: _running,
     lastRun: _lastRun?.toISOString() ?? null,
     lastResult: _lastRunResult,
