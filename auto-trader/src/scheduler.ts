@@ -140,7 +140,6 @@ const STRATEGY_VIDEOS_FILES = [
   resolve(process.cwd(), 'strategy-videos.json'),
 ];
 const STRATEGY_X_CONSECUTIVE_LOSS_LIMIT = 2;
-const MAX_GENERIC_SIGNALS_PER_VIDEO_TIMEFRAME = 2;
 let _lastDailyVideoQueueLogDate = '';
 
 // ── Public API ───────────────────────────────────────────
@@ -420,9 +419,15 @@ async function autoQueueGenericSignalsFromTrackedVideos(
   const genericVideos = videos.filter(v => v.strategyType === 'generic_strategy');
   if (genericVideos.length === 0) return queuedTickers;
 
-  let created = 0;
-  let deduped = 0;
+  type GenericStrategyBucket = {
+    videoId: string;
+    sourceName: string;
+    sourceUrl: string | null;
+    heading: string;
+    timeframe: 'DAY_TRADE' | 'SWING_TRADE';
+  };
 
+  const bucketsByTimeframe = new Map<'DAY_TRADE' | 'SWING_TRADE', GenericStrategyBucket[]>();
   for (const video of genericVideos) {
     const sourceName = (video.sourceName ?? '').trim();
     if (!sourceName) continue;
@@ -432,45 +437,74 @@ async function autoQueueGenericSignalsFromTrackedVideos(
     const timeframesRaw = video.applicableTimeframes?.length
       ? video.applicableTimeframes
       : (video.timeframe ? [video.timeframe] : ['DAY_TRADE']);
-
     const timeframes = timeframesRaw.filter(
       tf => tf === 'DAY_TRADE' || tf === 'SWING_TRADE'
     ) as Array<'DAY_TRADE' | 'SWING_TRADE'>;
     if (timeframes.length === 0) continue;
 
     for (const timeframe of timeframes) {
-      const candidates = ideas
-        .filter(i =>
-          i.mode === timeframe &&
-          i.confidence >= config.minScannerConfidence
-        )
-        .sort((a, b) => b.confidence - a.confidence);
+      const list = bucketsByTimeframe.get(timeframe) ?? [];
+      list.push({
+        videoId: video.videoId,
+        sourceName,
+        sourceUrl,
+        heading,
+        timeframe,
+      });
+      bucketsByTimeframe.set(timeframe, list);
+    }
+  }
 
-      let queuedForTimeframe = 0;
-      for (const candidate of candidates) {
-        const ticker = candidate.ticker.trim().toUpperCase();
-        if (!ticker) continue;
-        if (queuedTickers.has(ticker)) continue;
-        if (await hasActiveTrade(ticker)) continue;
+  let created = 0;
+  let deduped = 0;
 
+  // Cache active-check by ticker to avoid repeated DB roundtrips during allocation.
+  const activeTickerCache = new Map<string, boolean>();
+  const isActiveTicker = async (ticker: string): Promise<boolean> => {
+    const cached = activeTickerCache.get(ticker);
+    if (cached != null) return cached;
+    const active = await hasActiveTrade(ticker);
+    activeTickerCache.set(ticker, active);
+    return active;
+  };
+
+  for (const [timeframe, buckets] of bucketsByTimeframe.entries()) {
+    if (buckets.length === 0) continue;
+    const candidates = ideas
+      .filter(i => i.mode === timeframe && i.confidence >= config.minScannerConfidence)
+      .sort((a, b) => b.confidence - a.confidence);
+    if (candidates.length === 0) continue;
+
+    const seenTickers = new Set<string>();
+    for (const candidate of candidates) {
+      const ticker = candidate.ticker.trim().toUpperCase();
+      if (!ticker) continue;
+      if (seenTickers.has(ticker)) continue;
+      seenTickers.add(ticker);
+      if (await isActiveTicker(ticker)) continue;
+
+      let createdForTicker = false;
+      let existingForTicker = false;
+      for (const bucket of buckets) {
         const exists = await findExternalStrategySignal({
-          sourceName,
+          sourceName: bucket.sourceName,
           ticker,
           signal: candidate.signal,
           mode: timeframe,
           executeOnDate: todayET,
-          strategyVideoId: video.videoId,
+          strategyVideoId: bucket.videoId,
         });
         if (exists) {
           deduped += 1;
+          existingForTicker = true;
           continue;
         }
 
         await createExternalStrategySignal({
-          source_name: sourceName,
-          source_url: sourceUrl,
-          strategy_video_id: video.videoId,
-          strategy_video_heading: heading,
+          source_name: bucket.sourceName,
+          source_url: bucket.sourceUrl,
+          strategy_video_id: bucket.videoId,
+          strategy_video_heading: bucket.heading,
           ticker,
           signal: candidate.signal,
           mode: timeframe,
@@ -479,14 +513,15 @@ async function autoQueueGenericSignalsFromTrackedVideos(
           stop_loss: null,
           target_price: null,
           execute_on_date: todayET,
-          notes: `Generic strategy auto from video ${video.videoId} | ${heading} | scanner candidate: ${candidate.reason}`,
+          notes: `Generic strategy auto from video ${bucket.videoId} | ${bucket.heading} | scanner candidate: ${candidate.reason} | allocation group: ${buckets.length}`,
         });
+
         created += 1;
+        createdForTicker = true;
+      }
+
+      if (createdForTicker || existingForTicker) {
         queuedTickers.add(ticker);
-        queuedForTimeframe += 1;
-        if (queuedForTimeframe >= MAX_GENERIC_SIGNALS_PER_VIDEO_TIMEFRAME) {
-          break;
-        }
       }
     }
   }
@@ -498,6 +533,16 @@ async function autoQueueGenericSignalsFromTrackedVideos(
   }
 
   return queuedTickers;
+}
+
+function isGenericStrategySignal(
+  signal: ExternalStrategySignal,
+  genericVideoIds: Set<string>,
+): boolean {
+  const videoId = (signal.strategy_video_id ?? '').trim();
+  if (videoId && genericVideoIds.has(videoId)) return true;
+  const notes = (signal.notes ?? '').toLowerCase();
+  return notes.includes('generic strategy auto');
 }
 
 function countConsecutiveLosses(outcomes: Array<{ pnl: number | null }>): number {
@@ -1032,8 +1077,16 @@ async function executeExternalStrategySignal(
   signal: ExternalStrategySignal,
   config: AutoTraderConfig,
   positions: EnrichedPosition[],
+  options?: {
+    allocationSplit?: number;
+    allocationIndex?: number;
+    allowDuplicateTicker?: boolean;
+  },
 ): Promise<'executed' | 'skipped' | 'failed' | 'waiting'> {
   const ticker = signal.ticker.toUpperCase();
+  const allocationSplit = Math.max(1, Math.floor(options?.allocationSplit ?? 1));
+  const allocationIndex = Math.max(1, Math.floor(options?.allocationIndex ?? 1));
+  const allowDuplicateTicker = options?.allowDuplicateTicker === true;
   const skipExternalSignal = async (failureReason: string, skipReason: string): Promise<'skipped'> => {
     await updateExternalStrategySignal(signal.id, {
       status: 'SKIPPED',
@@ -1077,7 +1130,20 @@ async function executeExternalStrategySignal(
     return 'skipped';
   }
 
-  if (await hasActiveTrade(ticker)) {
+  if (allowDuplicateTicker) {
+    const activeTrades = await getActiveTrades();
+    const sameTickerTrades = activeTrades.filter(
+      trade => trade.ticker.toUpperCase() === ticker
+    );
+    const hasConflict = sameTickerTrades.some(trade => (
+      trade.mode !== signal.mode ||
+      trade.signal !== signal.signal ||
+      !trade.strategy_video_id
+    ));
+    if (hasConflict) {
+      return skipExternalSignal('Duplicate active trade for ticker', 'duplicate_active_trade_conflict');
+    }
+  } else if (await hasActiveTrade(ticker)) {
     return skipExternalSignal('Duplicate active trade for ticker', 'duplicate_active_trade');
   }
 
@@ -1140,7 +1206,7 @@ async function executeExternalStrategySignal(
   }
 
   const dd = assessDrawdownMultiplier(positions);
-  const sizing = signal.position_size_override && signal.position_size_override > 0
+  const baseSizing = signal.position_size_override && signal.position_size_override > 0
     ? (() => {
       const quantity = Math.max(1, Math.floor(signal.position_size_override! / referencePrice));
       return { quantity, dollarSize: quantity * referencePrice };
@@ -1153,6 +1219,20 @@ async function executeExternalStrategySignal(
       stopLoss: effectiveStopLoss ?? undefined,
       drawdownMultiplier: dd.multiplier,
     });
+
+  const splitDollarSize = baseSizing.dollarSize / allocationSplit;
+  const splitQuantity = Math.floor(splitDollarSize / referencePrice);
+  if (splitQuantity < 1 || splitDollarSize <= 0) {
+    return skipExternalSignal(
+      `Split allocation too small after dividing across ${allocationSplit} strategies`,
+      'allocation_split_too_small',
+    );
+  }
+
+  const sizing = {
+    quantity: splitQuantity,
+    dollarSize: splitQuantity * referencePrice,
+  };
 
   if (sizing.quantity < 1 || sizing.dollarSize <= 0) {
     await updateExternalStrategySignal(signal.id, {
@@ -1197,6 +1277,9 @@ async function executeExternalStrategySignal(
 
     let ibOrderId: string;
     const entryForRecord = effectiveEntryPrice ?? referencePrice;
+    const splitLabel = allocationSplit > 1
+      ? ` | allocation ${allocationIndex}/${allocationSplit}`
+      : '';
 
     if (hasBracketLevels) {
       const result = await placeBracketOrder({
@@ -1237,7 +1320,7 @@ async function executeExternalStrategySignal(
       ib_order_id: ibOrderId,
       status: 'SUBMITTED',
       scanner_reason: `External strategy signal from ${signal.source_name}`,
-      notes: signal.notes ? `External signal | ${signal.notes}` : 'External signal',
+      notes: signal.notes ? `External signal${splitLabel} | ${signal.notes}` : `External signal${splitLabel}`,
     });
 
     recordPendingOrder(sizing.dollarSize);
@@ -1258,7 +1341,11 @@ async function executeExternalStrategySignal(
       strategy_video_heading: signal.strategy_video_heading,
       scanner_signal: side,
       scanner_confidence: signal.confidence,
-      metadata: { external_signal_id: signal.id },
+      metadata: {
+        external_signal_id: signal.id,
+        allocation_split: allocationSplit,
+        allocation_index: allocationIndex,
+      },
     });
     return 'executed';
   } catch (err) {
@@ -1290,6 +1377,47 @@ async function processExternalStrategySignals(
   const pending = await getDueExternalStrategySignals();
   if (pending.length === 0) return;
 
+  const executionOptionsBySignalId = new Map<string, {
+    allocationSplit: number;
+    allocationIndex: number;
+    allowDuplicateTicker: boolean;
+  }>();
+  try {
+    const videos = await loadStrategyVideos();
+    const genericVideoIds = new Set(
+      videos
+        .filter(video => video.strategyType === 'generic_strategy')
+        .map(video => video.videoId),
+    );
+    const groups = new Map<string, ExternalStrategySignal[]>();
+    for (const signal of pending) {
+      if (!isGenericStrategySignal(signal, genericVideoIds)) continue;
+      const key = [
+        signal.ticker.toUpperCase(),
+        signal.mode,
+        signal.signal,
+        signal.execute_on_date,
+      ].join('::');
+      const list = groups.get(key) ?? [];
+      list.push(signal);
+      groups.set(key, list);
+    }
+
+    for (const group of groups.values()) {
+      if (group.length <= 1) continue;
+      group.sort((a, b) => a.created_at.localeCompare(b.created_at));
+      group.forEach((signal, idx) => {
+        executionOptionsBySignalId.set(signal.id, {
+          allocationSplit: group.length,
+          allocationIndex: idx + 1,
+          allowDuplicateTicker: true,
+        });
+      });
+    }
+  } catch (err) {
+    log(`Generic allocation grouping fallback: ${err instanceof Error ? err.message : 'unknown'}`);
+  }
+
   let executed = 0;
   let skipped = 0;
   let failed = 0;
@@ -1313,7 +1441,12 @@ async function processExternalStrategySignals(
       continue;
     }
 
-    const result = await executeExternalStrategySignal(signal, config, positions);
+    const result = await executeExternalStrategySignal(
+      signal,
+      config,
+      positions,
+      executionOptionsBySignalId.get(signal.id),
+    );
     if (result === 'executed') executed += 1;
     if (result === 'skipped') skipped += 1;
     if (result === 'failed') failed += 1;
