@@ -71,7 +71,7 @@ function fmtUsd(value: number, decimals = 2, showPlus = false): string {
 
 // ── Main Component ──────────────────────────────────────
 
-type Tab = 'portfolio' | 'today' | 'smart' | 'signals' | 'history' | 'settings';
+type Tab = 'portfolio' | 'today' | 'smart' | 'signals' | 'strategies' | 'history' | 'settings';
 
 export function PaperTrading() {
   const [config, setConfig] = useState<AutoTraderConfig>(getAutoTraderConfig);
@@ -390,6 +390,7 @@ export function PaperTrading() {
           { id: 'today' as Tab, label: "Today's Activity", icon: Zap, count: dedupedToday.length },
           { id: 'history' as Tab, label: 'Trade History', icon: Clock, count: allTrades.length },
           { id: 'signals' as Tab, label: 'Signal Quality', icon: Target },
+          { id: 'strategies' as Tab, label: 'Strategy Perf', icon: BarChart3, count: sourcePerf.length },
           { id: 'smart' as Tab, label: 'Smart Trading', icon: Brain },
           { id: 'settings' as Tab, label: 'Settings', icon: Settings },
         ].map(t => (
@@ -452,6 +453,9 @@ export function PaperTrading() {
               totalDeployed={totalDeployed}
               maxAllocation={config.maxTotalAllocation}
             />
+          )}
+          {tab === 'strategies' && (
+            <StrategyPerformanceTab sources={sourcePerf} />
           )}
           {tab === 'history' && (
             <HistoryTab trades={allTrades} />
@@ -1866,6 +1870,125 @@ function FeatureCard({ label, enabled, detail }: { label: string; enabled: boole
         {detail && <p className="text-[10px] text-[hsl(var(--muted-foreground))] truncate">{detail}</p>}
         {!enabled && !detail && <p className="text-[10px] text-[hsl(var(--muted-foreground))]">Off</p>}
       </div>
+    </div>
+  );
+}
+
+// ── Strategy Performance Tab ─────────────────────────────
+
+function StrategyPerformanceTab({ sources }: {
+  sources: StrategySourcePerformance[];
+}) {
+  const totalTrades = sources.reduce((sum, s) => sum + s.totalTrades, 0);
+  const totalActive = sources.reduce((sum, s) => sum + s.activeTrades, 0);
+  const totalPnl = sources.reduce((sum, s) => sum + s.totalPnl, 0);
+
+  return (
+    <div className="space-y-3">
+      <div className="grid grid-cols-3 gap-3">
+        <div className="rounded-xl border border-blue-200 bg-blue-50 p-4">
+          <p className="text-[10px] text-blue-700/80 font-medium">Tracked Sources</p>
+          <p className="text-xl font-bold text-blue-700 tabular-nums">{sources.length}</p>
+        </div>
+        <div className="rounded-xl border border-indigo-200 bg-indigo-50 p-4">
+          <p className="text-[10px] text-indigo-700/80 font-medium">Source Trades</p>
+          <p className="text-xl font-bold text-indigo-700 tabular-nums">{totalTrades}</p>
+          {totalActive > 0 && (
+            <p className="text-[10px] text-indigo-700/70">{totalActive} active</p>
+          )}
+        </div>
+        <div className={cn(
+          'rounded-xl border p-4',
+          totalPnl >= 0
+            ? 'border-emerald-200 bg-emerald-50'
+            : 'border-red-200 bg-red-50'
+        )}>
+          <p className={cn(
+            'text-[10px] font-medium',
+            totalPnl >= 0 ? 'text-emerald-700/80' : 'text-red-700/80'
+          )}>Total P&L</p>
+          <p className={cn(
+            'text-xl font-bold tabular-nums',
+            totalPnl >= 0 ? 'text-emerald-700' : 'text-red-700'
+          )}>
+            {fmtUsd(totalPnl, 0, true)}
+          </p>
+        </div>
+      </div>
+
+      {sources.length === 0 ? (
+        <div className="rounded-xl border border-[hsl(var(--border))] bg-white p-8 text-center">
+          <BarChart3 className="w-10 h-10 text-[hsl(var(--muted-foreground))] opacity-40 mx-auto" />
+          <p className="mt-3 text-sm text-[hsl(var(--muted-foreground))]">No strategy-source performance yet</p>
+          <p className="text-xs text-[hsl(var(--muted-foreground))] opacity-70 mt-1">
+            Source-tagged auto-trades will appear here after execution.
+          </p>
+        </div>
+      ) : (
+        <div className="rounded-xl border border-[hsl(var(--border))] bg-white overflow-hidden">
+          <div className="px-4 py-2.5 border-b border-[hsl(var(--border))] bg-[hsl(var(--secondary))]">
+            <h3 className="text-sm font-semibold text-[hsl(var(--foreground))]">Source Leaderboard</h3>
+          </div>
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="bg-[hsl(var(--secondary))]/50 text-[hsl(var(--muted-foreground))] text-xs">
+                <th className="text-left px-4 py-2.5 font-medium">Source</th>
+                <th className="text-right px-4 py-2.5 font-medium">Trades</th>
+                <th className="text-right px-4 py-2.5 font-medium">Win Rate</th>
+                <th className="text-right px-4 py-2.5 font-medium">Avg P&L</th>
+                <th className="text-right px-4 py-2.5 font-medium">Total P&L</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-[hsl(var(--border))]">
+              {sources.map(source => (
+                <tr key={source.source} className="hover:bg-[hsl(var(--secondary))]/50">
+                  <td className="px-4 py-2.5">
+                    <div className="min-w-0">
+                      <p className="font-semibold truncate">{source.source}</p>
+                      {source.sourceUrl && (
+                        <a
+                          href={source.sourceUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="text-[10px] text-blue-600 hover:text-blue-700 truncate block"
+                        >
+                          {source.sourceUrl}
+                        </a>
+                      )}
+                    </div>
+                  </td>
+                  <td className="px-4 py-2.5 text-right tabular-nums">
+                    {source.totalTrades}
+                    {source.activeTrades > 0 && (
+                      <span className="text-[10px] text-[hsl(var(--muted-foreground))] ml-1">
+                        ({source.activeTrades} active)
+                      </span>
+                    )}
+                  </td>
+                  <td className={cn(
+                    'px-4 py-2.5 text-right tabular-nums font-medium',
+                    source.winRate >= 50 ? 'text-emerald-600' : source.winRate > 0 ? 'text-red-600' : 'text-[hsl(var(--muted-foreground))]'
+                  )}>
+                    {source.winRate > 0 ? `${source.winRate.toFixed(0)}%` : '—'}
+                  </td>
+                  <td className={cn(
+                    'px-4 py-2.5 text-right tabular-nums font-medium',
+                    source.avgPnl >= 0 ? 'text-emerald-600' : 'text-red-600'
+                  )}>
+                    {fmtUsd(source.avgPnl, 0, true)}
+                  </td>
+                  <td className={cn(
+                    'px-4 py-2.5 text-right tabular-nums font-bold',
+                    source.totalPnl >= 0 ? 'text-emerald-600' : 'text-red-600'
+                  )}>
+                    {fmtUsd(source.totalPnl, 0, true)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }
