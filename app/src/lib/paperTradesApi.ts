@@ -465,6 +465,11 @@ export interface StrategyVideoPerformance {
   isMarkedX: boolean;
   firstTradeAt: string | null;
   lastTradeAt: string | null;
+  recentTrades: Array<{
+    ticker: string;
+    signal: 'BUY' | 'SELL';
+    openedAt: string | null;
+  }>;
 }
 
 export interface StrategySignalStatusSummary {
@@ -472,6 +477,7 @@ export interface StrategySignalStatusSummary {
   sourceUrl: string | null;
   videoId: string | null;
   videoHeading: string | null;
+  strategyType: 'daily_signal' | 'generic_strategy' | null;
   applicableDate: string | null;
   latestSignalStatus: string | null;
 }
@@ -725,6 +731,11 @@ export async function recalculatePerformanceByStrategyVideo(): Promise<StrategyV
     closedOutcomes: Array<{ pnl: number; at: string }>;
     firstTradeAt: string | null;
     lastTradeAt: string | null;
+    recentTrades: Array<{
+      ticker: string;
+      signal: 'BUY' | 'SELL';
+      openedAt: string | null;
+    }>;
   }>();
 
   for (const trade of trades) {
@@ -750,6 +761,7 @@ export async function recalculatePerformanceByStrategyVideo(): Promise<StrategyV
       closedOutcomes: [],
       firstTradeAt: trade.opened_at ?? null,
       lastTradeAt: trade.opened_at ?? null,
+      recentTrades: [],
     };
 
     if (!curr.sourceUrl && trade.strategy_source_url) curr.sourceUrl = trade.strategy_source_url;
@@ -760,6 +772,12 @@ export async function recalculatePerformanceByStrategyVideo(): Promise<StrategyV
       if (!curr.firstTradeAt || openedAt < curr.firstTradeAt) curr.firstTradeAt = openedAt;
       if (!curr.lastTradeAt || openedAt > curr.lastTradeAt) curr.lastTradeAt = openedAt;
     }
+
+    curr.recentTrades.push({
+      ticker: trade.ticker,
+      signal: trade.signal,
+      openedAt: trade.opened_at ?? null,
+    });
 
     curr.totalTrades += 1;
     if (activeStatuses.has(trade.status)) {
@@ -812,6 +830,9 @@ export async function recalculatePerformanceByStrategyVideo(): Promise<StrategyV
         isMarkedX: consecutiveLosses >= 2,
         firstTradeAt: g.firstTradeAt,
         lastTradeAt: g.lastTradeAt,
+        recentTrades: [...g.recentTrades]
+          .sort((a, b) => (b.openedAt ?? '').localeCompare(a.openedAt ?? ''))
+          .slice(0, 5),
       };
     })
     .sort((a, b) => b.totalPnl - a.totalPnl);
@@ -828,6 +849,7 @@ export async function getStrategySignalStatusSummaries(): Promise<StrategySignal
   if (error || !data) return [];
 
   const grouped = new Map<string, StrategySignalStatusSummary & { sortKey: string }>();
+  const trackedTypeByKey = new Map<string, 'daily_signal' | 'generic_strategy'>();
   for (const row of data as Array<{
     source_name: string | null;
     source_url: string | null;
@@ -852,6 +874,7 @@ export async function getStrategySignalStatusSummaries(): Promise<StrategySignal
         sourceUrl: row.source_url ?? null,
         videoId,
         videoHeading,
+        strategyType: null,
         applicableDate: row.execute_on_date ?? null,
         latestSignalStatus: row.status ?? null,
         sortKey,
@@ -882,16 +905,31 @@ export async function getStrategySignalStatusSummaries(): Promise<StrategySignal
             : (item.canonicalUrl ?? item.reelUrl ?? null);
 
           const key = `${source}::${videoId ?? videoHeading}`;
+          const strategyType = item.strategyType === 'daily_signal' || item.strategyType === 'generic_strategy'
+            ? item.strategyType
+            : null;
+          if (strategyType) {
+            trackedTypeByKey.set(key, strategyType);
+          }
           if (!grouped.has(key)) {
             grouped.set(key, {
               source,
               sourceUrl: inferredSourceUrl,
               videoId,
               videoHeading,
+              strategyType,
               applicableDate: item.strategyType === 'daily_signal' ? (item.tradeDate ?? null) : null,
               latestSignalStatus: null,
               sortKey: `${item.tradeDate ?? ''}|`,
             });
+          } else {
+            const existing = grouped.get(key);
+            if (existing && strategyType && existing.strategyType == null) {
+              grouped.set(key, {
+                ...existing,
+                strategyType,
+              });
+            }
           }
         }
       }
@@ -900,8 +938,15 @@ export async function getStrategySignalStatusSummaries(): Promise<StrategySignal
     // non-blocking: UI still works from DB-only summaries
   }
 
-  return [...grouped.values()]
-    .map(({ sortKey: _sortKey, ...summary }) => summary)
+  return [...grouped.entries()]
+    .map(([key, value]) => {
+      const strategyType = value.strategyType ?? trackedTypeByKey.get(key) ?? null;
+      const { sortKey: _sortKey, ...rest } = value;
+      return {
+        ...rest,
+        strategyType,
+      };
+    })
     .sort((a, b) => (b.applicableDate ?? '').localeCompare(a.applicableDate ?? ''));
 }
 

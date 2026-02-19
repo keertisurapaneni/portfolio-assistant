@@ -75,6 +75,24 @@ function fmtUsd(value: number, decimals = 2, showPlus = false): string {
   return `${sign}$${Math.abs(value).toFixed(decimals)}`;
 }
 
+function toEtIsoDate(value: string | null | undefined): string | null {
+  const raw = (value ?? '').trim();
+  if (!raw) return null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) return null;
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(parsed);
+  const year = parts.find(p => p.type === 'year')?.value ?? '0000';
+  const month = parts.find(p => p.type === 'month')?.value ?? '00';
+  const day = parts.find(p => p.type === 'day')?.value ?? '00';
+  return `${year}-${month}-${day}`;
+}
+
 // ── Main Component ──────────────────────────────────────
 
 type Tab = 'portfolio' | 'today' | 'smart' | 'signals' | 'strategies' | 'history' | 'settings';
@@ -2038,6 +2056,7 @@ function StrategyPerformanceTab({ sources, videos, statuses }: {
     sourceUrl: string | null;
     videoId: string | null;
     videoHeading: string;
+    strategyType: 'daily_signal' | 'generic_strategy' | null;
     totalTrades: number;
     activeTrades: number;
     winRate: number;
@@ -2045,6 +2064,12 @@ function StrategyPerformanceTab({ sources, videos, statuses }: {
     totalPnl: number;
     isMarkedX: boolean;
     applicableDate: string | null;
+    lastTradeAt: string | null;
+    recentTrades: Array<{
+      ticker: string;
+      signal: 'BUY' | 'SELL';
+      openedAt: string | null;
+    }>;
     latestSignalStatus: string | null;
   };
 
@@ -2099,6 +2124,7 @@ function StrategyPerformanceTab({ sources, videos, statuses }: {
         sourceUrl: video.sourceUrl,
         videoId: video.videoId,
         videoHeading: video.videoHeading,
+        strategyType: status?.strategyType ?? null,
         totalTrades: video.totalTrades,
         activeTrades: video.activeTrades,
         winRate: video.winRate,
@@ -2106,6 +2132,8 @@ function StrategyPerformanceTab({ sources, videos, statuses }: {
         totalPnl: video.totalPnl,
         isMarkedX: video.isMarkedX || sourceMarkedX,
         applicableDate: status?.applicableDate ?? null,
+        lastTradeAt: video.lastTradeAt,
+        recentTrades: video.recentTrades ?? [],
         latestSignalStatus: status?.latestSignalStatus ?? null,
       });
     }
@@ -2122,6 +2150,7 @@ function StrategyPerformanceTab({ sources, videos, statuses }: {
         sourceUrl: status.sourceUrl,
         videoId: status.videoId,
         videoHeading: status.videoHeading ?? status.videoId ?? 'Untitled strategy',
+        strategyType: status.strategyType ?? null,
         totalTrades: 0,
         activeTrades: 0,
         winRate: 0,
@@ -2129,6 +2158,8 @@ function StrategyPerformanceTab({ sources, videos, statuses }: {
         totalPnl: 0,
         isMarkedX: sourceMarkedX,
         applicableDate: status.applicableDate,
+        lastTradeAt: null,
+        recentTrades: [],
         latestSignalStatus: status.latestSignalStatus,
       });
     }
@@ -2155,6 +2186,18 @@ function StrategyPerformanceTab({ sources, videos, statuses }: {
         const mergedAvgReturnPct = mergedTotalTrades > 0
           ? ((base.avgReturnPct * base.totalTrades) + legacyRows.reduce((sum, row) => sum + (row.avgReturnPct * row.totalTrades), 0)) / mergedTotalTrades
           : 0;
+        const sortedMergedDates = [base.lastTradeAt, ...legacyRows.map(row => row.lastTradeAt)]
+          .filter((v): v is string => !!v)
+          .sort();
+        const mergedLastTradeAt = sortedMergedDates.length > 0
+          ? sortedMergedDates[sortedMergedDates.length - 1]
+          : null;
+        const mergedRecentTrades = [
+          ...base.recentTrades,
+          ...legacyRows.flatMap(row => row.recentTrades),
+        ]
+          .sort((a, b) => (b.openedAt ?? '').localeCompare(a.openedAt ?? ''))
+          .slice(0, 5);
 
         bySource.set(source, [{
           ...base,
@@ -2164,6 +2207,8 @@ function StrategyPerformanceTab({ sources, videos, statuses }: {
           avgReturnPct: mergedAvgReturnPct,
           totalPnl: base.totalPnl + legacyRows.reduce((sum, row) => sum + row.totalPnl, 0),
           isMarkedX: base.isMarkedX || legacyRows.some(row => row.isMarkedX),
+          lastTradeAt: mergedLastTradeAt,
+          recentTrades: mergedRecentTrades,
         }]);
         continue;
       }
@@ -2229,7 +2274,9 @@ function StrategyPerformanceTab({ sources, videos, statuses }: {
       return { label: 'legacy', tone: 'amber' };
     }
     const isExpired = row.latestSignalStatus === 'EXPIRED' || (
-      !!row.applicableDate && row.applicableDate < todayET
+      row.strategyType === 'daily_signal' &&
+      !!row.applicableDate &&
+      row.applicableDate < todayET
     );
     if (isExpired) return { label: 'expired', tone: 'amber' };
     return { label: 'active ✓', tone: 'green' };
@@ -2420,7 +2467,7 @@ function StrategyPerformanceTab({ sources, videos, statuses }: {
                             <thead>
                               <tr className="text-[hsl(var(--muted-foreground))]">
                                 <th className="text-left py-1.5 font-medium">Strategy</th>
-                                <th className="text-right py-1.5 font-medium">Applicable Date</th>
+                                <th className="text-right py-1.5 font-medium">Date</th>
                                 <th className="text-right py-1.5 font-medium">Trades</th>
                                 <th className="text-right py-1.5 font-medium">Win Rate</th>
                                 <th className="text-right py-1.5 font-medium">Avg %</th>
@@ -2429,72 +2476,93 @@ function StrategyPerformanceTab({ sources, videos, statuses }: {
                               </tr>
                             </thead>
                             <tbody className="divide-y divide-[hsl(var(--border))]">
-                              {sourceVideos.map(video => (
-                                <tr key={`${sourceName}::${video.videoId ?? video.videoHeading}`}>
-                                  <td className="py-2">
-                                    <div className="min-w-0">
-                                      <p className="truncate">{video.videoHeading}</p>
-                                      {video.videoId ? (
-                                        <div className="flex items-center gap-2 text-[10px]">
-                                          <span className="text-[hsl(var(--muted-foreground))]">{video.videoId}</span>
-                                          <a
-                                            href={`https://www.instagram.com/reel/${video.videoId}/`}
-                                            target="_blank"
-                                            rel="noreferrer"
-                                            className="text-blue-600 hover:text-blue-700"
-                                          >
-                                            Open video
-                                          </a>
-                                        </div>
-                                      ) : null}
-                                    </div>
-                                  </td>
-                                  <td className="py-2 text-right tabular-nums">
-                                    {video.applicableDate ?? '—'}
-                                  </td>
-                                  <td className="py-2 text-right tabular-nums">{video.totalTrades}</td>
-                                  <td className={cn(
-                                    'py-2 text-right tabular-nums font-medium',
-                                    video.winRate >= 50 ? 'text-emerald-600' : video.winRate > 0 ? 'text-red-600' : 'text-[hsl(var(--muted-foreground))]'
-                                  )}>
-                                    {video.winRate > 0 ? `${video.winRate.toFixed(0)}%` : '—'}
-                                  </td>
-                                  <td className={cn(
-                                    'py-2 text-right tabular-nums',
-                                    video.avgReturnPct >= 0 ? 'text-emerald-600' : 'text-red-600'
-                                  )}>
-                                    {video.avgReturnPct >= 0 ? '+' : ''}{video.avgReturnPct.toFixed(2)}%
-                                  </td>
-                                  <td className={cn(
-                                    'py-2 text-right tabular-nums font-semibold',
-                                    video.totalPnl >= 0 ? 'text-emerald-600' : 'text-red-600'
-                                  )}>
-                                    {fmtUsd(video.totalPnl, 0, true)}
-                                  </td>
-                                  <td className="py-2 text-right">
-                                    {(() => {
-                                      const state = getStrategyState(video);
-                                      const badgeClass = state.tone === 'green'
-                                        ? 'bg-emerald-100 text-emerald-700'
-                                        : state.tone === 'amber'
-                                          ? 'bg-amber-100 text-amber-700'
-                                          : 'bg-red-100 text-red-700';
-                                      return (
-                                        <div className="flex flex-col items-end">
-                                          <span className={`px-1.5 py-0.5 rounded text-[10px] font-semibold ${badgeClass}`}>
-                                            {state.label}
-                                          </span>
-                                          {video.latestSignalStatus && (
-                                            <span className="text-[10px] text-[hsl(var(--muted-foreground))] mt-0.5">
-                                              {video.latestSignalStatus}
+                              {sourceVideos.map(video => {
+                                const tradesLabelRaw = video.recentTrades
+                                  .map(t => `${t.ticker} ${t.signal} (${toEtIsoDate(t.openedAt) ?? '—'})`)
+                                  .join(' | ');
+                                const extraCount = Math.max(0, video.totalTrades - video.recentTrades.length);
+                                const tradesLabel = tradesLabelRaw
+                                  ? `${tradesLabelRaw}${extraCount > 0 ? ` | +${extraCount} more` : ''}`
+                                  : '';
+                                const lastTradeDate = toEtIsoDate(video.lastTradeAt);
+                                const displayDate = video.totalTrades > 0
+                                  ? lastTradeDate
+                                  : (video.strategyType === 'daily_signal' ? video.applicableDate : null);
+                                return (
+                                  <tr key={`${sourceName}::${video.videoId ?? video.videoHeading}`}>
+                                    <td className="py-2">
+                                      <div className="min-w-0">
+                                        <p className="truncate">{video.videoHeading}</p>
+                                        {video.videoId ? (
+                                          <div className="flex items-center gap-2 text-[10px]">
+                                            <span className="text-[hsl(var(--muted-foreground))]">{video.videoId}</span>
+                                            <a
+                                              href={`https://www.instagram.com/reel/${video.videoId}/`}
+                                              target="_blank"
+                                              rel="noreferrer"
+                                              className="text-blue-600 hover:text-blue-700"
+                                            >
+                                              Open video
+                                            </a>
+                                          </div>
+                                        ) : null}
+                                        {tradesLabel && (
+                                          <p className="text-[10px] text-[hsl(var(--muted-foreground))] truncate mt-0.5" title={tradesLabel}>
+                                            Trades: {tradesLabel}
+                                          </p>
+                                        )}
+                                      </div>
+                                    </td>
+                                    <td className="py-2 text-right tabular-nums">
+                                      {displayDate ?? '—'}
+                                      {video.totalTrades === 0 && video.strategyType === 'daily_signal' && video.applicableDate && (
+                                        <div className="text-[10px] text-[hsl(var(--muted-foreground))]">applicable</div>
+                                      )}
+                                    </td>
+                                    <td className="py-2 text-right tabular-nums">{video.totalTrades}</td>
+                                    <td className={cn(
+                                      'py-2 text-right tabular-nums font-medium',
+                                      video.winRate >= 50 ? 'text-emerald-600' : video.winRate > 0 ? 'text-red-600' : 'text-[hsl(var(--muted-foreground))]'
+                                    )}>
+                                      {video.winRate > 0 ? `${video.winRate.toFixed(0)}%` : '—'}
+                                    </td>
+                                    <td className={cn(
+                                      'py-2 text-right tabular-nums',
+                                      video.avgReturnPct >= 0 ? 'text-emerald-600' : 'text-red-600'
+                                    )}>
+                                      {video.avgReturnPct >= 0 ? '+' : ''}{video.avgReturnPct.toFixed(2)}%
+                                    </td>
+                                    <td className={cn(
+                                      'py-2 text-right tabular-nums font-semibold',
+                                      video.totalPnl >= 0 ? 'text-emerald-600' : 'text-red-600'
+                                    )}>
+                                      {fmtUsd(video.totalPnl, 0, true)}
+                                    </td>
+                                    <td className="py-2 text-right">
+                                      {(() => {
+                                        const state = getStrategyState(video);
+                                        const badgeClass = state.tone === 'green'
+                                          ? 'bg-emerald-100 text-emerald-700'
+                                          : state.tone === 'amber'
+                                            ? 'bg-amber-100 text-amber-700'
+                                            : 'bg-red-100 text-red-700';
+                                        return (
+                                          <div className="flex flex-col items-end">
+                                            <span className={`px-1.5 py-0.5 rounded text-[10px] font-semibold ${badgeClass}`}>
+                                              {state.label}
                                             </span>
-                                          )}
-                                        </div>
-                                      );
-                                    })()}
-                                  </td>
-                                </tr>
-                              ))}
+                                            {video.latestSignalStatus && (
+                                              <span className="text-[10px] text-[hsl(var(--muted-foreground))] mt-0.5">
+                                                {video.latestSignalStatus}
+                                              </span>
+                                            )}
+                                          </div>
+                                        );
+                                      })()}
+                                    </td>
+                                  </tr>
+                                );
+                              })}
                             </tbody>
                           </table>
                         </td>
