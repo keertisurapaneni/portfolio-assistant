@@ -476,6 +476,18 @@ export interface StrategySignalStatusSummary {
   latestSignalStatus: string | null;
 }
 
+interface TrackedStrategyVideoRecord {
+  videoId?: string;
+  sourceHandle?: string;
+  sourceName?: string;
+  reelUrl?: string;
+  canonicalUrl?: string;
+  videoHeading?: string;
+  strategyType?: 'daily_signal' | 'generic_strategy' | string;
+  tradeDate?: string;
+  status?: string;
+}
+
 export interface PendingStrategySignal {
   id: string;
   ticker: string;
@@ -845,6 +857,47 @@ export async function getStrategySignalStatusSummaries(): Promise<StrategySignal
         sortKey,
       });
     }
+  }
+
+  // Include tracked videos even before they generate signals/trades
+  try {
+    const trackedRes = await fetch('/strategy-videos.json', { cache: 'no-store' });
+    if (trackedRes.ok) {
+      const tracked = await trackedRes.json() as unknown;
+      if (Array.isArray(tracked)) {
+        for (const item of tracked as TrackedStrategyVideoRecord[]) {
+          if (!item || typeof item !== 'object') continue;
+          if (item.status && item.status !== 'tracked') continue;
+
+          const source = (item.sourceName ?? '').trim();
+          if (!source) continue;
+
+          const videoId = (item.videoId ?? '').trim() || null;
+          const videoHeading = (item.videoHeading ?? '').trim() || videoId;
+          if (!videoId && !videoHeading) continue;
+
+          const sourceHandle = (item.sourceHandle ?? '').trim().replace(/^@+/, '');
+          const inferredSourceUrl = sourceHandle
+            ? `https://www.instagram.com/${sourceHandle}/`
+            : (item.canonicalUrl ?? item.reelUrl ?? null);
+
+          const key = `${source}::${videoId ?? videoHeading}`;
+          if (!grouped.has(key)) {
+            grouped.set(key, {
+              source,
+              sourceUrl: inferredSourceUrl,
+              videoId,
+              videoHeading,
+              applicableDate: item.strategyType === 'daily_signal' ? (item.tradeDate ?? null) : null,
+              latestSignalStatus: null,
+              sortKey: `${item.tradeDate ?? ''}|`,
+            });
+          }
+        }
+      }
+    }
+  } catch {
+    // non-blocking: UI still works from DB-only summaries
   }
 
   return [...grouped.values()]

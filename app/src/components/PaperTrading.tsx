@@ -2048,7 +2048,7 @@ function StrategyPerformanceTab({ sources, videos, statuses }: {
     latestSignalStatus: string | null;
   };
 
-  const [expandedSource, setExpandedSource] = useState<string | null>(null);
+  const [expandedSources, setExpandedSources] = useState<Set<string>>(new Set());
   const todayET = useMemo(() => {
     const parts = new Intl.DateTimeFormat('en-US', {
       timeZone: 'America/New_York',
@@ -2134,6 +2134,40 @@ function StrategyPerformanceTab({ sources, videos, statuses }: {
     }
 
     for (const [source, rows] of bySource.entries()) {
+      const legacyRows = rows.filter(row =>
+        !row.videoId &&
+        row.videoHeading.toLowerCase().startsWith('legacy strategy')
+      );
+      const nonLegacyRows = rows.filter(row =>
+        !!row.videoId ||
+        !row.videoHeading.toLowerCase().startsWith('legacy strategy')
+      );
+
+      // If a source has exactly one known video, fold legacy totals into it to avoid
+      // showing a confusing duplicate "legacy" line for the same strategy source.
+      if (legacyRows.length > 0 && nonLegacyRows.length === 1) {
+        const base = nonLegacyRows[0];
+        const legacyTrades = legacyRows.reduce((sum, row) => sum + row.totalTrades, 0);
+        const mergedTotalTrades = base.totalTrades + legacyTrades;
+        const mergedWinRate = mergedTotalTrades > 0
+          ? ((base.winRate * base.totalTrades) + legacyRows.reduce((sum, row) => sum + (row.winRate * row.totalTrades), 0)) / mergedTotalTrades
+          : 0;
+        const mergedAvgReturnPct = mergedTotalTrades > 0
+          ? ((base.avgReturnPct * base.totalTrades) + legacyRows.reduce((sum, row) => sum + (row.avgReturnPct * row.totalTrades), 0)) / mergedTotalTrades
+          : 0;
+
+        bySource.set(source, [{
+          ...base,
+          totalTrades: mergedTotalTrades,
+          activeTrades: base.activeTrades + legacyRows.reduce((sum, row) => sum + row.activeTrades, 0),
+          winRate: mergedWinRate,
+          avgReturnPct: mergedAvgReturnPct,
+          totalPnl: base.totalPnl + legacyRows.reduce((sum, row) => sum + row.totalPnl, 0),
+          isMarkedX: base.isMarkedX || legacyRows.some(row => row.isMarkedX),
+        }]);
+        continue;
+      }
+
       bySource.set(source, [...rows].sort((a, b) => b.totalPnl - a.totalPnl));
     }
 
@@ -2172,6 +2206,22 @@ function StrategyPerformanceTab({ sources, videos, statuses }: {
     if (perf?.isMarkedX) return true;
     return (rowsBySource.get(source) ?? []).some(row => row.isMarkedX);
   }).length;
+
+  const expandableSourceNames = useMemo(
+    () => sourceNames.filter(source => (rowsBySource.get(source)?.length ?? 0) > 0),
+    [sourceNames, rowsBySource]
+  );
+  const allExpanded = expandableSourceNames.length > 0 && expandableSourceNames.every(source => expandedSources.has(source));
+
+  useEffect(() => {
+    setExpandedSources(prev => {
+      const next = new Set<string>();
+      for (const source of prev) {
+        if (sourceNames.includes(source)) next.add(source);
+      }
+      return next;
+    });
+  }, [sourceNames]);
 
   const getStrategyState = (row: StrategyRow): { label: string; tone: 'green' | 'amber' | 'red' } => {
     if (row.isMarkedX) return { label: 'deactivated X --', tone: 'red' };
@@ -2248,8 +2298,16 @@ function StrategyPerformanceTab({ sources, videos, statuses }: {
         </div>
       ) : (
         <div className="rounded-xl border border-[hsl(var(--border))] bg-white overflow-hidden">
-          <div className="px-4 py-2.5 border-b border-[hsl(var(--border))] bg-[hsl(var(--secondary))]">
+          <div className="px-4 py-2.5 border-b border-[hsl(var(--border))] bg-[hsl(var(--secondary))] flex items-center justify-between gap-3">
             <h3 className="text-sm font-semibold text-[hsl(var(--foreground))]">Source Leaderboard (Drill Down by Video)</h3>
+            {expandableSourceNames.length > 0 && (
+              <button
+                onClick={() => setExpandedSources(allExpanded ? new Set() : new Set(expandableSourceNames))}
+                className="text-xs text-blue-600 hover:text-blue-700 font-medium whitespace-nowrap"
+              >
+                {allExpanded ? 'Collapse all' : 'Expand all'}
+              </button>
+            )}
           </div>
           <table className="w-full text-sm">
             <thead>
@@ -2266,7 +2324,7 @@ function StrategyPerformanceTab({ sources, videos, statuses }: {
               {sourceNames.map(sourceName => {
                 const perf = sourcePerfByName.get(sourceName);
                 const sourceVideos = rowsBySource.get(sourceName) ?? [];
-                const expanded = expandedSource === sourceName;
+                const expanded = expandedSources.has(sourceName);
                 const sourceUrl = perf?.sourceUrl ?? sourceVideos.find(v => v.sourceUrl)?.sourceUrl ?? null;
                 const sourceIsMarkedX = perf?.isMarkedX ?? sourceVideos.some(v => v.isMarkedX);
                 const sourceTrades = perf?.totalTrades ?? sourceVideos.reduce((sum, row) => sum + row.totalTrades, 0);
@@ -2336,7 +2394,12 @@ function StrategyPerformanceTab({ sources, videos, statuses }: {
                         {sourceVideos.length > 0 ? (
                           <div className="flex flex-col items-end">
                             <button
-                              onClick={() => setExpandedSource(expanded ? null : sourceName)}
+                              onClick={() => setExpandedSources(prev => {
+                                const next = new Set(prev);
+                                if (next.has(sourceName)) next.delete(sourceName);
+                                else next.add(sourceName);
+                                return next;
+                              })}
                               className="text-xs text-blue-600 hover:text-blue-700 font-medium"
                             >
                               {expanded ? 'Hide' : `View (${sourceVideos.length})`}
