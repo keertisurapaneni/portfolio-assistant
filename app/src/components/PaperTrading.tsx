@@ -444,6 +444,7 @@ export function PaperTrading() {
             <PortfolioTab
               positions={ibPositions}
               orders={ibOrders}
+              pendingSignals={pendingSignals}
               connected={connected}
               onRefresh={loadIBData}
             />
@@ -603,9 +604,10 @@ function getPortfolioSortValue(pos: IBPosition, key: PortfolioSortKey): number |
   }
 }
 
-function PortfolioTab({ positions, orders, connected, onRefresh }: {
+function PortfolioTab({ positions, orders, pendingSignals, connected, onRefresh }: {
   positions: IBPosition[];
   orders: IBLiveOrder[];
+  pendingSignals: PendingStrategySignal[];
   connected: boolean;
   onRefresh: () => void;
 }) {
@@ -841,6 +843,72 @@ function PortfolioTab({ positions, orders, connected, onRefresh }: {
                   </tr>
                 );
               })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* Queued Strategy Signals (waiting for trigger) */}
+      {pendingSignals.length > 0 && (
+        <div className="rounded-xl border border-amber-200 bg-amber-50/40 overflow-hidden">
+          <div className="px-4 py-2.5 border-b border-amber-200/60 bg-amber-50">
+            <h3 className="text-sm font-semibold text-amber-800">
+              Queued Strategy Signals ({pendingSignals.length})
+            </h3>
+          </div>
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="bg-amber-50/80 text-amber-700 text-xs">
+                <th className="text-left px-4 py-2.5 font-medium">Symbol</th>
+                <th className="text-left px-4 py-2.5 font-medium">Signal</th>
+                <th className="text-left px-4 py-2.5 font-medium">Mode</th>
+                <th className="text-right px-4 py-2.5 font-medium">Trigger</th>
+                <th className="text-right px-4 py-2.5 font-medium">Applicable Date</th>
+                <th className="text-left px-4 py-2.5 font-medium">Strategy</th>
+                <th className="text-left px-4 py-2.5 font-medium">Status</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-amber-200/60">
+              {pendingSignals.map(signal => (
+                <tr key={signal.id} className="hover:bg-amber-50/80">
+                  <td className="px-4 py-2.5 font-bold">{signal.ticker}</td>
+                  <td className="px-4 py-2.5">
+                    <span className={cn(
+                      'inline-flex px-2 py-0.5 rounded text-[10px] font-bold',
+                      signal.signal === 'BUY' ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'
+                    )}>
+                      {signal.signal}
+                    </span>
+                  </td>
+                  <td className="px-4 py-2.5 text-xs text-[hsl(var(--muted-foreground))]">
+                    {signal.mode.replace('_', ' ')}
+                  </td>
+                  <td className="px-4 py-2.5 text-right tabular-nums">
+                    {signal.entry_price != null ? `$${signal.entry_price.toFixed(2)}` : '—'}
+                  </td>
+                  <td className="px-4 py-2.5 text-right tabular-nums">{signal.execute_on_date}</td>
+                  <td className="px-4 py-2.5 text-xs">
+                    <div className="min-w-0">
+                      <p className="truncate text-[hsl(var(--foreground))]">
+                        {signal.strategy_video_heading ?? signal.strategy_video_id ?? 'External strategy'}
+                      </p>
+                      {signal.strategy_video_id && (
+                        <a
+                          href={`https://www.instagram.com/reel/${signal.strategy_video_id}/`}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="text-[10px] text-blue-600 hover:text-blue-700"
+                        >
+                          Open video
+                        </a>
+                      )}
+                    </div>
+                  </td>
+                  <td className="px-4 py-2.5">
+                    <StatusBadge status={signal.status} />
+                  </td>
+                </tr>
+              ))}
             </tbody>
           </table>
         </div>
