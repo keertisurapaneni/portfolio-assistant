@@ -685,10 +685,19 @@ export async function recalculatePerformanceByStrategySource(): Promise<Strategy
     .map(([source, s]) => {
       const sortedClosed = [...s.closedOutcomes].sort((a, b) => b.at.localeCompare(a.at));
       let consecutiveLosses = 0;
+      let lossesOnSeparateDays = 0;
+      let lastLossDate = '';
       for (const outcome of sortedClosed) {
-        if (outcome.pnl < 0) consecutiveLosses += 1;
-        else break;
+        if (outcome.pnl < 0) {
+          consecutiveLosses += 1;
+          const day = (outcome.at || '').slice(0, 10);
+          if (day && day !== lastLossDate) {
+            lossesOnSeparateDays += 1;
+            lastLossDate = day;
+          }
+        } else break;
       }
+      const shouldDeactivate = lossesOnSeparateDays >= 3 && !/casper\s*clipping/i.test(source);
       return {
         source,
         sourceUrl: s.sourceUrl,
@@ -700,7 +709,7 @@ export async function recalculatePerformanceByStrategySource(): Promise<Strategy
         totalPnl: s.closedPnl + s.activeUnrealizedPnl,
         avgPnl: s.closedCount > 0 ? s.closedPnl / s.closedCount : 0,
         consecutiveLosses,
-        isMarkedX: consecutiveLosses >= 2,
+        isMarkedX: shouldDeactivate,
       };
     })
     .sort((a, b) => b.totalPnl - a.totalPnl);
@@ -818,10 +827,19 @@ export async function recalculatePerformanceByStrategyVideo(): Promise<StrategyV
     .map(g => {
       const sortedClosed = [...g.closedOutcomes].sort((a, b) => b.at.localeCompare(a.at));
       let consecutiveLosses = 0;
+      let lossesOnSeparateDays = 0;
+      let lastLossDate = '';
       for (const outcome of sortedClosed) {
-        if (outcome.pnl < 0) consecutiveLosses += 1;
-        else break;
+        if (outcome.pnl < 0) {
+          consecutiveLosses += 1;
+          const day = (outcome.at || '').slice(0, 10);
+          if (day && day !== lastLossDate) {
+            lossesOnSeparateDays += 1;
+            lastLossDate = day;
+          }
+        } else break;
       }
+      const shouldDeactivate = lossesOnSeparateDays >= 3 && !/casper\s*clipping/i.test(g.source);
       return {
         source: g.source,
         sourceUrl: g.sourceUrl,
@@ -836,7 +854,7 @@ export async function recalculatePerformanceByStrategyVideo(): Promise<StrategyV
         avgPnl: g.closedCount > 0 ? g.closedPnl / g.closedCount : 0,
         avgReturnPct: g.returns.length > 0 ? g.returns.reduce((a, b) => a + b, 0) / g.returns.length : 0,
         consecutiveLosses,
-        isMarkedX: consecutiveLosses >= 2,
+        isMarkedX: shouldDeactivate,
         firstTradeAt: g.firstTradeAt,
         lastTradeAt: g.lastTradeAt,
         recentTrades: [...g.recentTrades]
