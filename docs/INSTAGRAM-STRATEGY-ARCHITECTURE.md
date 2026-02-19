@@ -102,8 +102,10 @@ Additional checks: `shouldMarkStrategyX()` (consecutive losses), `runPreTradeChe
 
 | Schedule | Description |
 |----------|-------------|
-| `*/30 9-16 * * 1-5` | Main scheduler — every 30 min, 9:00–16:30 ET, weekdays |
+| `*/15 9-16 * * 1-5` | Main scheduler — every 15 min, 9:00–16:30 ET, weekdays |
 | `36 9 * * 1-5` | First Candle — 09:36 ET, weekdays |
+
+**Realtime-triggered execution:** When `trade_scans` is updated (e.g. user opens TradeIdeas and triggers a scanner refresh), the auto-trader runs trade execution immediately via Supabase Realtime instead of waiting for the next 15-min tick. No extra Gemini calls — same scanner refresh cadence.
 
 **First Candle strategy:**
 

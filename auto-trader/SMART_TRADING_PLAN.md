@@ -177,7 +177,7 @@ server scheduler and defers to it; if the server isn't running, it falls back to
 browser-side scheduling.
 
 ```
-auto-trader service (node-cron: every 30min, 9:00-16:30 ET, weekdays)
+auto-trader service (node-cron: every 15min, 9:00-16:30 ET, weekdays)
   │
   ├─ loadConfig() from Supabase (direct DB query via service role key)
   ├─ preGenerateSuggestedFinds() → daily-suggestions edge function

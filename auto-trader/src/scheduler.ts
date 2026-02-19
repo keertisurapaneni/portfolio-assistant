@@ -4,7 +4,8 @@
  * Replaces the browser-based useAutoTradeScheduler hook — trades now
  * happen as long as the auto-trader service is running (no browser needed).
  *
- * Schedule: every 30 minutes, 9:00 AM – 4:30 PM ET, weekdays.
+ * Schedule: every 15 minutes, 9:00 AM – 4:30 PM ET, weekdays.
+ * Realtime: when trade_scans is updated (scanner refresh), executes immediately.
  * On each tick: sync positions, scan for ideas, manage existing positions,
  * execute qualifying trades via IB Gateway.
  */
@@ -23,6 +24,7 @@ import {
 } from './ib-connection.js';
 import {
   isConfigured,
+  getSupabase,
   getSupabaseUrl,
   getSupabaseAnonKey,
   loadConfig,
@@ -124,6 +126,9 @@ interface StrategyVideoRecord {
 
 let _cronJob: cron.ScheduledTask | null = null;
 let _firstCandleCronJob: cron.ScheduledTask | null = null;
+let _realtimeChannel: { unsubscribe: () => void } | null = null;
+let _realtimeDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+const REALTIME_DEBOUNCE_MS = 3000; // coalesce day_trades + swing_trades writes
 let _running = false;
 let _lastRun: Date | null = null;
 let _lastRunResult: string = 'never';
@@ -161,9 +166,9 @@ export function startScheduler(): void {
     return;
   }
 
-  // Run every 30 minutes between 9:00-16:30 ET on weekdays.
+  // Run every 15 minutes between 9:00-16:30 ET on weekdays (faster position management).
   // node-cron uses server-local time, so we use the TZ option.
-  _cronJob = cron.schedule('*/30 9-16 * * 1-5', () => {
+  _cronJob = cron.schedule('*/15 9-16 * * 1-5', () => {
     runSchedulerCycle().catch(err => {
       console.error('[Scheduler] Cycle failed:', err);
       _lastRunResult = `error: ${err instanceof Error ? err.message : 'unknown'}`;
@@ -182,7 +187,10 @@ export function startScheduler(): void {
     timezone: 'America/New_York',
   });
 
-  console.log('[Scheduler] Started — every 30 min + 9:36 ET first-candle pass (weekdays)');
+  console.log('[Scheduler] Started — every 15 min + 9:36 ET first-candle pass (weekdays)');
+
+  // Realtime: execute trades immediately when scanner refreshes (e.g. from TradeIdeas UI)
+  subscribeToTradeScans();
 
   // Run once on startup (delayed 10s to let IB connect)
   setTimeout(() => {
@@ -193,6 +201,7 @@ export function startScheduler(): void {
 }
 
 export function stopScheduler(): void {
+  unsubscribeFromTradeScans();
   if (_cronJob) {
     _cronJob.stop();
     _cronJob = null;
@@ -1927,6 +1936,108 @@ async function preGenerateSuggestedFinds(
     _lastSuggestedFindsDate = today;
   } catch (err) {
     log(`Suggested Finds failed: ${err instanceof Error ? err.message : 'unknown'}`);
+  }
+}
+
+// ── Trade Execution Only (Realtime-triggered) ─────────────
+// Runs when trade_scans is updated (e.g. user opens TradeIdeas and triggers refresh).
+// Skips if scheduler cycle is already running — avoids double execution.
+
+async function runTradeExecutionOnly(): Promise<void> {
+  if (_running) return;
+  if (!isConnected()) return;
+  if (!isMarketHoursET()) return;
+
+  const config = await loadConfig();
+  if (!config.enabled || !config.accountId) return;
+
+  _running = true;
+  const startTime = Date.now();
+  try {
+    log('[Realtime] trade_scans updated — running trade execution');
+    resetProcessedTickersIfNewDay();
+    const positions = await getEnrichedPositions();
+
+    let allIdeas: TradeIdea[] = [];
+    try {
+      const data = await fetchTradeIdeas();
+      allIdeas = [...(data.dayTrades ?? []), ...(data.swingTrades ?? [])];
+    } catch (err) {
+      log(`[Realtime] Scanner fetch failed: ${err instanceof Error ? err.message : 'unknown'}`);
+      return;
+    }
+
+    await autoQueueDailySignalsFromTrackedVideos();
+    const genericQueuedTickers = await autoQueueGenericSignalsFromTrackedVideos(allIdeas, config);
+    await processExternalStrategySignals(config, positions);
+
+    const newIdeas = allIdeas.filter(i =>
+      !_processedTickers.has(i.ticker) &&
+      !genericQueuedTickers.has(i.ticker)
+    );
+    if (newIdeas.length > 0) {
+      const activeCount = await countActivePositions();
+      const slots = config.maxPositions - activeCount;
+      if (slots > 0) {
+        const qualified = newIdeas
+          .filter(i => i.confidence >= config.minScannerConfidence)
+          .sort((a, b) => b.confidence - a.confidence)
+          .slice(0, slots);
+        for (const idea of qualified) {
+          _processedTickers.add(idea.ticker);
+          const result = await executeScannerTrade(idea, config, positions);
+          log(`  ${idea.ticker}: ${result}`);
+          await new Promise(r => setTimeout(r, 2000));
+        }
+      }
+    }
+    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+    log(`[Realtime] Trade execution complete (${elapsed}s)`);
+  } catch (err) {
+    log(`[Realtime] Trade execution failed: ${err instanceof Error ? err.message : 'unknown'}`);
+  } finally {
+    _running = false;
+    _lastRun = new Date();
+  }
+}
+
+function subscribeToTradeScans(): void {
+  if (_realtimeChannel) return;
+  try {
+    const sb = getSupabase();
+    const channel = sb
+      .channel('trade-scans-changes')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'trade_scans' },
+        () => {
+          // Debounce: scanner writes day_trades + swing_trades, so we get 2 events
+          if (_realtimeDebounceTimer) clearTimeout(_realtimeDebounceTimer);
+          _realtimeDebounceTimer = setTimeout(() => {
+            _realtimeDebounceTimer = null;
+            runTradeExecutionOnly().catch(err =>
+              console.error('[Realtime] Trade execution error:', err)
+            );
+          }, REALTIME_DEBOUNCE_MS);
+        }
+      )
+      .subscribe();
+    _realtimeChannel = channel;
+    log('[Realtime] Subscribed to trade_scans — will execute when scanner refreshes');
+  } catch (err) {
+    log(`[Realtime] Subscription failed: ${err instanceof Error ? err.message : 'unknown'}`);
+  }
+}
+
+function unsubscribeFromTradeScans(): void {
+  if (_realtimeDebounceTimer) {
+    clearTimeout(_realtimeDebounceTimer);
+    _realtimeDebounceTimer = null;
+  }
+  if (_realtimeChannel) {
+    _realtimeChannel.unsubscribe();
+    _realtimeChannel = null;
+    log('[Realtime] Unsubscribed from trade_scans');
   }
 }
 

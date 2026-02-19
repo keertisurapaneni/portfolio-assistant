@@ -58,8 +58,8 @@ function isMarketHoursET(): boolean {
   return mins >= 9 * 60 + 30 && mins <= 16 * 60;
 }
 
-/** Interval between scanner checks (30 minutes) */
-const SCANNER_INTERVAL_MS = 30 * 60 * 1000;
+/** Interval between scanner checks (15 minutes, matches server scheduler) */
+const SCANNER_INTERVAL_MS = 15 * 60 * 1000;
 
 /** Save a portfolio snapshot — called once per sync cycle */
 let _lastSnapshotDate = '';
