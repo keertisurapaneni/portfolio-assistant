@@ -2472,10 +2472,7 @@ function StrategyPerformanceTab({ sources, videos, statuses }: {
                               <tr className="text-[hsl(var(--muted-foreground))]">
                                 <th className="text-left py-1.5 font-medium">Strategy</th>
                                 <th className="text-right py-1.5 font-medium">Date</th>
-                                <th className="text-right py-1.5 font-medium">Trade Count</th>
-                                <th className="text-left py-1.5 font-medium">Trade 1</th>
-                                <th className="text-left py-1.5 font-medium">Trade 2</th>
-                                <th className="text-left py-1.5 font-medium">Trade 3</th>
+                                <th className="text-right py-1.5 font-medium">Trades</th>
                                 <th className="text-right py-1.5 font-medium">Win Rate</th>
                                 <th className="text-right py-1.5 font-medium">Avg %</th>
                                 <th className="text-right py-1.5 font-medium">Total P&L</th>
@@ -2486,122 +2483,128 @@ function StrategyPerformanceTab({ sources, videos, statuses }: {
                               {sourceVideos.map(video => {
                                 const recentTrades = [...video.recentTrades]
                                   .sort((a, b) => (b.openedAt ?? '').localeCompare(a.openedAt ?? ''));
-                                const tradeSlots = [recentTrades[0] ?? null, recentTrades[1] ?? null, recentTrades[2] ?? null];
-                                const extraCount = Math.max(0, video.totalTrades - tradeSlots.filter(Boolean).length);
+                                const displayedTrades = recentTrades.slice(0, 5);
+                                const extraCount = Math.max(0, video.totalTrades - displayedTrades.length);
                                 const lastTradeDate = toEtIsoDate(video.lastTradeAt);
                                 const displayDate = video.totalTrades > 0
                                   ? lastTradeDate
                                   : (video.strategyType === 'daily_signal' ? video.applicableDate : null);
+                                const baseKey = `${sourceName}::${video.videoId ?? video.videoHeading}`;
                                 return (
-                                  <tr key={`${sourceName}::${video.videoId ?? video.videoHeading}`}>
-                                    <td className="py-2">
-                                      <div className="min-w-0">
-                                        <p className="truncate">{video.videoHeading}</p>
-                                        {video.videoId ? (
-                                          <div className="flex items-center gap-2 text-[10px]">
-                                            <span className="text-[hsl(var(--muted-foreground))]">{video.videoId}</span>
-                                            <a
-                                              href={`https://www.instagram.com/reel/${video.videoId}/`}
-                                              target="_blank"
-                                              rel="noreferrer"
-                                              className="text-blue-600 hover:text-blue-700"
-                                            >
-                                              Open video
-                                            </a>
-                                          </div>
-                                        ) : null}
-                                      </div>
-                                    </td>
-                                    <td className="py-2 text-right tabular-nums">
-                                      {displayDate ?? '—'}
-                                      {video.totalTrades === 0 && video.strategyType === 'daily_signal' && video.applicableDate && (
-                                        <div className="text-[10px] text-[hsl(var(--muted-foreground))]">applicable</div>
-                                      )}
-                                    </td>
-                                    <td className="py-2 text-right tabular-nums">
-                                      {video.totalTrades}
-                                      {extraCount > 0 && (
-                                        <p className="text-[10px] text-[hsl(var(--muted-foreground))] mt-0.5">
-                                          +{extraCount} more
-                                        </p>
-                                      )}
-                                    </td>
-                                    {tradeSlots.map((trade, idx) => (
-                                      <td key={`${video.videoId ?? video.videoHeading}-trade-slot-${idx}`} className="py-2 align-top">
-                                        {trade ? (
-                                          <div className="rounded-md border border-[hsl(var(--border))] bg-white px-2 py-1">
-                                            <div className="flex items-center gap-1.5">
-                                              <span className="font-medium">{trade.ticker}</span>
-                                              <span className={cn(
-                                                'inline-flex px-1 py-0.5 rounded text-[9px] font-bold',
-                                                trade.signal === 'BUY' ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'
-                                              )}>
-                                                {trade.signal}
-                                              </span>
+                                  <Fragment key={baseKey}>
+                                    <tr>
+                                      <td className="py-2">
+                                        <div className="min-w-0">
+                                          <p className="truncate">{video.videoHeading}</p>
+                                          {video.videoId ? (
+                                            <div className="flex items-center gap-2 text-[10px]">
+                                              <span className="text-[hsl(var(--muted-foreground))]">{video.videoId}</span>
+                                              <a
+                                                href={`https://www.instagram.com/reel/${video.videoId}/`}
+                                                target="_blank"
+                                                rel="noreferrer"
+                                                className="text-blue-600 hover:text-blue-700"
+                                              >
+                                                Open video
+                                              </a>
                                             </div>
-                                            <p className="text-[10px] text-[hsl(var(--muted-foreground))]">
-                                              {toEtIsoDate(trade.openedAt) ?? '—'}
-                                            </p>
-                                            <p className={cn(
-                                              'text-[10px] font-semibold tabular-nums',
-                                              (trade.pnl ?? 0) > 0 ? 'text-emerald-600' : (trade.pnl ?? 0) < 0 ? 'text-red-600' : 'text-[hsl(var(--muted-foreground))]'
-                                            )}>
-                                              {trade.pnl == null
-                                                ? 'Open'
-                                                : fmtUsd(trade.pnl, 2, true)}
-                                              {trade.pnlPercent != null && (
-                                                <span className="text-[hsl(var(--muted-foreground))] ml-1">
-                                                  ({trade.pnlPercent >= 0 ? '+' : ''}{trade.pnlPercent.toFixed(2)}%)
-                                                </span>
-                                              )}
-                                            </p>
-                                          </div>
-                                        ) : (
-                                          <span className="text-[10px] text-[hsl(var(--muted-foreground))]">—</span>
+                                          ) : null}
+                                        </div>
+                                      </td>
+                                      <td className="py-2 text-right tabular-nums">
+                                        {displayDate ?? '—'}
+                                        {video.totalTrades === 0 && video.strategyType === 'daily_signal' && video.applicableDate && (
+                                          <div className="text-[10px] text-[hsl(var(--muted-foreground))]">applicable</div>
                                         )}
                                       </td>
-                                    ))}
-                                    <td className={cn(
-                                      'py-2 text-right tabular-nums font-medium',
-                                      video.winRate >= 50 ? 'text-emerald-600' : video.winRate > 0 ? 'text-red-600' : 'text-[hsl(var(--muted-foreground))]'
-                                    )}>
-                                      {video.winRate > 0 ? `${video.winRate.toFixed(0)}%` : '—'}
-                                    </td>
-                                    <td className={cn(
-                                      'py-2 text-right tabular-nums',
-                                      video.avgReturnPct >= 0 ? 'text-emerald-600' : 'text-red-600'
-                                    )}>
-                                      {video.avgReturnPct >= 0 ? '+' : ''}{video.avgReturnPct.toFixed(2)}%
-                                    </td>
-                                    <td className={cn(
-                                      'py-2 text-right tabular-nums font-semibold',
-                                      video.totalPnl >= 0 ? 'text-emerald-600' : 'text-red-600'
-                                    )}>
-                                      {fmtUsd(video.totalPnl, 0, true)}
-                                    </td>
-                                    <td className="py-2 text-right">
-                                      {(() => {
-                                        const state = getStrategyState(video);
-                                        const badgeClass = state.tone === 'green'
-                                          ? 'bg-emerald-100 text-emerald-700'
-                                          : state.tone === 'amber'
-                                            ? 'bg-amber-100 text-amber-700'
-                                            : 'bg-red-100 text-red-700';
-                                        return (
-                                          <div className="flex flex-col items-end">
-                                            <span className={`px-1.5 py-0.5 rounded text-[10px] font-semibold ${badgeClass}`}>
-                                              {state.label}
-                                            </span>
-                                            {video.latestSignalStatus && (
-                                              <span className="text-[10px] text-[hsl(var(--muted-foreground))] mt-0.5">
-                                                {video.latestSignalStatus}
+                                      <td className="py-2 text-right tabular-nums">
+                                        {video.totalTrades}
+                                        {extraCount > 0 && (
+                                          <p className="text-[10px] text-[hsl(var(--muted-foreground))] mt-0.5">
+                                            +{extraCount} older
+                                          </p>
+                                        )}
+                                      </td>
+                                      <td className={cn(
+                                        'py-2 text-right tabular-nums font-medium',
+                                        video.winRate >= 50 ? 'text-emerald-600' : video.winRate > 0 ? 'text-red-600' : 'text-[hsl(var(--muted-foreground))]'
+                                      )}>
+                                        {video.winRate > 0 ? `${video.winRate.toFixed(0)}%` : '—'}
+                                      </td>
+                                      <td className={cn(
+                                        'py-2 text-right tabular-nums',
+                                        video.avgReturnPct >= 0 ? 'text-emerald-600' : 'text-red-600'
+                                      )}>
+                                        {video.avgReturnPct >= 0 ? '+' : ''}{video.avgReturnPct.toFixed(2)}%
+                                      </td>
+                                      <td className={cn(
+                                        'py-2 text-right tabular-nums font-semibold',
+                                        video.totalPnl >= 0 ? 'text-emerald-600' : 'text-red-600'
+                                      )}>
+                                        {fmtUsd(video.totalPnl, 0, true)}
+                                      </td>
+                                      <td className="py-2 text-right">
+                                        {(() => {
+                                          const state = getStrategyState(video);
+                                          const badgeClass = state.tone === 'green'
+                                            ? 'bg-emerald-100 text-emerald-700'
+                                            : state.tone === 'amber'
+                                              ? 'bg-amber-100 text-amber-700'
+                                              : 'bg-red-100 text-red-700';
+                                          return (
+                                            <div className="flex flex-col items-end">
+                                              <span className={`px-1.5 py-0.5 rounded text-[10px] font-semibold ${badgeClass}`}>
+                                                {state.label}
                                               </span>
-                                            )}
+                                              {video.latestSignalStatus && (
+                                                <span className="text-[10px] text-[hsl(var(--muted-foreground))] mt-0.5">
+                                                  {video.latestSignalStatus}
+                                                </span>
+                                              )}
+                                            </div>
+                                          );
+                                        })()}
+                                      </td>
+                                    </tr>
+                                    {displayedTrades.map((trade, idx) => (
+                                      <tr key={`${baseKey}::trade-${idx}`} className="bg-white/60">
+                                        <td className="py-1.5 pl-6">
+                                          <div className="flex items-center gap-1.5">
+                                            <span className="text-[hsl(var(--muted-foreground))]">↳</span>
+                                            <span className="font-medium">{trade.ticker}</span>
+                                            <span className={cn(
+                                              'inline-flex px-1 py-0.5 rounded text-[9px] font-bold',
+                                              trade.signal === 'BUY' ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'
+                                            )}>
+                                              {trade.signal}
+                                            </span>
                                           </div>
-                                        );
-                                      })()}
-                                    </td>
-                                  </tr>
+                                        </td>
+                                        <td className="py-1.5 text-right tabular-nums">
+                                          {toEtIsoDate(trade.openedAt) ?? '—'}
+                                        </td>
+                                        <td className="py-1.5 text-right tabular-nums">{idx + 1}</td>
+                                        <td className="py-1.5 text-right text-[hsl(var(--muted-foreground))]">—</td>
+                                        <td className={cn(
+                                          'py-1.5 text-right tabular-nums font-medium',
+                                          (trade.pnlPercent ?? 0) > 0 ? 'text-emerald-600' : (trade.pnlPercent ?? 0) < 0 ? 'text-red-600' : 'text-[hsl(var(--muted-foreground))]'
+                                        )}>
+                                          {trade.pnlPercent == null
+                                            ? '—'
+                                            : `${trade.pnlPercent >= 0 ? '+' : ''}${trade.pnlPercent.toFixed(2)}%`}
+                                        </td>
+                                        <td className={cn(
+                                          'py-1.5 text-right tabular-nums font-semibold',
+                                          (trade.pnl ?? 0) > 0 ? 'text-emerald-600' : (trade.pnl ?? 0) < 0 ? 'text-red-600' : 'text-[hsl(var(--muted-foreground))]'
+                                        )}>
+                                          {trade.pnl == null ? 'Open' : fmtUsd(trade.pnl, 2, true)}
+                                        </td>
+                                        <td className="py-1.5 text-right">
+                                          <StatusBadge status={trade.status} />
+                                        </td>
+                                      </tr>
+                                    ))}
+                                  </Fragment>
                                 );
                               })}
                             </tbody>
