@@ -31,6 +31,10 @@
     "ogTitle": "Casper | $246k in February #success #relatable #mindset #trading #forex | Instagram",
     "strategyType": "generic_strategy",
     "applicableTimeframes": ["DAY_TRADE"],
+    "executionWindowEt": {
+      "start": "09:35",
+      "end": "10:30"
+    },
     "summary": "Wait for the first 5-minute candle (9:30-9:35 AM EST), mark high/low, drop to 1-minute, require level break with fair value gap and engulfing confirmation on retest, target fixed 3R.",
     "transcriptSource": "/Users/ksrisurapaneni/Downloads/Video by caspersmcwisdom.txt",
     "status": "tracked",

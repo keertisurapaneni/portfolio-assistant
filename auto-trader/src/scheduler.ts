@@ -112,6 +112,10 @@ interface StrategyVideoRecord {
   strategyType?: 'daily_signal' | 'generic_strategy';
   timeframe?: 'DAY_TRADE' | 'SWING_TRADE' | 'LONG_TERM';
   applicableTimeframes?: Array<'DAY_TRADE' | 'SWING_TRADE' | 'LONG_TERM'>;
+  executionWindowEt?: {
+    start?: string;
+    end?: string;
+  };
   tradeDate?: string;
   extractedSignals?: DailyVideoSignal[];
 }
@@ -268,6 +272,16 @@ function normalizeDateToEtIso(value: string | null | undefined): string | null {
   const parsed = new Date(raw);
   if (Number.isNaN(parsed.getTime())) return null;
   return formatDateToEtIso(parsed);
+}
+
+function parseEtClockToMinutes(value: string | null | undefined): number | null {
+  const raw = (value ?? '').trim();
+  const m = raw.match(/^([01]?\d|2[0-3]):([0-5]\d)$/);
+  if (!m) return null;
+  const h = Number(m[1]);
+  const min = Number(m[2]);
+  if (!Number.isFinite(h) || !Number.isFinite(min)) return null;
+  return h * 60 + min;
 }
 
 function inferSourceUrl(video: StrategyVideoRecord): string | null {
@@ -1382,8 +1396,29 @@ async function processExternalStrategySignals(
     allocationIndex: number;
     allowDuplicateTicker: boolean;
   }>();
+  const strategyWindowByVideoId = new Map<string, {
+    startMinutes: number;
+    endMinutes: number;
+    label: string;
+  }>();
   try {
     const videos = await loadStrategyVideos();
+    for (const video of videos) {
+      const videoId = (video.videoId ?? '').trim();
+      if (!videoId) continue;
+      const startRaw = video.executionWindowEt?.start;
+      const endRaw = video.executionWindowEt?.end;
+      if (!startRaw || !endRaw) continue;
+      const startMinutes = parseEtClockToMinutes(startRaw);
+      const endMinutes = parseEtClockToMinutes(endRaw);
+      if (startMinutes == null || endMinutes == null || endMinutes <= startMinutes) continue;
+      strategyWindowByVideoId.set(videoId, {
+        startMinutes,
+        endMinutes,
+        label: `${startRaw}-${endRaw} ET`,
+      });
+    }
+
     const genericVideoIds = new Set(
       videos
         .filter(video => video.strategyType === 'generic_strategy')
@@ -1424,6 +1459,7 @@ async function processExternalStrategySignals(
   let expired = 0;
   let waiting = 0;
   const nowMs = Date.now();
+  const nowEtMinutes = getETMinutes();
 
   for (const signal of pending) {
     const executeAtMs = signal.execute_at ? new Date(signal.execute_at).getTime() : null;
@@ -1439,6 +1475,24 @@ async function processExternalStrategySignals(
       });
       expired += 1;
       continue;
+    }
+
+    const strategyWindow = signal.strategy_video_id
+      ? strategyWindowByVideoId.get(signal.strategy_video_id)
+      : null;
+    if (strategyWindow) {
+      if (nowEtMinutes < strategyWindow.startMinutes) {
+        waiting += 1;
+        continue;
+      }
+      if (nowEtMinutes > strategyWindow.endMinutes) {
+        await updateExternalStrategySignal(signal.id, {
+          status: 'EXPIRED',
+          failure_reason: `Signal outside strategy window (${strategyWindow.label})`,
+        });
+        expired += 1;
+        continue;
+      }
     }
 
     const result = await executeExternalStrategySignal(
