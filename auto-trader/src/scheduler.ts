@@ -1034,6 +1034,24 @@ async function executeExternalStrategySignal(
   positions: EnrichedPosition[],
 ): Promise<'executed' | 'skipped' | 'failed' | 'waiting'> {
   const ticker = signal.ticker.toUpperCase();
+  const skipExternalSignal = async (failureReason: string, skipReason: string): Promise<'skipped'> => {
+    await updateExternalStrategySignal(signal.id, {
+      status: 'SKIPPED',
+      failure_reason: failureReason,
+    });
+    persistEvent(ticker, 'warning', `External signal skipped: ${failureReason}`, {
+      action: 'skipped',
+      source: 'external_signal',
+      mode: signal.mode,
+      strategy_source: signal.source_name,
+      strategy_source_url: signal.source_url,
+      strategy_video_id: signal.strategy_video_id,
+      strategy_video_heading: signal.strategy_video_heading,
+      skip_reason: skipReason,
+    });
+    return 'skipped';
+  };
+
   const markX = await shouldMarkStrategyX(signal);
   if (markX.blocked) {
     const reason = `Strategy marked X after ${markX.consecutiveLosses} consecutive losses (${markX.scope})`;
@@ -1060,36 +1078,59 @@ async function executeExternalStrategySignal(
   }
 
   if (await hasActiveTrade(ticker)) {
-    await updateExternalStrategySignal(signal.id, {
-      status: 'SKIPPED',
-      failure_reason: 'Duplicate active trade for ticker',
-    });
-    persistEvent(ticker, 'warning', 'External signal skipped: duplicate active trade', {
-      action: 'skipped',
-      source: 'external_signal',
-      mode: signal.mode,
-      strategy_source: signal.source_name,
-      strategy_source_url: signal.source_url,
-      skip_reason: 'duplicate_active_trade',
-    });
-    return 'skipped';
+    return skipExternalSignal('Duplicate active trade for ticker', 'duplicate_active_trade');
   }
 
+  const hasProvidedLevels = (
+    signal.entry_price != null &&
+    signal.stop_loss != null &&
+    signal.target_price != null
+  );
+  const requiresFaValidation = !hasProvidedLevels && (
+    signal.mode === 'DAY_TRADE' || signal.mode === 'SWING_TRADE'
+  );
+  let validatedFA: TradingSignalsResponse['trade'] | null = null;
+
+  if (requiresFaValidation) {
+    try {
+      const fa = await fetchTradingSignal(ticker, signal.mode);
+      const faRec = fa.trade.recommendation;
+      const faConf = fa.trade.confidence ?? 0;
+      if (faConf < config.minFAConfidence) {
+        return skipExternalSignal(`Full analysis confidence ${faConf} below minimum ${config.minFAConfidence}`, 'fa_confidence');
+      }
+      if (faRec === 'HOLD') {
+        return skipExternalSignal('Full analysis recommendation is HOLD', 'fa_hold');
+      }
+      if (faRec !== signal.signal) {
+        return skipExternalSignal(`Direction mismatch: external ${signal.signal} vs full analysis ${faRec}`, 'fa_direction_mismatch');
+      }
+      validatedFA = fa.trade;
+    } catch (err) {
+      const reason = `Full analysis validation failed: ${err instanceof Error ? err.message : 'unknown'}`;
+      return skipExternalSignal(reason, 'fa_validation_failed');
+    }
+  }
+
+  const effectiveEntryPrice = signal.entry_price ?? validatedFA?.entryPrice ?? null;
+  const effectiveStopLoss = signal.stop_loss ?? validatedFA?.stopLoss ?? null;
+  const effectiveTargetPrice = signal.target_price ?? validatedFA?.targetPrice ?? null;
+
   const quote = await getQuotePrice(ticker);
-  if (signal.entry_price != null && quote == null) {
+  if (effectiveEntryPrice != null && quote == null) {
     return 'waiting';
   }
 
-  if (signal.entry_price != null && quote != null) {
-    if (signal.signal === 'BUY' && quote < signal.entry_price) {
+  if (effectiveEntryPrice != null && quote != null) {
+    if (signal.signal === 'BUY' && quote < effectiveEntryPrice) {
       return 'waiting';
     }
-    if (signal.signal === 'SELL' && quote > signal.entry_price) {
+    if (signal.signal === 'SELL' && quote > effectiveEntryPrice) {
       return 'waiting';
     }
   }
 
-  const referencePrice = quote ?? signal.entry_price ?? null;
+  const referencePrice = quote ?? effectiveEntryPrice ?? null;
   if (!referencePrice || referencePrice <= 0) {
     await updateExternalStrategySignal(signal.id, {
       status: 'FAILED',
@@ -1108,8 +1149,8 @@ async function executeExternalStrategySignal(
       price: referencePrice,
       mode: signal.mode,
       conviction: signal.confidence,
-      entryPrice: signal.entry_price ?? undefined,
-      stopLoss: signal.stop_loss ?? undefined,
+      entryPrice: effectiveEntryPrice ?? undefined,
+      stopLoss: effectiveStopLoss ?? undefined,
       drawdownMultiplier: dd.multiplier,
     });
 
@@ -1149,22 +1190,22 @@ async function executeExternalStrategySignal(
   try {
     const side = signal.signal;
     const hasBracketLevels = (
-      signal.entry_price != null &&
-      signal.stop_loss != null &&
-      signal.target_price != null
+      effectiveEntryPrice != null &&
+      effectiveStopLoss != null &&
+      effectiveTargetPrice != null
     );
 
     let ibOrderId: string;
-    const entryForRecord = signal.entry_price ?? referencePrice;
+    const entryForRecord = effectiveEntryPrice ?? referencePrice;
 
     if (hasBracketLevels) {
       const result = await placeBracketOrder({
         symbol: ticker,
         side,
         quantity: sizing.quantity,
-        entryPrice: signal.entry_price!,
-        stopLoss: signal.stop_loss!,
-        takeProfit: signal.target_price!,
+        entryPrice: effectiveEntryPrice!,
+        stopLoss: effectiveStopLoss!,
+        takeProfit: effectiveTargetPrice!,
         tif: signal.mode === 'DAY_TRADE' ? 'DAY' : 'GTC',
       });
       ibOrderId = String(result.parentOrderId);
@@ -1186,11 +1227,11 @@ async function executeExternalStrategySignal(
       strategy_video_id: signal.strategy_video_id,
       strategy_video_heading: signal.strategy_video_heading,
       scanner_confidence: signal.confidence,
-      fa_confidence: signal.confidence,
-      fa_recommendation: side,
+      fa_confidence: validatedFA?.confidence ?? null,
+      fa_recommendation: validatedFA?.recommendation ?? null,
       entry_price: entryForRecord,
-      stop_loss: signal.stop_loss,
-      target_price: signal.target_price,
+      stop_loss: effectiveStopLoss,
+      target_price: effectiveTargetPrice,
       quantity: sizing.quantity,
       position_size: sizing.dollarSize,
       ib_order_id: ibOrderId,
