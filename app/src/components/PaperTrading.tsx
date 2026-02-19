@@ -50,10 +50,12 @@ import {
   type TradePerformance,
   type AutoTradeEventRecord,
   type CategoryPerformance,
+  type StrategySourcePerformance,
   getAllTrades,
   getPerformance,
   recalculatePerformance,
   recalculatePerformanceByCategory,
+  recalculatePerformanceByStrategySource,
   getAutoTradeEvents,
   getTodaysExecutedEvents,
 } from '../lib/paperTradesApi';
@@ -82,6 +84,7 @@ export function PaperTrading() {
   const [persistedEvents, setPersistedEvents] = useState<AutoTradeEventRecord[]>([]);
   const [todaysExecuted, setTodaysExecuted] = useState<AutoTradeEventRecord[]>([]);
   const [categoryPerf, setCategoryPerf] = useState<CategoryPerformance[]>([]);
+  const [sourcePerf, setSourcePerf] = useState<StrategySourcePerformance[]>([]);
   const [totalDeployed, setTotalDeployed] = useState(0);
   const [marketRegime, setMarketRegime] = useState<MarketRegime | null>(null);
   const [kellyMultiplier, setKellyMultiplier] = useState<number>(1.0);
@@ -93,12 +96,13 @@ export function PaperTrading() {
   const loadData = useCallback(async () => {
     setLoading(true);
     try {
-      const [all, perf, savedEvents, todayEvents, catPerf, deployed, regime, kelly] = await Promise.all([
+      const [all, perf, savedEvents, todayEvents, catPerf, srcPerf, deployed, regime, kelly] = await Promise.all([
         getAllTrades(50),
         getPerformance(),
         getAutoTradeEvents(100),
         getTodaysExecutedEvents(),
         recalculatePerformanceByCategory(),
+        recalculatePerformanceByStrategySource(),
         getTotalDeployed(),
         getMarketRegime(config),
         calculateKellyMultiplier(config),
@@ -108,6 +112,7 @@ export function PaperTrading() {
       setPersistedEvents(savedEvents);
       setTodaysExecuted(todayEvents);
       setCategoryPerf(catPerf);
+      setSourcePerf(srcPerf);
       setTotalDeployed(deployed);
       setMarketRegime(regime);
       setKellyMultiplier(kelly);
@@ -443,6 +448,7 @@ export function PaperTrading() {
           {tab === 'signals' && (
             <PerformanceBreakdown
               categories={categoryPerf}
+              sources={sourcePerf}
               totalDeployed={totalDeployed}
               maxAllocation={config.maxTotalAllocation}
             />
@@ -502,6 +508,11 @@ export function PaperTrading() {
                     })}>{event.action}</span>
                   )}
                   <span className="text-[hsl(var(--muted-foreground))] ml-1.5">{event.message}</span>
+                  {event.strategy_source && (
+                    <span className="text-[hsl(var(--muted-foreground))] ml-1.5 opacity-70">
+                      [{event.strategy_source}]
+                    </span>
+                  )}
                   {event.scanner_confidence != null && event.fa_confidence != null && (
                     <span className="text-[hsl(var(--muted-foreground))] ml-1.5 opacity-60">
                       {event.source === 'suggested_finds'
@@ -1861,8 +1872,9 @@ function FeatureCard({ label, enabled, detail }: { label: string; enabled: boole
 
 // ── Performance Breakdown (Signal Quality) ───────────────
 
-function PerformanceBreakdown({ categories, totalDeployed, maxAllocation }: {
+function PerformanceBreakdown({ categories, sources, totalDeployed, maxAllocation }: {
   categories: CategoryPerformance[];
+  sources: StrategySourcePerformance[];
   totalDeployed: number;
   maxAllocation: number;
 }) {
@@ -1875,7 +1887,7 @@ function PerformanceBreakdown({ categories, totalDeployed, maxAllocation }: {
   const deployedPct = maxAllocation > 0 ? (totalDeployed / maxAllocation) * 100 : 0;
   const deployedColor = deployedPct < 60 ? 'bg-emerald-500' : deployedPct < 85 ? 'bg-amber-500' : 'bg-red-500';
 
-  const hasData = categories.some(c => c.totalTrades > 0);
+  const hasData = categories.some(c => c.totalTrades > 0) || sources.length > 0;
   if (!hasData) return null;
 
   return (
@@ -1920,6 +1932,76 @@ function PerformanceBreakdown({ categories, totalDeployed, maxAllocation }: {
           color="violet"
         />
       </div>
+
+      {/* External strategy source leaderboard */}
+      {sources.length > 0 && (
+        <div className="rounded-xl border border-[hsl(var(--border))] bg-white overflow-hidden">
+          <div className="px-4 py-2.5 border-b border-[hsl(var(--border))] bg-[hsl(var(--secondary))]">
+            <h3 className="text-sm font-semibold text-[hsl(var(--foreground))]">Source Leaderboard</h3>
+            <p className="text-[10px] text-[hsl(var(--muted-foreground))]">
+              Compares trade performance by strategy source/page
+            </p>
+          </div>
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="bg-[hsl(var(--secondary))]/50 text-[hsl(var(--muted-foreground))] text-xs">
+                <th className="text-left px-4 py-2.5 font-medium">Source</th>
+                <th className="text-right px-4 py-2.5 font-medium">Trades</th>
+                <th className="text-right px-4 py-2.5 font-medium">Win Rate</th>
+                <th className="text-right px-4 py-2.5 font-medium">Avg P&L</th>
+                <th className="text-right px-4 py-2.5 font-medium">Total P&L</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-[hsl(var(--border))]">
+              {sources.map(source => (
+                <tr key={source.source} className="hover:bg-[hsl(var(--secondary))]/50">
+                  <td className="px-4 py-2.5">
+                    <div className="min-w-0">
+                      <p className="font-semibold truncate">{source.source}</p>
+                      {source.sourceUrl && (
+                        <a
+                          href={source.sourceUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="text-[10px] text-blue-600 hover:text-blue-700 truncate block"
+                        >
+                          {source.sourceUrl}
+                        </a>
+                      )}
+                    </div>
+                  </td>
+                  <td className="px-4 py-2.5 text-right tabular-nums">
+                    {source.totalTrades}
+                    {source.activeTrades > 0 && (
+                      <span className="text-[10px] text-[hsl(var(--muted-foreground))] ml-1">
+                        ({source.activeTrades} active)
+                      </span>
+                    )}
+                  </td>
+                  <td className={cn(
+                    'px-4 py-2.5 text-right tabular-nums font-medium',
+                    source.winRate >= 50 ? 'text-emerald-600' : source.winRate > 0 ? 'text-red-600' : 'text-[hsl(var(--muted-foreground))]'
+                  )}>
+                    {source.winRate > 0 ? `${source.winRate.toFixed(0)}%` : '—'}
+                  </td>
+                  <td className={cn(
+                    'px-4 py-2.5 text-right tabular-nums font-medium',
+                    source.avgPnl >= 0 ? 'text-emerald-600' : 'text-red-600'
+                  )}>
+                    {fmtUsd(source.avgPnl, 0, true)}
+                  </td>
+                  <td className={cn(
+                    'px-4 py-2.5 text-right tabular-nums font-bold',
+                    source.totalPnl >= 0 ? 'text-emerald-600' : 'text-red-600'
+                  )}>
+                    {fmtUsd(source.totalPnl, 0, true)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
 
       {/* Portfolio Management (dip buy + profit take) */}
       {((dipBuy?.totalTrades ?? 0) > 0 || (profitTake?.totalTrades ?? 0) > 0) && (

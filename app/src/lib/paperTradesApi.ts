@@ -30,6 +30,8 @@ export interface PaperTrade {
   ticker: string;
   mode: 'DAY_TRADE' | 'SWING_TRADE' | 'LONG_TERM';
   signal: 'BUY' | 'SELL';
+  strategy_source: string | null;
+  strategy_source_url: string | null;
   scanner_confidence: number | null;
   fa_confidence: number | null;
   fa_recommendation: string | null;
@@ -231,9 +233,11 @@ export interface AutoTradeEventRecord {
   ticker: string;
   event_type: 'info' | 'success' | 'warning' | 'error';
   action: 'executed' | 'skipped' | 'failed' | null;
-  source: 'scanner' | 'suggested_finds' | 'manual' | 'system' | 'dip_buy' | 'profit_take' | 'loss_cut' | null;
+  source: 'scanner' | 'suggested_finds' | 'manual' | 'system' | 'dip_buy' | 'profit_take' | 'loss_cut' | 'external_signal' | null;
   mode: 'DAY_TRADE' | 'SWING_TRADE' | 'LONG_TERM' | null;
   message: string;
+  strategy_source: string | null;
+  strategy_source_url: string | null;
   scanner_signal: string | null;
   scanner_confidence: number | null;
   fa_recommendation: string | null;
@@ -426,6 +430,18 @@ export interface CategoryPerformance {
   totalDeployed: number;
 }
 
+export interface StrategySourcePerformance {
+  source: string;
+  sourceUrl: string | null;
+  totalTrades: number;
+  activeTrades: number;
+  wins: number;
+  losses: number;
+  winRate: number;
+  totalPnl: number;
+  avgPnl: number;
+}
+
 /**
  * Recalculate performance broken down by category:
  * - suggested_finds: LONG_TERM mode trades (initial picks only, not dip_buy/profit_take)
@@ -526,6 +542,82 @@ export async function recalculatePerformanceByCategory(): Promise<CategoryPerfor
   }
 
   return results;
+}
+
+export async function recalculatePerformanceByStrategySource(): Promise<StrategySourcePerformance[]> {
+  const { data: allTrades, error } = await supabase
+    .from('paper_trades')
+    .select('*')
+    .not('strategy_source', 'is', null);
+
+  if (error || !allTrades) return [];
+  const trades = allTrades as PaperTrade[];
+
+  const activeStatuses = new Set(['PENDING', 'SUBMITTED', 'FILLED', 'PARTIAL']);
+  const closedStatuses = new Set(['STOPPED', 'TARGET_HIT', 'CLOSED']);
+
+  const groups = new Map<string, {
+    sourceUrl: string | null;
+    totalTrades: number;
+    activeTrades: number;
+    wins: number;
+    losses: number;
+    closedCount: number;
+    closedPnl: number;
+    activeUnrealizedPnl: number;
+  }>();
+
+  for (const trade of trades) {
+    const source = (trade.strategy_source ?? '').trim();
+    if (!source) continue;
+
+    const curr = groups.get(source) ?? {
+      sourceUrl: trade.strategy_source_url ?? null,
+      totalTrades: 0,
+      activeTrades: 0,
+      wins: 0,
+      losses: 0,
+      closedCount: 0,
+      closedPnl: 0,
+      activeUnrealizedPnl: 0,
+    };
+
+    if (!curr.sourceUrl && trade.strategy_source_url) {
+      curr.sourceUrl = trade.strategy_source_url;
+    }
+
+    curr.totalTrades += 1;
+    if (activeStatuses.has(trade.status)) {
+      curr.activeTrades += 1;
+      if (trade.status === 'FILLED' && trade.pnl != null) {
+        curr.activeUnrealizedPnl += trade.pnl;
+      }
+    }
+
+    if (closedStatuses.has(trade.status) && trade.fill_price != null) {
+      curr.closedCount += 1;
+      const pnl = trade.pnl ?? 0;
+      curr.closedPnl += pnl;
+      if (pnl > 0) curr.wins += 1;
+      if (pnl < 0) curr.losses += 1;
+    }
+
+    groups.set(source, curr);
+  }
+
+  return [...groups.entries()]
+    .map(([source, s]) => ({
+      source,
+      sourceUrl: s.sourceUrl,
+      totalTrades: s.totalTrades,
+      activeTrades: s.activeTrades,
+      wins: s.wins,
+      losses: s.losses,
+      winRate: s.closedCount > 0 ? (s.wins / s.closedCount) * 100 : 0,
+      totalPnl: s.closedPnl + s.activeUnrealizedPnl,
+      avgPnl: s.closedCount > 0 ? s.closedPnl / s.closedCount : 0,
+    }))
+    .sort((a, b) => b.totalPnl - a.totalPnl);
 }
 
 // ── Portfolio Snapshots ──────────────────────────────────

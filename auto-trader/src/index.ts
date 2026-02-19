@@ -17,6 +17,9 @@ import contractRoutes from './routes/contracts.js';
 import orderRoutes from './routes/orders.js';
 import positionRoutes from './routes/positions.js';
 import marketDataRoutes from './routes/market-data.js';
+import schedulerRoutes from './routes/scheduler.js';
+import strategyRoutes from './routes/strategies.js';
+import { startScheduler, stopScheduler } from './scheduler.js';
 
 const PORT = parseInt(process.env.PORT ?? '3001', 10);
 
@@ -49,6 +52,8 @@ app.use('/api', contractRoutes);
 app.use('/api', orderRoutes);
 app.use('/api', positionRoutes);
 app.use('/api', marketDataRoutes);
+app.use('/api', schedulerRoutes);
+app.use('/api', strategyRoutes);
 
 // ── Compatibility endpoints (match old CPGW paths) ──────
 
@@ -84,6 +89,7 @@ app.listen(PORT, () => {
   onConnectionChange((state) => {
     if (state) {
       console.log('✅ IB Gateway connected — ready to trade');
+      startScheduler();
     } else {
       console.log('⚠️  IB Gateway disconnected — will auto-reconnect');
     }
@@ -94,10 +100,12 @@ app.listen(PORT, () => {
 
 process.on('SIGINT', () => {
   console.log('\nShutting down auto-trader...');
+  stopScheduler();
   process.exit(0);
 });
 
 process.on('SIGTERM', () => {
   console.log('\nShutting down auto-trader...');
+  stopScheduler();
   process.exit(0);
 });

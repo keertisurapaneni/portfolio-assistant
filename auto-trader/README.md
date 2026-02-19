@@ -105,6 +105,28 @@ launchctl kickstart -k gui/$(id -u)/com.portfolio-assistant.auto-trader
   - `/tmp/auto-trader-stderr.log`
   - `~/ibc/logs/`
 
+## External Strategy Signals (Source Tracking)
+
+The auto-trader now supports source-attributed, date-based signals (for example from specific pages/creators):
+
+- `POST /api/strategy-signals` — queue a signal
+- `GET /api/strategy-signals` — list queued/executed signals
+- `PATCH /api/strategy-signals/:id` — update/cancel a signal
+- `GET /api/strategy-performance` — P&L leaderboard by source
+
+Minimum payload for `POST /api/strategy-signals`:
+
+```json
+{
+  "sourceName": "Example Trading Page",
+  "sourceUrl": "https://instagram.com/example",
+  "ticker": "AAPL",
+  "signal": "BUY",
+  "mode": "SWING_TRADE",
+  "executeOnDate": "2026-02-19"
+}
+```
+
 ## Security notes
 
 - Never commit real credentials.
