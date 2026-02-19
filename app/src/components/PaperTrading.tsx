@@ -53,6 +53,7 @@ import {
   type StrategySourcePerformance,
   type StrategyVideoPerformance,
   type StrategySignalStatusSummary,
+  type PendingStrategySignal,
   getAllTrades,
   getPerformance,
   recalculatePerformance,
@@ -60,6 +61,7 @@ import {
   recalculatePerformanceByStrategySource,
   recalculatePerformanceByStrategyVideo,
   getStrategySignalStatusSummaries,
+  getPendingStrategySignals,
   getAutoTradeEvents,
   getTodaysExecutedEvents,
 } from '../lib/paperTradesApi';
@@ -91,6 +93,7 @@ export function PaperTrading() {
   const [sourcePerf, setSourcePerf] = useState<StrategySourcePerformance[]>([]);
   const [videoPerf, setVideoPerf] = useState<StrategyVideoPerformance[]>([]);
   const [strategyStatuses, setStrategyStatuses] = useState<StrategySignalStatusSummary[]>([]);
+  const [pendingSignals, setPendingSignals] = useState<PendingStrategySignal[]>([]);
   const [totalDeployed, setTotalDeployed] = useState(0);
   const [marketRegime, setMarketRegime] = useState<MarketRegime | null>(null);
   const [kellyMultiplier, setKellyMultiplier] = useState<number>(1.0);
@@ -102,7 +105,7 @@ export function PaperTrading() {
   const loadData = useCallback(async () => {
     setLoading(true);
     try {
-      const [all, perf, savedEvents, todayEvents, catPerf, srcPerf, vidPerf, signalStatuses, deployed, regime, kelly] = await Promise.all([
+      const [all, perf, savedEvents, todayEvents, catPerf, srcPerf, vidPerf, signalStatuses, pending, deployed, regime, kelly] = await Promise.all([
         getAllTrades(50),
         getPerformance(),
         getAutoTradeEvents(100),
@@ -111,6 +114,7 @@ export function PaperTrading() {
         recalculatePerformanceByStrategySource(),
         recalculatePerformanceByStrategyVideo(),
         getStrategySignalStatusSummaries(),
+        getPendingStrategySignals(300),
         getTotalDeployed(),
         getMarketRegime(config),
         calculateKellyMultiplier(config),
@@ -123,6 +127,7 @@ export function PaperTrading() {
       setSourcePerf(srcPerf);
       setVideoPerf(vidPerf);
       setStrategyStatuses(signalStatuses);
+      setPendingSignals(pending);
       setTotalDeployed(deployed);
       setMarketRegime(regime);
       setKellyMultiplier(kelly);
@@ -468,7 +473,7 @@ export function PaperTrading() {
             <StrategyPerformanceTab sources={sourcePerf} videos={videoPerf} statuses={strategyStatuses} />
           )}
           {tab === 'history' && (
-            <HistoryTab trades={allTrades} />
+            <HistoryTab trades={allTrades} pendingSignals={pendingSignals} />
           )}
           {tab === 'settings' && (
             <SettingsTab config={config} onUpdate={updateConfig} />
@@ -1008,15 +1013,15 @@ function TodaysActivityTab({ events, trades }: { events: AutoTradeEventRecord[];
 
 type HistorySortKey = 'date' | 'ticker' | 'pnl' | 'signal' | 'status';
 
-function HistoryTab({ trades }: { trades: PaperTrade[] }) {
+function HistoryTab({ trades, pendingSignals }: { trades: PaperTrade[]; pendingSignals: PendingStrategySignal[] }) {
   const [sortKey, setSortKey] = useState<HistorySortKey>('date');
   const [sortAsc, setSortAsc] = useState(false);
 
-  if (trades.length === 0) {
+  if (trades.length === 0 && pendingSignals.length === 0) {
     return (
       <div className="text-center py-12">
         <Clock className="w-10 h-10 text-[hsl(var(--muted-foreground))] opacity-40 mx-auto" />
-        <p className="mt-3 text-sm text-[hsl(var(--muted-foreground))]">No trades yet</p>
+        <p className="mt-3 text-sm text-[hsl(var(--muted-foreground))]">No trades or pending strategy signals yet</p>
       </div>
     );
   }
@@ -1056,6 +1061,7 @@ function HistoryTab({ trades }: { trades: PaperTrade[] }) {
 
   // Summary stats
   const activeTrades = trades.filter(t => ['SUBMITTED', 'FILLED', 'PARTIAL', 'PENDING'].includes(t.status));
+  const totalPendingLike = activeTrades.length + pendingSignals.length;
   const totalPnl = trades.reduce((s, t) => s + (t.pnl ?? 0), 0);
   const wins = trades.filter(t => (t.pnl ?? 0) > 0).length;
   const losses = trades.filter(t => (t.pnl ?? 0) < 0).length;
@@ -1065,9 +1071,10 @@ function HistoryTab({ trades }: { trades: PaperTrade[] }) {
       <div className="flex items-center justify-between rounded-lg bg-[hsl(var(--secondary))] px-4 py-2.5">
         <div className="flex items-center gap-4 text-xs text-[hsl(var(--muted-foreground))]">
           <span>{trades.length} trades</span>
-          {activeTrades.length > 0 && (
-            <span className="text-blue-600">{activeTrades.length} active</span>
+          {totalPendingLike > 0 && (
+            <span className="text-blue-600">{totalPendingLike} active/pending</span>
           )}
+          {pendingSignals.length > 0 && <span className="text-amber-600">{pendingSignals.length} strategy signals pending</span>}
           <span className="text-emerald-600">{wins}W</span>
           <span className="text-red-500">{losses}L</span>
         </div>
@@ -1075,6 +1082,73 @@ function HistoryTab({ trades }: { trades: PaperTrade[] }) {
           Total: {fmtUsd(totalPnl, 2, true)}
         </span>
       </div>
+
+      {pendingSignals.length > 0 && (
+        <div className="rounded-xl border border-amber-200 bg-amber-50/40 overflow-hidden">
+          <div className="px-4 py-2.5 border-b border-amber-200/60 bg-amber-50">
+            <h3 className="text-sm font-semibold text-amber-800">Pending Strategy Signals</h3>
+          </div>
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="bg-amber-50/80 text-amber-700 text-xs">
+                <th className="text-left px-4 py-2.5 font-medium">Ticker</th>
+                <th className="text-left px-4 py-2.5 font-medium">Signal</th>
+                <th className="text-left px-4 py-2.5 font-medium">Strategy</th>
+                <th className="text-right px-4 py-2.5 font-medium">Entry Trigger</th>
+                <th className="text-right px-4 py-2.5 font-medium">Applicable Date</th>
+                <th className="text-left px-4 py-2.5 font-medium">Source</th>
+                <th className="text-left px-4 py-2.5 font-medium">Status</th>
+                <th className="text-right px-4 py-2.5 font-medium">Added</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-amber-200/60">
+              {pendingSignals.map(signal => (
+                <tr key={signal.id} className="hover:bg-amber-50/80">
+                  <td className="px-4 py-3 font-bold">{signal.ticker}</td>
+                  <td className="px-4 py-3">
+                    <span className={cn(
+                      'inline-flex px-2 py-0.5 rounded text-[10px] font-bold',
+                      signal.signal === 'BUY' ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'
+                    )}>
+                      {signal.signal}
+                    </span>
+                  </td>
+                  <td className="px-4 py-3 text-xs">
+                    <div className="min-w-0">
+                      <p className="truncate text-[hsl(var(--foreground))]">
+                        {signal.strategy_video_heading ?? signal.strategy_video_id ?? 'External strategy'}
+                      </p>
+                      {signal.strategy_video_id && (
+                        <a
+                          href={`https://www.instagram.com/reel/${signal.strategy_video_id}/`}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="text-[10px] text-blue-600 hover:text-blue-700"
+                        >
+                          Open video
+                        </a>
+                      )}
+                    </div>
+                  </td>
+                  <td className="px-4 py-3 text-right tabular-nums">
+                    {signal.entry_price != null ? `$${signal.entry_price.toFixed(2)}` : '—'}
+                  </td>
+                  <td className="px-4 py-3 text-right tabular-nums">{signal.execute_on_date}</td>
+                  <td className="px-4 py-3 text-xs text-[hsl(var(--muted-foreground))]">
+                    {signal.source_name}
+                  </td>
+                  <td className="px-4 py-3">
+                    <StatusBadge status={signal.status} />
+                  </td>
+                  <td className="px-4 py-3 text-right text-xs text-[hsl(var(--muted-foreground))] tabular-nums">
+                    {new Date(signal.created_at).toLocaleDateString()}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
 
       <div className="rounded-xl border border-[hsl(var(--border))] bg-white overflow-hidden">
         <table className="w-full text-sm">
@@ -2033,6 +2107,9 @@ function StrategyPerformanceTab({ sources, videos, statuses }: {
 
   const getStrategyState = (row: StrategyRow): { label: string; tone: 'green' | 'amber' | 'red' } => {
     if (row.isMarkedX) return { label: 'deactivated X --', tone: 'red' };
+    if (row.videoHeading.toLowerCase().startsWith('legacy strategy')) {
+      return { label: 'legacy', tone: 'amber' };
+    }
     const isExpired = row.latestSignalStatus === 'EXPIRED' || (
       !!row.applicableDate && row.applicableDate < todayET
     );
@@ -2226,9 +2303,19 @@ function StrategyPerformanceTab({ sources, videos, statuses }: {
                                   <td className="py-2">
                                     <div className="min-w-0">
                                       <p className="truncate">{video.videoHeading}</p>
-                                      {video.videoId && (
-                                        <p className="text-[10px] text-[hsl(var(--muted-foreground))]">{video.videoId}</p>
-                                      )}
+                                      {video.videoId ? (
+                                        <div className="flex items-center gap-2 text-[10px]">
+                                          <span className="text-[hsl(var(--muted-foreground))]">{video.videoId}</span>
+                                          <a
+                                            href={`https://www.instagram.com/reel/${video.videoId}/`}
+                                            target="_blank"
+                                            rel="noreferrer"
+                                            className="text-blue-600 hover:text-blue-700"
+                                          >
+                                            Open video
+                                          </a>
+                                        </div>
+                                      ) : null}
                                     </div>
                                   </td>
                                   <td className="py-2 text-right tabular-nums">

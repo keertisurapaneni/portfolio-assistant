@@ -476,6 +476,21 @@ export interface StrategySignalStatusSummary {
   latestSignalStatus: string | null;
 }
 
+export interface PendingStrategySignal {
+  id: string;
+  ticker: string;
+  signal: 'BUY' | 'SELL';
+  mode: 'DAY_TRADE' | 'SWING_TRADE' | 'LONG_TERM';
+  source_name: string;
+  source_url: string | null;
+  strategy_video_id: string | null;
+  strategy_video_heading: string | null;
+  entry_price: number | null;
+  execute_on_date: string;
+  status: string;
+  created_at: string;
+}
+
 /**
  * Recalculate performance broken down by category:
  * - suggested_finds: LONG_TERM mode trades (initial picks only, not dip_buy/profit_take)
@@ -674,8 +689,7 @@ export async function recalculatePerformanceByStrategyVideo(): Promise<StrategyV
   const { data: allTrades, error } = await supabase
     .from('paper_trades')
     .select('*')
-    .not('strategy_source', 'is', null)
-    .not('strategy_video_heading', 'is', null);
+    .not('strategy_source', 'is', null);
 
   if (error || !allTrades) return [];
   const trades = allTrades as PaperTrade[];
@@ -703,10 +717,10 @@ export async function recalculatePerformanceByStrategyVideo(): Promise<StrategyV
 
   for (const trade of trades) {
     const source = (trade.strategy_source ?? '').trim();
-    const heading = (trade.strategy_video_heading ?? '').trim();
-    if (!source || !heading) continue;
+    if (!source) continue;
 
     const videoId = (trade.strategy_video_id ?? '').trim() || null;
+    const heading = (trade.strategy_video_heading ?? '').trim() || 'Legacy strategy (missing video metadata)';
     const key = `${source}::${videoId ?? heading}`;
     const curr = groups.get(key) ?? {
       source,
@@ -836,6 +850,18 @@ export async function getStrategySignalStatusSummaries(): Promise<StrategySignal
   return [...grouped.values()]
     .map(({ sortKey: _sortKey, ...summary }) => summary)
     .sort((a, b) => (b.applicableDate ?? '').localeCompare(a.applicableDate ?? ''));
+}
+
+export async function getPendingStrategySignals(limit = 200): Promise<PendingStrategySignal[]> {
+  const { data, error } = await supabase
+    .from('external_strategy_signals')
+    .select('id,ticker,signal,mode,source_name,source_url,strategy_video_id,strategy_video_heading,entry_price,execute_on_date,status,created_at')
+    .eq('status', 'PENDING')
+    .order('created_at', { ascending: false })
+    .limit(limit);
+
+  if (error) return [];
+  return (data ?? []) as PendingStrategySignal[];
 }
 
 // ── Portfolio Snapshots ──────────────────────────────────
