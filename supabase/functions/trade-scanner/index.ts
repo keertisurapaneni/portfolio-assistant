@@ -141,10 +141,9 @@ const SECTOR_STOCKS: Record<string, string[]> = {
  *   2. SECTOR MOMENTUM — top 2-3 performing sectors contribute their stocks
  *   3. YAHOO MOST ACTIVE — high volume names making big moves
  *   4. EARNINGS PLAYS — stocks with earnings 5-14 days out
- *   5. AI SUGGESTIONS — tickers from today's Suggested Finds cache
- *   6. PORTFOLIO — always include user's existing holdings
+ *   5. PORTFOLIO — always include user's existing holdings
  *
- * Result: deduplicated list of ~40-60 tickers, refreshed each scan.
+ * Result: deduplicated list of ~35-55 tickers, refreshed each scan.
  */
 async function buildDynamicSwingUniverse(
   sb: ReturnType<typeof createClient>,
@@ -239,35 +238,7 @@ async function buildDynamicSwingUniverse(
     console.warn('[Swing Universe] Earnings calendar fetch failed:', err);
   }
 
-  // ── 4. AI Suggested Finds: tickers from today's cache ──
-  try {
-    const today = formatDateToEtIso(new Date());
-    const { data: rows } = await sb
-      .from('daily_suggestions')
-      .select('data')
-      .eq('suggestion_date', today);
-
-    if (rows && rows.length > 0) {
-      const aiTickers: string[] = [];
-      for (const row of rows) {
-        const suggestions = row.data as { ticker?: string }[];
-        if (Array.isArray(suggestions)) {
-          for (const s of suggestions) {
-            if (s.ticker) aiTickers.push(s.ticker.toUpperCase());
-          }
-        }
-      }
-      const unique = [...new Set(aiTickers)].slice(0, 10);
-      if (unique.length > 0) {
-        sources.ai_suggestions = unique;
-        console.log(`[Swing Universe] AI suggestions: ${unique.length} tickers from daily cache`);
-      }
-    }
-  } catch (err) {
-    console.warn('[Swing Universe] AI suggestions fetch failed:', err);
-  }
-
-  // ── 5. Portfolio holdings: always include ──
+  // ── 4. Portfolio holdings: always include ──
   if (portfolioTickers.length > 0) {
     sources.portfolio = portfolioTickers;
   }
