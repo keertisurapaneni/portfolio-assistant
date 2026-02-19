@@ -870,33 +870,31 @@ function AppContent() {
               <TrendingUp className="w-4 h-4" />
               Movers
             </NavLink>
+            <NavLink
+              to="/strategy-queue"
+              className={({ isActive }) => cn(
+                'flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all',
+                isActive
+                  ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-md shadow-blue-500/25'
+                  : 'text-slate-500 hover:text-slate-700 hover:bg-white/80'
+              )}
+            >
+              <Link2 className="w-4 h-4" />
+              Add Strategies
+            </NavLink>
             {isAuthed && (
-              <>
-                <NavLink
-                  to="/strategy-queue"
-                  className={({ isActive }) => cn(
-                    'flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all',
-                    isActive
-                      ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-md shadow-blue-500/25'
-                      : 'text-slate-500 hover:text-slate-700 hover:bg-white/80'
-                  )}
-                >
-                  <Link2 className="w-4 h-4" />
-                  Add Strategies
-                </NavLink>
-                <NavLink
-                  to="/paper-trading"
-                  className={({ isActive }) => cn(
-                    'flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all',
-                    isActive
-                      ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-md shadow-blue-500/25'
-                      : 'text-slate-500 hover:text-slate-700 hover:bg-white/80'
-                  )}
-                >
-                  <Bot className="w-4 h-4" />
-                  Paper Trading
-                </NavLink>
-              </>
+              <NavLink
+                to="/paper-trading"
+                className={({ isActive }) => cn(
+                  'flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all',
+                  isActive
+                    ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-md shadow-blue-500/25'
+                    : 'text-slate-500 hover:text-slate-700 hover:bg-white/80'
+                )}
+              >
+                <Bot className="w-4 h-4" />
+                Paper Trading
+              </NavLink>
             )}
           </div>
         </div>
@@ -928,7 +926,7 @@ function AppContent() {
           <Route path="/finds" element={<SuggestedFinds existingTickers={existingTickers} />} />
           <Route path="/movers" element={<MarketMovers />} />
           <Route path="/signals" element={<TradingSignals />} />
-          {isAuthed && <Route path="/strategy-queue" element={<StrategyQueue />} />}
+          <Route path="/strategy-queue" element={<StrategyQueue />} />
           {isAuthed && <Route path="/paper-trading" element={<PaperTrading />} />}
         </Routes>
       </main>
