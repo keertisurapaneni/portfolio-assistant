@@ -1614,7 +1614,7 @@ async function savePortfolioSnapshotQuiet(
 // ── Daily Rehydration ────────────────────────────────────
 
 async function runDailyRehydration(config: AutoTraderConfig): Promise<void> {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = getETDateString();
   if (_lastRehydrationDate === today) return;
   if (!isPastMarketCloseET()) return;
   if (!config.accountId) return;
@@ -1636,7 +1636,7 @@ async function preGenerateSuggestedFinds(
   config: AutoTraderConfig,
   positions: EnrichedPosition[],
 ): Promise<void> {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = getETDateString();
   if (_lastSuggestedFindsDate === today) return;
   if (getETMinutes() < 9 * 60) return; // before 9 AM ET
 
