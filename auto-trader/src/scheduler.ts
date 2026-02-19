@@ -398,6 +398,94 @@ async function autoQueueDailySignalsFromTrackedVideos(): Promise<void> {
   }
 }
 
+async function autoQueueGenericSignalsFromTrackedVideos(
+  ideas: TradeIdea[],
+  config: AutoTraderConfig,
+): Promise<Set<string>> {
+  const queuedTickers = new Set<string>();
+  if (ideas.length === 0) return queuedTickers;
+
+  const todayET = getETDateString();
+  const videos = await loadStrategyVideos();
+  const genericVideos = videos.filter(v => v.strategyType === 'generic_strategy');
+  if (genericVideos.length === 0) return queuedTickers;
+
+  let created = 0;
+  let deduped = 0;
+
+  for (const video of genericVideos) {
+    const sourceName = (video.sourceName ?? '').trim();
+    if (!sourceName) continue;
+    const sourceUrl = inferSourceUrl(video);
+    const heading = (video.videoHeading ?? video.videoId).trim();
+
+    const timeframesRaw = video.applicableTimeframes?.length
+      ? video.applicableTimeframes
+      : (video.timeframe ? [video.timeframe] : ['DAY_TRADE']);
+
+    const timeframes = timeframesRaw.filter(
+      tf => tf === 'DAY_TRADE' || tf === 'SWING_TRADE'
+    ) as Array<'DAY_TRADE' | 'SWING_TRADE'>;
+    if (timeframes.length === 0) continue;
+
+    for (const timeframe of timeframes) {
+      const candidates = ideas
+        .filter(i =>
+          i.mode === timeframe &&
+          i.confidence >= config.minScannerConfidence
+        )
+        .sort((a, b) => b.confidence - a.confidence);
+
+      for (const candidate of candidates) {
+        const ticker = candidate.ticker.trim().toUpperCase();
+        if (!ticker) continue;
+        if (queuedTickers.has(ticker)) continue;
+        if (await hasActiveTrade(ticker)) continue;
+
+        const exists = await findExternalStrategySignal({
+          sourceName,
+          ticker,
+          signal: candidate.signal,
+          mode: timeframe,
+          executeOnDate: todayET,
+          strategyVideoId: video.videoId,
+        });
+        if (exists) {
+          deduped += 1;
+          continue;
+        }
+
+        await createExternalStrategySignal({
+          source_name: sourceName,
+          source_url: sourceUrl,
+          strategy_video_id: video.videoId,
+          strategy_video_heading: heading,
+          ticker,
+          signal: candidate.signal,
+          mode: timeframe,
+          confidence: Math.max(1, Math.min(10, Math.round(candidate.confidence))),
+          entry_price: null,
+          stop_loss: null,
+          target_price: null,
+          execute_on_date: todayET,
+          notes: `Generic strategy auto from video ${video.videoId} | ${heading} | scanner candidate: ${candidate.reason}`,
+        });
+        created += 1;
+        queuedTickers.add(ticker);
+        break;
+      }
+    }
+  }
+
+  if (created > 0) {
+    log(`Auto-queued ${created} generic strategy signals from tracked videos`);
+  } else if (deduped > 0) {
+    log(`Generic strategy signals already queued (${deduped} duplicates skipped)`);
+  }
+
+  return queuedTickers;
+}
+
 function countConsecutiveLosses(outcomes: Array<{ pnl: number | null }>): number {
   let losses = 0;
   for (const outcome of outcomes) {
@@ -1664,44 +1752,54 @@ async function runSchedulerCycle(): Promise<void> {
     await checkProfitTakeOpportunities(config, positions);
     await checkLossCutOpportunities(config, positions);
 
-    // 7. Auto-queue daily signals from tracked strategy videos (no manual posting needed)
-    await autoQueueDailySignalsFromTrackedVideos();
-
-    // 8. Process externally supplied strategy signals (date/time gated)
-    await processExternalStrategySignals(config, positions);
-
-    // 9. Fetch + process scanner trade ideas
+    // Load scanner ideas once per cycle (used by generic-video queue + scanner execution)
+    let allIdeas: TradeIdea[] = [];
+    let scannerIdeasLoaded = false;
     try {
       const data = await fetchTradeIdeas();
-      const allIdeas = [...(data.dayTrades ?? []), ...(data.swingTrades ?? [])];
-      const newIdeas = allIdeas.filter(i => !_processedTickers.has(i.ticker));
-
-      if (newIdeas.length > 0) {
-        const activeCount = await countActivePositions();
-        const slots = config.maxPositions - activeCount;
-
-        if (slots > 0) {
-          const qualified = newIdeas
-            .filter(i => i.confidence >= config.minScannerConfidence)
-            .slice(0, slots);
-
-          for (const idea of qualified) {
-            _processedTickers.add(idea.ticker);
-            const result = await executeScannerTrade(idea, config, positions);
-            log(`  ${idea.ticker}: ${result}`);
-            await new Promise(r => setTimeout(r, 2000));
-          }
-        } else {
-          log(`Max positions reached (${config.maxPositions}) — skipping scanner ideas`);
-        }
-      } else {
-        log('No new scanner ideas');
-      }
+      allIdeas = [...(data.dayTrades ?? []), ...(data.swingTrades ?? [])];
+      scannerIdeasLoaded = true;
     } catch (err) {
       log(`Scanner fetch failed: ${err instanceof Error ? err.message : 'unknown'}`);
     }
 
-    // 10. Daily rehydration (after 4:15 PM ET)
+    // 7. Auto-queue daily ticker/trigger signals from tracked strategy videos
+    await autoQueueDailySignalsFromTrackedVideos();
+
+    // 8. Auto-queue generic strategy videos via scanner candidates (paper-trading execution)
+    const genericQueuedTickers = await autoQueueGenericSignalsFromTrackedVideos(allIdeas, config);
+
+    // 9. Process externally supplied strategy signals (date/time gated)
+    await processExternalStrategySignals(config, positions);
+
+    // 10. Execute scanner ideas not already routed through generic strategies
+    const newIdeas = allIdeas.filter(i =>
+      !_processedTickers.has(i.ticker) &&
+      !genericQueuedTickers.has(i.ticker)
+    );
+    if (newIdeas.length > 0) {
+      const activeCount = await countActivePositions();
+      const slots = config.maxPositions - activeCount;
+
+      if (slots > 0) {
+        const qualified = newIdeas
+          .filter(i => i.confidence >= config.minScannerConfidence)
+          .slice(0, slots);
+
+        for (const idea of qualified) {
+          _processedTickers.add(idea.ticker);
+          const result = await executeScannerTrade(idea, config, positions);
+          log(`  ${idea.ticker}: ${result}`);
+          await new Promise(r => setTimeout(r, 2000));
+        }
+      } else {
+        log(`Max positions reached (${config.maxPositions}) — skipping scanner ideas`);
+      }
+    } else if (scannerIdeasLoaded) {
+      log('No new scanner ideas');
+    }
+
+    // 11. Daily rehydration (after 4:15 PM ET)
     await runDailyRehydration(config);
 
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
