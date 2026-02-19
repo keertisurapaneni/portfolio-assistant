@@ -1,14 +1,14 @@
 /**
- * Background auto-trade scheduler — runs scanner + suggested finds
- * processing on a schedule regardless of which page is open.
+ * Background auto-trade scheduler — defers to the server-side scheduler
+ * running inside the auto-trader service (node-cron, no browser needed).
  *
- * Mounted at the app level (App.tsx) so it runs as long as the browser tab is open.
+ * The browser hook now:
+ *   1. Checks if the server scheduler is active (GET /api/scheduler/status)
+ *   2. If yes → does nothing (server handles everything)
+ *   3. If no → falls back to browser-side scheduling as before
  *
- * Schedule:
- *   - Scanner: twice daily during market hours (~10:00 AM and 3:30 PM ET)
- *   - Suggested Finds: once on mount (if not already processed this session)
- *
- * The edge function caches results, so calling it doesn't trigger unnecessary re-scans.
+ * This means trades happen even when no browser tab is open, as long as
+ * the auto-trader service + IB Gateway are running.
  */
 
 import { useEffect, useRef } from 'react';
@@ -36,6 +36,17 @@ import {
 import { analyzeUnreviewedTrades, updatePerformancePatterns } from '../lib/aiFeedback';
 import { discoverStocks } from '../lib/aiSuggestedFinds';
 import { useAuth } from '../lib/auth';
+
+async function isServerSchedulerRunning(): Promise<boolean> {
+  try {
+    const res = await fetch('http://localhost:3001/api/scheduler/status');
+    if (!res.ok) return false;
+    const data = await res.json();
+    return data.running === true;
+  } catch {
+    return false;
+  }
+}
 
 /** Check if we're in US market hours (9:30 AM - 4:00 PM ET, weekdays) */
 function isMarketHoursET(): boolean {
@@ -176,12 +187,34 @@ export function useAutoTradeScheduler() {
   const processedTickersRef = useRef<Set<string>>(new Set());
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const lastRunRef = useRef<number>(0);
+  const serverSchedulerRef = useRef<boolean>(false);
 
   useEffect(() => {
-    // Only run if authenticated
     if (!isAuthed) return;
 
+    // Check if the server-side scheduler is handling things
+    isServerSchedulerRunning().then(running => {
+      serverSchedulerRef.current = running;
+      if (running) {
+        console.log('[AutoTradeScheduler] Server-side scheduler is active — browser scheduling disabled');
+      } else {
+        console.log('[AutoTradeScheduler] Server scheduler not detected — using browser fallback');
+      }
+    });
+
+    // Re-check every 5 minutes in case server starts/stops
+    const serverCheckInterval = setInterval(() => {
+      isServerSchedulerRunning().then(running => {
+        if (running !== serverSchedulerRef.current) {
+          serverSchedulerRef.current = running;
+          console.log(`[AutoTradeScheduler] Server scheduler ${running ? 'now active' : 'stopped'} — ${running ? 'browser scheduling disabled' : 'browser fallback active'}`);
+        }
+      });
+    }, 5 * 60 * 1000);
+
     const runScannerAutoTrade = async () => {
+      // If server scheduler is running, skip browser-side scheduling entirely
+      if (serverSchedulerRef.current) return;
       // Load fresh config from Supabase (in case settings changed from another tab/device)
       const config = await loadAutoTraderConfig();
       if (!config.enabled) return;
@@ -282,6 +315,7 @@ export function useAutoTradeScheduler() {
 
     return () => {
       clearTimeout(initTimeout);
+      clearInterval(serverCheckInterval);
       if (intervalRef.current) {
         clearInterval(intervalRef.current);
         intervalRef.current = null;

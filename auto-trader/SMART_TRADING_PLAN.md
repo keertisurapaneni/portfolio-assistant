@@ -171,49 +171,68 @@ paper account.
 
 ## Data Flow
 
+The scheduler runs **server-side** inside the auto-trader Node.js service (node-cron).
+No browser tab needs to be open. The browser hook (`useAutoTradeScheduler`) detects the
+server scheduler and defers to it; if the server isn't running, it falls back to
+browser-side scheduling.
+
 ```
-useAutoTradeScheduler (every 30min during market hours)
+auto-trader service (node-cron: every 30min, 9:00-16:30 ET, weekdays)
   │
-  ├─ loadAutoTraderConfig() from Supabase
-  ├─ syncPositions(accountId)
-  ├─ Save portfolio snapshot
+  ├─ loadConfig() from Supabase (direct DB query via service role key)
+  ├─ preGenerateSuggestedFinds() → daily-suggestions edge function
+  ├─ syncPositions() → IB positions + paper_trades updates
+  ├─ savePortfolioSnapshot() → Supabase insert
   │
   ├─ Update portfolioValue from IB positions
-  ├─ getMarketRegime() → VIX/SPY → regimeMultiplier
+  ├─ assessDrawdownMultiplier() → portfolio health check
   │
-  ├─ checkDipBuyOpportunities(config, positions, regime)
-  ├─ checkProfitTakeOpportunities(config, positions)
+  ├─ checkDipBuyOpportunities() → IB positions + market orders
+  ├─ checkProfitTakeOpportunities() → IB positions + market orders
+  ├─ checkLossCutOpportunities() → IB positions + market orders
   │
-  ├─ fetchTradeIdeas() → scanner results
+  ├─ fetchTradeIdeas() → trade-scanner edge function
   │   └─ For each idea:
-  │       ├─ checkEarningsBlackout(ticker) → skip if near earnings
-  │       ├─ checkSectorExposure(ticker) → skip if sector over limit
-  │       ├─ calculatePositionSize(config, idea, regime, kelly)
-  │       └─ processTradeIdea() → place bracket order
+  │       ├─ fetchTradingSignal() → trading-signals edge function (full analysis)
+  │       ├─ checkAllocationCap / checkSectorExposure / checkEarningsBlackout
+  │       ├─ calculatePositionSize(config, idea, drawdownMultiplier)
+  │       └─ placeBracketOrder() → IB Gateway
   │
-  └─ processSuggestedFinds() → for each stock:
-      ├─ checkEarningsBlackout(ticker)
-      ├─ checkSectorExposure(ticker)
-      ├─ calculatePositionSize(config, stock, regime, kelly)
-      └─ place market buy
+  └─ runDailyRehydration() (after 4:15 PM ET)
+      └─ syncPositions + recalculate performance
 ```
+
+### Scheduler API (localhost:3001)
+
+| Endpoint                    | Method | Description                   |
+|-----------------------------|--------|-------------------------------|
+| `/api/scheduler/status`     | GET    | Current state, last run, etc. |
+| `/api/scheduler/run`        | POST   | Trigger a manual cycle        |
+| `/api/scheduler/start`      | POST   | Start the cron scheduler      |
+| `/api/scheduler/stop`       | POST   | Stop the cron scheduler       |
 
 ---
 
 ## Implementation Files
 
-- `supabase/migrations/20260214000007_smart_sizing_config.sql` — DB migration
+- `auto-trader/src/scheduler.ts` — Server-side scheduler (node-cron orchestration)
+- `docs/INSTAGRAM-STRATEGY-ARCHITECTURE.md` — Instagram strategy ingestion, execution, and performance tracking
+- `auto-trader/src/lib/supabase.ts` — Supabase client + DB helpers (config, trades, events)
+- `auto-trader/src/routes/scheduler.ts` — REST API for scheduler status/control
 - `app/src/lib/autoTrader.ts` — Core logic (sizing, dip buy, profit take, regime, Kelly)
-- `app/src/lib/paperTradesApi.ts` — Type updates (source: 'dip_buy' | 'profit_take')
-- `app/src/hooks/useAutoTradeScheduler.ts` — Wire new checks into schedule loop
+- `app/src/hooks/useAutoTradeScheduler.ts` — Browser fallback (defers to server when active)
 - `app/src/components/PaperTrading.tsx` — Settings UI + Smart Trading tab
+- `supabase/migrations/20260214000007_smart_sizing_config.sql` — DB migration
 
 ---
 
-## Future Enhancement: Always-On Trading (No Laptop Required)
+## Always-On Trading
 
-Currently the auto-trader requires a laptop running IB Gateway locally. Below are
-options to make it run 24/7 without manual intervention.
+The auto-trader runs via macOS launchd (starts on user login) with IB Gateway + IBC.
+As long as the laptop is on and IB Gateway is connected, trades happen automatically
+with no browser needed.
+
+### Future: Fully Always-On (No Laptop Required)
 
 ### Option 1: Cloud VPS with Docker (Recommended first step)
 
