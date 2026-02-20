@@ -63,6 +63,10 @@ Secure proxy for Finnhub API calls with server-side caching (15 min TTL).
 
 **Endpoints:** `quote`, `metrics`, `recommendations`, `earnings`
 
+### `process-strategy-video-queue`
+
+Processes pending `strategy_video_queue` items: fetches page metadata (og:title, og:description), classifies as `daily_signal` or `generic_strategy` via Gemini, then upserts to `strategy_videos`. Requires `GEMINI_API_KEY` for classification; without it, defaults to `generic_strategy`.
+
 ---
 
 ## Deployment
@@ -89,6 +93,7 @@ supabase secrets set GEMINI_API_KEY_2=<key>
 npx supabase functions deploy trading-signals --no-verify-jwt
 npx supabase functions deploy trade-scanner --no-verify-jwt
 npx supabase functions deploy fetch-stock-data --no-verify-jwt
+npx supabase functions deploy process-strategy-video-queue --no-verify-jwt
 ```
 
 **Important:** When editing `_shared/` modules, redeploy **both** `trading-signals` and `trade-scanner`.
