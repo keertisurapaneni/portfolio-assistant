@@ -7,7 +7,7 @@ import type {
   StrategySignalStatusSummary,
   TradeStatus,
 } from '../../../lib/paperTradesApi';
-import { fixUnknownSources, assignUnknownToSource, updateStrategyVideoMetadata, extractFromTranscript } from '../../../lib/strategyVideoQueueApi';
+import { fixUnknownSources, assignUnknownToSource, updateStrategyVideoMetadata, extractFromTranscript, cleanupStrategyAssignments } from '../../../lib/strategyVideoQueueApi';
 import { fmtUsd, toEtIsoDate } from '../utils';
 import { StatusBadge } from '../shared';
 
@@ -51,6 +51,7 @@ export function StrategyPerformanceTab({ sources, videos, statuses, onRefresh }:
   const [expandedSources, setExpandedSources] = useState<Set<string>>(new Set());
   const [expandedTranscript, setExpandedTranscript] = useState<string | null>(null);
   const [fixing, setFixing] = useState(false);
+  const [cleaning, setCleaning] = useState(false);
   const [assigningVideoId, setAssigningVideoId] = useState<string | null>(null);
   const [updatingCategoryVideoId, setUpdatingCategoryVideoId] = useState<string | null>(null);
   const [pasteTranscriptVideoId, setPasteTranscriptVideoId] = useState<string | null>(null);
@@ -390,6 +391,22 @@ export function StrategyPerformanceTab({ sources, videos, statuses, onRefresh }:
               {hasUnknown && fixing && (
                 <span className="text-xs text-amber-700">Fixing Unknown sources…</span>
               )}
+              <button
+                onClick={async () => {
+                  setCleaning(true);
+                  try {
+                    const { processed } = await cleanupStrategyAssignments();
+                    if (processed > 0 && onRefresh) onRefresh();
+                  } finally {
+                    setCleaning(false);
+                  }
+                }}
+                disabled={cleaning}
+                className="text-xs text-blue-600 hover:text-blue-700 font-medium whitespace-nowrap disabled:opacity-50"
+                title="Remove assigned videos from Unknown (fix duplicates)"
+              >
+                {cleaning ? 'Cleaning…' : 'Cleanup duplicates'}
+              </button>
               {expandableSourceNames.length > 0 && (
                 <button
                   onClick={() => setExpandedSources(allExpanded ? new Set() : new Set(expandableSourceNames))}

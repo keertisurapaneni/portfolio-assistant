@@ -81,6 +81,26 @@ export async function getQueue(limit = 50): Promise<StrategyVideoQueueItem[]> {
   return (data ?? []) as StrategyVideoQueueItem[];
 }
 
+/** Sync external_strategy_signals and paper_trades for already-assigned videos (removes duplicates from Unknown) */
+export async function cleanupStrategyAssignments(): Promise<{ ok: boolean; processed: number }> {
+  const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/assign-strategy-videos-to-source`;
+  const key = import.meta.env.VITE_SUPABASE_ANON_KEY;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(key && { Authorization: `Bearer ${key}` }),
+    },
+    body: JSON.stringify({ cleanup: true }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err?.error ?? `Cleanup failed: ${res.status}`);
+  }
+  const data = await res.json();
+  return { ok: true, processed: data.processed ?? 0 };
+}
+
 /** Manually assign Unknown videos to a known source (when auto-fix fails) */
 export async function assignUnknownToSource(params: {
   source_handle: string;
