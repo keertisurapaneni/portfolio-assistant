@@ -58,6 +58,7 @@ export function StrategyPerformanceTab({ sources, videos, statuses, onRefresh }:
   const [fixing, setFixing] = useState(false);
   const [cleaning, setCleaning] = useState(false);
   const [assigningVideoId, setAssigningVideoId] = useState<string | null>(null);
+  const [changingSourceVideoId, setChangingSourceVideoId] = useState<string | null>(null);
   const [updatingCategoryVideoId, setUpdatingCategoryVideoId] = useState<string | null>(null);
   const [pasteTranscriptVideoId, setPasteTranscriptVideoId] = useState<string | null>(null);
   const [pasteTranscriptText, setPasteTranscriptText] = useState('');
@@ -366,6 +367,28 @@ export function StrategyPerformanceTab({ sources, videos, statuses, onRefresh }:
         strategy_type: sel.category ? (sel.category as 'daily_signal' | 'generic_strategy') : undefined,
       });
       if (assigned > 0) onRefresh();
+    } finally {
+      setAssigningVideoId(null);
+    }
+  };
+
+  const handleChangeSource = async (videoId: string, baseKey: string) => {
+    const sel = videoAssignSelections[baseKey];
+    if (!sel?.source || !onRefresh) return;
+    const opt = assignOptions.find((o) => o.sourceName === sel.source);
+    if (!opt) return;
+    setAssigningVideoId(videoId);
+    try {
+      const { assigned } = await assignUnknownToSource({
+        source_handle: opt.sourceHandle,
+        source_name: opt.sourceName,
+        video_ids: [videoId],
+        strategy_type: sel.category ? (sel.category as 'daily_signal' | 'generic_strategy') : undefined,
+      });
+      if (assigned > 0) {
+        setChangingSourceVideoId(null);
+        onRefresh();
+      }
     } finally {
       setAssigningVideoId(null);
     }
@@ -723,15 +746,56 @@ export function StrategyPerformanceTab({ sources, videos, statuses, onRefresh }:
                                           {video.videoId && (
                                             <div className="mt-2 space-y-1">
                                               {/* Step 1: Source */}
-                                              <div className="flex items-center gap-1.5 text-[10px]">
-                                                <span className={cn(
-                                                  'w-4 h-4 rounded-full flex items-center justify-center text-white font-bold text-[9px] shrink-0',
-                                                  sourceName !== 'Unknown' ? 'bg-emerald-500' : 'bg-amber-400'
-                                                )}>1</span>
-                                                <span className="text-[hsl(var(--muted-foreground))]">Source:</span>
-                                                <span className={sourceName !== 'Unknown' ? 'text-emerald-600 font-medium' : 'text-amber-600 font-medium'}>
-                                                  {sourceName !== 'Unknown' ? sourceName : 'Unknown — needs assignment'}
-                                                </span>
+                                              <div className="flex flex-col gap-1 text-[10px]">
+                                                <div className="flex items-center gap-1.5">
+                                                  <span className={cn(
+                                                    'w-4 h-4 rounded-full flex items-center justify-center text-white font-bold text-[9px] shrink-0',
+                                                    sourceName !== 'Unknown' ? 'bg-emerald-500' : 'bg-amber-400'
+                                                  )}>1</span>
+                                                  <span className="text-[hsl(var(--muted-foreground))]">Source:</span>
+                                                  <span className={sourceName !== 'Unknown' ? 'text-emerald-600 font-medium' : 'text-amber-600 font-medium'}>
+                                                    {sourceName !== 'Unknown' ? sourceName : 'Unknown — needs assignment'}
+                                                  </span>
+                                                  {sourceName !== 'Unknown' && assignOptions.length > 0 && changingSourceVideoId !== video.videoId && (
+                                                    <button
+                                                      type="button"
+                                                      onClick={() => {
+                                                        setChangingSourceVideoId(video.videoId);
+                                                        setVideoAssignSelections(prev => ({ ...prev, [baseKey]: { source: '', category: video.strategyType ?? 'generic_strategy' } }));
+                                                      }}
+                                                      className="text-blue-500 hover:text-blue-700 font-medium"
+                                                    >
+                                                      Change
+                                                    </button>
+                                                  )}
+                                                </div>
+                                                {changingSourceVideoId === video.videoId && assignOptions.length > 0 && (
+                                                  <div className="ml-5 flex flex-wrap items-center gap-1.5">
+                                                    <select
+                                                      value={videoAssignSelections[baseKey]?.source ?? ''}
+                                                      onChange={(e) => setVideoAssignSelections(prev => ({ ...prev, [baseKey]: { ...prev[baseKey], source: e.target.value, category: prev[baseKey]?.category ?? 'generic_strategy' } }))}
+                                                      className="text-xs border rounded px-1.5 py-0.5 bg-white min-w-[140px]"
+                                                    >
+                                                      <option value="">Select new source…</option>
+                                                      {assignOptions.filter(o => o.sourceName !== sourceName).map((o) => (
+                                                        <option key={o.sourceHandle} value={o.sourceName}>{o.sourceName}</option>
+                                                      ))}
+                                                    </select>
+                                                    <button
+                                                      onClick={() => handleChangeSource(video.videoId!, baseKey)}
+                                                      disabled={!videoAssignSelections[baseKey]?.source || assigningVideoId === video.videoId}
+                                                      className="text-[10px] px-2 py-0.5 rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                                                    >
+                                                      {assigningVideoId === video.videoId ? 'Saving…' : 'Save'}
+                                                    </button>
+                                                    <button
+                                                      onClick={() => setChangingSourceVideoId(null)}
+                                                      className="text-[10px] px-2 py-0.5 rounded border hover:bg-[hsl(var(--secondary))]"
+                                                    >
+                                                      Cancel
+                                                    </button>
+                                                  </div>
+                                                )}
                                               </div>
                                               {/* Step 2: Transcript */}
                                               <div className="flex items-start gap-1.5 text-[10px]">
