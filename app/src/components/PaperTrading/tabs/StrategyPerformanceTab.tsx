@@ -67,7 +67,7 @@ export function StrategyPerformanceTab({ sources, videos, statuses, onRefresh }:
   const autoFixAttempted = useRef(false);
 
   // Add Videos panel state
-  const [addPanelOpen, setAddPanelOpen] = useState(false);
+  const [addPanelOpen, setAddPanelOpen] = useState(true);
   const [addUrlInput, setAddUrlInput] = useState('');
   const [addingUrls, setAddingUrls] = useState(false);
   const [addError, setAddError] = useState<string | null>(null);
@@ -417,34 +417,39 @@ export function StrategyPerformanceTab({ sources, videos, statuses, onRefresh }:
   return (
     <div className="space-y-3">
       {/* Add Videos Panel */}
-      <div className="rounded-xl border border-[hsl(var(--border))] bg-white overflow-hidden">
+      <div className="rounded-xl border-2 border-blue-200 bg-blue-50 overflow-hidden">
         <button
           onClick={() => setAddPanelOpen(v => !v)}
-          className="w-full px-4 py-2.5 flex items-center justify-between gap-3 bg-[hsl(var(--secondary))] hover:bg-[hsl(var(--secondary))]/80 transition-colors"
+          className="w-full px-4 py-3 flex items-center justify-between gap-3 hover:bg-blue-100/60 transition-colors"
         >
-          <span className="flex items-center gap-2 text-sm font-semibold text-[hsl(var(--foreground))]">
-            <Plus className="w-4 h-4" />
+          <span className="flex items-center gap-2.5 text-sm font-bold text-blue-800">
+            <span className="flex items-center justify-center w-6 h-6 rounded-full bg-blue-600 text-white">
+              <Plus className="w-3.5 h-3.5" />
+            </span>
             Add Strategy Videos
+            <span className="text-xs font-normal text-blue-600">Instagram · YouTube · Twitter</span>
           </span>
-          {addPanelOpen ? <ChevronUp className="w-4 h-4 text-[hsl(var(--muted-foreground))]" /> : <ChevronDown className="w-4 h-4 text-[hsl(var(--muted-foreground))]" />}
+          {addPanelOpen
+            ? <ChevronUp className="w-4 h-4 text-blue-500 shrink-0" />
+            : <ChevronDown className="w-4 h-4 text-blue-500 shrink-0" />}
         </button>
         {addPanelOpen && (
-          <div className="p-4 space-y-3">
+          <div className="px-4 pb-4 space-y-3 border-t border-blue-200 pt-3 bg-white">
             <p className="text-xs text-[hsl(var(--muted-foreground))]">
-              Paste one or more Instagram / YouTube / Twitter URLs (one per line). YouTube captions are fetched automatically. Instagram videos require a GitHub Actions run — if that fails you can paste the transcript manually.
+              Paste one or more URLs (one per line). YouTube captions are fetched automatically. Instagram triggers a background job — if it fails, you can paste the transcript manually.
             </p>
             <textarea
               value={addUrlInput}
               onChange={e => setAddUrlInput(e.target.value)}
-              placeholder="https://www.instagram.com/reel/ABC123/&#10;https://www.youtube.com/watch?v=XYZ"
-              className="w-full min-h-[80px] p-2 text-sm border rounded bg-white resize-y font-mono"
+              placeholder={"https://www.instagram.com/reel/ABC123/\nhttps://www.youtube.com/watch?v=XYZ"}
+              className="w-full min-h-[72px] p-2.5 text-sm border border-blue-200 rounded-lg bg-white resize-y font-mono focus:outline-none focus:ring-2 focus:ring-blue-400"
               rows={3}
             />
             <div className="flex items-center gap-2">
               <button
                 onClick={handleAddUrls}
                 disabled={addingUrls || !addUrlInput.trim()}
-                className="px-3 py-1.5 rounded text-sm font-medium bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                className="px-4 py-2 rounded-lg text-sm font-semibold bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed shadow-sm"
               >
                 {addingUrls ? 'Adding…' : 'Add & Queue'}
               </button>
@@ -452,12 +457,12 @@ export function StrategyPerformanceTab({ sources, videos, statuses, onRefresh }:
             </div>
 
             {recentQueue.length > 0 && (
-              <div className="mt-2 space-y-1">
-                <p className="text-xs font-medium text-[hsl(var(--muted-foreground))]">Recent queue</p>
+              <div className="mt-1 space-y-1.5">
+                <p className="text-xs font-semibold text-[hsl(var(--muted-foreground))]">Recent queue</p>
                 {recentQueue.map(item => (
                   <div key={item.id} className="flex items-center gap-2 text-xs">
                     <span className={cn(
-                      'inline-flex px-1.5 py-0.5 rounded font-medium text-[10px]',
+                      'inline-flex px-1.5 py-0.5 rounded font-medium text-[10px] shrink-0',
                       item.status === 'done' && 'bg-emerald-100 text-emerald-700',
                       item.status === 'processing' && 'bg-blue-100 text-blue-700',
                       item.status === 'pending' && 'bg-amber-100 text-amber-700',
@@ -465,9 +470,9 @@ export function StrategyPerformanceTab({ sources, videos, statuses, onRefresh }:
                     )}>
                       {item.status === 'processing' ? 'processing…' : item.status}
                     </span>
-                    <Link2 className="w-3 h-3 text-[hsl(var(--muted-foreground))]" />
-                    <a href={item.url} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline truncate max-w-[280px]">{item.url}</a>
-                    {item.error_message && <span className="text-red-600 truncate max-w-[200px]" title={item.error_message}>{item.error_message}</span>}
+                    <Link2 className="w-3 h-3 text-[hsl(var(--muted-foreground))] shrink-0" />
+                    <a href={item.url} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline truncate max-w-[300px]">{item.url}</a>
+                    {item.error_message && <span className="text-red-600 truncate max-w-[180px]" title={item.error_message}>{item.error_message}</span>}
                   </div>
                 ))}
               </div>
