@@ -1369,10 +1369,24 @@ export async function expireStaleSignals(): Promise<number> {
     .lt('execute_on_date', todayET)
     .select('id');
 
+  // Sweep 3: signals for today if today is a weekend (market closed all day)
+  const todayDayOfWeek = new Date().toLocaleDateString('en-US', { timeZone: 'America/New_York', weekday: 'short' });
+  const isWeekend = todayDayOfWeek === 'Sat' || todayDayOfWeek === 'Sun';
+  let byWeekend: { id: string }[] = [];
+  if (isWeekend) {
+    const { data: wd } = await supabase
+      .from('external_strategy_signals')
+      .update({ status: 'EXPIRED', updated_at: now })
+      .eq('status', 'PENDING')
+      .eq('execute_on_date', todayET)
+      .select('id');
+    byWeekend = wd ?? [];
+  }
+
   if (e1) console.warn('[expireStaleSignals] expires_at sweep failed:', e1.message);
   if (e2) console.warn('[expireStaleSignals] execute_on_date sweep failed:', e2.message);
 
-  return ((byTime ?? []).length + (byDate ?? []).length);
+  return ((byTime ?? []).length + (byDate ?? []).length + byWeekend.length);
 }
 
 // ── Portfolio Snapshots ──────────────────────────────────

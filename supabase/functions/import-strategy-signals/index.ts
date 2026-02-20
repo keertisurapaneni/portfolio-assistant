@@ -120,6 +120,15 @@ Deno.serve(async (req) => {
     );
   }
 
+  // Don't create signals for weekends — market is closed
+  const tradeDay = new Date(`${video.trade_date}T12:00:00Z`).getDay(); // 0=Sun, 6=Sat
+  if (tradeDay === 0 || tradeDay === 6) {
+    return new Response(
+      JSON.stringify({ ok: true, skipped: true, reason: `trade_date ${video.trade_date} falls on a weekend — market closed` }),
+      { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+    );
+  }
+
   const tradeDate = video.trade_date as string;
   const executionWindow = video.execution_window_et as ExecutionWindow | null;
   const sourceHandle = (video.source_handle ?? '').trim().toLowerCase();
