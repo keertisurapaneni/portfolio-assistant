@@ -1,5 +1,5 @@
-import { Fragment, useState, useEffect, useMemo } from 'react';
-import { BarChart3, Wrench } from 'lucide-react';
+import { Fragment, useState, useEffect, useMemo, useRef } from 'react';
+import { BarChart3 } from 'lucide-react';
 import { cn } from '../../../lib/utils';
 import type {
   StrategySourcePerformance,
@@ -47,6 +47,7 @@ type StrategyRow = {
 export function StrategyPerformanceTab({ sources, videos, statuses, onRefresh }: StrategyPerformanceTabProps) {
   const [expandedSources, setExpandedSources] = useState<Set<string>>(new Set());
   const [fixing, setFixing] = useState(false);
+  const autoFixAttempted = useRef(false);
 
   const { todayET, isPastMarketCloseET } = useMemo(() => {
     const dateFormatter = new Intl.DateTimeFormat('en-US', {
@@ -204,6 +205,18 @@ export function StrategyPerformanceTab({ sources, videos, statuses, onRefresh }:
     });
   }, [sources, statuses, sourcePerfByName]);
 
+  const hasUnknown = sourceNames.includes('Unknown');
+  useEffect(() => {
+    if (!hasUnknown || autoFixAttempted.current || !onRefresh) return;
+    autoFixAttempted.current = true;
+    setFixing(true);
+    fixUnknownSources()
+      .then(({ fixed }) => {
+        if (fixed > 0) onRefresh();
+      })
+      .finally(() => setFixing(false));
+  }, [hasUnknown, onRefresh]);
+
   const totalTrades = sourceNames.reduce((sum, source) => {
     const perf = sourcePerfByName.get(source);
     if (perf) return sum + perf.totalTrades;
@@ -301,24 +314,8 @@ export function StrategyPerformanceTab({ sources, videos, statuses, onRefresh }:
           <div className="px-4 py-2.5 border-b border-[hsl(var(--border))] bg-[hsl(var(--secondary))] flex items-center justify-between gap-3">
             <h3 className="text-sm font-semibold text-[hsl(var(--foreground))]">Source Leaderboard (Drill Down by Video)</h3>
             <div className="flex items-center gap-2">
-              {sourceNames.includes('Unknown') && (
-                <button
-                  onClick={async () => {
-                    setFixing(true);
-                    try {
-                      const { fixed } = await fixUnknownSources();
-                      if (fixed > 0 && onRefresh) onRefresh();
-                    } finally {
-                      setFixing(false);
-                    }
-                  }}
-                  disabled={fixing}
-                  className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg bg-amber-600 text-white hover:opacity-90 disabled:opacity-50"
-                  title="Re-resolve source for videos under Unknown"
-                >
-                  <Wrench className="h-3.5 w-3.5" />
-                  {fixing ? 'Fixing...' : 'Fix Unknown sources'}
-                </button>
+              {hasUnknown && fixing && (
+                <span className="text-xs text-amber-700">Fixing Unknown sources…</span>
               )}
               {expandableSourceNames.length > 0 && (
                 <button
