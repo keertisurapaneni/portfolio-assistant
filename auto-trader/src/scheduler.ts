@@ -282,8 +282,10 @@ async function runTranscriptIngest(scriptPath: string): Promise<void> {
   if (!supabaseUrl || !supabaseKey) return;
 
   const serviceKey = getSupabaseServiceRoleKey();
+  const venvPython = resolve(dirname(scriptPath), '.venv', 'bin', 'python');
+  const pythonCmd = existsSync(venvPython) ? venvPython : 'python3';
   return new Promise((resolve, reject) => {
-    const proc = spawn('python3', [scriptPath, '--from-strategy-videos'], {
+    const proc = spawn(pythonCmd, [scriptPath, '--from-strategy-videos'], {
       env: {
         ...process.env,
         SUPABASE_URL: supabaseUrl,

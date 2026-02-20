@@ -7,7 +7,7 @@ import type {
   StrategySignalStatusSummary,
   TradeStatus,
 } from '../../../lib/paperTradesApi';
-import { fixUnknownSources, assignUnknownToSource } from '../../../lib/strategyVideoQueueApi';
+import { fixUnknownSources, assignUnknownToSource, updateStrategyVideoMetadata, extractFromTranscript } from '../../../lib/strategyVideoQueueApi';
 import { fmtUsd, toEtIsoDate } from '../utils';
 import { StatusBadge } from '../shared';
 
@@ -51,8 +51,12 @@ export function StrategyPerformanceTab({ sources, videos, statuses, onRefresh }:
   const [expandedSources, setExpandedSources] = useState<Set<string>>(new Set());
   const [expandedTranscript, setExpandedTranscript] = useState<string | null>(null);
   const [fixing, setFixing] = useState(false);
-  const [assigning, setAssigning] = useState(false);
-  const [assignTarget, setAssignTarget] = useState<string>('');
+  const [assigningVideoId, setAssigningVideoId] = useState<string | null>(null);
+  const [updatingCategoryVideoId, setUpdatingCategoryVideoId] = useState<string | null>(null);
+  const [pasteTranscriptVideoId, setPasteTranscriptVideoId] = useState<string | null>(null);
+  const [pasteTranscriptText, setPasteTranscriptText] = useState('');
+  const [extractingVideoId, setExtractingVideoId] = useState<string | null>(null);
+  const [videoAssignSelections, setVideoAssignSelections] = useState<Record<string, { source: string; category: string }>>({});
   const autoFixAttempted = useRef(false);
 
   const { todayET, isPastMarketCloseET } = useMemo(() => {
@@ -279,18 +283,47 @@ export function StrategyPerformanceTab({ sources, videos, statuses, onRefresh }:
     });
   }, [sourceNames]);
 
-  const handleAssignUnknown = async () => {
-    const opt = assignOptions.find((o) => o.sourceName === assignTarget);
-    if (!opt || !onRefresh) return;
-    setAssigning(true);
+  const handleAssignVideo = async (videoId: string, baseKey: string) => {
+    const sel = videoAssignSelections[baseKey];
+    if (!sel?.source || !onRefresh) return;
+    const opt = assignOptions.find((o) => o.sourceName === sel.source);
+    if (!opt) return;
+    setAssigningVideoId(videoId);
     try {
       const { assigned } = await assignUnknownToSource({
         source_handle: opt.sourceHandle,
         source_name: opt.sourceName,
+        video_ids: [videoId],
+        strategy_type: sel.category ? (sel.category as 'daily_signal' | 'generic_strategy') : undefined,
       });
       if (assigned > 0) onRefresh();
     } finally {
-      setAssigning(false);
+      setAssigningVideoId(null);
+    }
+  };
+
+  const handleCategoryChange = async (videoId: string, strategyType: 'daily_signal' | 'generic_strategy') => {
+    if (!onRefresh) return;
+    setUpdatingCategoryVideoId(videoId);
+    try {
+      await updateStrategyVideoMetadata({ video_id: videoId, strategy_type: strategyType });
+      onRefresh();
+    } finally {
+      setUpdatingCategoryVideoId(null);
+    }
+  };
+
+  const handlePasteTranscript = async (videoId: string) => {
+    const text = pasteTranscriptText.trim();
+    if (!text || !onRefresh) return;
+    setExtractingVideoId(videoId);
+    try {
+      await extractFromTranscript({ video_id: videoId, transcript: text });
+      setPasteTranscriptVideoId(null);
+      setPasteTranscriptText('');
+      onRefresh();
+    } finally {
+      setExtractingVideoId(null);
     }
   };
 
@@ -413,30 +446,6 @@ export function StrategyPerformanceTab({ sources, videos, statuses, onRefresh }:
                             <a href={sourceUrl} target="_blank" rel="noreferrer" className="text-[10px] text-blue-600 hover:text-blue-700 truncate block">
                               {sourceUrl}
                             </a>
-                          )}
-                          {sourceName === 'Unknown' && assignOptions.length > 0 && (
-                            <div className="mt-2 flex flex-wrap items-center gap-2">
-                              <span className="text-[10px] text-[hsl(var(--muted-foreground))]">Assign to:</span>
-                              <select
-                                value={assignTarget}
-                                onChange={(e) => setAssignTarget(e.target.value)}
-                                className="text-xs border rounded px-2 py-1 bg-white min-w-[140px]"
-                              >
-                                <option value="">Select source…</option>
-                                {assignOptions.map((o) => (
-                                  <option key={o.sourceHandle} value={o.sourceName}>
-                                    {o.sourceName}
-                                  </option>
-                                ))}
-                              </select>
-                              <button
-                                onClick={handleAssignUnknown}
-                                disabled={!assignTarget || assigning}
-                                className="text-xs px-2 py-1 rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
-                              >
-                                {assigning ? 'Assigning…' : 'Assign'}
-                              </button>
-                            </div>
                           )}
                         </div>
                       </td>
@@ -591,6 +600,95 @@ export function StrategyPerformanceTab({ sources, videos, statuses, onRefresh }:
                                                     </pre>
                                                   )}
                                                 </div>
+                                              )}
+                                            </div>
+                                          )}
+                                          {sourceName === 'Unknown' && video.videoId && (
+                                            <div className="mt-2">
+                                              {pasteTranscriptVideoId === video.videoId ? (
+                                                <div className="space-y-2">
+                                                  <textarea
+                                                    value={pasteTranscriptText}
+                                                    onChange={(e) => setPasteTranscriptText(e.target.value)}
+                                                    placeholder="Paste transcript here… AI will extract source and category."
+                                                    className="w-full min-h-[80px] p-2 text-xs border rounded bg-white resize-y"
+                                                    rows={4}
+                                                  />
+                                                  <div className="flex items-center gap-2">
+                                                    <button
+                                                      onClick={() => handlePasteTranscript(video.videoId!)}
+                                                      disabled={!pasteTranscriptText.trim() || extractingVideoId === video.videoId}
+                                                      className="text-xs px-2 py-1 rounded bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                                                    >
+                                                      {extractingVideoId === video.videoId ? 'Extracting…' : 'Extract metadata'}
+                                                    </button>
+                                                    <button
+                                                      onClick={() => { setPasteTranscriptVideoId(null); setPasteTranscriptText(''); }}
+                                                      className="text-xs px-2 py-1 rounded border hover:bg-[hsl(var(--secondary))]"
+                                                    >
+                                                      Cancel
+                                                    </button>
+                                                  </div>
+                                                </div>
+                                              ) : (
+                                                <button
+                                                  type="button"
+                                                  onClick={() => { setPasteTranscriptVideoId(video.videoId); setPasteTranscriptText(''); }}
+                                                  className="text-[10px] text-blue-600 hover:text-blue-700 font-medium"
+                                                >
+                                                  Paste transcript to auto-assign source & category
+                                                </button>
+                                              )}
+                                            </div>
+                                          )}
+                                          {sourceName === 'Unknown' && video.videoId && assignOptions.length > 0 && (
+                                            <div className="mt-2 flex flex-wrap items-center gap-2">
+                                              <span className="text-[10px] text-[hsl(var(--muted-foreground))]">Assign to:</span>
+                                              <select
+                                                value={videoAssignSelections[baseKey]?.source ?? ''}
+                                                onChange={(e) => setVideoAssignSelections(prev => ({ ...prev, [baseKey]: { ...prev[baseKey], source: e.target.value, category: prev[baseKey]?.category ?? 'generic_strategy' } }))}
+                                                className="text-xs border rounded px-2 py-1 bg-white min-w-[140px]"
+                                              >
+                                                <option value="">Select source…</option>
+                                                {assignOptions.map((o) => (
+                                                  <option key={o.sourceHandle} value={o.sourceName}>{o.sourceName}</option>
+                                                ))}
+                                              </select>
+                                              <span className="text-[10px] text-[hsl(var(--muted-foreground))]">Category:</span>
+                                              <select
+                                                value={videoAssignSelections[baseKey]?.category ?? 'generic_strategy'}
+                                                onChange={(e) => setVideoAssignSelections(prev => ({ ...prev, [baseKey]: { ...prev[baseKey], category: e.target.value, source: prev[baseKey]?.source ?? '' } }))}
+                                                className="text-xs border rounded px-2 py-1 bg-white"
+                                              >
+                                                <option value="daily_signal">Daily signal</option>
+                                                <option value="generic_strategy">Generic strategy</option>
+                                              </select>
+                                              <button
+                                                onClick={() => handleAssignVideo(video.videoId!, baseKey)}
+                                                disabled={!videoAssignSelections[baseKey]?.source || assigningVideoId === video.videoId}
+                                                className="text-xs px-2 py-1 rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                                              >
+                                                {assigningVideoId === video.videoId ? 'Assigning…' : 'Assign'}
+                                              </button>
+                                            </div>
+                                          )}
+                                          {sourceName !== 'Unknown' && video.videoId && (
+                                            <div className="mt-2 flex items-center gap-2">
+                                              <span className="text-[10px] text-[hsl(var(--muted-foreground))]">Category:</span>
+                                              <select
+                                                value={video.strategyType ?? 'generic_strategy'}
+                                                onChange={(e) => {
+                                                  const v = e.target.value as 'daily_signal' | 'generic_strategy';
+                                                  if (v) handleCategoryChange(video.videoId!, v);
+                                                }}
+                                                disabled={updatingCategoryVideoId === video.videoId}
+                                                className="text-xs border rounded px-2 py-1 bg-white"
+                                              >
+                                                <option value="daily_signal">Daily signal</option>
+                                                <option value="generic_strategy">Generic strategy</option>
+                                              </select>
+                                              {updatingCategoryVideoId === video.videoId && (
+                                                <span className="text-[10px] text-[hsl(var(--muted-foreground))]">Updating…</span>
                                               )}
                                             </div>
                                           )}

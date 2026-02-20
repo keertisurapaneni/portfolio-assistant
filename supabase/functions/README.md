@@ -74,7 +74,7 @@ Processes pending `strategy_video_queue` items (quick add):
 
 ### `extract-strategy-metadata-from-transcript`
 
-Extracts metadata from transcript via Gemini and upserts to `strategy_videos`. Called by the ingest script.
+Extracts metadata from transcript via Groq (Llama 3.3 70B) and upserts to `strategy_videos`. Called by the ingest script. Uses `GROQ_API_KEY` (same as ai-proxy).
 
 **POST body:** `{ video_id, platform?, reel_url?, canonical_url?, transcript }`  
 **Extracts:** source_name, source_handle, strategy_type, video_heading, trade_date, extracted_signals, summary, etc.
@@ -115,6 +115,8 @@ UI: Strategy Perf → Unknown row → "Assign to:" dropdown + Assign button.
 
 ```bash
 supabase secrets set FINNHUB_API_KEY=<key>
+supabase secrets set GROQ_API_KEY=<key>        # ai-proxy + extract-strategy-metadata
+supabase secrets set INGEST_TRIGGER_URL=<url>  # Optional: Vercel api/run_ingest URL for transcript ingest (no auto-trader)
 supabase secrets set GEMINI_API_KEY=<key>
 supabase secrets set GEMINI_API_KEY_2=<key>
 # ... up to GEMINI_API_KEY_13 (sequential, no gaps)
@@ -131,6 +133,7 @@ npx supabase functions deploy process-strategy-video-queue --no-verify-jwt
 npx supabase functions deploy fix-unknown-strategy-sources --no-verify-jwt
 npx supabase functions deploy assign-strategy-videos-to-source --no-verify-jwt
 npx supabase functions deploy extract-strategy-metadata-from-transcript --no-verify-jwt
+npx supabase functions deploy trigger-transcript-ingest --no-verify-jwt
 ```
 
 **Important:** When editing `_shared/` modules, redeploy **both** `trading-signals` and `trade-scanner`.

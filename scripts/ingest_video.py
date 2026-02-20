@@ -56,40 +56,75 @@ def parse_url(url: str) -> dict | None:
     return None
 
 
-def download_audio(url: str, out_path: str, cookies_file: str | None = None) -> bool:
-    """Download audio from URL using yt-dlp. Returns True on success."""
+def download_audio(url: str, out_path: str, cookies_file: str | None = None) -> str | None:
+    """Download audio from URL using yt-dlp. Returns path to downloaded file or None on failure."""
+    # Use python -m yt_dlp so it works when run from venv (yt-dlp may not be in PATH)
+    # Use m4a to avoid ffmpeg dependency (Instagram DASH is often m4a; faster-whisper accepts it)
+    base = out_path.replace(".wav", "").replace(".m4a", "")
+    out_template = base + ".%(ext)s"
     cmd = [
-        "yt-dlp",
+        sys.executable,
+        "-m",
+        "yt_dlp",
         "-x",
         "--audio-format",
-        "wav",
+        "m4a",
         "-o",
-        out_path,
+        out_template,
         "--no-playlist",
         url,
     ]
     if cookies_file and os.path.isfile(cookies_file):
         cmd.extend(["--cookies", cookies_file])
     try:
-        subprocess.run(cmd, check=True, capture_output=True, timeout=120)
-        return os.path.isfile(out_path)
+        result = subprocess.run(cmd, capture_output=True, timeout=120, text=True)
+        if result.returncode != 0:
+            err = (result.stderr or "").strip() or (result.stdout or "").strip()
+            print(f"[ingest] yt-dlp failed: {err[:500] if err else result.returncode}")
+            return None
+        # yt-dlp outputs base.m4a (or base.m4a from DASH)
+        for ext in ("m4a", "webm", "mp3", "opus"):
+            p = base + "." + ext
+            if os.path.isfile(p):
+                return p
+        return None
     except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired) as e:
         print(f"[ingest] yt-dlp failed: {e}")
-        return False
+        return None
 
 
 def transcribe(audio_path: str) -> str:
-    """Transcribe audio with faster-whisper. Returns transcript text."""
+    """Transcribe audio. Uses Groq Whisper API if GROQ_API_KEY set, else faster-whisper."""
+    groq_key = os.environ.get("GROQ_API_KEY")
+    if groq_key:
+        return _transcribe_groq(audio_path, groq_key)
     try:
         from faster_whisper import WhisperModel
     except ImportError:
-        print("[ingest] Install: pip install faster-whisper")
+        print("[ingest] Install: pip install faster-whisper, or set GROQ_API_KEY for API transcribe")
         sys.exit(1)
-
     model = WhisperModel("base", device="cpu", compute_type="int8")
     segments, info = model.transcribe(audio_path, language="en", beam_size=1)
     text = " ".join(s.text for s in segments if s.text).strip()
     return text or ""
+
+
+def _transcribe_groq(audio_path: str, api_key: str) -> str:
+    """Transcribe via Groq Whisper API (lighter for serverless)."""
+    import requests
+    ext = os.path.splitext(audio_path)[1].lower()
+    mime = {"m4a": "audio/mp4", "mp3": "audio/mpeg", "wav": "audio/wav", "webm": "audio/webm"}.get(ext, "audio/mp4")
+    with open(audio_path, "rb") as f:
+        files = {"file": (os.path.basename(audio_path), f, mime)}
+        resp = requests.post(
+            "https://api.groq.com/openai/v1/audio/transcriptions",
+            headers={"Authorization": f"Bearer {api_key}"},
+            files=files,
+            data={"model": "whisper-large-v3-turbo", "response_format": "text"},
+            timeout=60,
+        )
+    resp.raise_for_status()
+    return (resp.text or "").strip()
 
 
 def set_ingest_status(
@@ -152,7 +187,13 @@ def call_extract(
         },
         timeout=60,
     )
-    resp.raise_for_status()
+    if resp.status_code >= 400:
+        try:
+            err_body = resp.json()
+            err_msg = err_body.get("error", err_body.get("message", resp.text[:200]))
+        except Exception:
+            err_msg = resp.text[:200] if resp.text else f"HTTP {resp.status_code}"
+        raise RuntimeError(f"Extract {resp.status_code}: {err_msg}")
     return resp.json()
 
 
@@ -250,8 +291,9 @@ def main():
             print(f"  Warning: could not set transcribing status: {e}")
 
         with tempfile.TemporaryDirectory() as tmp:
-            audio_path = os.path.join(tmp, "audio.wav")
-            if not download_audio(url, audio_path, cookies):
+            audio_path = os.path.join(tmp, "audio")
+            downloaded = download_audio(url, audio_path, cookies)
+            if not downloaded:
                 print("  Skip: download failed")
                 try:
                     set_ingest_status(supabase_url, supabase_key, video_id, platform, "failed", "Download failed")
@@ -259,7 +301,7 @@ def main():
                     pass
                 continue
 
-            transcript = transcribe(audio_path)
+            transcript = transcribe(downloaded)
             if not transcript:
                 print("  Skip: empty transcript")
                 try:

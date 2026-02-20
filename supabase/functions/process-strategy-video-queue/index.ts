@@ -184,6 +184,16 @@ Deno.serve(async (req) => {
     results.push({ id: item.id, status: 'done' });
   }
 
+  // Trigger transcript ingest (no auto-trader needed — runs in configured worker)
+  const ingestUrl = Deno.env.get('INGEST_TRIGGER_URL');
+  if (results.length > 0 && ingestUrl?.trim()) {
+    fetch(ingestUrl.trim(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ source: 'process-strategy-video-queue' }),
+    }).catch((e) => console.error('[process-strategy-video-queue] ingest trigger:', e));
+  }
+
   return new Response(
     JSON.stringify({ ok: true, processed: results.length, results }),
     { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }

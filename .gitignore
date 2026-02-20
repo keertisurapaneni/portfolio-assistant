@@ -51,5 +51,8 @@ lerna-debug.log*
 # Auto-trader: IBC credentials (never commit)
 auto-trader/ibc/config.ini
 
+# Ingest script venv
+scripts/.venv/
+
 # Playwright MCP
 .playwright-mcp/
