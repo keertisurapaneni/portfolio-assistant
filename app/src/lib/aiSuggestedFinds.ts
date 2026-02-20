@@ -20,7 +20,7 @@ const DAILY_SUGGESTIONS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1
 const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
 // Cache config
-const PROMPT_VERSION = 10; // v10: ensure conviction scores in theme-driven Gold Mines + cache bust
+const PROMPT_VERSION = 12; // v12: Gold Mine theme headline support penalty (<3 headlines → -2 conviction; 1 headline → max 7)
 const CACHE_KEY = `gemini-discovery-v${PROMPT_VERSION}`;
 const CACHE_DURATION = 1000 * 60 * 60 * 24; // 24 hours
 
@@ -202,6 +202,11 @@ interface FinnhubMetricData {
   epsGrowth: number | null;
   marketCap: number | null;
   grossMargin: number | null;
+  // Durability metrics (optional — only when Finnhub provides them)
+  netDebt: number | null;
+  ebitda: number | null;
+  interestCoverage: number | null;
+  freeCashFlow: number | null;
 }
 
 async function fetchMetricsForTickers(tickers: string[]): Promise<FinnhubMetricData[]> {
@@ -216,6 +221,8 @@ async function fetchMetricsForTickers(tickers: string[]): Promise<FinnhubMetricD
         if (!data) return null;
 
         const m = (data as { metric?: Record<string, number> }).metric || {};
+        const num = (v: unknown): number | null =>
+          typeof v === 'number' && !Number.isNaN(v) ? v : null;
         return {
           ticker,
           roe: m.roeTTM ?? m.roeAnnual ?? null,
@@ -228,6 +235,10 @@ async function fetchMetricsForTickers(tickers: string[]): Promise<FinnhubMetricD
           epsGrowth: m.epsGrowthTTMYoy ?? m.epsGrowthQuarterlyYoy ?? null,
           marketCap: m.marketCapitalization ?? null,
           grossMargin: m.grossMarginTTM ?? m.grossMarginAnnual ?? null,
+          netDebt: num(m.netDebt ?? m.netDebtTTM),
+          ebitda: num(m.ebitda ?? m.ebitdaTTM),
+          interestCoverage: num(m.interestCoverage ?? m.interestCoverageTTM),
+          freeCashFlow: num(m.freeCashFlow ?? m.freeCashFlowTTM ?? m.fcf),
         } as FinnhubMetricData;
       })
     );
@@ -261,6 +272,10 @@ function buildCompounderAnalysisPrompt(metrics: FinnhubMetricData[]): string {
       if (m.revenueGrowth !== null) lines.push(`  Revenue Growth YoY: ${m.revenueGrowth.toFixed(1)}%`);
       if (m.epsGrowth !== null) lines.push(`  EPS Growth YoY: ${m.epsGrowth.toFixed(1)}%`);
       if (m.marketCap !== null) lines.push(`  Market Cap: $${(m.marketCap / 1000).toFixed(1)}B`);
+      if (m.netDebt !== null) lines.push(`  Net Debt: $${(m.netDebt / 1e6).toFixed(2)}M`);
+      if (m.ebitda !== null) lines.push(`  EBITDA: $${(m.ebitda / 1e6).toFixed(2)}M`);
+      if (m.interestCoverage !== null) lines.push(`  Interest Coverage: ${m.interestCoverage.toFixed(1)}x`);
+      if (m.freeCashFlow !== null) lines.push(`  Free Cash Flow: $${(m.freeCashFlow / 1e6).toFixed(2)}M`);
       return lines.join('\n');
     })
     .join('\n\n');
@@ -275,6 +290,11 @@ RULES:
 - If a metric is missing, note it — do not guess.
 - A great business at a bad price is NOT a great buy. Consider P/E relative to growth rate. PEG < 1.5 is attractive. P/E below sector average is a plus.
 - Always include P/E as one of the 3 visible metrics.
+
+DURABILITY PENALTY (apply ONLY when data is present; do not fabricate missing metrics):
+- If Net Debt and EBITDA are both present and NetDebt/EBITDA > 3 → reduce conviction by 2.
+- If Interest Coverage is present and < 4 → reduce conviction by 2.
+- If Free Cash Flow is present and negative (most recent year) → reduce conviction by 2.
 
 QUALIFYING CRITERIA for Steady Compounders:
 - ROE > 12% (proxy for ROIC durability)
@@ -476,6 +496,11 @@ RULES:
 - Be HONEST about weak metrics — mention them as risks, don't spin them as positives.
 - Include ALL stocks provided — let the user decide. Flag risks clearly in whyGreat.
 - Sort by conviction (highest first). conviction = 1-10 buy conviction score based on both the catalyst strength AND financial quality.
+
+THEME HEADLINE SUPPORT (apply before final conviction):
+- Count how many separate headlines support or reference the dominant theme.
+- If theme referenced in < 3 separate headlines → reduce conviction of all stocks by 2.
+- If theme appears only once → cap max conviction at 7.
 
 RECENT HEADLINES (for context):
 ${headlinesSummary}

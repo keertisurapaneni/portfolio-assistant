@@ -504,6 +504,11 @@ async function closeAllDayTrades(accountId: string) {
           close_reason: 'eod_close',
           closed_at: new Date().toISOString(),
         });
+        fetch(`${_IB_BASE}/trade-performance-log/close`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ tradeId: trade.id, trigger: 'EOD_CLOSE' }),
+        }).catch(err => console.warn('[closeAllDayTrades] Performance log failed:', err));
 
         logEvent(trade.ticker, 'success', 'Day trade closed at EOD');
       } catch (err) {
@@ -663,6 +668,38 @@ export async function getTotalDeployed(): Promise<number> {
   return dbDeployed + _pendingDeployedDollar;
 }
 
+/** Get LONG_TERM exposure by tag (Gold Mine vs Compounders) for tag-level caps.
+ *  Uses paper_trades only; tag inferred from notes/scanner_reason on initial entries. */
+export async function getLongTermExposureByTag(): Promise<{
+  totalGoldMineExposure: number;
+  totalCompounderExposure: number;
+  longTermTotal: number;
+}> {
+  const activeTrades = await getActiveTrades();
+  const longTerm = activeTrades.filter(t => t.mode === 'LONG_TERM');
+
+  const tagByTicker = new Map<string, 'Gold Mine' | 'Compounder'>();
+  for (const t of longTerm) {
+    if ((t.notes ?? '').startsWith('Dip buy')) continue;
+    if (!tagByTicker.has(t.ticker)) {
+      const isGoldMine = /Gold Mine/i.test((t.notes ?? '') + (t.scanner_reason ?? ''));
+      tagByTicker.set(t.ticker, isGoldMine ? 'Gold Mine' : 'Compounder');
+    }
+  }
+
+  let totalGoldMineExposure = 0;
+  let totalCompounderExposure = 0;
+  for (const t of longTerm) {
+    const tag = tagByTicker.get(t.ticker);
+    if (!tag) continue;
+    const size = t.position_size ?? 0;
+    if (tag === 'Gold Mine') totalGoldMineExposure += size;
+    else totalCompounderExposure += size;
+  }
+  const longTermTotal = totalGoldMineExposure + totalCompounderExposure;
+  return { totalGoldMineExposure, totalCompounderExposure, longTermTotal };
+}
+
 // ── Daily deployment tracking ────────────────────────────
 // Tracks how much NEW capital was deployed today (resets at midnight).
 let _dailyDeployedDollar = 0;
@@ -740,13 +777,18 @@ async function checkAllocationCap(
 
 // ── Smart Trading: Layer 1 — Dynamic Position Sizing ─────
 
-/** Conviction multiplier for long-term holds */
-function convictionMultiplier(conviction: number): number {
-  if (conviction >= 10) return 1.5;
-  if (conviction >= 9) return 1.25;
-  if (conviction >= 8) return 1.0;
-  if (conviction >= 7) return 0.75;
-  return 0.5;
+/** Conviction multiplier for long-term holds.
+ *  Gold Mine: capped at 1.25x (even if conviction = 10).
+ *  Steady Compounder: full multiplier up to 1.5x. */
+function convictionMultiplier(conviction: number, suggestedFindTag?: 'Steady Compounder' | 'Gold Mine'): number {
+  let mult: number;
+  if (conviction >= 10) mult = 1.5;
+  else if (conviction >= 9) mult = 1.25;
+  else if (conviction >= 8) mult = 1.0;
+  else if (conviction >= 7) mult = 0.75;
+  else mult = 0.5;
+  if (suggestedFindTag === 'Gold Mine') mult = Math.min(mult, 1.25);
+  return mult;
 }
 
 /** Calculate position size in shares. Returns { quantity, dollarSize }. */
@@ -756,6 +798,7 @@ export function calculatePositionSize(
     price: number;
     mode: 'LONG_TERM' | 'DAY_TRADE' | 'SWING_TRADE';
     conviction?: number;      // for long-term holds
+    suggestedFindTag?: 'Steady Compounder' | 'Gold Mine';  // for LONG_TERM: Gold Mine → 0.75x final (after conviction)
     entryPrice?: number;      // for scanner trades
     stopLoss?: number;        // for scanner trades (risk-based sizing)
     regimeMultiplier?: number; // from market regime check
@@ -763,7 +806,7 @@ export function calculatePositionSize(
     drawdownMultiplier?: number; // from portfolio health (1.0 = normal, <1 = reduce)
   }
 ): { quantity: number; dollarSize: number } {
-  const { price, mode, conviction, entryPrice, stopLoss, regimeMultiplier = 1.0, kellyMultiplier = 1.0, drawdownMultiplier = 1.0 } = params;
+  const { price, mode, conviction, suggestedFindTag, entryPrice, stopLoss, regimeMultiplier = 1.0, kellyMultiplier = 1.0, drawdownMultiplier = 1.0 } = params;
 
   const alloc = config.maxTotalAllocation;
 
@@ -792,9 +835,10 @@ export function calculatePositionSize(
   let dollarSize: number;
 
   if (mode === 'LONG_TERM' && conviction != null) {
-    // Conviction-weighted: base allocation * conviction multiplier
+    // Base * conviction (Gold Mine capped at 1.25x; Steady Compounder up to 1.5x), then tag multiplier: Gold Mine → 0.75x final
     const base = alloc * (config.baseAllocationPct / 100);
-    dollarSize = base * convictionMultiplier(conviction);
+    dollarSize = base * convictionMultiplier(conviction, suggestedFindTag);
+    if (suggestedFindTag === 'Gold Mine') dollarSize *= 0.75;
   } else if (stopLoss && entryPrice && Math.abs(entryPrice - stopLoss) > 0) {
     // Risk-based: risk budget / risk per share
     // Use ALLOCATION cap as base, not portfolio value, to keep trades reasonable
@@ -1177,14 +1221,24 @@ export async function checkDipBuyOpportunities(
   const activeTrades = await getActiveTrades();
   const longTermFilled = activeTrades.filter(t => t.mode === 'LONG_TERM' && t.status === 'FILLED');
 
+  // For each ticker, find the initial entry (not a dip buy) for originalQty and tag inference
+  const initialByTicker = new Map<string, { trade: PaperTrade; isGoldMine: boolean }>();
+  for (const t of longTermFilled) {
+    if ((t.notes ?? '').startsWith('Dip buy')) continue;
+    if (!initialByTicker.has(t.ticker)) {
+      const isGoldMine = /Gold Mine/i.test((t.notes ?? '') + (t.scanner_reason ?? ''));
+      initialByTicker.set(t.ticker, { trade: t, isGoldMine });
+    }
+  }
+
   const tiers = [
     { pct: config.dipBuyTier3Pct, sizePct: config.dipBuyTier3SizePct, label: 'Tier 3' },
     { pct: config.dipBuyTier2Pct, sizePct: config.dipBuyTier2SizePct, label: 'Tier 2' },
     { pct: config.dipBuyTier1Pct, sizePct: config.dipBuyTier1SizePct, label: 'Tier 1' },
   ];
 
-  for (const trade of longTermFilled) {
-    const ibPos = ibPositions.find(p => p.contractDesc.toUpperCase() === trade.ticker.toUpperCase());
+  for (const [ticker, { trade, isGoldMine }] of initialByTicker) {
+    const ibPos = ibPositions.find(p => p.contractDesc.toUpperCase() === ticker.toUpperCase());
     if (!ibPos || ibPos.mktPrice <= 0 || ibPos.avgCost <= 0) continue;
 
     const dipPct = ((ibPos.mktPrice - ibPos.avgCost) / ibPos.avgCost) * 100;
@@ -1192,15 +1246,18 @@ export async function checkDipBuyOpportunities(
     const absDip = Math.abs(dipPct);
 
     // Find highest triggered tier
-    const triggered = tiers.find(t => absDip >= t.pct);
+    let triggered = tiers.find(t => absDip >= t.pct);
     if (!triggered) continue;
+
+    // Gold Mine: disable Tier 3
+    if (isGoldMine && triggered.label === 'Tier 3') continue;
 
     // Cooldown check: no dip buy for this ticker in last N hours
     const cooldownMs = config.dipBuyCooldownHours * 60 * 60 * 1000;
     const { data: recentDipBuys } = await supabase
       .from('auto_trade_events')
       .select('created_at')
-      .eq('ticker', trade.ticker)
+      .eq('ticker', ticker)
       .eq('source', 'dip_buy')
       .eq('action', 'executed')
       .order('created_at', { ascending: false })
@@ -1209,7 +1266,7 @@ export async function checkDipBuyOpportunities(
     if (recentDipBuys && recentDipBuys.length > 0) {
       const lastBuyTime = new Date(recentDipBuys[0].created_at).getTime();
       if (Date.now() - lastBuyTime < cooldownMs) {
-        logEvent(trade.ticker, 'info', `Dip buy cooldown active (${config.dipBuyCooldownHours}h)`);
+        logEvent(ticker, 'info', `Dip buy cooldown active (${config.dipBuyCooldownHours}h)`);
         continue;
       }
     }
@@ -1221,23 +1278,25 @@ export async function checkDipBuyOpportunities(
       config.maxTotalAllocation * 0.10,
     );
     if (currentPositionValue >= maxPositionValue) {
-      logEvent(trade.ticker, 'info', `Position already at max ($${maxPositionValue.toFixed(0)} cap)`);
+      logEvent(ticker, 'info', `Position already at max ($${maxPositionValue.toFixed(0)} cap)`);
       continue;
     }
 
     // Allocation cap check
     const originalQty = trade.quantity ?? Math.abs(ibPos.position);
-    const addOnQty = Math.max(1, Math.floor(originalQty * (triggered.sizePct / 100)));
+    let sizePct = triggered.sizePct;
+    if (isGoldMine && triggered.label === 'Tier 2') sizePct *= 0.5; // Gold Mine: Tier 2 add-on 50% smaller
+    const addOnQty = Math.max(1, Math.floor(originalQty * (sizePct / 100)));
     const addOnDollar = addOnQty * ibPos.mktPrice;
 
-    const capOk = await checkAllocationCap(config, addOnDollar, trade.ticker);
+    const capOk = await checkAllocationCap(config, addOnDollar, ticker);
     if (!capOk) continue;
 
     // Place dip buy
-    logEvent(trade.ticker, 'info', `Dip buy ${triggered.label}: ${addOnQty} shares at -${absDip.toFixed(1)}%`);
+    logEvent(ticker, 'info', `Dip buy ${triggered.label}: ${addOnQty} shares at -${absDip.toFixed(1)}%`);
 
     try {
-      const contract = await searchContract(trade.ticker);
+      const contract = await searchContract(ticker);
       if (!contract) continue;
 
       const orderReplies = await placeMarketOrder({
@@ -1245,13 +1304,13 @@ export async function checkDipBuyOpportunities(
         conid: contract.conid,
         side: 'BUY',
         quantity: addOnQty,
-        symbol: trade.ticker,
+        symbol: ticker,
       });
       await handleOrderConfirmations(orderReplies);
       const orderId = orderReplies[0]?.order_id ?? null;
 
       await createPaperTrade({
-        ticker: trade.ticker,
+        ticker,
         mode: 'LONG_TERM',
         signal: 'BUY',
         scanner_confidence: trade.scanner_confidence,
@@ -1266,26 +1325,26 @@ export async function checkDipBuyOpportunities(
       });
 
       // Track pending order for allocation cap enforcement
-      recordPendingOrder(trade.ticker, addOnDollar);
+      recordPendingOrder(ticker, addOnDollar);
 
       const msg = `Dip buy ${triggered.label}: +${addOnQty} shares at $${ibPos.mktPrice.toFixed(2)} (-${absDip.toFixed(1)}%)`;
-      logEvent(trade.ticker, 'success', msg);
-      persistEvent(trade.ticker, 'success', msg, {
+      logEvent(ticker, 'success', msg);
+      persistEvent(ticker, 'success', msg, {
         action: 'executed', source: 'dip_buy', mode: 'LONG_TERM',
         scanner_signal: 'BUY', scanner_confidence: trade.scanner_confidence ?? undefined,
         metadata: { tier: triggered.label, dipPct: absDip, addOnQty, addOnDollar, mktPrice: ibPos.mktPrice },
       });
 
-      results.push({ ticker: trade.ticker, action: 'executed', reason: `Dip buy ${triggered.label}` });
+      results.push({ ticker, action: 'executed', reason: `Dip buy ${triggered.label}` });
     } catch (err) {
       const msg = `Dip buy failed: ${err instanceof Error ? err.message : 'Unknown'}`;
-      logEvent(trade.ticker, 'error', msg);
-      persistEvent(trade.ticker, 'error', msg, {
+      logEvent(ticker, 'error', msg);
+      persistEvent(ticker, 'error', msg, {
         action: 'failed', source: 'dip_buy', mode: 'LONG_TERM',
         skip_reason: 'Dip buy order failed',
         metadata: { tier: triggered.label, dipPct: absDip },
       });
-      results.push({ ticker: trade.ticker, action: 'failed', reason: msg });
+      results.push({ ticker, action: 'failed', reason: msg });
     }
   }
 
@@ -1850,11 +1909,16 @@ export async function processSuggestedFinds(
   // Filter: conviction >= minSuggestedFindsConviction (default 8)
   // AND valuation must be Undervalued or Deep Value.
   // Top picks always qualify regardless of valuation.
+  // Optional: if Gold Mine count > Compounder count by 2x, raise min conviction for Gold Mines by +1.
   const minConv = cfg.minSuggestedFindsConviction;
+  const goldMineCount = stocks.filter(s => s.tag === 'Gold Mine').length;
+  const compounderCount = stocks.filter(s => s.tag === 'Steady Compounder').length;
+  const goldMineMinConv = goldMineCount > compounderCount * 2 ? minConv + 1 : minConv;
   const tops = topPickTickers ?? new Set<string>();
   const qualified = stocks.filter(s => {
     const conv = s.conviction ?? 0;
-    if (conv < minConv) return false;
+    const effectiveMin = s.tag === 'Gold Mine' ? goldMineMinConv : minConv;
+    if (conv < effectiveMin) return false;
     if (tops.has(s.ticker)) return true; // top pick — always buy
     const tag = (s.valuationTag ?? '').toLowerCase();
     return tag === 'deep value' || tag === 'undervalued';
@@ -1864,7 +1928,10 @@ export async function processSuggestedFinds(
     return [];
   }
 
-  logEvent('*', 'info', `Processing ${qualified.length} Suggested Finds (conviction ${minConv}+ and undervalued/deep value)...`);
+  const convMsg = goldMineMinConv > minConv
+    ? `conviction ${minConv}+ (Compounders) / ${goldMineMinConv}+ (Gold Mines — raised: ${goldMineCount} GM > ${compounderCount}×2 Comp)`
+    : `conviction ${minConv}+`;
+  logEvent('*', 'info', `Processing ${qualified.length} Suggested Finds (${convMsg} and undervalued/deep value)...`);
 
   const toProcess = qualified.slice(0, slotsAvailable);
 
@@ -1901,6 +1968,28 @@ async function processSuggestedFind(
       skip_reason: 'Duplicate position', metadata: sfMeta,
     });
     return { ticker, action: 'skipped', reason: 'Duplicate position' };
+  }
+
+  // ── 1b. Macro regime: block Gold Mine when SPY < SMA200 ──
+  if (stock.tag === 'Gold Mine') {
+    try {
+      const res = await fetch(`${_IB_BASE}/regime/spy`);
+      if (res.ok) {
+        const data = await res.json() as { belowSma200?: boolean | null };
+        if (data.belowSma200 === true) {
+          const msg = `SPY below SMA200 — blocking new Gold Mine entries (macro regime)`;
+          logEvent(ticker, 'info', msg);
+          persistEvent(ticker, 'info', msg, {
+            action: 'skipped', source: 'suggested_finds', mode: 'LONG_TERM',
+            scanner_signal: 'BUY', scanner_confidence: conviction,
+            skip_reason: 'SPY below SMA200', metadata: sfMeta,
+          });
+          return { ticker, action: 'skipped', reason: 'SPY below SMA200 — Gold Mine blocked' };
+        }
+      }
+    } catch {
+      // Fail open: if we can't fetch regime, allow the trade
+    }
   }
 
   // ── 2. Fresh conviction verification ──
@@ -1966,11 +2055,28 @@ async function processSuggestedFind(
     price: currentPrice,
     mode: 'LONG_TERM',
     conviction,
+    suggestedFindTag: stock.tag,
     regimeMultiplier: regime.multiplier,
     kellyMultiplier: kellyMult,
     drawdownMultiplier: health.drawdownMultiplier,
   });
   const quantity = sizing.quantity;
+
+  // ── 3b. Tag-level cap: Gold Mine cannot exceed 40% of LONG_TERM sleeve ──
+  if (stock.tag === 'Gold Mine') {
+    const { totalGoldMineExposure } = await getLongTermExposureByTag();
+    const goldMineCap = config.maxTotalAllocation * 0.40;
+    if (totalGoldMineExposure + sizing.dollarSize > goldMineCap) {
+      const msg = `Gold Mine cap: $${totalGoldMineExposure.toFixed(0)} + $${sizing.dollarSize.toFixed(0)} > $${goldMineCap.toFixed(0)} (40% of sleeve) — skipping`;
+      logEvent(ticker, 'info', msg);
+      persistEvent(ticker, 'info', msg, {
+        action: 'skipped', source: 'suggested_finds', mode: 'LONG_TERM',
+        scanner_signal: 'BUY', scanner_confidence: conviction,
+        skip_reason: 'Gold Mine 40% cap reached', metadata: { ...sfMeta, totalGoldMineExposure, goldMineCap },
+      });
+      return { ticker, action: 'skipped', reason: 'Gold Mine 40% cap reached' };
+    }
+  }
 
   // Pre-trade checks (allocation cap, sector limits, earnings blackout)
   const preCheckOk = await runPreTradeChecks(config, ticker, sizing.dollarSize);
@@ -2197,6 +2303,11 @@ export async function syncPositions(accountId: string): Promise<void> {
         analyzeCompletedTrade(closedTrade)
           .then(() => updatePerformancePatterns())
           .catch(err => console.warn('[syncPositions] Trade analysis failed:', err));
+        fetch(`${_IB_BASE}/trade-performance-log/close`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ tradeId: trade.id, trigger: 'IB_POSITION_GONE' }),
+        }).catch(err => console.warn('[syncPositions] Performance log failed:', err));
 
       } else if (trade.status === 'SUBMITTED') {
         // ── Stale SUBMITTED trades — expire day trades older than 1 day ──
@@ -2210,6 +2321,11 @@ export async function syncPositions(accountId: string): Promise<void> {
             closed_at: new Date().toISOString(),
             notes: (trade.notes ?? '') + ' | Expired: DAY order not filled within 1 day',
           });
+          fetch(`${_IB_BASE}/trade-performance-log/close`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ tradeId: trade.id, trigger: 'EXPIRED_DAY_ORDER' }),
+          }).catch(err => console.warn('[syncPositions] Performance log failed:', err));
           logEvent(trade.ticker, 'info', 'Day trade expired — order never filled');
         }
       }

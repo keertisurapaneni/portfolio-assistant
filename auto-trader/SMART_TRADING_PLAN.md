@@ -22,6 +22,14 @@ Dip-buy/profit-take actions are tracked separately so they don't pollute the
 "initial signal quality" metrics. Analysis tracks "did the pick work?" separately
 from "did active management add alpha?"
 
+### Validation Schedule Recommendation
+
+| Horizon | Purpose |
+|---------|---------|
+| **30 days** | Sanity check — is the system behaving? Any obvious bugs or misconfigs? |
+| **90 days** | Factor validation — are tag/conviction/regime signals predictive? Use `performance_log` for LONG_TERM. |
+| **180 days** | Structural decision — scale up, tune, or retire based on evidence. |
+
 ## Allocation Cap
 
 Total deployed capital hard-capped at **$250K**. Before any new trade:
@@ -45,8 +53,10 @@ Every day after market close (4:15 PM ET), the scheduler automatically:
 Instead of fixed dollar amounts, size positions based on conviction and risk.
 
 **Long-term holds (Suggested Finds):**
-- Base allocation = `portfolioValue * baseAllocationPct%` (default 2% = $20K on $1M)
+- Base allocation = `maxTotalAllocation * baseAllocationPct%` (default 2%)
 - Multiplied by conviction: 10 = 1.5x, 9 = 1.25x, 8 = 1.0x, 7 = 0.75x
+- **Gold Mine**: conviction multiplier capped at 1.25x (even if conviction = 10); then 0.75x final size
+- **Steady Compounder**: full conviction multiplier up to 1.5x; no additional tag multiplier
 - Capped at `maxPositionPct%` of portfolio (default 5% = $50K)
 
 **Scanner trades with stop loss:**
@@ -64,9 +74,11 @@ For long-term positions that drop, automatically average down in tiers.
 
 | Tier | Dip from Avg Cost | Add-on Size (% of original qty) |
 |------|-------------------|---------------------------------|
-| 1    | -5%               | 50%                             |
-| 2    | -10%              | 75%                             |
-| 3    | -15%              | 100%                            |
+| 1    | -10%              | 25%                             |
+| 2    | -20%              | 50% (Steady) / 25% (Gold Mine)  |
+| 3    | -30%              | 75% (Steady only; disabled for Gold Mine) |
+
+**Gold Mine:** Tier 3 disabled; Tier 2 add-on 50% smaller. Steady Compounders: full logic.
 
 Guards:
 - Total position must stay under `maxPositionPct%` of portfolio
@@ -101,6 +113,12 @@ Fetches VIX level and SPY trend from the auto-trader service. Applies a multipli
 to all position sizes:
 
 - VIX > 30 (panic): 0.5x multiplier, pause new long-term buys
+
+**Macro regime (SPY vs SMA200):** When SPY < SMA200, block new LONG_TERM entries for **Gold Mine** only. Steady Compounders allowed (normal rules). Does not affect existing positions.
+
+**Tag-level allocation cap (Gold Mine):** Total Gold Mine exposure cannot exceed 40% of `maxTotalAllocation`. If a new Gold Mine position would exceed this, skip it. Compounders have no tag cap. Applied before allocation cap checks.
+
+**Candidate selection (optional):** If Gold Mine count > Compounder count by 2×, raise minimum conviction threshold for Gold Mines by +1 (e.g. min 8 → 9 for Gold Mines only).
 - VIX 25-30 (fear): 0.6x multiplier
 - VIX 15-25 (normal): 1.0x multiplier
 - VIX < 15 (complacent): 1.1x multiplier (slight boost)

@@ -30,6 +30,7 @@ import {
   loadConfig,
   saveConfigPartial,
   getActiveTrades,
+  getLongTermExposureByTag,
   hasActiveTrade,
   countActivePositions,
   createPaperTrade,
@@ -56,6 +57,8 @@ import {
   analyzeUnreviewedTrades,
   updatePerformancePatterns,
 } from './lib/feedback.js';
+import { logLongTermPerformance } from './lib/performanceLog.js';
+import { logClosedTradePerformance } from './lib/tradePerformanceLog.js';
 
 // ── Types ────────────────────────────────────────────────
 
@@ -708,6 +711,23 @@ interface SwingEntryLog {
   regime_alignment_at_entry: 'above_both' | 'below_both' | 'mixed' | null;
 }
 
+const SPY_REGIME_CACHE_MS = 15 * 60 * 1000;
+let _spyBelowSma200Cache: { value: boolean; ts: number } | null = null;
+
+async function isSpyBelowSma200(): Promise<boolean> {
+  if (_spyBelowSma200Cache && Date.now() - _spyBelowSma200Cache.ts < SPY_REGIME_CACHE_MS) {
+    return _spyBelowSma200Cache.value;
+  }
+  const bars = await fetchYahooDailyBars('SPY');
+  if (!bars || bars.closes.length < 200) return false; // fail open
+  const closes = bars.closes;
+  const price = closes[closes.length - 1];
+  const sma200 = closes.slice(-200).reduce((a, b) => a + b, 0) / 200;
+  const below = price < sma200;
+  _spyBelowSma200Cache = { value: below, ts: Date.now() };
+  return below;
+}
+
 async function fetchYahooDailyBars(symbol: string): Promise<{ closes: number[]; volumes: number[] } | null> {
   try {
     const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=1y&interval=1d&includePrePost=false`;
@@ -902,12 +922,16 @@ async function fetchDailySuggestions(): Promise<SuggestedStock[] | null> {
 
 // ── Position Sizing ──────────────────────────────────────
 
-function convictionMultiplier(conv: number): number {
-  if (conv >= 10) return 1.5;
-  if (conv >= 9) return 1.25;
-  if (conv >= 8) return 1.0;
-  if (conv >= 7) return 0.75;
-  return 0.5;
+/** Gold Mine: cap at 1.25x. Steady Compounder: full up to 1.5x. */
+function convictionMultiplier(conv: number, suggestedFindTag?: 'Steady Compounder' | 'Gold Mine'): number {
+  let mult: number;
+  if (conv >= 10) mult = 1.5;
+  else if (conv >= 9) mult = 1.25;
+  else if (conv >= 8) mult = 1.0;
+  else if (conv >= 7) mult = 0.75;
+  else mult = 0.5;
+  if (suggestedFindTag === 'Gold Mine') mult = Math.min(mult, 1.25);
+  return mult;
 }
 
 function calculatePositionSize(
@@ -916,6 +940,7 @@ function calculatePositionSize(
     price: number;
     mode: 'LONG_TERM' | 'DAY_TRADE' | 'SWING_TRADE';
     conviction?: number;
+    suggestedFindTag?: 'Steady Compounder' | 'Gold Mine';
     entryPrice?: number;
     stopLoss?: number;
     regimeMultiplier?: number;
@@ -923,7 +948,7 @@ function calculatePositionSize(
   }
 ): { quantity: number; dollarSize: number } {
   const {
-    price, mode, conviction, entryPrice, stopLoss,
+    price, mode, conviction, suggestedFindTag, entryPrice, stopLoss,
     regimeMultiplier = 1.0, drawdownMultiplier = 1.0,
   } = params;
   const alloc = config.maxTotalAllocation;
@@ -941,7 +966,8 @@ function calculatePositionSize(
 
   if (mode === 'LONG_TERM' && conviction != null) {
     const base = alloc * (config.baseAllocationPct / 100);
-    dollarSize = base * convictionMultiplier(conviction);
+    dollarSize = base * convictionMultiplier(conviction, suggestedFindTag);
+    if (suggestedFindTag === 'Gold Mine') dollarSize *= 0.75;
   } else if (stopLoss && entryPrice && Math.abs(entryPrice - stopLoss) > 0) {
     const riskBudget = alloc * (config.riskPerTradePct / 100);
     const riskPerShare = Math.abs(entryPrice - stopLoss);
@@ -1259,6 +1285,12 @@ async function executeSuggestedFindTrade(
 
   if (await hasActiveTrade(ticker)) return 'skipped:duplicate';
 
+  // Macro regime: block Gold Mine when SPY < SMA200 (Steady Compounders allowed)
+  if (stock.tag === 'Gold Mine') {
+    const below = await isSpyBelowSma200();
+    if (below) return 'skipped:spy_below_sma200';
+  }
+
   // Conviction verification via trading-signals
   try {
     const freshFA = await fetchTradingSignal(ticker, 'SWING_TRADE');
@@ -1276,8 +1308,19 @@ async function executeSuggestedFindTrade(
   const dd = assessDrawdownMultiplier(positions);
   const sizing = calculatePositionSize(config, {
     price: currentPrice, mode: 'LONG_TERM', conviction,
+    suggestedFindTag: stock.tag,
     drawdownMultiplier: dd.multiplier,
   });
+
+  // Tag-level cap: Gold Mine cannot exceed 40% of LONG_TERM sleeve
+  if (stock.tag === 'Gold Mine') {
+    const { totalGoldMineExposure } = await getLongTermExposureByTag();
+    const goldMineCap = config.maxTotalAllocation * 0.40;
+    if (totalGoldMineExposure + sizing.dollarSize > goldMineCap) {
+      log(`${ticker}: Gold Mine cap — $${totalGoldMineExposure.toFixed(0)} + $${sizing.dollarSize.toFixed(0)} > $${goldMineCap.toFixed(0)} (40%)`);
+      return 'skipped:gold_mine_cap';
+    }
+  }
 
   if (!(await runPreTradeChecks(config, ticker, sizing.dollarSize, positions))) {
     return 'skipped:pre_trade_check';
@@ -1880,7 +1923,6 @@ async function syncPositions(
         r_multiple: rMultiple,
       });
       log(`${trade.ticker}: Closed (${closeReason}) — P&L $${pnl.toFixed(2)}`);
-      // Trigger trade analysis immediately so feedback loop runs without waiting for rehydration
       const closedTrade = {
         ...trade,
         status,
@@ -1895,15 +1937,32 @@ async function syncPositions(
           if (ok) updatePerformancePatterns().catch(() => {});
         })
         .catch(err => log(`Trade analysis failed for ${trade.ticker}: ${err instanceof Error ? err.message : 'unknown'}`));
+      if (trade.mode === 'LONG_TERM' && !(trade.notes ?? '').startsWith('Dip buy')) {
+        const tradeForLog: import('./lib/supabase.js').PaperTrade = {
+          ...closedTrade,
+          opened_at: trade.opened_at ?? trade.created_at ?? closedAt,
+        };
+        logLongTermPerformance(tradeForLog)
+          .catch(err => log(`Performance log failed for ${trade.ticker}: ${err instanceof Error ? err.message : 'unknown'}`));
+      }
+      logClosedTradePerformance(closedTrade as import('./lib/supabase.js').PaperTrade, {
+        source: 'scheduler',
+        trigger: 'IB_POSITION_GONE',
+      }).catch(err => log(`Trade perf log failed for ${trade.ticker}: ${err instanceof Error ? err.message : 'unknown'}`));
     } else if (trade.status === 'SUBMITTED') {
       const tradeAge = Date.now() - new Date(trade.created_at).getTime();
       // Stale day trades
       if (trade.mode === 'DAY_TRADE' && tradeAge > 86400000) {
+        const closedAt = new Date().toISOString();
         await updatePaperTrade(trade.id, {
           status: 'CLOSED', close_reason: 'manual',
-          closed_at: new Date().toISOString(),
+          closed_at: closedAt,
           notes: (trade.notes ?? '') + ' | Expired: DAY order not filled within 1 day',
         });
+        logClosedTradePerformance(
+          { ...trade, status: 'CLOSED', close_reason: 'manual', closed_at: closedAt } as import('./lib/supabase.js').PaperTrade,
+          { source: 'scheduler', trigger: 'EXPIRED_DAY_ORDER' }
+        ).catch(() => {});
         log(`${trade.ticker}: Day trade expired`);
       }
       // Swing bracket limit: expire after 2 trading days (~48h), cancel IB order
@@ -1923,11 +1982,16 @@ async function syncPositions(
           }
         }
         upsertSwingMetrics({ date: getETDateString(), swing_orders_expired: 1 }).catch(() => {});
+        const closedAt = new Date().toISOString();
         await updatePaperTrade(trade.id, {
           status: 'CLOSED', close_reason: 'manual',
-          closed_at: new Date().toISOString(),
+          closed_at: closedAt,
           notes: (trade.notes ?? '') + ' | Expired: SWING limit not filled within 2 trading days',
         });
+        logClosedTradePerformance(
+          { ...trade, status: 'CLOSED', close_reason: 'manual', closed_at: closedAt } as import('./lib/supabase.js').PaperTrade,
+          { source: 'scheduler', trigger: 'EXPIRED_SWING_BRACKET' }
+        ).catch(() => {});
       }
     }
   }
@@ -1941,25 +2005,35 @@ async function checkDipBuyOpportunities(
   const activeTrades = await getActiveTrades();
   const longTermFilled = activeTrades.filter(t => t.mode === 'LONG_TERM' && t.status === 'FILLED');
 
+  const initialByTicker = new Map<string, { trade: PaperTrade; isGoldMine: boolean }>();
+  for (const t of longTermFilled) {
+    if ((t.notes ?? '').startsWith('Dip buy')) continue;
+    if (!initialByTicker.has(t.ticker)) {
+      const isGoldMine = /Gold Mine/i.test((t.notes ?? '') + (t.scanner_reason ?? ''));
+      initialByTicker.set(t.ticker, { trade: t, isGoldMine });
+    }
+  }
+
   const tiers = [
     { pct: config.dipBuyTier3Pct, sizePct: config.dipBuyTier3SizePct, label: 'Tier 3' },
     { pct: config.dipBuyTier2Pct, sizePct: config.dipBuyTier2SizePct, label: 'Tier 2' },
     { pct: config.dipBuyTier1Pct, sizePct: config.dipBuyTier1SizePct, label: 'Tier 1' },
   ];
 
-  for (const trade of longTermFilled) {
-    const ibPos = positions.find(p => p.symbol.toUpperCase() === trade.ticker.toUpperCase());
+  for (const [ticker, { trade, isGoldMine }] of initialByTicker) {
+    const ibPos = positions.find(p => p.symbol.toUpperCase() === ticker.toUpperCase());
     if (!ibPos || ibPos.mktPrice <= 0 || ibPos.avgCost <= 0) continue;
 
     const dipPct = ((ibPos.mktPrice - ibPos.avgCost) / ibPos.avgCost) * 100;
     if (dipPct >= 0) continue;
     const absDip = Math.abs(dipPct);
 
-    const triggered = tiers.find(t => absDip >= t.pct);
+    let triggered = tiers.find(t => absDip >= t.pct);
     if (!triggered) continue;
+    if (isGoldMine && triggered.label === 'Tier 3') continue;
 
     // Cooldown
-    const recentEvents = await getRecentDipBuyEvents(trade.ticker);
+    const recentEvents = await getRecentDipBuyEvents(ticker);
     if (recentEvents.length > 0) {
       const lastBuyTime = new Date(recentEvents[0].created_at).getTime();
       if (Date.now() - lastBuyTime < config.dipBuyCooldownHours * 3600000) continue;
@@ -1973,21 +2047,23 @@ async function checkDipBuyOpportunities(
     if (Math.abs(ibPos.position) * ibPos.mktPrice >= maxPositionValue) continue;
 
     const originalQty = trade.quantity ?? Math.abs(ibPos.position);
-    const addOnQty = Math.max(1, Math.floor(originalQty * (triggered.sizePct / 100)));
+    let sizePct = triggered.sizePct;
+    if (isGoldMine && triggered.label === 'Tier 2') sizePct *= 0.5;
+    const addOnQty = Math.max(1, Math.floor(originalQty * (sizePct / 100)));
     const addOnDollar = addOnQty * ibPos.mktPrice;
 
-    if (!(await checkAllocationCap(config, addOnDollar, trade.ticker, positions))) continue;
+    if (!(await checkAllocationCap(config, addOnDollar, ticker, positions))) continue;
 
     try {
-      const contract = await searchContract(trade.ticker);
+      const contract = await searchContract(ticker);
       if (!contract) continue;
 
       const result = await placeMarketOrder({
-        symbol: trade.ticker, side: 'BUY', quantity: addOnQty,
+        symbol: ticker, side: 'BUY', quantity: addOnQty,
       });
 
       await createPaperTrade({
-        ticker: trade.ticker, mode: 'LONG_TERM', signal: 'BUY',
+        ticker, mode: 'LONG_TERM', signal: 'BUY',
         scanner_confidence: trade.scanner_confidence,
         fa_confidence: trade.fa_confidence,
         fa_recommendation: 'BUY',
@@ -2000,13 +2076,13 @@ async function checkDipBuyOpportunities(
       });
 
       recordPendingOrder(addOnDollar);
-      log(`${trade.ticker}: DIP BUY ${triggered.label} — +${addOnQty} shares at -${absDip.toFixed(1)}%`);
-      persistEvent(trade.ticker, 'success', `Dip buy ${triggered.label}: +${addOnQty} shares`, {
+      log(`${ticker}: DIP BUY ${triggered.label} — +${addOnQty} shares at -${absDip.toFixed(1)}%`);
+      persistEvent(ticker, 'success', `Dip buy ${triggered.label}: +${addOnQty} shares`, {
         action: 'executed', source: 'dip_buy', mode: 'LONG_TERM',
         metadata: { tier: triggered.label, dipPct: absDip, addOnQty, addOnDollar },
       });
     } catch (err) {
-      log(`${trade.ticker}: Dip buy failed — ${err instanceof Error ? err.message : 'unknown'}`);
+      log(`${ticker}: Dip buy failed — ${err instanceof Error ? err.message : 'unknown'}`);
     }
   }
 }
@@ -2228,15 +2304,19 @@ async function preGenerateSuggestedFinds(
     if (config.enabled && config.accountId) {
       // Filter by conviction + valuation
       const minConv = config.minSuggestedFindsConviction;
+      const goldMineCount = stocks.filter(s => s.tag === 'Gold Mine').length;
+      const compounderCount = stocks.filter(s => s.tag === 'Steady Compounder').length;
+      const goldMineMinConv = goldMineCount > compounderCount * 2 ? minConv + 1 : minConv;
       const topTickers = new Set<string>();
       const compounders = stocks.filter(s => s.tag === 'Steady Compounder');
-      const goldMines = stocks.filter(s => s.tag !== 'Steady Compounder');
+      const goldMines = stocks.filter(s => s.tag === 'Gold Mine');
       if (compounders[0] && (compounders[0].conviction ?? 0) >= 8) topTickers.add(compounders[0].ticker);
       if (goldMines[0] && (goldMines[0].conviction ?? 0) >= 8) topTickers.add(goldMines[0].ticker);
 
       const qualified = stocks.filter(s => {
         const conv = s.conviction ?? 0;
-        if (conv < minConv) return false;
+        const effectiveMin = s.tag === 'Gold Mine' ? goldMineMinConv : minConv;
+        if (conv < effectiveMin) return false;
         if (topTickers.has(s.ticker)) return true;
         const tag = (s.valuationTag ?? '').toLowerCase();
         return tag === 'deep value' || tag === 'undervalued';

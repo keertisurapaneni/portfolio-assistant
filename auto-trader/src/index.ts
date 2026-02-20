@@ -19,6 +19,8 @@ import positionRoutes from './routes/positions.js';
 import marketDataRoutes from './routes/market-data.js';
 import schedulerRoutes from './routes/scheduler.js';
 import strategyRoutes from './routes/strategies.js';
+import performanceLogRoutes from './routes/performance-log.js';
+import paperTradingRoutes from './routes/paper-trading.js';
 import { startScheduler, stopScheduler } from './scheduler.js';
 
 const PORT = parseInt(process.env.PORT ?? '3001', 10);
@@ -54,6 +56,8 @@ app.use('/api', positionRoutes);
 app.use('/api', marketDataRoutes);
 app.use('/api', schedulerRoutes);
 app.use('/api', strategyRoutes);
+app.use('/api', performanceLogRoutes);
+app.use('/api', paperTradingRoutes);
 
 // ── Compatibility endpoints (match old CPGW paths) ──────
 

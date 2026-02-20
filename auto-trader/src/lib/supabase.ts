@@ -194,6 +194,9 @@ export interface PaperTrade {
   close_price: number | null;
   pnl: number | null;
   pnl_percent: number | null;
+  opened_at: string;
+  filled_at: string | null;
+  closed_at: string | null;
   close_reason: string | null;
   scanner_reason: string | null;
   fa_rationale: Record<string, string> | null;
@@ -285,6 +288,37 @@ export async function getActiveTrades(): Promise<PaperTrade[]> {
     .order('opened_at', { ascending: false });
   if (error) throw new Error(`getActiveTrades: ${error.message}`);
   return (data ?? []) as PaperTrade[];
+}
+
+/** Get LONG_TERM exposure by tag (Gold Mine vs Compounders) for tag-level caps. */
+export async function getLongTermExposureByTag(): Promise<{
+  totalGoldMineExposure: number;
+  totalCompounderExposure: number;
+  longTermTotal: number;
+}> {
+  const activeTrades = await getActiveTrades();
+  const longTerm = activeTrades.filter(t => t.mode === 'LONG_TERM');
+
+  const tagByTicker = new Map<string, 'Gold Mine' | 'Compounder'>();
+  for (const t of longTerm) {
+    if ((t.notes ?? '').startsWith('Dip buy')) continue;
+    if (!tagByTicker.has(t.ticker)) {
+      const isGoldMine = /Gold Mine/i.test((t.notes ?? '') + (t.scanner_reason ?? ''));
+      tagByTicker.set(t.ticker, isGoldMine ? 'Gold Mine' : 'Compounder');
+    }
+  }
+
+  let totalGoldMineExposure = 0;
+  let totalCompounderExposure = 0;
+  for (const t of longTerm) {
+    const tag = tagByTicker.get(t.ticker);
+    if (!tag) continue;
+    const size = t.position_size ?? 0;
+    if (tag === 'Gold Mine') totalGoldMineExposure += size;
+    else totalCompounderExposure += size;
+  }
+  const longTermTotal = totalGoldMineExposure + totalCompounderExposure;
+  return { totalGoldMineExposure, totalCompounderExposure, longTermTotal };
 }
 
 export async function hasActiveTrade(ticker: string): Promise<boolean> {
