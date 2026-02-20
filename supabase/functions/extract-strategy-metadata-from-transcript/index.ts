@@ -128,6 +128,38 @@ Deno.serve(async (req) => {
     Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
   );
 
+  // ── Step 1: Fetch current state + save transcript immediately ──────────────
+  // This ensures ingest_status = 'done' even if the LLM call below fails.
+  const { data: current } = await supabase
+    .from('strategy_videos')
+    .select('id, source_name, source_handle')
+    .eq('platform', platform)
+    .eq('video_id', video_id)
+    .maybeSingle();
+
+  const { data: savedVideo, error: saveErr } = await supabase
+    .from('strategy_videos')
+    .upsert({
+      video_id,
+      platform,
+      transcript,
+      ingest_status: 'done',
+      ingest_error: null,
+      status: 'tracked',
+      ...(reel_url ? { reel_url } : {}),
+      ...(canonical_url ? { canonical_url } : {}),
+    }, { onConflict: 'platform,video_id', ignoreDuplicates: false })
+    .select('id, video_id, platform, source_name')
+    .single();
+
+  if (saveErr) {
+    return new Response(
+      JSON.stringify({ error: saveErr.message }),
+      { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+    );
+  }
+
+  // ── Step 2: LLM extraction — transcript already saved, so failures are non-fatal ──
   const todayEt = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' }); // YYYY-MM-DD
   const userPrompt = `Today's date (ET): ${todayEt}\n\nTranscript:\n\n${transcript}\n\nExtract metadata from this trading strategy video transcript. For trade_date, resolve relative references like "today", "tomorrow", "Friday" to an actual YYYY-MM-DD date using today's date above.`;
 
@@ -136,19 +168,16 @@ Deno.serve(async (req) => {
     const raw = await callGroq(apiKey, EXTRACT_SYSTEM, userPrompt);
     extracted = parseJson(raw);
   } catch (e) {
-    console.error('[extract-strategy-metadata]', e);
+    console.error('[extract-strategy-metadata] LLM failed — transcript saved, metadata skipped:', e);
+    // Return success: transcript is stored and ingest_status is 'done'
     return new Response(
-      JSON.stringify({ error: `Extraction failed: ${(e as Error).message}` }),
-      { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      JSON.stringify({ ok: true, strategy_video: savedVideo, warning: `LLM extraction failed: ${(e as Error).message}` }),
+      { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
   }
 
   let source_name = String(extracted.source_name ?? '').trim();
   let source_handle = (extracted.source_handle ? String(extracted.source_handle).trim().toLowerCase().replace(/^@+/, '') : null) as string | null;
-
-  if (!source_name) {
-    source_name = 'Unknown';
-  }
 
   // Resolve canonical source_name from existing strategy_videos if we have a handle
   if (source_handle) {
@@ -164,6 +193,23 @@ Deno.serve(async (req) => {
     if (existing?.source_name) {
       source_name = existing.source_name.trim();
       source_handle = (existing.source_handle ?? source_handle).trim() || null;
+    }
+  }
+
+  // ── Source preservation: never overwrite a manually-assigned source with Unknown ──
+  // If the video already has a real source (not Unknown), keep it even if the LLM
+  // couldn't identify the source from the transcript.
+  const currentSourceName = (current?.source_name ?? '').trim();
+  const currentSourceHandle = (current?.source_handle ?? '').trim();
+  const hasManualSource = currentSourceName && currentSourceName !== 'Unknown';
+
+  if (!source_name || source_name === 'Unknown') {
+    if (hasManualSource) {
+      // Keep the manually-assigned source
+      source_name = currentSourceName;
+      source_handle = currentSourceHandle || source_handle;
+    } else {
+      source_name = 'Unknown';
     }
   }
 
@@ -186,30 +232,28 @@ Deno.serve(async (req) => {
   const extracted_signals = Array.isArray(extracted.extracted_signals) ? extracted.extracted_signals : [];
   const summary = extracted.summary ? String(extracted.summary).trim() : null;
 
-  const upsertPayload = {
-    video_id,
-    platform,
-    source_handle,
-    source_name,
-    reel_url,
-    canonical_url,
-    video_heading,
-    strategy_type,
-    timeframe,
-    applicable_timeframes,
-    execution_window_et,
-    trade_date,
-    extracted_signals,
-    summary,
-    transcript,
-    ingest_status: 'done',
-    ingest_error: null,
-    status: 'tracked',
-  };
-
   const { data: upserted, error } = await supabase
     .from('strategy_videos')
-    .upsert(upsertPayload, { onConflict: 'platform,video_id', ignoreDuplicates: false })
+    .upsert({
+      video_id,
+      platform,
+      source_handle,
+      source_name,
+      reel_url,
+      canonical_url,
+      video_heading,
+      strategy_type,
+      timeframe,
+      applicable_timeframes,
+      execution_window_et,
+      trade_date,
+      extracted_signals,
+      summary,
+      transcript,
+      ingest_status: 'done',
+      ingest_error: null,
+      status: 'tracked',
+    }, { onConflict: 'platform,video_id', ignoreDuplicates: false })
     .select('id, video_id, platform, source_name')
     .single();
 
