@@ -1,4 +1,5 @@
-// Paper Trading Performance — rolling attribution from trade_performance_log.
+// Paper Trading Performance — rolling attribution from paper_trades (source of truth).
+// Uses trade_performance_log for regime data when available.
 // GET ?window=7d|30d|90d — returns aggregated metrics for deployed website (no localhost).
 
 import { createClient } from 'jsr:@supabase/supabase-js@2';
@@ -7,6 +8,31 @@ const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
+
+interface PaperTradeRow {
+  id: string;
+  ticker: string;
+  mode: string;
+  notes: string | null;
+  fill_price: number | null;
+  close_price: number | null;
+  quantity: number | null;
+  position_size: number | null;
+  pnl: number | null;
+  pnl_percent: number | null;
+  filled_at: string | null;
+  closed_at: string | null;
+  opened_at: string;
+  created_at: string;
+  close_reason: string | null;
+}
+
+interface LogRow {
+  trade_id: string;
+  regime_at_entry: { spy_above_50?: boolean; spy_above_200?: boolean; vix_bucket?: string } | null;
+  regime_at_exit: { spy_above_50?: boolean; spy_above_200?: boolean; vix_bucket?: string } | null;
+  tag: string | null;
+}
 
 interface TradePerformanceRow {
   trade_id: string;
@@ -22,6 +48,7 @@ interface TradePerformanceRow {
   realized_pnl: number | null;
   realized_return_pct: number | null;
   days_held: number | null;
+  close_reason: string | null;
   regime_at_entry: { spy_above_50?: boolean; spy_above_200?: boolean; vix_bucket?: string } | null;
   regime_at_exit: { spy_above_50?: boolean; spy_above_200?: boolean; vix_bucket?: string } | null;
 }
@@ -146,35 +173,33 @@ Deno.serve(async (req) => {
   const warnings: string[] = [];
 
   try {
-    const { data, error } = await supabase
-      .from('trade_performance_log')
-      .select('*')
-      .gte('exit_datetime', from.toISOString())
-      .lte('exit_datetime', asOfStr)
-      .order('exit_datetime', { ascending: false })
-      .limit(200);
+    // Use paper_trades as source of truth (matches category cards)
+    const { data: tradesData, error: tradesError } = await supabase
+      .from('paper_trades')
+      .select('id, ticker, mode, notes, fill_price, close_price, quantity, position_size, pnl, pnl_percent, filled_at, closed_at, opened_at, created_at, close_reason')
+      .in('status', ['STOPPED', 'TARGET_HIT', 'CLOSED'])
+      .not('fill_price', 'is', null)
+      .not('closed_at', 'is', null)
+      .gte('closed_at', from.toISOString())
+      .lte('closed_at', asOfStr)
+      .order('closed_at', { ascending: false })
+      .limit(500);
 
-    if (error) {
-      if (error.code === '42P01' || error.message?.includes('does not exist')) {
-        warnings.push('Performance log table not yet available. Run migrations and close some trades.');
-        return new Response(
-          JSON.stringify({
-            asOf: asOfStr,
-            overall: emptyOverall,
-            byStrategy: {},
-            byTag: {},
-            byRegime: {},
-            recentClosedTrades: [],
-            warnings,
-          }),
-          { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-        );
-      }
-      throw error;
+    if (tradesError) {
+      throw tradesError;
     }
 
-    const rows = (data ?? []) as TradePerformanceRow[];
-    if (rows.length === 0) {
+    const trades = (tradesData ?? []) as PaperTradeRow[];
+
+    // Exclude dip-buy add-ons (same as trade_performance_log)
+    const filteredTrades = trades.filter(t => !(t.notes ?? '').startsWith('Dip buy'));
+
+    // Only include DAY_TRADE, SWING_TRADE, LONG_TERM (same as log)
+    const validTrades = filteredTrades.filter(t =>
+      ['DAY_TRADE', 'SWING_TRADE', 'LONG_TERM'].includes(t.mode)
+    );
+
+    if (validTrades.length === 0) {
       warnings.push(`No closed trades in the last ${days} days.`);
       return new Response(
         JSON.stringify({
@@ -190,6 +215,51 @@ Deno.serve(async (req) => {
       );
     }
 
+    // Fetch regime from trade_performance_log for those trades (optional enrichment)
+    const tradeIds = validTrades.map(t => t.id);
+    const { data: logData } = await supabase
+      .from('trade_performance_log')
+      .select('trade_id, regime_at_entry, regime_at_exit, tag')
+      .in('trade_id', tradeIds);
+
+    const logByTradeId = new Map<string, LogRow>();
+    for (const r of (logData ?? []) as LogRow[]) {
+      logByTradeId.set(r.trade_id, r);
+    }
+
+    const rows: TradePerformanceRow[] = validTrades.map(t => {
+      const entryDatetime = t.filled_at ?? t.opened_at ?? t.created_at;
+      const exitDatetime = t.closed_at!;
+      const entryPrice = t.fill_price ?? null;
+      const exitPrice = t.close_price ?? null;
+      const qty = t.quantity ?? 0;
+      const notional = t.position_size ?? (entryPrice != null && qty > 0 ? entryPrice * qty : null);
+      const daysHeld = entryDatetime && exitDatetime
+        ? (new Date(exitDatetime).getTime() - new Date(entryDatetime).getTime()) / (24 * 60 * 60 * 1000)
+        : null;
+
+      const log = logByTradeId.get(t.id);
+      const tag = t.mode === 'LONG_TERM' ? (log?.tag ?? null) : null;
+
+      return {
+        trade_id: t.id,
+        ticker: t.ticker,
+        strategy: t.mode,
+        tag,
+        entry_datetime: entryDatetime,
+        exit_datetime: exitDatetime,
+        entry_price: entryPrice,
+        exit_price: exitPrice,
+        qty,
+        notional_at_entry: notional,
+        realized_pnl: t.pnl ?? null,
+        realized_return_pct: t.pnl_percent ?? null,
+        days_held: daysHeld != null ? Math.round(daysHeld * 100) / 100 : null,
+        close_reason: t.close_reason ?? null,
+        regime_at_entry: log?.regime_at_entry ?? null,
+        regime_at_exit: log?.regime_at_exit ?? null,
+      };
+    });
     const overall = computeGroupMetrics(rows);
     const portfolioReturn = portfolioRealizedReturnPct(rows);
     const byStrategy = aggregateByGroup(rows, r => r.strategy);

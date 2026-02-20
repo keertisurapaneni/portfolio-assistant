@@ -132,7 +132,10 @@ export function PerformanceTab({
       </div>
 
       <div className="pt-2 border-t border-[hsl(var(--border))]">
-        <h3 className="text-sm font-semibold text-[hsl(var(--foreground))] mb-3">Attribution (rolling window)</h3>
+        <h3 className="text-sm font-semibold text-[hsl(var(--foreground))] mb-1">Attribution (rolling window)</h3>
+        <p className="text-[10px] text-[hsl(var(--muted-foreground))] mb-3">
+          Category cards above show all-time. Attribution below shows trades closed in the selected window.
+        </p>
       </div>
       <div className="flex items-center gap-2">
         <span className="text-sm font-medium text-[hsl(var(--muted-foreground))]">Window:</span>

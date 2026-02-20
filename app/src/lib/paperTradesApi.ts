@@ -807,7 +807,8 @@ export interface PendingStrategySignal {
 export async function recalculatePerformanceByCategory(): Promise<CategoryPerformance[]> {
   const { data: allTrades, error } = await supabase
     .from('paper_trades')
-    .select('*');
+    .select('*')
+    .limit(2000);
 
   if (error || !allTrades) return [];
   const trades = allTrades as PaperTrade[];
