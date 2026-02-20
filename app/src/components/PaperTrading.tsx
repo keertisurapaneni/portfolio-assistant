@@ -2495,7 +2495,19 @@ function StrategyPerformanceTab({ sources, videos, statuses }: {
                                     <tr>
                                       <td className="py-2">
                                         <div className="min-w-0">
-                                          <p className="truncate">{video.videoHeading}</p>
+                                          <p className="truncate flex items-center gap-2">
+                                            {video.videoHeading}
+                                            {video.strategyType === 'daily_signal' && (
+                                              <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-100 text-amber-800 shrink-0" title="Date-specific: only valid for applicable date">
+                                                daily
+                                              </span>
+                                            )}
+                                            {video.strategyType === 'generic_strategy' && (
+                                              <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-slate-100 text-slate-700 shrink-0" title="Ongoing: applies across dates">
+                                                generic
+                                              </span>
+                                            )}
+                                          </p>
                                           {video.videoId ? (
                                             <div className="flex items-center gap-2 text-[10px]">
                                               <span className="text-[hsl(var(--muted-foreground))]">{video.videoId}</span>

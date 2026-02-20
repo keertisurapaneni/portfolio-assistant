@@ -49,6 +49,12 @@ import {
   type ExternalStrategySignal,
   type PaperTrade,
 } from './lib/supabase.js';
+import {
+  recalculatePerformance,
+  analyzeCompletedTrade,
+  analyzeUnreviewedTrades,
+  updatePerformancePatterns,
+} from './lib/feedback.js';
 
 // ── Types ────────────────────────────────────────────────
 
@@ -120,6 +126,7 @@ interface StrategyVideoRecord {
   };
   tradeDate?: string;
   extractedSignals?: DailyVideoSignal[];
+  status?: string; // 'tracked' | 'deactivated' | etc. — only 'tracked' (or absent) are used
 }
 
 // ── State ────────────────────────────────────────────────
@@ -322,6 +329,7 @@ function inferSourceUrl(video: StrategyVideoRecord): string | null {
 }
 
 async function loadStrategyVideos(): Promise<StrategyVideoRecord[]> {
+  const todayET = getETDateString();
   for (const file of STRATEGY_VIDEOS_FILES) {
     try {
       const raw = await readFile(file, 'utf8');
@@ -330,7 +338,17 @@ async function loadStrategyVideos(): Promise<StrategyVideoRecord[]> {
         log(`Strategy videos file is not an array: ${file}`);
         return [];
       }
-      return parsed as StrategyVideoRecord[];
+      const all = parsed as StrategyVideoRecord[];
+      // Only include tracked videos — respect manual deactivations
+      // daily_signal videos expire after their trade date; generic_strategy are ongoing
+      return all.filter(v => {
+        if (v.status && v.status !== 'tracked') return false;
+        if (v.strategyType === 'daily_signal' && v.tradeDate) {
+          const tradeDate = normalizeDateToEtIso(v.tradeDate);
+          if (tradeDate && tradeDate < todayET) return false; // expired
+        }
+        return true;
+      });
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code;
       if (code === 'ENOENT') continue;
@@ -1600,13 +1618,31 @@ async function syncPositions(
       const status = closeReason === 'stop_loss' ? 'STOPPED'
         : closeReason === 'target_hit' ? 'TARGET_HIT' : 'CLOSED';
 
+      const closedAt = new Date().toISOString();
+      const pnlVal = parseFloat(pnl.toFixed(2));
+      const pnlPct = fillPrice > 0 ? parseFloat(((pnl / (fillPrice * qty)) * 100).toFixed(2)) : null;
       await updatePaperTrade(trade.id, {
         status, close_reason: closeReason, close_price: actual,
-        closed_at: new Date().toISOString(),
-        pnl: parseFloat(pnl.toFixed(2)),
-        pnl_percent: fillPrice > 0 ? parseFloat(((pnl / (fillPrice * qty)) * 100).toFixed(2)) : null,
+        closed_at: closedAt,
+        pnl: pnlVal,
+        pnl_percent: pnlPct,
       });
       log(`${trade.ticker}: Closed (${closeReason}) — P&L $${pnl.toFixed(2)}`);
+      // Trigger trade analysis immediately so feedback loop runs without waiting for rehydration
+      const closedTrade = {
+        ...trade,
+        status,
+        close_reason: closeReason,
+        close_price: actual,
+        closed_at: closedAt,
+        pnl: pnlVal,
+        pnl_percent: pnlPct,
+      };
+      analyzeCompletedTrade(closedTrade)
+        .then(ok => {
+          if (ok) updatePerformancePatterns().catch(() => {});
+        })
+        .catch(err => log(`Trade analysis failed for ${trade.ticker}: ${err instanceof Error ? err.message : 'unknown'}`));
     } else if (trade.status === 'SUBMITTED') {
       // Stale day trades
       const tradeAge = Date.now() - new Date(trade.created_at).getTime();
@@ -1873,10 +1909,15 @@ async function runDailyRehydration(config: AutoTraderConfig): Promise<void> {
   if (!isPastMarketCloseET()) return;
   if (!config.accountId) return;
 
-  // Just sync positions — AI analysis runs only in the frontend for now
   try {
     const positions = await getEnrichedPositions();
     await syncPositions(config, positions);
+    await recalculatePerformance();
+    const analyzed = await analyzeUnreviewedTrades();
+    if (analyzed > 0) {
+      await updatePerformancePatterns();
+      log(`Rehydration: analyzed ${analyzed} unreviewed trades, updated patterns`);
+    }
     _lastRehydrationDate = today;
     log('Daily rehydration complete');
   } catch (err) {
