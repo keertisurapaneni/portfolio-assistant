@@ -81,6 +81,30 @@ export async function getQueue(limit = 50): Promise<StrategyVideoQueueItem[]> {
   return (data ?? []) as StrategyVideoQueueItem[];
 }
 
+/** Manually assign Unknown videos to a known source (when auto-fix fails) */
+export async function assignUnknownToSource(params: {
+  source_handle: string;
+  source_name: string;
+  video_ids?: string[];
+}): Promise<{ assigned: number; video_ids: string[] }> {
+  const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/assign-strategy-videos-to-source`;
+  const key = import.meta.env.VITE_SUPABASE_ANON_KEY;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(key && { Authorization: `Bearer ${key}` }),
+    },
+    body: JSON.stringify(params),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err?.error ?? `Assign failed: ${res.status}`);
+  }
+  const data = await res.json();
+  return { assigned: data.assigned ?? 0, video_ids: data.video_ids ?? [] };
+}
+
 /** Fix strategy_videos with source_name = 'Unknown' by re-resolving from URL */
 export async function fixUnknownSources(): Promise<{ fixed: number; results: { video_id: string; source_name: string; status: 'fixed' | 'failed' }[] }> {
   const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/fix-unknown-strategy-sources`;

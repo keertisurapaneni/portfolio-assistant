@@ -779,6 +779,9 @@ export interface StrategySignalStatusSummary {
   /** For generic_strategy: DAY_TRADE, SWING_TRADE, or both */
   applicableTimeframes: Array<'DAY_TRADE' | 'SWING_TRADE'> | null;
   latestSignalStatus: string | null;
+  transcript?: string | null;
+  ingestStatus?: 'pending' | 'transcribing' | 'done' | 'failed' | null;
+  ingestError?: string | null;
 }
 
 export interface PendingStrategySignal {
@@ -1202,7 +1205,7 @@ export async function getStrategySignalStatusSummaries(): Promise<StrategySignal
   try {
     const { data: tracked } = await supabase
       .from('strategy_videos')
-      .select('video_id, source_handle, source_name, canonical_url, reel_url, video_heading, strategy_type, trade_date, timeframe, applicable_timeframes')
+      .select('video_id, source_handle, source_name, canonical_url, reel_url, video_heading, strategy_type, trade_date, timeframe, applicable_timeframes, transcript, ingest_status, ingest_error')
       .eq('status', 'tracked');
 
     if (tracked && Array.isArray(tracked)) {
@@ -1217,6 +1220,9 @@ export async function getStrategySignalStatusSummaries(): Promise<StrategySignal
         trade_date: string | null;
         timeframe: string | null;
         applicable_timeframes: string[] | null;
+        transcript: string | null;
+        ingest_status: string | null;
+        ingest_error: string | null;
       }>) {
         const source = (item.source_name ?? '').trim();
         if (!source) continue;
@@ -1248,6 +1254,12 @@ export async function getStrategySignalStatusSummaries(): Promise<StrategySignal
         if (timeframes.length > 0) {
           trackedTimeframesByKey.set(key, timeframes);
         }
+        const transcript = (item.transcript ?? '').trim() || null;
+        const ingestStatus = (item.ingest_status === 'pending' || item.ingest_status === 'transcribing' || item.ingest_status === 'done' || item.ingest_status === 'failed')
+          ? item.ingest_status
+          : null;
+        const ingestError = (item.ingest_error ?? '').trim() || null;
+
         if (!grouped.has(key)) {
           grouped.set(key, {
             source,
@@ -1259,6 +1271,9 @@ export async function getStrategySignalStatusSummaries(): Promise<StrategySignal
             applicableTimeframes: timeframes.length > 0 ? timeframes : null,
             latestSignalStatus: null,
             sortKey: `${item.trade_date ?? ''}|`,
+            transcript,
+            ingestStatus,
+            ingestError,
           });
         } else {
           const existing = grouped.get(key);
@@ -1266,6 +1281,9 @@ export async function getStrategySignalStatusSummaries(): Promise<StrategySignal
             const updates: Partial<StrategySignalStatusSummary> = {};
             if (strategyType && existing.strategyType == null) updates.strategyType = strategyType;
             if (timeframes.length > 0) updates.applicableTimeframes = timeframes;
+            if (transcript != null) updates.transcript = transcript;
+            if (ingestStatus != null) updates.ingestStatus = ingestStatus;
+            if (ingestError != null) updates.ingestError = ingestError;
             if (Object.keys(updates).length > 0) {
               grouped.set(key, { ...existing, ...updates });
             }

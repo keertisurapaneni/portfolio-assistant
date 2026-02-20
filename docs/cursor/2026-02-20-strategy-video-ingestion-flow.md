@@ -2,7 +2,7 @@
 
 ## Goal
 
-Add strategy videos from Instagram/YouTube/Twitter, show them in Strategy Perf under the correct source, then enrich with transcript metadata.
+Add strategy videos from Instagram/YouTube/Twitter, show them in Strategy Perf under the correct source, then enrich with transcript metadata. **Fully automated** — no manual steps.
 
 ## Flow
 
@@ -11,12 +11,22 @@ Add strategy videos from Instagram/YouTube/Twitter, show them in Strategy Perf u
    - Resolves `source_name` from existing `strategy_videos` by `source_handle` (kaycapitals → "Somesh | Day Trader | Investor")
    - For Instagram URLs without handle in path, fetches page to extract handle from og:url
    - Creates minimal `strategy_videos` row → **shows in Strategy Perf immediately**
-3. **Transcript pipeline** — When run: transcribe → extract metadata → `upsert-strategy-video` with full payload
-   - Updates same row with `strategy_type`, `extracted_signals`, `video_heading`, `trade_date`
-   - Strategy Perf then shows complete metadata
+3. **Transcript pipeline** (automatic, every 10 min via auto-trader):
+   - Fetches `strategy_videos` where `video_heading` IS NULL
+   - yt-dlp downloads audio → faster-whisper transcribes
+   - `extract-strategy-metadata-from-transcript` (Gemini) extracts: source_name, source_handle, strategy_type, video_heading, extracted_signals, trade_date, etc.
+   - Upserts to `strategy_videos` → Strategy Perf shows complete metadata
 
 ## Key Decisions
 
 - **No AI classification on quick add** — `strategy_type` (daily_signal vs generic_strategy) set from transcript, not page metadata
-- **Source resolution from DB** — Look up `strategy_videos.source_handle` to reuse canonical `source_name`; new sources get humanized handle
+- **Source from transcript** — Gemini extracts source_name/source_handle from transcript (e.g. "Hey it's Somesh from Kay Capitals")
 - **Process pending always visible** — Button shown even when 0 pending (disabled) so users know the feature exists
+
+## Setup
+
+```bash
+pip install -r scripts/requirements.txt   # yt-dlp, faster-whisper, requests
+```
+
+Auto-trader runs the ingest automatically when `scripts/ingest_video.py` exists.
