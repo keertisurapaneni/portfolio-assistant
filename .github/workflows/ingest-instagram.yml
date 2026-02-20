@@ -20,6 +20,7 @@ jobs:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
       GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+      INSTAGRAM_SESSION_ID: ${{ secrets.INSTAGRAM_SESSION_ID }}
 
     steps:
       - name: Checkout
@@ -39,10 +40,31 @@ jobs:
         run: |
           pip install --quiet yt-dlp requests groq
 
+      - name: Create Instagram cookies file
+        run: |
+          if [ -n "$INSTAGRAM_SESSION_ID" ]; then
+            python3 -c "
+import os
+sid = os.environ['INSTAGRAM_SESSION_ID']
+with open('/tmp/instagram_cookies.txt', 'w') as f:
+    f.write('# Netscape HTTP Cookie File\n')
+    f.write(f'.instagram.com\tTRUE\t/\tTRUE\t9999999999\tsessionid\t{sid}\n')
+print('Instagram cookies file created')
+"
+          else
+            echo "WARNING: INSTAGRAM_SESSION_ID secret not set — downloads may fail behind login wall"
+          fi
+
       - name: Run ingest
         id: ingest
         run: |
           set -e
+
+          # Use cookies file if it exists
+          COOKIES_ARG=""
+          if [ -f "/tmp/instagram_cookies.txt" ]; then
+            COOKIES_ARG="--cookies /tmp/instagram_cookies.txt"
+          fi
 
           # Prefer video_ids from repository_dispatch payload, then workflow_dispatch input
           VIDEO_IDS="${{ github.event.client_payload.video_ids }}"
@@ -58,12 +80,12 @@ jobs:
               id=$(echo "$id" | xargs)  # trim whitespace
               if [ -n "$id" ]; then
                 echo "=== Processing $id ==="
-                python scripts/ingest_video.py "https://www.instagram.com/reel/$id/" || echo "WARNING: Failed to process $id (continuing)"
+                python scripts/ingest_video.py "https://www.instagram.com/reel/$id/" $COOKIES_ARG || echo "WARNING: Failed to process $id (continuing)"
               fi
             done
           else
             echo "No video IDs provided — processing all pending Instagram strategy_videos"
-            python scripts/ingest_video.py --from-strategy-videos || echo "WARNING: --from-strategy-videos had errors"
+            python scripts/ingest_video.py --from-strategy-videos $COOKIES_ARG || echo "WARNING: --from-strategy-videos had errors"
           fi
 
       - name: Report completion

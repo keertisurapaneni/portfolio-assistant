@@ -162,7 +162,7 @@ let _processedTickersDate = '';
 const FINNHUB_BASE = 'https://finnhub.io/api/v1';
 const FINNHUB_KEY = process.env.FINNHUB_API_KEY ?? '';
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const STRATEGY_X_CONSECUTIVE_LOSS_LIMIT = 2;
+const STRATEGY_X_CONSECUTIVE_LOSS_LIMIT = 3;
 let _lastDailyVideoQueueLogDate = '';
 
 // ── Public API ───────────────────────────────────────────
@@ -684,17 +684,30 @@ function isGenericStrategySignal(
   return notes.includes('generic strategy auto');
 }
 
-function countConsecutiveLosses(outcomes: Array<{ pnl: number | null }>): number {
-  let losses = 0;
+function countConsecutiveLosses(outcomes: Array<{ pnl: number | null; closed_at?: string | null }>): number {
+  // Group outcomes by calendar day (ET date from closed_at), then count consecutive days
+  // where ALL trades on that day were losses. A winning trade on a day resets the streak.
+  const byDay = new Map<string, number[]>();
   for (const outcome of outcomes) {
-    const pnl = outcome.pnl ?? 0;
-    if (pnl < 0) {
-      losses += 1;
-      continue;
-    }
-    break;
+    const day = outcome.closed_at
+      ? new Date(outcome.closed_at).toLocaleDateString('en-CA', { timeZone: 'America/New_York' })
+      : 'unknown';
+    const arr = byDay.get(day) ?? [];
+    arr.push(outcome.pnl ?? 0);
+    byDay.set(day, arr);
   }
-  return losses;
+  // Days sorted most-recent first (outcomes are already ordered desc by closed_at)
+  const days = [...byDay.entries()];
+  let lossDays = 0;
+  for (const [, pnls] of days) {
+    const dayPnl = pnls.reduce((s, v) => s + v, 0);
+    if (dayPnl < 0) {
+      lossDays += 1;
+    } else {
+      break;
+    }
+  }
+  return lossDays;
 }
 
 async function shouldMarkStrategyX(signal: ExternalStrategySignal): Promise<{
@@ -1431,6 +1444,9 @@ async function executeExternalStrategySignal(
   const allocationSplit = Math.max(1, Math.floor(options?.allocationSplit ?? 1));
   const allocationIndex = Math.max(1, Math.floor(options?.allocationIndex ?? 1));
   const allowDuplicateTicker = options?.allowDuplicateTicker === true;
+  // #region agent log
+  fetch('http://127.0.0.1:7653/ingest/8500cd13-6ad2-4d7d-ab01-2e235f7bb638',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'0bad81'},body:JSON.stringify({sessionId:'0bad81',location:'scheduler.ts:1433',message:'executeExternalStrategySignal entry',data:{ticker,signalId:signal.id,sourceName:signal.source_name,allowDuplicateTicker,allocationSplit,hasGenericNote:(signal.notes??'').toLowerCase().includes('generic strategy auto')},timestamp:Date.now(),hypothesisId:'A'})}).catch(()=>{});
+  // #endregion
   const skipExternalSignal = async (failureReason: string, skipReason: string): Promise<'skipped'> => {
     await updateExternalStrategySignal(signal.id, {
       status: 'SKIPPED',
@@ -1474,7 +1490,11 @@ async function executeExternalStrategySignal(
     return 'skipped';
   }
 
-  if (allowDuplicateTicker) {
+  // Generic auto signals may arrive in a later scheduler cycle alone (e.g. after a strategy
+  // execution window opens), losing their allocationSplit group context. Always use the lenient
+  // conflict check for them so they aren't blocked by a same-direction strategy trade.
+  const isGenericAutoSignal = (signal.notes ?? '').toLowerCase().includes('generic strategy auto');
+  if (allowDuplicateTicker || isGenericAutoSignal) {
     const activeTrades = await getActiveTrades();
     const sameTickerTrades = activeTrades.filter(
       trade => trade.ticker.toUpperCase() === ticker
@@ -1484,6 +1504,9 @@ async function executeExternalStrategySignal(
       trade.signal !== signal.signal ||
       !trade.strategy_video_id
     ));
+    // #region agent log
+    fetch('http://127.0.0.1:7653/ingest/8500cd13-6ad2-4d7d-ab01-2e235f7bb638',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'0bad81'},body:JSON.stringify({sessionId:'0bad81',location:'scheduler.ts:1485',message:'lenient duplicate check',data:{ticker,isGenericAutoSignal,allowDuplicateTicker,sameTickerCount:sameTickerTrades.length,hasConflict},timestamp:Date.now(),hypothesisId:'A'})}).catch(()=>{});
+    // #endregion
     if (hasConflict) {
       return skipExternalSignal('Duplicate active trade for ticker', 'duplicate_active_trade_conflict');
     }
