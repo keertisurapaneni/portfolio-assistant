@@ -14,6 +14,7 @@ export interface StrategyVideoQueueItem {
   status: 'pending' | 'processing' | 'done' | 'failed';
   error_message: string | null;
   strategy_video_id: string | null;
+  strategy_type: 'daily_signal' | 'generic_strategy' | null;
   created_at: string;
   processed_at: string | null;
 }
@@ -78,4 +79,23 @@ export async function getQueue(limit = 50): Promise<StrategyVideoQueueItem[]> {
 
   if (error) throw new Error(`Failed to fetch queue: ${error.message}`);
   return (data ?? []) as StrategyVideoQueueItem[];
+}
+
+/** Trigger processing of pending queue items (creates strategy_videos entries) */
+export async function processQueue(): Promise<{ processed: number; results: { id: string; status: 'done' | 'failed'; error?: string }[] }> {
+  const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/process-strategy-video-queue`;
+  const key = import.meta.env.VITE_SUPABASE_ANON_KEY;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(key && { Authorization: `Bearer ${key}` }),
+    },
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err?.error ?? `Process failed: ${res.status}`);
+  }
+  const data = await res.json();
+  return { processed: data.processed ?? 0, results: data.results ?? [] };
 }

@@ -4,6 +4,7 @@ import { cn } from '../lib/utils';
 import {
   addUrlsToQueue,
   getQueue,
+  processQueue,
   type StrategyVideoQueueItem,
   type QueueItemPlatform,
 } from '../lib/strategyVideoQueueApi';
@@ -12,6 +13,11 @@ const PLATFORM_LABELS: Record<QueueItemPlatform, string> = {
   instagram: 'Instagram',
   twitter: 'Twitter',
   youtube: 'YouTube',
+};
+
+const CATEGORY_LABELS: Record<'daily_signal' | 'generic_strategy', string> = {
+  daily_signal: 'Daily Signal',
+  generic_strategy: 'Generic Strategy',
 };
 
 function StatusBadge({ status }: { status: StrategyVideoQueueItem['status'] }) {
@@ -40,7 +46,10 @@ export function StrategyQueue() {
   const [queue, setQueue] = useState<StrategyVideoQueueItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [processing, setProcessing] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error' | 'info'; text: string } | null>(null);
+
+  const pendingCount = queue.filter((i) => i.status === 'pending').length;
 
   const loadQueue = useCallback(async () => {
     setLoading(true);
@@ -77,7 +86,15 @@ export function StrategyQueue() {
           text: `Added ${added}. Invalid (${invalid.length}): ${invalid.slice(0, 3).join(', ')}${invalid.length > 3 ? '...' : ''}`,
         });
       } else {
-        setMessage({ type: 'success', text: `Added ${added} URL${added === 1 ? '' : 's'} to queue` });
+        setMessage({ type: 'success', text: `Added ${added} URL${added === 1 ? '' : 's'}. Processing...` });
+        try {
+          const { processed } = await processQueue();
+          await loadQueue();
+          setMessage({ type: 'success', text: `Added ${added} URL${added === 1 ? '' : 's'}. Processed ${processed} into strategy videos.` });
+        } catch (procErr) {
+          setMessage({ type: 'error', text: `Added ${added} but processing failed: ${procErr instanceof Error ? procErr.message : 'Unknown error'}` });
+          await loadQueue();
+        }
       }
     } catch (err) {
       setMessage({ type: 'error', text: err instanceof Error ? err.message : 'Failed to add URLs' });
@@ -94,7 +111,7 @@ export function StrategyQueue() {
           Add Strategy Videos
         </h1>
         <p className="mt-1 text-sm text-[hsl(var(--muted-foreground))]">
-          Paste Instagram, Twitter, or YouTube video URLs. Process them later with the ingest script.
+          Paste Instagram, Twitter, or YouTube video URLs. They are processed automatically into strategy videos.
         </p>
       </div>
 
@@ -139,61 +156,94 @@ export function StrategyQueue() {
 
       <div className="rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-4 shadow-sm">
         <div className="flex items-center justify-between mb-3">
-          <h2 className="text-lg font-semibold text-[hsl(var(--foreground))]">Queue</h2>
-          <button
-            onClick={loadQueue}
-            disabled={loading}
-            className="p-2 rounded-lg hover:bg-[hsl(var(--muted))] disabled:opacity-50"
-          >
-            <RefreshCw className={cn('h-4 w-4', loading && 'animate-spin')} />
-          </button>
+          <h2 className="text-lg font-semibold text-[hsl(var(--foreground))]">Videos</h2>
+          <div className="flex items-center gap-2">
+            {pendingCount > 0 && (
+              <button
+                onClick={async () => {
+                  setProcessing(true);
+                  setMessage(null);
+                  try {
+                    const { processed } = await processQueue();
+                    await loadQueue();
+                    setMessage({ type: 'success', text: `Processed ${processed} pending item${processed === 1 ? '' : 's'}.` });
+                  } catch (err) {
+                    setMessage({ type: 'error', text: err instanceof Error ? err.message : 'Processing failed' });
+                    await loadQueue();
+                  } finally {
+                    setProcessing(false);
+                  }
+                }}
+                disabled={processing}
+                className="px-3 py-1.5 text-sm rounded-lg bg-blue-600 text-white hover:opacity-90 disabled:opacity-50"
+              >
+                {processing ? 'Processing...' : `Process ${pendingCount} pending`}
+              </button>
+            )}
+            <button
+              onClick={loadQueue}
+              disabled={loading}
+              className="p-2 rounded-lg hover:bg-[hsl(var(--muted))] disabled:opacity-50"
+            >
+              <RefreshCw className={cn('h-4 w-4', loading && 'animate-spin')} />
+            </button>
+          </div>
         </div>
 
         {loading && queue.length === 0 ? (
           <p className="text-sm text-[hsl(var(--muted-foreground))] py-4">Loading...</p>
         ) : queue.length === 0 ? (
-          <p className="text-sm text-[hsl(var(--muted-foreground))] py-4">No URLs in queue. Paste some above.</p>
+          <p className="text-sm text-[hsl(var(--muted-foreground))] py-4">No videos yet. Paste URLs above to add them.</p>
         ) : (
-          <ul className="space-y-2">
-            {queue.map(item => (
-              <li
-                key={item.id}
-                className="flex flex-col sm:flex-row sm:items-center gap-2 py-2 border-b border-[hsl(var(--border))] last:border-0"
-              >
-                <div className="flex-1 min-w-0">
-                  <a
-                    href={item.url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-sm text-blue-600 hover:underline truncate block"
-                  >
-                    {truncateUrl(item.url)}
-                  </a>
-                  {item.platform && (
-                    <span className="text-xs text-[hsl(var(--muted-foreground))]">
-                      {PLATFORM_LABELS[item.platform]}
-                    </span>
-                  )}
-                </div>
-                <div className="flex items-center gap-2 shrink-0">
-                  <StatusBadge status={item.status} />
-                  {item.error_message && (
-                    <span className="text-xs text-red-600" title={item.error_message}>
-                      <AlertCircle className="h-4 w-4" />
-                    </span>
-                  )}
-                </div>
-              </li>
-            ))}
-          </ul>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-[hsl(var(--border))]">
+                  <th className="text-left py-2 font-medium text-[hsl(var(--foreground))]">Video</th>
+                  <th className="text-left py-2 font-medium text-[hsl(var(--foreground))]">Platform</th>
+                  <th className="text-left py-2 font-medium text-[hsl(var(--foreground))]">Category</th>
+                  <th className="text-left py-2 font-medium text-[hsl(var(--foreground))]">Added</th>
+                  <th className="text-left py-2 font-medium text-[hsl(var(--foreground))]">Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {queue.map(item => (
+                  <tr key={item.id} className="border-b border-[hsl(var(--border))] last:border-0">
+                    <td className="py-2">
+                      <a
+                        href={item.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-blue-600 hover:underline truncate block max-w-[200px]"
+                      >
+                        {truncateUrl(item.url)}
+                      </a>
+                    </td>
+                    <td className="py-2 text-[hsl(var(--muted-foreground))]">
+                      {item.platform ? PLATFORM_LABELS[item.platform] : '—'}
+                    </td>
+                    <td className="py-2 text-[hsl(var(--muted-foreground))]">
+                      {item.strategy_type ? CATEGORY_LABELS[item.strategy_type] : '—'}
+                    </td>
+                    <td className="py-2 text-[hsl(var(--muted-foreground))]">
+                      {item.created_at ? new Date(item.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : '—'}
+                    </td>
+                    <td className="py-2">
+                      <div className="flex items-center gap-2">
+                        <StatusBadge status={item.status} />
+                        {item.error_message && (
+                          <span className="text-red-600" title={item.error_message}>
+                            <AlertCircle className="h-4 w-4" />
+                          </span>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
-      </div>
-
-      <div className="rounded-lg bg-[hsl(var(--muted))]/50 px-4 py-3 text-sm text-[hsl(var(--muted-foreground))]">
-        <p className="font-medium text-[hsl(var(--foreground))] mb-1">Process the queue</p>
-        <p>
-          Process queue: transcribe videos, extract metadata, then POST to <code className="bg-[hsl(var(--background))] px-1.5 py-0.5 rounded">/functions/v1/upsert-strategy-video</code> to add to strategy_videos.
-        </p>
       </div>
     </div>
   );
