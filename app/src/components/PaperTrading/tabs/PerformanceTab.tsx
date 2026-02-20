@@ -9,7 +9,7 @@ import {
   TrendingDown,
 } from 'lucide-react';
 import { cn } from '../../../lib/utils';
-import type { CategoryPerformance, StrategySourcePerformance } from '../../../lib/paperTradesApi';
+import type { CategoryPerformance } from '../../../lib/paperTradesApi';
 import {
   getPaperTradingPerformance,
   type PerformanceResponse,
@@ -23,14 +23,12 @@ import { Spinner } from '../../Spinner';
 
 export interface PerformanceTabProps {
   categories: CategoryPerformance[];
-  sources: StrategySourcePerformance[];
   totalDeployed: number;
   maxAllocation: number;
 }
 
 export function PerformanceTab({
   categories,
-  sources,
   totalDeployed,
   maxAllocation,
 }: PerformanceTabProps) {
@@ -104,60 +102,6 @@ export function PerformanceTab({
           <SignalScorecard title="Day Trades" subtitle="Scanner signals" data={dt} color="blue" />
           <SignalScorecard title="Swing Trades" subtitle="Scanner signals" data={sw} color="violet" />
         </div>
-
-        {sources.length > 0 && (
-          <div className="rounded-xl border border-[hsl(var(--border))] bg-white overflow-hidden">
-            <div className="px-4 py-2.5 border-b border-[hsl(var(--border))] bg-[hsl(var(--secondary))]">
-              <h3 className="text-sm font-semibold text-[hsl(var(--foreground))]">Source Leaderboard</h3>
-              <p className="text-[10px] text-[hsl(var(--muted-foreground))]">Performance by strategy source</p>
-            </div>
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="bg-[hsl(var(--secondary))]/50 text-[hsl(var(--muted-foreground))] text-xs">
-                  <th className="text-left px-4 py-2.5 font-medium">Source</th>
-                  <th className="text-right px-4 py-2.5 font-medium">Trades</th>
-                  <th className="text-right px-4 py-2.5 font-medium">Win Rate</th>
-                  <th className="text-right px-4 py-2.5 font-medium">Avg P&L</th>
-                  <th className="text-right px-4 py-2.5 font-medium">Total P&L</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-[hsl(var(--border))]">
-                {sources.map(source => (
-                  <tr key={source.source} className="hover:bg-[hsl(var(--secondary))]/50">
-                    <td className="px-4 py-2.5">
-                      <div className="min-w-0">
-                        <p className="font-semibold truncate">{source.source}</p>
-                        {source.sourceUrl && (
-                          <a href={source.sourceUrl} target="_blank" rel="noreferrer" className="text-[10px] text-blue-600 hover:text-blue-700 truncate block">
-                            {source.sourceUrl}
-                          </a>
-                        )}
-                      </div>
-                    </td>
-                    <td className="px-4 py-2.5 text-right tabular-nums">
-                      {source.totalTrades}
-                      {source.activeTrades > 0 && (
-                        <span className="text-[10px] text-[hsl(var(--muted-foreground))] ml-1">({source.activeTrades} active)</span>
-                      )}
-                    </td>
-                    <td className={cn(
-                      'px-4 py-2.5 text-right tabular-nums font-medium',
-                      source.winRate >= 50 ? 'text-emerald-600' : source.winRate > 0 ? 'text-red-600' : 'text-[hsl(var(--muted-foreground))]'
-                    )}>
-                      {source.winRate > 0 ? `${source.winRate.toFixed(0)}%` : '—'}
-                    </td>
-                    <td className={cn('px-4 py-2.5 text-right tabular-nums font-medium', source.avgPnl >= 0 ? 'text-emerald-600' : 'text-red-600')}>
-                      {fmtUsd(source.avgPnl, 0, true)}
-                    </td>
-                    <td className={cn('px-4 py-2.5 text-right tabular-nums font-bold', source.totalPnl >= 0 ? 'text-emerald-600' : 'text-red-600')}>
-                      {fmtUsd(source.totalPnl, 0, true)}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
 
         {((dipBuy?.totalTrades ?? 0) > 0 || (profitTake?.totalTrades ?? 0) > 0) && (
           <div className="flex gap-3 text-xs">

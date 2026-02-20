@@ -459,7 +459,6 @@ export function PaperTrading() {
           {tab === 'performance' && (
             <PerformanceTab
               categories={categoryPerf}
-              sources={sourcePerf}
               totalDeployed={totalDeployed}
               maxAllocation={config.maxTotalAllocation}
             />
