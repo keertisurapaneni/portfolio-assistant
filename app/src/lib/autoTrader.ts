@@ -64,16 +64,36 @@ export function resetPendingOrders() {
   _pendingDeployedDollar = 0;
 }
 
-// ── Lightweight price lookup (via auto-trader service — Finnhub key stays server-side) ──
-const _IB_BASE = 'http://localhost:3001/api';
+// ── Edge Function URLs (no localhost — works deployed) ──
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL ?? '';
+const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY ?? '';
+const REGIME_SPY_EDGE = `${SUPABASE_URL}/functions/v1/regime-spy`;
+const STOCK_DATA_EDGE = `${SUPABASE_URL}/functions/v1/fetch-stock-data`;
+const TRADE_PERF_LOG_EDGE = `${SUPABASE_URL}/functions/v1/trade-performance-log-close`;
+
+/** Fetch SPY vs SMA200 from Edge Function. Returns null on failure. */
+async function fetchRegimeSpy(): Promise<{ belowSma200?: boolean | null; vix?: number | null; price?: number | null } | null> {
+  try {
+    const res = await fetch(REGIME_SPY_EDGE, { headers: { Authorization: `Bearer ${SUPABASE_KEY}` } });
+    if (res.ok) return await res.json();
+  } catch {
+    // Edge Function unavailable
+  }
+  return null;
+}
 
 /** Get the current market price for a ticker (for position sizing). Returns null on failure. */
 async function getQuotePrice(ticker: string): Promise<number | null> {
   try {
-    const res = await fetch(`${_IB_BASE}/quote/${ticker.toUpperCase()}`);
+    const res = await fetch(STOCK_DATA_EDGE, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${SUPABASE_KEY}` },
+      body: JSON.stringify({ ticker: ticker.toUpperCase(), endpoint: 'quote' }),
+    });
     if (!res.ok) return null;
     const data = await res.json();
-    return data.price > 0 ? data.price : null;
+    const price = data?.c ?? data?.price;
+    return price != null && price > 0 ? price : null;
   } catch {
     return null;
   }
@@ -504,9 +524,9 @@ async function closeAllDayTrades(accountId: string) {
           close_reason: 'eod_close',
           closed_at: new Date().toISOString(),
         });
-        fetch(`${_IB_BASE}/trade-performance-log/close`, {
+        fetch(TRADE_PERF_LOG_EDGE, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${SUPABASE_KEY}` },
           body: JSON.stringify({ tradeId: trade.id, trigger: 'EOD_CLOSE' }),
         }).catch(err => console.warn('[closeAllDayTrades] Performance log failed:', err));
 
@@ -1024,13 +1044,9 @@ export async function getMarketRegime(config: AutoTraderConfig): Promise<MarketR
   let spyPrice: number | null = null;
 
   try {
-    // VIX quote via auto-trader service
-    const [vixRes, spyRes] = await Promise.all([
-      fetch(`${_IB_BASE}/quote/VIX`).then(r => r.ok ? r.json() : null).catch(() => null),
-      fetch(`${_IB_BASE}/quote/SPY`).then(r => r.ok ? r.json() : null).catch(() => null),
-    ]);
-    vix = vixRes?.price ?? null;
-    spyPrice = spyRes?.price ?? null;
+    const data = await fetchRegimeSpy();
+    vix = data?.vix ?? null;
+    spyPrice = data?.price ?? null;
   } catch {
     // Use defaults
   }
@@ -1060,13 +1076,17 @@ export async function getMarketRegime(config: AutoTraderConfig): Promise<MarketR
 const _sectorCache: Map<string, { sector: string; ts: number }> = new Map();
 const SECTOR_CACHE_MS = 24 * 60 * 60 * 1000;
 
-/** Fetch sector for a ticker via Finnhub company profile */
+/** Fetch sector for a ticker via Edge Function (profile endpoint). */
 async function getTickerSector(ticker: string): Promise<string | null> {
   const cached = _sectorCache.get(ticker.toUpperCase());
   if (cached && Date.now() - cached.ts < SECTOR_CACHE_MS) return cached.sector;
 
   try {
-    const res = await fetch(`${_IB_BASE}/sector/${ticker.toUpperCase()}`);
+    const res = await fetch(STOCK_DATA_EDGE, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${SUPABASE_KEY}` },
+      body: JSON.stringify({ ticker: ticker.toUpperCase(), endpoint: 'profile' }),
+    });
     if (!res.ok) return null;
     const data = await res.json();
     const sector = data.sector ?? data.finnhubIndustry ?? null;
@@ -1145,13 +1165,22 @@ export async function checkEarningsBlackout(
   }
 
   try {
-    const res = await fetch(`${_IB_BASE}/earnings/${ticker.toUpperCase()}`);
+    const res = await fetch(STOCK_DATA_EDGE, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${SUPABASE_KEY}` },
+      body: JSON.stringify({ ticker: ticker.toUpperCase(), endpoint: 'earnings_calendar' }),
+    });
     if (!res.ok) {
       _earningsCache.set(ticker.toUpperCase(), { date: null, ts: Date.now() });
       return true;
     }
     const data = await res.json();
-    const earningsDate = data.earningsDate ?? null;
+    const sym = ticker.toUpperCase();
+    const cal = data.earningsCalendar ?? [];
+    const next = Array.isArray(cal)
+      ? cal.find((e: { symbol?: string; date?: string }) => (e.symbol ?? '').toUpperCase() === sym)
+      : null;
+    const earningsDate = next?.date ?? data.earningsDate ?? null;
     _earningsCache.set(ticker.toUpperCase(), { date: earningsDate, ts: Date.now() });
 
     if (earningsDate) {
@@ -1973,19 +2002,16 @@ async function processSuggestedFind(
   // ── 1b. Macro regime: block Gold Mine when SPY < SMA200 ──
   if (stock.tag === 'Gold Mine') {
     try {
-      const res = await fetch(`${_IB_BASE}/regime/spy`);
-      if (res.ok) {
-        const data = await res.json() as { belowSma200?: boolean | null };
-        if (data.belowSma200 === true) {
-          const msg = `SPY below SMA200 — blocking new Gold Mine entries (macro regime)`;
-          logEvent(ticker, 'info', msg);
-          persistEvent(ticker, 'info', msg, {
-            action: 'skipped', source: 'suggested_finds', mode: 'LONG_TERM',
-            scanner_signal: 'BUY', scanner_confidence: conviction,
-            skip_reason: 'SPY below SMA200', metadata: sfMeta,
-          });
-          return { ticker, action: 'skipped', reason: 'SPY below SMA200 — Gold Mine blocked' };
-        }
+      const data = await fetchRegimeSpy();
+      if (data?.belowSma200 === true) {
+        const msg = `SPY below SMA200 — blocking new Gold Mine entries (macro regime)`;
+        logEvent(ticker, 'info', msg);
+        persistEvent(ticker, 'info', msg, {
+          action: 'skipped', source: 'suggested_finds', mode: 'LONG_TERM',
+          scanner_signal: 'BUY', scanner_confidence: conviction,
+          skip_reason: 'SPY below SMA200', metadata: sfMeta,
+        });
+        return { ticker, action: 'skipped', reason: 'SPY below SMA200 — Gold Mine blocked' };
       }
     } catch {
       // Fail open: if we can't fetch regime, allow the trade
@@ -2303,9 +2329,9 @@ export async function syncPositions(accountId: string): Promise<void> {
         analyzeCompletedTrade(closedTrade)
           .then(() => updatePerformancePatterns())
           .catch(err => console.warn('[syncPositions] Trade analysis failed:', err));
-        fetch(`${_IB_BASE}/trade-performance-log/close`, {
+        fetch(TRADE_PERF_LOG_EDGE, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${SUPABASE_KEY}` },
           body: JSON.stringify({ tradeId: trade.id, trigger: 'IB_POSITION_GONE' }),
         }).catch(err => console.warn('[syncPositions] Performance log failed:', err));
 
@@ -2321,9 +2347,9 @@ export async function syncPositions(accountId: string): Promise<void> {
             closed_at: new Date().toISOString(),
             notes: (trade.notes ?? '') + ' | Expired: DAY order not filled within 1 day',
           });
-          fetch(`${_IB_BASE}/trade-performance-log/close`, {
+          fetch(TRADE_PERF_LOG_EDGE, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${SUPABASE_KEY}` },
             body: JSON.stringify({ tradeId: trade.id, trigger: 'EXPIRED_DAY_ORDER' }),
           }).catch(err => console.warn('[syncPositions] Performance log failed:', err));
           logEvent(trade.ticker, 'info', 'Day trade expired — order never filled');

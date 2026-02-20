@@ -11,6 +11,10 @@
 
 const IB_BASE_URL = 'http://localhost:3001/api';
 
+function isLocalhost(): boolean {
+  return typeof window !== 'undefined' && window.location?.hostname === 'localhost';
+}
+
 // ── Types ────────────────────────────────────────────────
 
 export interface IBAccount {
@@ -80,6 +84,9 @@ async function ibFetch<T>(
   path: string,
   options: RequestInit = {}
 ): Promise<T> {
+  if (!isLocalhost()) {
+    throw new Error('Auto-trader service unreachable (not on localhost)');
+  }
   const url = `${IB_BASE_URL}${path}`;
   const res = await fetch(url, {
     ...options,

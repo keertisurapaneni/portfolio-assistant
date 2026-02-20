@@ -37,13 +37,29 @@ import { analyzeUnreviewedTrades, updatePerformancePatterns } from '../lib/aiFee
 import { discoverStocks } from '../lib/aiSuggestedFinds';
 import { useAuth } from '../lib/auth';
 
+const SCHEDULER_CHECK_BACKOFF_MS = 5 * 60 * 1000; // 5 min after failure
+let _lastSchedulerCheckFail = 0;
+
 async function isServerSchedulerRunning(): Promise<boolean> {
+  if (typeof window !== 'undefined' && window.location?.hostname !== 'localhost') {
+    return false; // Deployed — auto-trader not available, skip localhost
+  }
+  if (Date.now() - _lastSchedulerCheckFail < SCHEDULER_CHECK_BACKOFF_MS) {
+    return false; // Recently failed, avoid repeated 404s
+  }
   try {
-    const res = await fetch('http://localhost:3001/api/scheduler/status');
-    if (!res.ok) return false;
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 2000);
+    const res = await fetch('http://localhost:3001/api/scheduler/status', { signal: ctrl.signal });
+    clearTimeout(t);
+    if (!res.ok) {
+      _lastSchedulerCheckFail = Date.now();
+      return false;
+    }
     const data = await res.json();
     return data.running === true;
   } catch {
+    _lastSchedulerCheckFail = Date.now();
     return false;
   }
 }

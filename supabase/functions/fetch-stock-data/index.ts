@@ -14,7 +14,7 @@ const corsHeaders = {
 
 interface RequestPayload {
   ticker: string;
-  endpoint: 'quote' | 'metrics' | 'recommendations' | 'earnings' | 'news' | 'general_news' | 'profile';
+  endpoint: 'quote' | 'metrics' | 'recommendations' | 'earnings' | 'earnings_calendar' | 'news' | 'general_news' | 'profile';
 }
 
 interface CacheEntry {
@@ -42,7 +42,7 @@ Deno.serve(async req => {
       );
     }
 
-    const validEndpoints = ['quote', 'metrics', 'recommendations', 'earnings', 'news', 'general_news', 'profile'];
+    const validEndpoints = ['quote', 'metrics', 'recommendations', 'earnings', 'earnings_calendar', 'news', 'general_news', 'profile'];
     if (!validEndpoints.includes(endpoint)) {
       return new Response(
         JSON.stringify({ error: `Invalid endpoint. Must be one of: ${validEndpoints.join(', ')}` }),
@@ -116,6 +116,12 @@ Deno.serve(async req => {
       case 'earnings':
         apiUrl = `${FINNHUB_BASE}/stock/earnings?symbol=${symbol}&token=${finnhubApiKey}`;
         break;
+      case 'earnings_calendar': {
+        const fromDate = new Date().toISOString().split('T')[0];
+        const toDate = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+        apiUrl = `${FINNHUB_BASE}/calendar/earnings?symbol=${symbol}&from=${fromDate}&to=${toDate}&token=${finnhubApiKey}`;
+        break;
+      }
       case 'news': {
         // Get news from last 7 days
         const toDate = new Date().toISOString().split('T')[0];
