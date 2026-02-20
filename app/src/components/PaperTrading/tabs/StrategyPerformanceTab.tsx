@@ -871,7 +871,7 @@ export function StrategyPerformanceTab({ sources, videos, statuses, onRefresh }:
                                                           disabled={!pasteTranscriptText.trim() || extractingVideoId === video.videoId}
                                                           className="text-xs px-2 py-1 rounded bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50"
                                                         >
-                                                          {extractingVideoId === video.videoId ? 'Extracting…' : 'Extract metadata'}
+                                                          {extractingVideoId === video.videoId ? 'Submitting…' : 'Submit'}
                                                         </button>
                                                         <button
                                                           onClick={() => { setPasteTranscriptVideoId(null); setPasteTranscriptText(''); }}
@@ -903,7 +903,7 @@ export function StrategyPerformanceTab({ sources, videos, statuses, onRefresh }:
                                                       onClick={() => { setPasteTranscriptVideoId(video.videoId); setPasteTranscriptText(video.transcript ?? ''); }}
                                                       className="text-blue-600 hover:text-blue-700 font-medium"
                                                     >
-                                                      Re-extract
+                                                      Re-submit
                                                     </button>
                                                   </div>
                                                 ) : (
