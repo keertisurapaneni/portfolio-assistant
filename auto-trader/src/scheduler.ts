@@ -1444,9 +1444,6 @@ async function executeExternalStrategySignal(
   const allocationSplit = Math.max(1, Math.floor(options?.allocationSplit ?? 1));
   const allocationIndex = Math.max(1, Math.floor(options?.allocationIndex ?? 1));
   const allowDuplicateTicker = options?.allowDuplicateTicker === true;
-  // #region agent log
-  fetch('http://127.0.0.1:7653/ingest/8500cd13-6ad2-4d7d-ab01-2e235f7bb638',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'0bad81'},body:JSON.stringify({sessionId:'0bad81',location:'scheduler.ts:1433',message:'executeExternalStrategySignal entry',data:{ticker,signalId:signal.id,sourceName:signal.source_name,allowDuplicateTicker,allocationSplit,hasGenericNote:(signal.notes??'').toLowerCase().includes('generic strategy auto')},timestamp:Date.now(),hypothesisId:'A'})}).catch(()=>{});
-  // #endregion
   const skipExternalSignal = async (failureReason: string, skipReason: string): Promise<'skipped'> => {
     await updateExternalStrategySignal(signal.id, {
       status: 'SKIPPED',
@@ -1504,9 +1501,6 @@ async function executeExternalStrategySignal(
       trade.signal !== signal.signal ||
       !trade.strategy_video_id
     ));
-    // #region agent log
-    fetch('http://127.0.0.1:7653/ingest/8500cd13-6ad2-4d7d-ab01-2e235f7bb638',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'0bad81'},body:JSON.stringify({sessionId:'0bad81',location:'scheduler.ts:1485',message:'lenient duplicate check',data:{ticker,isGenericAutoSignal,allowDuplicateTicker,sameTickerCount:sameTickerTrades.length,hasConflict},timestamp:Date.now(),hypothesisId:'A'})}).catch(()=>{});
-    // #endregion
     if (hasConflict) {
       return skipExternalSignal('Duplicate active trade for ticker', 'duplicate_active_trade_conflict');
     }
