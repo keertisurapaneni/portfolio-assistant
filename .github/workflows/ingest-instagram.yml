@@ -1,0 +1,72 @@
+name: Ingest Instagram Strategy Videos
+
+# Triggered via repository_dispatch from the trigger-instagram-ingest Supabase edge function.
+# Also supports manual trigger from GitHub Actions UI.
+on:
+  repository_dispatch:
+    types: [ingest-instagram]
+  workflow_dispatch:
+    inputs:
+      video_ids:
+        description: 'Comma-separated Instagram video IDs (reels) to ingest'
+        required: false
+        default: ''
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ffmpeg
+
+      - name: Install Python dependencies
+        run: |
+          pip install --quiet yt-dlp requests groq
+
+      - name: Run ingest
+        id: ingest
+        run: |
+          set -e
+
+          # Prefer video_ids from repository_dispatch payload, then workflow_dispatch input
+          VIDEO_IDS="${{ github.event.client_payload.video_ids }}"
+          if [ -z "$VIDEO_IDS" ]; then
+            VIDEO_IDS="${{ github.event.inputs.video_ids }}"
+          fi
+
+          if [ -n "$VIDEO_IDS" ]; then
+            echo "Ingesting specific video IDs: $VIDEO_IDS"
+            # Convert comma-separated IDs to Instagram reel URLs and process each
+            IFS=',' read -ra IDS <<< "$VIDEO_IDS"
+            for id in "${IDS[@]}"; do
+              id=$(echo "$id" | xargs)  # trim whitespace
+              if [ -n "$id" ]; then
+                echo "=== Processing $id ==="
+                python scripts/ingest_video.py "https://www.instagram.com/reel/$id/" || echo "WARNING: Failed to process $id (continuing)"
+              fi
+            done
+          else
+            echo "No video IDs provided — processing all pending Instagram strategy_videos"
+            python scripts/ingest_video.py --from-strategy-videos || echo "WARNING: --from-strategy-videos had errors"
+          fi
+
+      - name: Report completion
+        if: always()
+        run: |
+          echo "Ingest job finished with status: ${{ job.status }}"

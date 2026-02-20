@@ -70,11 +70,13 @@ export async function addUrlsToQueue(urls: string[]): Promise<{ added: number; i
   return { added: toInsert.length, invalid };
 }
 
-export async function getQueue(limit = 50): Promise<StrategyVideoQueueItem[]> {
+export async function getQueue(options?: { limit?: number; order?: 'asc' | 'desc' }): Promise<StrategyVideoQueueItem[]> {
+  const limit = options?.limit ?? 50;
+  const ascending = (options?.order ?? 'desc') === 'asc';
   const { data, error } = await supabase
     .from('strategy_video_queue')
     .select('*')
-    .order('created_at', { ascending: false })
+    .order('created_at', { ascending })
     .limit(limit);
 
   if (error) throw new Error(`Failed to fetch queue: ${error.message}`);
@@ -196,6 +198,25 @@ export async function fixUnknownSources(): Promise<{ fixed: number; results: { v
   }
   const data = await res.json();
   return { fixed: data.fixed ?? 0, results: data.results ?? [] };
+}
+
+/** Fetch YouTube captions and run metadata extraction — no yt-dlp/ffmpeg needed */
+export async function fetchYouTubeTranscript(params: { video_id: string }): Promise<{ ok: boolean; transcript_length?: number; error?: string }> {
+  const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/fetch-youtube-transcript`;
+  const key = import.meta.env.VITE_SUPABASE_ANON_KEY;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(key && { Authorization: `Bearer ${key}` }),
+    },
+    body: JSON.stringify({ video_id: params.video_id }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({})) as Record<string, unknown>;
+    throw new Error(String(err?.error ?? `Fetch failed: ${res.status}`));
+  }
+  return res.json();
 }
 
 /** Trigger transcript ingest (download + transcribe + extract). No auto-trader needed if INGEST_TRIGGER_URL is set. */

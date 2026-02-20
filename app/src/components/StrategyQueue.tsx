@@ -50,7 +50,7 @@ export function StrategyQueue() {
   const loadQueue = useCallback(async () => {
     setLoading(true);
     try {
-      const items = await getQueue(50);
+      const items = await getQueue({ limit: 50 });
       setQueue(items);
     } catch (err) {
       setMessage({ type: 'error', text: err instanceof Error ? err.message : 'Failed to load queue' });

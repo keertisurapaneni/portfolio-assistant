@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { BrowserRouter, Routes, Route, NavLink, useLocation } from 'react-router-dom';
 import { SpeedInsights } from '@vercel/speed-insights/react';
 import { Analytics } from '@vercel/analytics/react';
-import { Activity, Briefcase, Brain, Lightbulb, Link2, RefreshCw, TrendingUp, User, LogOut, ChevronDown, Bot } from 'lucide-react';
+import { Activity, Briefcase, Brain, Lightbulb, RefreshCw, TrendingUp, User, LogOut, ChevronDown, Bot } from 'lucide-react';
 import type { StockWithConviction, RiskProfile } from './types';
 import { getUserData, saveUserData, addTickers, updateStock, removeStock, clearAllData, importStocksWithPositions } from './lib/storage';
 import { getCloudUserData, cloudAddTickers, cloudRemoveTicker, cloudClearAll, migrateGuestToCloud, cloudImportStocksWithPositions } from './lib/cloudStorage';
@@ -21,7 +21,6 @@ import { SuggestedFinds } from './components/SuggestedFinds';
 import { MarketMovers } from './components/MarketMovers';
 import { TradingSignals } from './components/TradingSignals';
 import { PaperTrading } from './components/PaperTrading';
-import { StrategyQueue } from './components/StrategyQueue';
 import { StockDetail } from './components/StockDetail';
 import { AddTickersModal } from './components/AddTickersModal';
 import { AuthModal } from './components/AuthModal';
@@ -870,18 +869,6 @@ function AppContent() {
               <TrendingUp className="w-4 h-4" />
               Movers
             </NavLink>
-            <NavLink
-              to="/strategy-queue"
-              className={({ isActive }) => cn(
-                'flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all',
-                isActive
-                  ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-md shadow-blue-500/25'
-                  : 'text-slate-500 hover:text-slate-700 hover:bg-white/80'
-              )}
-            >
-              <Link2 className="w-4 h-4" />
-              Add Strategies
-            </NavLink>
             {isAuthed && (
               <NavLink
                 to="/paper-trading"
@@ -926,7 +913,6 @@ function AppContent() {
           <Route path="/finds" element={<SuggestedFinds existingTickers={existingTickers} />} />
           <Route path="/movers" element={<MarketMovers />} />
           <Route path="/signals" element={<TradingSignals />} />
-          <Route path="/strategy-queue" element={<StrategyQueue />} />
           {isAuthed && <Route path="/paper-trading" element={<PaperTrading />} />}
         </Routes>
       </main>
