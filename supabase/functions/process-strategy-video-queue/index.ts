@@ -38,19 +38,36 @@ function toSourceName(handle: string): string {
     .trim();
 }
 
+// Instagram system paths / CDN paths that are never real account handles
+const IG_SYSTEM_PATHS = new Set([
+  'reel', 'p', 'stories', 'explore', 'accounts', 'direct', 'static',
+  'rsrc.php', 'favicon.ico', 'about', 'legal', 'privacy', 'help',
+]);
+
+/** Returns true if the string looks like a CDN path or system resource (not a real IG handle) */
+function isIgSystemPath(handle: string): boolean {
+  const h = handle.toLowerCase();
+  if (IG_SYSTEM_PATHS.has(h)) return true;
+  // Anything ending in a file extension (.php, .js, .css, .png, etc.) is a CDN path
+  if (/\.[a-z]{2,4}$/.test(h)) return true;
+  return false;
+}
+
 /** For instagram.com/reel/ID (no handle in path), fetch page and extract handle */
 async function fetchInstagramHandle(url: string): Promise<string | null> {
   try {
     const res = await fetch(url, { headers: { 'User-Agent': UA }, signal: AbortSignal.timeout(10_000) });
     const html = await res.text();
+    // Prefer og:url — most reliable
     const ogUrl = html.match(/<meta[^>]+property="og:url"[^>]+content="([^"]*)"/i)?.[1] ?? '';
     const m = /instagram\.com\/([^/]+)\/(?:reel|p)\//i.exec(ogUrl);
-    if (m?.[1]) return m[1].trim().toLowerCase();
+    if (m?.[1] && !isIgSystemPath(m[1])) return m[1].trim().toLowerCase();
 
+    // Fallback: first instagram.com/<handle>/ match in HTML
     const profileMatch = html.match(/instagram\.com\/([a-zA-Z0-9_.]+)(?:\/|["'\s>])/);
     if (profileMatch?.[1]) {
       const h = profileMatch[1].toLowerCase();
-      if (!['reel', 'p', 'stories', 'explore', 'accounts', 'direct'].includes(h)) return h;
+      if (!isIgSystemPath(h)) return h;
     }
   } catch {
     // ignore

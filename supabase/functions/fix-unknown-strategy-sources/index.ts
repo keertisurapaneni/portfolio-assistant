@@ -15,6 +15,21 @@ const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (
 
 const INSTAGRAM_REEL = /instagram\.com\/(?:([^/]+)\/)?reel\/([A-Za-z0-9_-]+)/i;
 
+// Instagram system paths / CDN paths that are never real account handles
+const IG_SYSTEM_PATHS = new Set([
+  'reel', 'p', 'stories', 'explore', 'accounts', 'direct', 'static',
+  'rsrc.php', 'favicon.ico', 'about', 'legal', 'privacy', 'help',
+]);
+
+/** Returns true if the string looks like a CDN path or system resource (not a real IG handle) */
+function isIgSystemPath(handle: string): boolean {
+  const h = handle.toLowerCase();
+  if (IG_SYSTEM_PATHS.has(h)) return true;
+  // Anything ending in a file extension (.php, .js, .css, .png, etc.) is a CDN path
+  if (/\.[a-z]{2,4}$/.test(h)) return true;
+  return false;
+}
+
 function toSourceName(handle: string): string {
   return handle
     .replace(/[_-]/g, ' ')
@@ -25,17 +40,19 @@ function toSourceName(handle: string): string {
 /** Extract handle from Instagram URL or page HTML */
 async function extractInstagramHandle(url: string): Promise<string | null> {
   const m = INSTAGRAM_REEL.exec(url);
-  if (m?.[1]) return m[1].trim().toLowerCase();
+  if (m?.[1] && !isIgSystemPath(m[1])) return m[1].trim().toLowerCase();
 
   try {
     const res = await fetch(url, { headers: { 'User-Agent': UA }, signal: AbortSignal.timeout(10_000) });
     const html = await res.text();
+    // Prefer og:url — most reliable
     const ogUrl = html.match(/<meta[^>]+property="og:url"[^>]+content="([^"]*)"/i)?.[1] ?? '';
     const m2 = /instagram\.com\/([^/]+)\/(?:reel|p)\//i.exec(ogUrl);
-    if (m2?.[1]) return m2[1].trim().toLowerCase();
+    if (m2?.[1] && !isIgSystemPath(m2[1])) return m2[1].trim().toLowerCase();
 
+    // Fallback: first instagram.com/<handle>/ match in HTML
     const profileMatch = html.match(/instagram\.com\/([a-zA-Z0-9_.]+)(?:\/|["'\s>])/);
-    if (profileMatch?.[1] && !['reel', 'p', 'stories', 'explore', 'accounts'].includes(profileMatch[1].toLowerCase())) {
+    if (profileMatch?.[1] && !isIgSystemPath(profileMatch[1])) {
       return profileMatch[1].trim().toLowerCase();
     }
   } catch {
