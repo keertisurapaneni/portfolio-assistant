@@ -8,8 +8,7 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "dev": "tsx watch src/index.ts",
-    "test": "tsx src/lib/tradePerformanceMetrics.test.ts",
-    "backfill:performance": "tsx src/scripts/backfillTradePerformanceLog.ts"
+    "test": "tsx src/lib/tradePerformanceMetrics.test.ts"
   },
   "dependencies": {
     "@stoqey/ib": "^1.5.3",
