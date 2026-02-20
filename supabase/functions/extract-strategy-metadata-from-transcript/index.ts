@@ -128,7 +128,8 @@ Deno.serve(async (req) => {
     Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
   );
 
-  const userPrompt = `Transcript:\n\n${transcript}\n\nExtract metadata from this trading strategy video transcript.`;
+  const todayEt = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' }); // YYYY-MM-DD
+  const userPrompt = `Today's date (ET): ${todayEt}\n\nTranscript:\n\n${transcript}\n\nExtract metadata from this trading strategy video transcript. For trade_date, resolve relative references like "today", "tomorrow", "Friday" to an actual YYYY-MM-DD date using today's date above.`;
 
   let extracted: Record<string, unknown>;
   try {
@@ -170,7 +171,9 @@ Deno.serve(async (req) => {
     ? extracted.strategy_type
     : null;
   const video_heading = extracted.video_heading ? String(extracted.video_heading).trim() : null;
-  const trade_date = extracted.trade_date ? String(extracted.trade_date).trim() : null;
+  // Only accept ISO date strings — reject relative values like "Friday", "tomorrow", etc.
+  const rawTradeDate = extracted.trade_date ? String(extracted.trade_date).trim() : null;
+  const trade_date = rawTradeDate && /^\d{4}-\d{2}-\d{2}$/.test(rawTradeDate) ? rawTradeDate : null;
   const timeframe = extracted.timeframe === 'DAY_TRADE' || extracted.timeframe === 'SWING_TRADE' || extracted.timeframe === 'LONG_TERM'
     ? extracted.timeframe
     : null;

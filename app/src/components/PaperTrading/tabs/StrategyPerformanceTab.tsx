@@ -215,7 +215,7 @@ export function StrategyPerformanceTab({ sources, videos, statuses, onRefresh }:
         source: status.source,
         sourceUrl: status.sourceUrl,
         videoId: status.videoId,
-        videoHeading: status.videoHeading ?? status.videoId ?? 'Untitled strategy',
+        videoHeading: status.videoHeading ?? 'Untitled video',
         platform: status.platform ?? null,
         strategyType: status.strategyType ?? null,
         applicableTimeframes: status.applicableTimeframes ?? null,

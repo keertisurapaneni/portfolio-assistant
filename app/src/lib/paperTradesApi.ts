@@ -1231,7 +1231,7 @@ export async function getStrategySignalStatusSummaries(): Promise<StrategySignal
         if (!source) continue;
 
         const videoId = (item.video_id ?? '').trim() || null;
-        const videoHeading = (item.video_heading ?? '').trim() || videoId;
+        const videoHeading = (item.video_heading ?? '').trim() || 'Untitled video';
         if (!videoId && !videoHeading) continue;
 
         const sourceHandle = (item.source_handle ?? '').trim().replace(/^@+/, '');
