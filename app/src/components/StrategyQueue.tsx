@@ -192,7 +192,7 @@ export function StrategyQueue() {
       <div className="rounded-lg bg-[hsl(var(--muted))]/50 px-4 py-3 text-sm text-[hsl(var(--muted-foreground))]">
         <p className="font-medium text-[hsl(var(--foreground))] mb-1">Process the queue</p>
         <p>
-          Run on your computer: <code className="bg-[hsl(var(--background))] px-1.5 py-0.5 rounded">python scripts/ingest_video.py --from-queue</code>
+          Process queue: transcribe videos, extract metadata, then POST to <code className="bg-[hsl(var(--background))] px-1.5 py-0.5 rounded">/functions/v1/upsert-strategy-video</code> to add to strategy_videos.
         </p>
       </div>
     </div>

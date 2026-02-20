@@ -4,6 +4,7 @@
  */
 
 import { supabase } from './supabaseClient';
+import { getExemptFromAutoDeactivationSources } from './strategyVideosApi';
 
 // ── Types ────────────────────────────────────────────────
 
@@ -482,19 +483,9 @@ export interface StrategySignalStatusSummary {
   videoHeading: string | null;
   strategyType: 'daily_signal' | 'generic_strategy' | null;
   applicableDate: string | null;
+  /** For generic_strategy: DAY_TRADE, SWING_TRADE, or both */
+  applicableTimeframes: Array<'DAY_TRADE' | 'SWING_TRADE'> | null;
   latestSignalStatus: string | null;
-}
-
-interface TrackedStrategyVideoRecord {
-  videoId?: string;
-  sourceHandle?: string;
-  sourceName?: string;
-  reelUrl?: string;
-  canonicalUrl?: string;
-  videoHeading?: string;
-  strategyType?: 'daily_signal' | 'generic_strategy' | string;
-  tradeDate?: string;
-  status?: string;
 }
 
 export interface PendingStrategySignal {
@@ -615,6 +606,7 @@ export async function recalculatePerformanceByCategory(): Promise<CategoryPerfor
 }
 
 export async function recalculatePerformanceByStrategySource(): Promise<StrategySourcePerformance[]> {
+  const exemptSources = await getExemptFromAutoDeactivationSources();
   const { data: allTrades, error } = await supabase
     .from('paper_trades')
     .select('*')
@@ -697,7 +689,7 @@ export async function recalculatePerformanceByStrategySource(): Promise<Strategy
           }
         } else break;
       }
-      const shouldDeactivate = lossesOnSeparateDays >= 3 && !/casper\s*clipping/i.test(source);
+      const shouldDeactivate = lossesOnSeparateDays >= 3 && !exemptSources.has(source);
       return {
         source,
         sourceUrl: s.sourceUrl,
@@ -716,6 +708,7 @@ export async function recalculatePerformanceByStrategySource(): Promise<Strategy
 }
 
 export async function recalculatePerformanceByStrategyVideo(): Promise<StrategyVideoPerformance[]> {
+  const exemptSources = await getExemptFromAutoDeactivationSources();
   const { data: allTrades, error } = await supabase
     .from('paper_trades')
     .select('*')
@@ -839,7 +832,7 @@ export async function recalculatePerformanceByStrategyVideo(): Promise<StrategyV
           }
         } else break;
       }
-      const shouldDeactivate = lossesOnSeparateDays >= 3 && !/casper\s*clipping/i.test(g.source);
+      const shouldDeactivate = lossesOnSeparateDays >= 3 && !exemptSources.has(g.source);
       return {
         source: g.source,
         sourceUrl: g.sourceUrl,
@@ -877,6 +870,7 @@ export async function getStrategySignalStatusSummaries(): Promise<StrategySignal
 
   const grouped = new Map<string, StrategySignalStatusSummary & { sortKey: string }>();
   const trackedTypeByKey = new Map<string, 'daily_signal' | 'generic_strategy'>();
+  const trackedTimeframesByKey = new Map<string, Array<'DAY_TRADE' | 'SWING_TRADE'>>();
   for (const row of data as Array<{
     source_name: string | null;
     source_url: string | null;
@@ -903,59 +897,83 @@ export async function getStrategySignalStatusSummaries(): Promise<StrategySignal
         videoHeading,
         strategyType: null,
         applicableDate: row.execute_on_date ?? null,
+        applicableTimeframes: null,
         latestSignalStatus: row.status ?? null,
         sortKey,
       });
     }
   }
 
-  // Include tracked videos even before they generate signals/trades
+  // Include tracked videos from strategy_videos table (single source of truth)
   try {
-    const trackedRes = await fetch('/strategy-videos.json', { cache: 'no-store' });
-    if (trackedRes.ok) {
-      const tracked = await trackedRes.json() as unknown;
-      if (Array.isArray(tracked)) {
-        for (const item of tracked as TrackedStrategyVideoRecord[]) {
-          if (!item || typeof item !== 'object') continue;
-          if (item.status && item.status !== 'tracked') continue;
+    const { data: tracked } = await supabase
+      .from('strategy_videos')
+      .select('video_id, source_handle, source_name, canonical_url, reel_url, video_heading, strategy_type, trade_date, timeframe, applicable_timeframes')
+      .eq('status', 'tracked');
 
-          const source = (item.sourceName ?? '').trim();
-          if (!source) continue;
+    if (tracked && Array.isArray(tracked)) {
+      for (const item of tracked as Array<{
+        video_id: string | null;
+        source_handle: string | null;
+        source_name: string | null;
+        canonical_url: string | null;
+        reel_url: string | null;
+        video_heading: string | null;
+        strategy_type: string | null;
+        trade_date: string | null;
+        timeframe: string | null;
+        applicable_timeframes: string[] | null;
+      }>) {
+        const source = (item.source_name ?? '').trim();
+        if (!source) continue;
 
-          const videoId = (item.videoId ?? '').trim() || null;
-          const videoHeading = (item.videoHeading ?? '').trim() || videoId;
-          if (!videoId && !videoHeading) continue;
+        const videoId = (item.video_id ?? '').trim() || null;
+        const videoHeading = (item.video_heading ?? '').trim() || videoId;
+        if (!videoId && !videoHeading) continue;
 
-          const sourceHandle = (item.sourceHandle ?? '').trim().replace(/^@+/, '');
-          const inferredSourceUrl = sourceHandle
-            ? `https://www.instagram.com/${sourceHandle}/`
-            : (item.canonicalUrl ?? item.reelUrl ?? null);
+        const sourceHandle = (item.source_handle ?? '').trim().replace(/^@+/, '');
+        const inferredSourceUrl = sourceHandle
+          ? `https://www.instagram.com/${sourceHandle}/`
+          : (item.canonical_url ?? item.reel_url ?? null);
 
-          const key = `${source}::${videoId ?? videoHeading}`;
-          const strategyType = item.strategyType === 'daily_signal' || item.strategyType === 'generic_strategy'
-            ? item.strategyType
-            : null;
-          if (strategyType) {
-            trackedTypeByKey.set(key, strategyType);
-          }
-          if (!grouped.has(key)) {
-            grouped.set(key, {
-              source,
-              sourceUrl: inferredSourceUrl,
-              videoId,
-              videoHeading,
-              strategyType,
-              applicableDate: item.strategyType === 'daily_signal' ? (item.tradeDate ?? null) : null,
-              latestSignalStatus: null,
-              sortKey: `${item.tradeDate ?? ''}|`,
-            });
-          } else {
-            const existing = grouped.get(key);
-            if (existing && strategyType && existing.strategyType == null) {
-              grouped.set(key, {
-                ...existing,
-                strategyType,
-              });
+        const key = `${source}::${videoId ?? videoHeading}`;
+        const strategyType = item.strategy_type === 'daily_signal' || item.strategy_type === 'generic_strategy'
+          ? item.strategy_type
+          : null;
+        if (strategyType) {
+          trackedTypeByKey.set(key, strategyType);
+        }
+        const timeframes = (item.applicable_timeframes?.length
+          ? item.applicable_timeframes
+          : item.timeframe
+            ? [item.timeframe]
+            : []
+        ).filter((t): t is 'DAY_TRADE' | 'SWING_TRADE' =>
+          t === 'DAY_TRADE' || t === 'SWING_TRADE'
+        ) as Array<'DAY_TRADE' | 'SWING_TRADE'>;
+        if (timeframes.length > 0) {
+          trackedTimeframesByKey.set(key, timeframes);
+        }
+        if (!grouped.has(key)) {
+          grouped.set(key, {
+            source,
+            sourceUrl: inferredSourceUrl,
+            videoId,
+            videoHeading,
+            strategyType,
+            applicableDate: strategyType === 'daily_signal' ? (item.trade_date ?? null) : null,
+            applicableTimeframes: timeframes.length > 0 ? timeframes : null,
+            latestSignalStatus: null,
+            sortKey: `${item.trade_date ?? ''}|`,
+          });
+        } else {
+          const existing = grouped.get(key);
+          if (existing) {
+            const updates: Partial<StrategySignalStatusSummary> = {};
+            if (strategyType && existing.strategyType == null) updates.strategyType = strategyType;
+            if (timeframes.length > 0) updates.applicableTimeframes = timeframes;
+            if (Object.keys(updates).length > 0) {
+              grouped.set(key, { ...existing, ...updates });
             }
           }
         }
@@ -968,10 +986,12 @@ export async function getStrategySignalStatusSummaries(): Promise<StrategySignal
   return [...grouped.entries()]
     .map(([key, value]) => {
       const strategyType = value.strategyType ?? trackedTypeByKey.get(key) ?? null;
+      const applicableTimeframes = value.applicableTimeframes ?? trackedTimeframesByKey.get(key) ?? null;
       const { sortKey: _sortKey, ...rest } = value;
       return {
         ...rest,
         strategyType,
+        applicableTimeframes: applicableTimeframes ?? null,
       };
     })
     .sort((a, b) => (b.applicableDate ?? '').localeCompare(a.applicableDate ?? ''));

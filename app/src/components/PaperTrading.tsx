@@ -2058,6 +2058,7 @@ function StrategyPerformanceTab({ sources, videos, statuses }: {
     videoId: string | null;
     videoHeading: string;
     strategyType: 'daily_signal' | 'generic_strategy' | null;
+    applicableTimeframes: Array<'DAY_TRADE' | 'SWING_TRADE'> | null;
     totalTrades: number;
     activeTrades: number;
     winRate: number;
@@ -2078,17 +2079,29 @@ function StrategyPerformanceTab({ sources, videos, statuses }: {
   };
 
   const [expandedSources, setExpandedSources] = useState<Set<string>>(new Set());
-  const todayET = useMemo(() => {
-    const parts = new Intl.DateTimeFormat('en-US', {
+  const { todayET, isPastMarketCloseET } = useMemo(() => {
+    const dateFormatter = new Intl.DateTimeFormat('en-US', {
       timeZone: 'America/New_York',
       year: 'numeric',
       month: '2-digit',
       day: '2-digit',
-    }).formatToParts(new Date());
+    });
+    const timeStr = new Date().toLocaleTimeString('en-US', {
+      timeZone: 'America/New_York',
+      hour12: false,
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+    const [h, m] = timeStr.split(':').map(Number);
+    const minutesSinceMidnight = (h ?? 0) * 60 + (m ?? 0);
+    const parts = dateFormatter.formatToParts(new Date());
     const year = parts.find(p => p.type === 'year')?.value ?? '0000';
     const month = parts.find(p => p.type === 'month')?.value ?? '00';
     const day = parts.find(p => p.type === 'day')?.value ?? '00';
-    return `${year}-${month}-${day}`;
+    return {
+      todayET: `${year}-${month}-${day}`,
+      isPastMarketCloseET: minutesSinceMidnight >= 16 * 60, // 4 PM ET
+    };
   }, []);
 
   const sourcePerfByName = useMemo(() => {
@@ -2129,6 +2142,7 @@ function StrategyPerformanceTab({ sources, videos, statuses }: {
         videoId: video.videoId,
         videoHeading: video.videoHeading,
         strategyType: status?.strategyType ?? null,
+        applicableTimeframes: status?.applicableTimeframes ?? null,
         totalTrades: video.totalTrades,
         activeTrades: video.activeTrades,
         winRate: video.winRate,
@@ -2155,6 +2169,7 @@ function StrategyPerformanceTab({ sources, videos, statuses }: {
         videoId: status.videoId,
         videoHeading: status.videoHeading ?? status.videoId ?? 'Untitled strategy',
         strategyType: status.strategyType ?? null,
+        applicableTimeframes: status.applicableTimeframes ?? null,
         totalTrades: 0,
         activeTrades: 0,
         winRate: 0,
@@ -2277,10 +2292,10 @@ function StrategyPerformanceTab({ sources, videos, statuses }: {
     if (row.videoHeading.toLowerCase().startsWith('legacy strategy')) {
       return { label: 'legacy', tone: 'amber' };
     }
-    const isExpired = row.latestSignalStatus === 'EXPIRED' || (
-      row.strategyType === 'daily_signal' &&
-      !!row.applicableDate &&
-      row.applicableDate < todayET
+    // generic_strategy: ongoing, runs every day — never expired by date/signal status
+    // daily_signal: expires when trade date passed, or past market close (4 PM ET) on trade date
+    const isExpired = row.strategyType === 'daily_signal' && !!row.applicableDate && (
+      row.applicableDate < todayET || (row.applicableDate === todayET && isPastMarketCloseET)
     );
     if (isExpired) return { label: 'expired', tone: 'amber' };
     return { label: 'active ✓', tone: 'green' };
@@ -2505,6 +2520,17 @@ function StrategyPerformanceTab({ sources, videos, statuses }: {
                                             {video.strategyType === 'generic_strategy' && (
                                               <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-slate-100 text-slate-700 shrink-0" title="Ongoing: applies across dates">
                                                 generic
+                                                {video.applicableTimeframes && video.applicableTimeframes.length > 0 && (
+                                                  <span className="ml-1 text-slate-500">
+                                                    ({video.applicableTimeframes.includes('DAY_TRADE') && video.applicableTimeframes.includes('SWING_TRADE')
+                                                      ? 'day + swing'
+                                                      : video.applicableTimeframes.includes('DAY_TRADE')
+                                                        ? 'day'
+                                                        : video.applicableTimeframes.includes('SWING_TRADE')
+                                                          ? 'swing'
+                                                          : ''})
+                                                  </span>
+                                                )}
                                               </span>
                                             )}
                                           </p>

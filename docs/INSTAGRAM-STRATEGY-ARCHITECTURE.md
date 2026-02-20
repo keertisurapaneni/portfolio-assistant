@@ -29,8 +29,7 @@ The portfolio-assistant ingests trading strategies from Instagram videos, queues
 
 | File | Purpose |
 |------|---------|
-| `auto-trader/strategy-videos.json` | Tracked videos (primary source for auto-trader) |
-| `app/public/strategy-videos.json` | UI copy (drill-down, tracked videos) |
+| `strategy_videos` table | Single source of truth for app and auto-trader |
 | `auto-trader/strategy-sources.json` | Source metadata (handle, URL) |
 
 ### Strategy Types
@@ -38,7 +37,7 @@ The portfolio-assistant ingests trading strategies from Instagram videos, queues
 | Type | Description | Behavior |
 |------|-------------|----------|
 | **daily_signal** | Videos with `extractedSignals` (concrete levels) | Creates BUY/SELL signals with entry, stop, target for today ET |
-| **generic_strategy** | Videos with no levels (e.g. candlestick rules) | Uses scanner ideas (confidence ≥ minScannerConfidence) and creates one signal per video per ticker |
+| **generic_strategy** | Videos with no levels (e.g. candlestick rules) | Uses scanner ideas (confidence ≥ minScannerConfidence) and creates one signal per video per ticker. Use `applicableTimeframes` to scope: `["DAY_TRADE"]`, `["SWING_TRADE"]`, or both |
 
 ### Source Attribution & Video Metadata
 
@@ -109,7 +108,7 @@ Additional checks: `shouldMarkStrategyX()` (consecutive losses), `runPreTradeChe
 
 **First Candle strategy:**
 
-- `executionWindowEt: { start: "09:35", end: "10:30" }` in `strategy-videos.json`
+- `execution_window_et: { start: "09:35", end: "10:30" }` in `strategy_videos`
 - `strategyWindowByVideoId` enforces this window
 - Outside window → EXPIRED or WAITING
 
@@ -146,7 +145,7 @@ Additional checks: `shouldMarkStrategyX()` (consecutive losses), `runPreTradeChe
 
 **Drill-down by video:** Per-video rows with columns: Strategy (heading), Date, Trade Count, Trade 1–3 samples, Win Rate, Avg %, Total P&L, Status. Video links: `https://www.instagram.com/reel/{videoId}/`.
 
-**Tracked videos:** `strategy-videos.json` merged into `getStrategySignalStatusSummaries()` for videos with no trades yet.
+**Tracked videos:** `strategy_videos` table merged into `getStrategySignalStatusSummaries()` for videos with no trades yet.
 
 ---
 
@@ -163,7 +162,7 @@ Suggested Finds are **not** part of the swing scanner universe.
 
 ## 8. Data Models
 
-### Strategy Video Record (`strategy-videos.json`)
+### Strategy Video Record (`strategy_videos` table)
 
 ```typescript
 interface StrategyVideoRecord {
@@ -178,6 +177,8 @@ interface StrategyVideoRecord {
   applicableTimeframes?: Array<'DAY_TRADE' | 'SWING_TRADE' | 'LONG_TERM'>;
   executionWindowEt?: { start?: string; end?: string };
   tradeDate?: string;
+  /** If true, source is exempt from auto-deactivation (3 losses on separate days). No hardcoded source names. */
+  exemptFromAutoDeactivation?: boolean;
   extractedSignals?: DailyVideoSignal[];
 }
 ```
@@ -226,7 +227,7 @@ interface PaperTrade {
 | External signals CRUD | `auto-trader/src/lib/supabase.ts` |
 | Strategy performance API | `app/src/lib/paperTradesApi.ts` |
 | Strategy Performance UI | `app/src/components/PaperTrading.tsx` (StrategyPerformanceTab) |
-| Strategy video config | `auto-trader/strategy-videos.json`, `app/public/strategy-videos.json` |
+| Strategy video config | `strategy_videos` table (Supabase) — single source of truth |
 | Swing universe | `supabase/functions/trade-scanner/index.ts` (buildDynamicSwingUniverse) |
 | Migrations | `supabase/migrations/20260219000001_external_strategy_signals.sql`, `20260219000002_strategy_video_metadata.sql` |
 

@@ -11,7 +11,6 @@
  */
 
 import cron from 'node-cron';
-import { readFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -152,10 +151,6 @@ let _processedTickersDate = '';
 const FINNHUB_BASE = 'https://finnhub.io/api/v1';
 const FINNHUB_KEY = process.env.FINNHUB_API_KEY ?? '';
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const STRATEGY_VIDEOS_FILES = [
-  resolve(__dirname, '../strategy-videos.json'),
-  resolve(process.cwd(), 'strategy-videos.json'),
-];
 const STRATEGY_X_CONSECUTIVE_LOSS_LIMIT = 2;
 let _lastDailyVideoQueueLogDate = '';
 
@@ -330,34 +325,56 @@ function inferSourceUrl(video: StrategyVideoRecord): string | null {
 
 async function loadStrategyVideos(): Promise<StrategyVideoRecord[]> {
   const todayET = getETDateString();
-  for (const file of STRATEGY_VIDEOS_FILES) {
-    try {
-      const raw = await readFile(file, 'utf8');
-      const parsed = JSON.parse(raw) as unknown;
-      if (!Array.isArray(parsed)) {
-        log(`Strategy videos file is not an array: ${file}`);
-        return [];
-      }
-      const all = parsed as StrategyVideoRecord[];
-      // Only include tracked videos — respect manual deactivations
-      // daily_signal videos expire after their trade date; generic_strategy are ongoing
-      return all.filter(v => {
-        if (v.status && v.status !== 'tracked') return false;
-        if (v.strategyType === 'daily_signal' && v.tradeDate) {
-          const tradeDate = normalizeDateToEtIso(v.tradeDate);
-          if (tradeDate && tradeDate < todayET) return false; // expired
-        }
-        return true;
-      });
-    } catch (err) {
-      const code = (err as NodeJS.ErrnoException).code;
-      if (code === 'ENOENT') continue;
-      log(`Failed to load strategy videos (${file}): ${err instanceof Error ? err.message : 'unknown'}`);
-      return [];
-    }
+  if (!isConfigured()) return [];
+  const { data, error } = await getSupabase()
+    .from('strategy_videos')
+    .select('*')
+    .eq('status', 'tracked');
+
+  if (error) {
+    log(`Failed to load strategy videos from DB: ${error.message}`);
+    return [];
   }
-  log(`Strategy videos file not found. Checked: ${STRATEGY_VIDEOS_FILES.join(', ')}`);
-  return [];
+
+  const rows = (data ?? []) as Array<{
+    video_id: string;
+    source_handle?: string | null;
+    source_name?: string | null;
+    reel_url?: string | null;
+    canonical_url?: string | null;
+    video_heading?: string | null;
+    strategy_type?: string | null;
+    timeframe?: string | null;
+    applicable_timeframes?: string[] | null;
+    execution_window_et?: { start?: string; end?: string } | null;
+    trade_date?: string | null;
+    extracted_signals?: unknown[] | null;
+  }>;
+
+  const mapped: StrategyVideoRecord[] = rows.map(r => ({
+    videoId: r.video_id,
+    sourceHandle: r.source_handle ?? undefined,
+    sourceName: r.source_name ?? undefined,
+    reelUrl: r.reel_url ?? undefined,
+    canonicalUrl: r.canonical_url ?? undefined,
+    videoHeading: r.video_heading ?? undefined,
+    strategyType: (r.strategy_type === 'daily_signal' || r.strategy_type === 'generic_strategy' ? r.strategy_type : undefined) as StrategyVideoRecord['strategyType'],
+    timeframe: (r.timeframe === 'DAY_TRADE' || r.timeframe === 'SWING_TRADE' || r.timeframe === 'LONG_TERM' ? r.timeframe : undefined) as StrategyVideoRecord['timeframe'],
+    applicableTimeframes: r.applicable_timeframes ?? undefined,
+    executionWindowEt: r.execution_window_et ?? undefined,
+    tradeDate: r.trade_date ?? undefined,
+    extractedSignals: r.extracted_signals ?? undefined,
+    status: 'tracked',
+  }));
+
+  // daily_signal videos expire after their trade date; generic_strategy are ongoing
+  return mapped.filter(v => {
+    if (v.strategyType === 'daily_signal' && v.tradeDate) {
+      const tradeDate = normalizeDateToEtIso(v.tradeDate);
+      if (tradeDate && tradeDate < todayET) return false; // expired
+    }
+    return true;
+  });
 }
 
 async function autoQueueDailySignalsFromTrackedVideos(): Promise<void> {
@@ -624,6 +641,19 @@ async function shouldMarkStrategyX(signal: ExternalStrategySignal): Promise<{
   const sourceName = (signal.source_name ?? '').trim();
   if (!sourceName) {
     return { blocked: false, scope: null, consecutiveLosses: 0 };
+  }
+
+  // Check exempt_from_auto_deactivation in strategy_videos (config-driven, no hardcoding)
+  if (isConfigured()) {
+    const { data } = await getSupabase()
+      .from('strategy_videos')
+      .select('source_name')
+      .eq('exempt_from_auto_deactivation', true)
+      .eq('status', 'tracked');
+    const exemptSources = new Set((data ?? []).map((r: { source_name: string }) => r.source_name?.trim()).filter(Boolean));
+    if (exemptSources.has(sourceName)) {
+      return { blocked: false, scope: null, consecutiveLosses: 0 };
+    }
   }
 
   if (signal.strategy_video_id) {
