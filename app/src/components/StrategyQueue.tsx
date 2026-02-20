@@ -158,28 +158,28 @@ export function StrategyQueue() {
         <div className="flex items-center justify-between mb-3">
           <h2 className="text-lg font-semibold text-[hsl(var(--foreground))]">Videos</h2>
           <div className="flex items-center gap-2">
-            {pendingCount > 0 && (
-              <button
-                onClick={async () => {
-                  setProcessing(true);
-                  setMessage(null);
-                  try {
-                    const { processed } = await processQueue();
-                    await loadQueue();
-                    setMessage({ type: 'success', text: `Processed ${processed} pending item${processed === 1 ? '' : 's'}.` });
-                  } catch (err) {
-                    setMessage({ type: 'error', text: err instanceof Error ? err.message : 'Processing failed' });
-                    await loadQueue();
-                  } finally {
-                    setProcessing(false);
-                  }
-                }}
-                disabled={processing}
-                className="px-3 py-1.5 text-sm rounded-lg bg-blue-600 text-white hover:opacity-90 disabled:opacity-50"
-              >
-                {processing ? 'Processing...' : `Process ${pendingCount} pending`}
-              </button>
-            )}
+            <button
+              onClick={async () => {
+                if (pendingCount === 0) return;
+                setProcessing(true);
+                setMessage(null);
+                try {
+                  const { processed } = await processQueue();
+                  await loadQueue();
+                  setMessage({ type: 'success', text: `Processed ${processed} pending item${processed === 1 ? '' : 's'}.` });
+                } catch (err) {
+                  setMessage({ type: 'error', text: err instanceof Error ? err.message : 'Processing failed' });
+                  await loadQueue();
+                } finally {
+                  setProcessing(false);
+                }
+              }}
+              disabled={processing || pendingCount === 0}
+              className="px-3 py-1.5 text-sm rounded-lg bg-blue-600 text-white hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
+              title={pendingCount === 0 ? 'No pending videos to process' : `Process ${pendingCount} pending video${pendingCount === 1 ? '' : 's'}`}
+            >
+              {processing ? 'Processing...' : pendingCount > 0 ? `Process ${pendingCount} pending` : 'Process pending'}
+            </button>
             <button
               onClick={loadQueue}
               disabled={loading}
