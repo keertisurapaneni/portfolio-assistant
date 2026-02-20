@@ -165,14 +165,31 @@ npm run preview  # preview production build
 npm run lint     # ESLint
 ```
 
+## Docs
+
+| Doc | Description |
+|---|---|
+| [`docs/DAY-TRADE-PROMPTS-SEQUENCE.md`](docs/DAY-TRADE-PROMPTS-SEQUENCE.md) | Day trade scanner + FA prompt flow |
+| [`docs/SWING-TRADE-PROMPTS-SEQUENCE.md`](docs/SWING-TRADE-PROMPTS-SEQUENCE.md) | Swing trade scanner + FA prompt flow |
+| [`docs/DAY-TRADE-VALIDATION-QUERIES.md`](docs/DAY-TRADE-VALIDATION-QUERIES.md) | Day trade performance analysis queries |
+| [`docs/SWING-TRADE-VALIDATION-QUERIES.md`](docs/SWING-TRADE-VALIDATION-QUERIES.md) | Swing underperformance diagnostics |
+| [`docs/INSTAGRAM-STRATEGY-ARCHITECTURE.md`](docs/INSTAGRAM-STRATEGY-ARCHITECTURE.md) | External strategy signals from videos |
+| [`supabase/functions/README.md`](supabase/functions/README.md) | Edge functions, prompts, API keys |
+| [`auto-trader/README.md`](auto-trader/README.md) | IB Gateway setup, scheduler, swing diagnostics |
+
 ## Commit Conventions
 
 Vercel deploys on push to `master`, **except**:
 
-| Prefix | Deploys? |
-|---|---|
-| `feat:` `fix:` | Yes |
-| `docs:` `chore:` `ci:` | Skipped |
+| Prefix | Use for | Deploys? |
+|---|---|---|
+| `feat:` | New features | Yes |
+| `fix:` | Bug fixes | Yes |
+| `docs:` | README, docs/, comments, prompts | No |
+| `chore:` | Dependencies, config, tooling | No |
+| `ci:` | CI/CD, workflows | No |
+
+Example: `docs: add swing validation queries`
 
 ## Troubleshooting
 

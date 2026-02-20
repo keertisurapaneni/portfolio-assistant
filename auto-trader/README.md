@@ -85,6 +85,15 @@ npm run build
 ./start.sh
 ```
 
+## Scripts
+
+```bash
+npm run dev      # dev server
+npm run build    # production build
+./start.sh       # start auto-trader service
+npx tsx scripts/swing-diagnostics.ts   # swing underperformance diagnostics (requires .env)
+```
+
 ## Troubleshooting
 
 - Check listeners:
