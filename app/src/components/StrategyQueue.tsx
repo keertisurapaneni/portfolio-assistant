@@ -15,11 +15,6 @@ const PLATFORM_LABELS: Record<QueueItemPlatform, string> = {
   youtube: 'YouTube',
 };
 
-const CATEGORY_LABELS: Record<'daily_signal' | 'generic_strategy', string> = {
-  daily_signal: 'Daily Signal',
-  generic_strategy: 'Generic Strategy',
-};
-
 function StatusBadge({ status }: { status: StrategyVideoQueueItem['status'] }) {
   const config = {
     pending: { icon: Clock, label: 'Pending', className: 'bg-amber-100 text-amber-800' },
@@ -201,7 +196,6 @@ export function StrategyQueue() {
                 <tr className="border-b border-[hsl(var(--border))]">
                   <th className="text-left py-2 font-medium text-[hsl(var(--foreground))]">Video</th>
                   <th className="text-left py-2 font-medium text-[hsl(var(--foreground))]">Platform</th>
-                  <th className="text-left py-2 font-medium text-[hsl(var(--foreground))]">Category</th>
                   <th className="text-left py-2 font-medium text-[hsl(var(--foreground))]">Added</th>
                   <th className="text-left py-2 font-medium text-[hsl(var(--foreground))]">Status</th>
                 </tr>
@@ -221,9 +215,6 @@ export function StrategyQueue() {
                     </td>
                     <td className="py-2 text-[hsl(var(--muted-foreground))]">
                       {item.platform ? PLATFORM_LABELS[item.platform] : '—'}
-                    </td>
-                    <td className="py-2 text-[hsl(var(--muted-foreground))]">
-                      {item.strategy_type ? CATEGORY_LABELS[item.strategy_type] : '—'}
                     </td>
                     <td className="py-2 text-[hsl(var(--muted-foreground))]">
                       {item.created_at ? new Date(item.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : '—'}

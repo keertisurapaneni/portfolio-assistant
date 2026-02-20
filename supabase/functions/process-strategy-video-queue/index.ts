@@ -1,6 +1,6 @@
 /**
- * Process pending strategy_video_queue items: create strategy_videos entries with AI classification.
- * Fetches page metadata, classifies as daily_signal or generic_strategy via Gemini, then upserts.
+ * Process pending strategy_video_queue items: create minimal strategy_videos entries.
+ * Category (daily_signal vs generic_strategy) is set later when transcript is available.
  */
 
 import { createClient } from 'jsr:@supabase/supabase-js@2';
@@ -13,8 +13,6 @@ const corsHeaders = {
 const INSTAGRAM_REEL = /instagram\.com\/(?:([^/]+)\/)?reel\/([A-Za-z0-9_-]+)/i;
 const TWITTER_STATUS = /(?:twitter|x)\.com\/(?:[^/]+\/)?status\/(\d+)/i;
 const YOUTUBE = /(?:youtube\.com\/watch\?v=|youtu\.be\/)([A-Za-z0-9_-]{11})/i;
-
-const UA = 'Mozilla/5.0 (compatible; PortfolioAssistant/1.0; +https://github.com/portfolio-assistant)';
 
 function parseUrl(url: string): { platform: 'instagram' | 'twitter' | 'youtube'; videoId: string; handle?: string } | null {
   const trimmed = url.trim();
@@ -30,66 +28,56 @@ function parseUrl(url: string): { platform: 'instagram' | 'twitter' | 'youtube';
   return null;
 }
 
-function toSourceName(handle: string | undefined): string {
-  if (!handle || !handle.trim()) return 'Unknown';
+const UA = 'Mozilla/5.0 (compatible; PortfolioAssistant/1.0)';
+
+function toSourceName(handle: string): string {
   return handle
     .replace(/[_-]/g, ' ')
     .replace(/\b\w/g, (c) => c.toUpperCase())
     .trim();
 }
 
-async function fetchVideoMetadata(url: string): Promise<{ title: string; description: string }> {
+/** For instagram.com/reel/ID (no handle in path), fetch page and extract handle from og:url if possible */
+async function fetchInstagramHandle(url: string): Promise<string | null> {
   try {
-    const res = await fetch(url, { headers: { 'User-Agent': UA }, signal: AbortSignal.timeout(10_000) });
+    const res = await fetch(url, { headers: { 'User-Agent': UA }, signal: AbortSignal.timeout(8_000) });
     const html = await res.text();
-    const title = html.match(/<meta[^>]+property="og:title"[^>]+content="([^"]*)"/i)?.[1]?.trim() ?? '';
-    const desc = html.match(/<meta[^>]+property="og:description"[^>]+content="([^"]*)"/i)?.[1]?.trim() ?? '';
-    return { title, description: desc };
+    const ogUrl = html.match(/<meta[^>]+property="og:url"[^>]+content="([^"]*)"/i)?.[1] ?? '';
+    const m = /instagram\.com\/([^/]+)\/(?:reel|p)\//i.exec(ogUrl);
+    return m?.[1]?.trim() || null;
   } catch {
-    return { title: '', description: '' };
+    return null;
   }
 }
 
-async function classifyStrategyType(
-  title: string,
-  description: string,
-  url: string,
-  apiKey: string
-): Promise<'daily_signal' | 'generic_strategy'> {
-  const text = [title, description].filter(Boolean).join('\n').trim() || url;
-  if (!text) return 'generic_strategy';
+/** Resolve source_name from handle: use existing strategy_videos if same handle, else humanize handle */
+async function resolveSource(
+  supabase: ReturnType<typeof createClient>,
+  platform: string,
+  handle: string | undefined
+): Promise<{ source_name: string; source_handle: string | null }> {
+  const h = (handle ?? '').trim().toLowerCase();
+  if (!h) return { source_name: 'Unknown', source_handle: null };
 
-  const prompt = `Classify this trading video into exactly one category.
+  const { data: existing } = await supabase
+    .from('strategy_videos')
+    .select('source_name, source_handle')
+    .ilike('source_handle', h)
+    .eq('platform', platform)
+    .limit(1)
+    .maybeSingle();
 
-daily_signal: Video has concrete stock levels for today — specific tickers with entry price, stop loss, target (e.g. "TSLA long above 414, target 420", "SPY short below 683").
-generic_strategy: General rules, patterns, or frameworks — no specific stock levels (e.g. candlestick rules, first candle rule, SMC concepts, general setups).
-
-Video info:
-${text.slice(0, 800)}
-
-Reply with ONLY one word: daily_signal or generic_strategy`;
-
-  try {
-    const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ role: 'user', parts: [{ text: prompt }] }],
-          generationConfig: { temperature: 0.1, maxOutputTokens: 20 },
-        }),
-        signal: AbortSignal.timeout(15_000),
-      }
-    );
-    if (!res.ok) return 'generic_strategy';
-    const data = await res.json();
-    const raw = (data?.candidates?.[0]?.content?.parts?.[0]?.text ?? '').trim().toLowerCase();
-    if (raw.includes('daily_signal')) return 'daily_signal';
-    return 'generic_strategy';
-  } catch {
-    return 'generic_strategy';
+  if (existing?.source_name) {
+    return {
+      source_name: existing.source_name.trim(),
+      source_handle: (existing.source_handle ?? h).trim() || null,
+    };
   }
+
+  return {
+    source_name: toSourceName(h),
+    source_handle: h,
+  };
 }
 
 Deno.serve(async (req) => {
@@ -106,7 +94,6 @@ Deno.serve(async (req) => {
 
   const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
   const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
-  const geminiKey = Deno.env.get('GEMINI_API_KEY');
   const supabase = createClient(supabaseUrl, supabaseKey);
 
   const { data: pending, error: fetchErr } = await supabase
@@ -137,22 +124,25 @@ Deno.serve(async (req) => {
       continue;
     }
 
-    const sourceName = toSourceName(parsed.handle);
-    let strategyType: 'daily_signal' | 'generic_strategy' = 'generic_strategy';
-    if (geminiKey) {
-      const { title, description } = await fetchVideoMetadata(item.url);
-      strategyType = await classifyStrategyType(title, description, item.url, geminiKey);
+    let handle = parsed.handle;
+    if (!handle && parsed.platform === 'instagram') {
+      handle = (await fetchInstagramHandle(item.url)) ?? undefined;
     }
+    const { source_name: sourceName, source_handle: sourceHandle } = await resolveSource(
+      supabase,
+      parsed.platform,
+      handle
+    );
 
     const row = {
       video_id: parsed.videoId,
       platform: parsed.platform,
-      source_handle: parsed.handle ?? null,
+      source_handle: sourceHandle ?? parsed.handle ?? null,
       source_name: sourceName,
       reel_url: parsed.platform === 'instagram' ? item.url : null,
       canonical_url: parsed.platform !== 'instagram' ? item.url : null,
       video_heading: null,
-      strategy_type: strategyType,
+      strategy_type: null,
       timeframe: null,
       applicable_timeframes: [],
       status: 'tracked',
@@ -179,7 +169,6 @@ Deno.serve(async (req) => {
       .update({
         status: 'done',
         strategy_video_id: inserted?.id ?? null,
-        strategy_type: strategyType,
         processed_at: new Date().toISOString(),
       })
       .eq('id', item.id);

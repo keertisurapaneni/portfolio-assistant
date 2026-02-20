@@ -25,12 +25,26 @@ The portfolio-assistant ingests trading strategies from Instagram videos, queues
 
 ## 1. Strategy Ingestion
 
+### Strategy Video Ingestion Flow
+
+1. **Add URLs** — User pastes Instagram/YouTube/Twitter URLs on Add Strategies page → `strategy_video_queue`
+2. **Quick add** — `process-strategy-video-queue` Edge Function runs automatically:
+   - Resolves `source_name` from existing `strategy_videos` by `source_handle` (e.g. kaycapitals → "Somesh | Day Trader | Investor")
+   - For Instagram URLs without handle in path, fetches page to extract handle from og:url
+   - Creates minimal `strategy_videos` row (video_id, platform, source, url) → **shows in Strategy Perf immediately** under correct source
+3. **Transcript pipeline** (when run) — Transcribes video, extracts metadata, calls `upsert-strategy-video` with full payload:
+   - Updates same row with `strategy_type`, `extracted_signals`, `video_heading`, `trade_date`, etc.
+   - Strategy Perf then shows complete metadata (daily vs generic, applicable date, etc.)
+
+**Key:** Quick add creates the row so videos appear in Strategy Perf under the right source. Transcript enriches that same row.
+
 ### Config Files
 
 | File | Purpose |
 |------|---------|
 | `strategy_videos` table | Single source of truth for app and auto-trader |
-| `auto-trader/strategy-sources.json` | Source metadata (handle, URL) |
+| `strategy_video_queue` table | URLs pasted from Add Strategies; processed by `process-strategy-video-queue` |
+| `auto-trader/strategy-sources.json` | Source metadata (handle, URL) — legacy; source resolution now uses `strategy_videos.source_handle` |
 
 ### Strategy Types
 
@@ -223,13 +237,16 @@ interface PaperTrade {
 
 | Concern | Primary Files |
 |---------|---------------|
+| Add Strategies UI | `app/src/components/StrategyQueue.tsx` |
+| Queue processing | `supabase/functions/process-strategy-video-queue/index.ts` |
+| Upsert (transcript) | `supabase/functions/upsert-strategy-video/index.ts` |
 | Scheduler & queue | `auto-trader/src/scheduler.ts` |
 | External signals CRUD | `auto-trader/src/lib/supabase.ts` |
 | Strategy performance API | `app/src/lib/paperTradesApi.ts` |
 | Strategy Performance UI | `app/src/components/PaperTrading.tsx` (StrategyPerformanceTab) |
 | Strategy video config | `strategy_videos` table (Supabase) — single source of truth |
 | Swing universe | `supabase/functions/trade-scanner/index.ts` (buildDynamicSwingUniverse) |
-| Migrations | `supabase/migrations/20260219000001_external_strategy_signals.sql`, `20260219000002_strategy_video_metadata.sql` |
+| Migrations | `supabase/migrations/20260219000001_external_strategy_signals.sql`, `20260220000002_strategy_video_queue.sql`, `20260221000001_strategy_videos.sql` |
 
 ---
 

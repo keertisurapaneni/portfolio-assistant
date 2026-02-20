@@ -65,7 +65,12 @@ Secure proxy for Finnhub API calls with server-side caching (15 min TTL).
 
 ### `process-strategy-video-queue`
 
-Processes pending `strategy_video_queue` items: fetches page metadata (og:title, og:description), classifies as `daily_signal` or `generic_strategy` via Gemini, then upserts to `strategy_videos`. Requires `GEMINI_API_KEY` for classification; without it, defaults to `generic_strategy`.
+Processes pending `strategy_video_queue` items (quick add):
+
+- Resolves `source_name` from existing `strategy_videos` by `source_handle` so new videos from same source (e.g. kaycapitals) group under canonical name (e.g. "Somesh | Day Trader | Investor")
+- For Instagram URLs without handle in path, fetches page to extract handle from og:url
+- Creates minimal `strategy_videos` row (video_id, platform, source, url) → shows in Strategy Perf immediately
+- `strategy_type`, `extracted_signals`, `video_heading`, etc. are set later when transcript pipeline runs and calls `upsert-strategy-video`
 
 ---
 
