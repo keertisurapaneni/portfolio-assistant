@@ -2115,7 +2115,7 @@ function ValidationTab({ dayReport, swingReport, onRefresh }: {
           Refresh
         </button>
       </div>
-      {subTab === 'day' && <DayTradeValidationTab report={dayReport} onRefresh={onRefresh} />}
+      {subTab === 'day' && <DayTradeValidationTab report={dayReport} />}
       {subTab === 'swing' && <SwingTradeValidationTab report={swingReport} onRefresh={onRefresh} />}
     </div>
   );
@@ -2123,9 +2123,8 @@ function ValidationTab({ dayReport, swingReport, onRefresh }: {
 
 // ── Day Trade Validation Tab ─────────────────────────────
 
-function DayTradeValidationTab({ report, onRefresh }: {
+function DayTradeValidationTab({ report }: {
   report: DayTradeValidationReport | null;
-  onRefresh: () => void;
 }) {
   if (!report) {
     return (
@@ -2139,16 +2138,7 @@ function DayTradeValidationTab({ report, onRefresh }: {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <h2 className="text-lg font-semibold">Day Trade Validation (10–20 day analysis)</h2>
-        <button
-          onClick={onRefresh}
-          className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-[hsl(var(--border))] hover:bg-[hsl(var(--secondary))] text-sm"
-        >
-          <RefreshCw className="w-4 h-4" />
-          Refresh
-        </button>
-      </div>
+      <h2 className="text-lg font-semibold">Day Trade Validation (10–20 day analysis)</h2>
 
       {!hasData ? (
         <div className="rounded-xl border border-[hsl(var(--border))] bg-white p-8 text-center text-[hsl(var(--muted-foreground))]">
@@ -3180,7 +3170,7 @@ function PerformanceTab() {
         <div className="flex items-center gap-2 px-4 py-3 rounded-xl bg-red-50 border border-red-200">
           <XCircle className="w-5 h-5 text-red-600 flex-shrink-0" />
           <p className="text-sm text-red-800">{error}</p>
-          <p className="text-xs text-red-600">Ensure the auto-trader service is running (localhost:3001).</p>
+          <p className="text-xs text-red-600">Check your connection and Supabase configuration.</p>
         </div>
       )}
 

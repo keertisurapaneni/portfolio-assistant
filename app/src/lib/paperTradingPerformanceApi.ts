@@ -1,8 +1,9 @@
 /**
- * API client for paper trading performance (consumes auto-trader service).
+ * API client for paper trading performance.
+ * Uses Supabase Edge Function so it works on deployed website (no localhost).
  */
 
-const API_BASE = 'http://localhost:3001/api';
+const PERFORMANCE_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/paper-trading-performance`;
 
 export interface GroupMetrics {
   count_trades_closed: number;
@@ -39,7 +40,10 @@ export interface PerformanceResponse {
 export async function getPaperTradingPerformance(
   window: '7d' | '30d' | '90d' = '30d'
 ): Promise<PerformanceResponse> {
-  const res = await fetch(`${API_BASE}/paper-trading/performance?window=${window}`);
+  const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+  const res = await fetch(`${PERFORMANCE_URL}?window=${window}`, {
+    headers: { Authorization: `Bearer ${supabaseKey}` },
+  });
   if (!res.ok) {
     throw new Error(`Performance API error: ${res.status}`);
   }
