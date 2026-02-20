@@ -11,8 +11,11 @@
 
 const IB_BASE_URL = 'http://localhost:3001/api';
 
-function isLocalhost(): boolean {
-  return typeof window !== 'undefined' && window.location?.hostname === 'localhost';
+/** True when app can reach auto-trader at localhost:3001 (dev only) */
+export function isLocalhost(): boolean {
+  if (typeof window === 'undefined') return false;
+  const h = window.location?.hostname ?? '';
+  return h === 'localhost' || h === '127.0.0.1' || h === '[::1]';
 }
 
 // ── Types ────────────────────────────────────────────────
@@ -85,7 +88,7 @@ async function ibFetch<T>(
   options: RequestInit = {}
 ): Promise<T> {
   if (!isLocalhost()) {
-    throw new Error('Auto-trader service unreachable (not on localhost)');
+    throw new Error('Auto-trader only available on localhost (deployed app cannot reach it)');
   }
   const url = `${IB_BASE_URL}${path}`;
   const res = await fetch(url, {
