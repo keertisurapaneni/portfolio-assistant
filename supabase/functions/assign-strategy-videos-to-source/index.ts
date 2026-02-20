@@ -99,7 +99,8 @@ Deno.serve(async (req) => {
       autoAssigned++;
     }
 
-    // Step B: for already-assigned videos, fix any signals/trades still marked Unknown
+    // Step B: for already-assigned videos, sync ALL mismatched signals/trades
+    // (fixes both "Unknown" and wrong-source cases, e.g. signals that say "Somesh" for a "Trade Momentum" video)
     const { data: assigned } = await supabase
       .from('strategy_videos')
       .select('video_id, source_name, source_handle')
@@ -114,16 +115,18 @@ Deno.serve(async (req) => {
       const handle = (row.source_handle ?? '').trim().toLowerCase();
       if (!vidId || !sourceName) continue;
       const sourceUrl = handle ? `https://www.instagram.com/${handle}/` : null;
+      // Update ALL signals for this video that have a different source_name
       await supabase
         .from('external_strategy_signals')
         .update({ source_name: sourceName, source_url: sourceUrl, updated_at: new Date().toISOString() })
         .eq('strategy_video_id', vidId)
-        .eq('source_name', 'Unknown');
+        .neq('source_name', sourceName);
+      // Same for paper_trades
       await supabase
         .from('paper_trades')
         .update({ strategy_source: sourceName, strategy_source_url: sourceUrl })
         .eq('strategy_video_id', vidId)
-        .eq('strategy_source', 'Unknown');
+        .neq('strategy_source', sourceName);
     }
 
     return new Response(

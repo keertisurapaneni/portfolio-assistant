@@ -11,6 +11,7 @@ import {
   fixUnknownSources, assignUnknownToSource, updateStrategyVideoMetadata,
   extractFromTranscript, cleanupStrategyAssignments, fetchYouTubeTranscript,
   addUrlsToQueue, processQueue, getQueue, type StrategyVideoQueueItem,
+  deleteStrategyVideo,
 } from '../../../lib/strategyVideoQueueApi';
 import { fmtUsd, toEtIsoDate } from '../utils';
 import { StatusBadge } from '../shared';
@@ -65,6 +66,8 @@ export function StrategyPerformanceTab({ sources, videos, statuses, onRefresh }:
   const [extractingVideoId, setExtractingVideoId] = useState<string | null>(null);
   const [transcriptSubmitError, setTranscriptSubmitError] = useState<string | null>(null);
   const [transcriptSubmitSuccess, setTranscriptSubmitSuccess] = useState<string | null>(null);
+  const [removingVideoId, setRemovingVideoId] = useState<string | null>(null);
+  const [confirmRemoveVideoId, setConfirmRemoveVideoId] = useState<string | null>(null);
   const [fetchingCaptionsVideoId, setFetchingCaptionsVideoId] = useState<string | null>(null);
   const [videoAssignSelections, setVideoAssignSelections] = useState<Record<string, { source: string; category: string }>>({});
   const autoFixAttempted = useRef(false);
@@ -427,6 +430,19 @@ export function StrategyPerformanceTab({ sources, videos, statuses, onRefresh }:
     }
   };
 
+  const handleRemoveVideo = async (videoId: string) => {
+    setRemovingVideoId(videoId);
+    try {
+      await deleteStrategyVideo(videoId);
+      setConfirmRemoveVideoId(null);
+      onRefresh?.();
+    } catch (err) {
+      console.error('[handleRemoveVideo]', err);
+    } finally {
+      setRemovingVideoId(null);
+    }
+  };
+
   const getStrategyState = (row: StrategyRow): { label: string; tone: 'green' | 'amber' | 'red' } => {
     if (row.isMarkedX) return { label: 'deactivated X --', tone: 'red' };
     if (row.videoHeading.toLowerCase().startsWith('legacy strategy')) {
@@ -716,6 +732,36 @@ export function StrategyPerformanceTab({ sources, videos, statuses, onRefresh }:
                                             {video.videoHeading}
                                             {video.strategyType === 'daily_signal' && (
                                               <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-100 text-amber-800 shrink-0" title="Date-specific: only valid for applicable date">daily</span>
+                                            )}
+                                            {video.videoId && confirmRemoveVideoId !== video.videoId && (
+                                              <button
+                                                type="button"
+                                                onClick={() => setConfirmRemoveVideoId(video.videoId!)}
+                                                className="ml-auto shrink-0 text-[10px] px-1.5 py-0.5 rounded text-red-500 hover:text-red-700 hover:bg-red-50 border border-red-200"
+                                                title="Remove this video"
+                                              >
+                                                Remove
+                                              </button>
+                                            )}
+                                            {video.videoId && confirmRemoveVideoId === video.videoId && (
+                                              <span className="ml-auto shrink-0 flex items-center gap-1">
+                                                <span className="text-[10px] text-red-600">Delete?</span>
+                                                <button
+                                                  type="button"
+                                                  onClick={() => handleRemoveVideo(video.videoId!)}
+                                                  disabled={removingVideoId === video.videoId}
+                                                  className="text-[10px] px-1.5 py-0.5 rounded bg-red-600 text-white hover:bg-red-700 disabled:opacity-50"
+                                                >
+                                                  {removingVideoId === video.videoId ? '…' : 'Yes'}
+                                                </button>
+                                                <button
+                                                  type="button"
+                                                  onClick={() => setConfirmRemoveVideoId(null)}
+                                                  className="text-[10px] px-1.5 py-0.5 rounded border hover:bg-gray-50"
+                                                >
+                                                  No
+                                                </button>
+                                              </span>
                                             )}
                                             {video.strategyType === 'generic_strategy' && (
                                               <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-slate-100 text-slate-700 shrink-0" title="Ongoing: applies across dates">

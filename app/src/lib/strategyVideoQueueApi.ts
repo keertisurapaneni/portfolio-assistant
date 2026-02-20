@@ -235,6 +235,34 @@ export async function triggerTranscriptIngest(): Promise<{ ok: boolean; triggere
 }
 
 /** Trigger processing of pending queue items (creates strategy_videos entries) */
+/**
+ * Delete a strategy video and cascade:
+ * - Expires any PENDING signals (preserves history for closed trades)
+ * - Removes from strategy_video_queue
+ * - Deletes the strategy_videos record
+ */
+export async function deleteStrategyVideo(videoId: string): Promise<void> {
+  const { supabase } = await import('./supabaseClient');
+
+  await supabase
+    .from('external_strategy_signals')
+    .update({ status: 'EXPIRED' })
+    .eq('strategy_video_id', videoId)
+    .eq('status', 'PENDING');
+
+  await supabase
+    .from('strategy_video_queue')
+    .delete()
+    .eq('video_id', videoId);
+
+  const { error } = await supabase
+    .from('strategy_videos')
+    .delete()
+    .eq('video_id', videoId);
+
+  if (error) throw new Error(error.message);
+}
+
 export async function processQueue(): Promise<{ processed: number; results: { id: string; status: 'done' | 'failed'; error?: string }[] }> {
   const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/process-strategy-video-queue`;
   const key = import.meta.env.VITE_SUPABASE_ANON_KEY;
