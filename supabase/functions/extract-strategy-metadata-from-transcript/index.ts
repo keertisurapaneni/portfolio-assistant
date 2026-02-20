@@ -1,5 +1,5 @@
 /**
- * Extract strategy video metadata from transcript using Gemini.
+ * Extract strategy video metadata from transcript using Groq (Llama).
  * Called by ingest script after transcribing. Extracts source_name, strategy_type,
  * video_heading, extracted_signals, trade_date, etc. — then upserts to strategy_videos.
  *
@@ -19,8 +19,8 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
-const GEMINI_MODEL = 'gemini-2.0-flash';
+const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions';
+const GROQ_MODEL = 'llama-3.3-70b-versatile';
 
 const EXTRACT_SYSTEM = `You extract structured metadata from trading strategy video transcripts.
 
@@ -47,24 +47,30 @@ Rules:
 - trade_date: only for daily_signal when date is explicit (e.g. "for Thursday", "today's levels").
 - execution_window_et: only if time window is specified (e.g. "9:30-9:35 levels", "first candle rule").`;
 
-async function callGemini(apiKey: string, systemPrompt: string, userPrompt: string): Promise<string> {
-  const url = `${GEMINI_BASE}/${GEMINI_MODEL}:generateContent?key=${apiKey}`;
-  const res = await fetch(url, {
+async function callGroq(apiKey: string, systemPrompt: string, userPrompt: string): Promise<string> {
+  const res = await fetch(GROQ_URL, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${apiKey}`,
+    },
     body: JSON.stringify({
-      systemInstruction: { parts: [{ text: systemPrompt }] },
-      contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
-      generationConfig: { temperature: 0.1, maxOutputTokens: 2000 },
+      model: GROQ_MODEL,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt },
+      ],
+      temperature: 0.1,
+      max_tokens: 2000,
     }),
     signal: AbortSignal.timeout(30_000),
   });
   if (!res.ok) {
     const err = await res.text();
-    throw new Error(`Gemini failed: ${res.status} ${err.slice(0, 200)}`);
+    throw new Error(`Groq failed: ${res.status} ${err.slice(0, 200)}`);
   }
   const data = await res.json();
-  return data?.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
+  return data?.choices?.[0]?.message?.content ?? '';
 }
 
 function parseJson(text: string): Record<string, unknown> {
@@ -85,10 +91,10 @@ Deno.serve(async (req) => {
     });
   }
 
-  const apiKey = Deno.env.get('GEMINI_API_KEY');
+  const apiKey = Deno.env.get('GROQ_API_KEY');
   if (!apiKey) {
     return new Response(
-      JSON.stringify({ error: 'GEMINI_API_KEY not configured' }),
+      JSON.stringify({ error: 'GROQ_API_KEY not configured' }),
       { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
   }
@@ -125,7 +131,7 @@ Deno.serve(async (req) => {
 
   let extracted: Record<string, unknown>;
   try {
-    const raw = await callGemini(apiKey, EXTRACT_SYSTEM, userPrompt);
+    const raw = await callGroq(apiKey, EXTRACT_SYSTEM, userPrompt);
     extracted = parseJson(raw);
   } catch (e) {
     console.error('[extract-strategy-metadata]', e);

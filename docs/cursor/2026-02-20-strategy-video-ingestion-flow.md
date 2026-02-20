@@ -11,11 +11,11 @@ Add strategy videos from Instagram/YouTube/Twitter, show them in Strategy Perf u
    - Resolves `source_name` from existing `strategy_videos` by `source_handle` (kaycapitals → "Somesh | Day Trader | Investor")
    - For Instagram URLs without handle in path, fetches page to extract handle from og:url
    - Creates minimal `strategy_videos` row → **shows in Strategy Perf immediately**
-3. **Transcript pipeline** (automatic, every 10 min via auto-trader):
-   - Fetches `strategy_videos` where `video_heading` IS NULL
-   - yt-dlp downloads audio → faster-whisper transcribes
-   - `extract-strategy-metadata-from-transcript` (Gemini) extracts: source_name, source_handle, strategy_type, video_heading, extracted_signals, trade_date, etc.
-   - Upserts to `strategy_videos` → Strategy Perf shows complete metadata
+3. **Transcript pipeline** (triggered when user adds videos, no auto-trader needed):
+   - process-strategy-video-queue creates rows → triggers ingest (INGEST_TRIGGER_URL)
+   - Frontend also triggers ingest after Process pending
+   - Ingest worker (Vercel api/run_ingest): yt-dlp downloads → Groq Whisper or faster-whisper transcribes → extract (Groq) upserts
+   - Fallback: auto-trader runs ingest every 10 min if scripts/.venv exists
 
 ## Key Decisions
 
@@ -25,8 +25,26 @@ Add strategy videos from Instagram/YouTube/Twitter, show them in Strategy Perf u
 
 ## Setup
 
-```bash
-pip install -r scripts/requirements.txt   # yt-dlp, faster-whisper, requests
-```
+### Option A: Vercel serverless (no auto-trader)
 
-Auto-trader runs the ingest automatically when `scripts/ingest_video.py` exists.
+1. Deploy to Vercel — `api/run_ingest.py` runs ingest when triggered
+2. Set Vercel env: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `GROQ_API_KEY`
+3. Set Supabase secret: `INGEST_TRIGGER_URL` = `https://your-app.vercel.app/api/run_ingest`
+4. When user adds videos → ingest runs automatically (no auto-trader)
+
+### Option B: Auto-trader (local)
+
+1. Python venv: `python3 -m venv scripts/.venv` + `pip install -r scripts/requirements.txt`
+2. ffmpeg: `brew install ffmpeg`
+3. Auto-trader runs ingest every 10 min when `scripts/.venv` exists
+
+## Troubleshooting
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| Ingest stays "Pending" | Auto-trader not running | Start auto-trader; ingest runs every 10 min |
+| `yt-dlp: No such file or directory` | yt-dlp not in PATH | Use venv: `scripts/.venv/bin/python scripts/ingest_video.py` |
+| `ffprobe and ffmpeg not found` | ffmpeg not installed | `brew install ffmpeg` |
+| Extract 500 | GROQ_API_KEY not set | `supabase secrets set GROQ_API_KEY=...` (same as ai-proxy) |
+| Download failed (Instagram) | Rate limit / login required | Use `--cookies path/to/cookies.txt` with Instagram session |
+| Vercel ingest: ffmpeg not found | Vercel serverless has no ffmpeg | Use auto-trader or Paste transcript for Instagram; YouTube may work |

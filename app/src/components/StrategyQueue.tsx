@@ -5,6 +5,7 @@ import {
   addUrlsToQueue,
   getQueue,
   processQueue,
+  triggerTranscriptIngest,
   type StrategyVideoQueueItem,
   type QueueItemPlatform,
 } from '../lib/strategyVideoQueueApi';
@@ -84,6 +85,7 @@ export function StrategyQueue() {
         setMessage({ type: 'success', text: `Added ${added} URL${added === 1 ? '' : 's'}. Processing...` });
         try {
           const { processed } = await processQueue();
+          if (processed > 0) triggerTranscriptIngest().catch(() => {}); // Fire-and-forget: trigger ingest (no auto-trader needed)
           await loadQueue();
           setMessage({ type: 'success', text: `Added ${added} URL${added === 1 ? '' : 's'}. Processed ${processed} into strategy videos.` });
         } catch (procErr) {
@@ -160,6 +162,7 @@ export function StrategyQueue() {
                 setMessage(null);
                 try {
                   const { processed } = await processQueue();
+                  if (processed > 0) triggerTranscriptIngest().catch(() => {});
                   await loadQueue();
                   setMessage({ type: 'success', text: `Processed ${processed} pending item${processed === 1 ? '' : 's'}.` });
                 } catch (err) {

@@ -86,6 +86,7 @@ export async function assignUnknownToSource(params: {
   source_handle: string;
   source_name: string;
   video_ids?: string[];
+  strategy_type?: 'daily_signal' | 'generic_strategy';
 }): Promise<{ assigned: number; video_ids: string[] }> {
   const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/assign-strategy-videos-to-source`;
   const key = import.meta.env.VITE_SUPABASE_ANON_KEY;
@@ -105,6 +106,59 @@ export async function assignUnknownToSource(params: {
   return { assigned: data.assigned ?? 0, video_ids: data.video_ids ?? [] };
 }
 
+/** Update strategy video metadata (source, category) */
+export async function updateStrategyVideoMetadata(params: {
+  video_id: string;
+  platform?: 'instagram' | 'twitter' | 'youtube';
+  source_handle?: string;
+  source_name?: string;
+  strategy_type?: 'daily_signal' | 'generic_strategy';
+}): Promise<{ ok: boolean }> {
+  const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/update-strategy-video-metadata`;
+  const key = import.meta.env.VITE_SUPABASE_ANON_KEY;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(key && { Authorization: `Bearer ${key}` }),
+    },
+    body: JSON.stringify(params),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err?.error ?? `Update failed: ${res.status}`);
+  }
+  return { ok: true };
+}
+
+/** Extract metadata from pasted transcript and upsert to strategy_videos (source, category, etc.) */
+export async function extractFromTranscript(params: {
+  video_id: string;
+  platform?: 'instagram' | 'twitter' | 'youtube';
+  transcript: string;
+}): Promise<{ ok: boolean; strategy_video?: { id: string; video_id: string; source_name: string }; extracted?: Record<string, unknown> }> {
+  const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/extract-strategy-metadata-from-transcript`;
+  const key = import.meta.env.VITE_SUPABASE_ANON_KEY;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(key && { Authorization: `Bearer ${key}` }),
+    },
+    body: JSON.stringify({
+      video_id: params.video_id,
+      platform: params.platform ?? 'instagram',
+      transcript: params.transcript.trim(),
+      reel_url: params.platform === 'instagram' ? `https://www.instagram.com/reel/${params.video_id}/` : undefined,
+    }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err?.error ?? `Extract failed: ${res.status}`);
+  }
+  return res.json();
+}
+
 /** Fix strategy_videos with source_name = 'Unknown' by re-resolving from URL */
 export async function fixUnknownSources(): Promise<{ fixed: number; results: { video_id: string; source_name: string; status: 'fixed' | 'failed' }[] }> {
   const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/fix-unknown-strategy-sources`;
@@ -122,6 +176,21 @@ export async function fixUnknownSources(): Promise<{ fixed: number; results: { v
   }
   const data = await res.json();
   return { fixed: data.fixed ?? 0, results: data.results ?? [] };
+}
+
+/** Trigger transcript ingest (download + transcribe + extract). No auto-trader needed if INGEST_TRIGGER_URL is set. */
+export async function triggerTranscriptIngest(): Promise<{ ok: boolean; triggered: boolean; message?: string }> {
+  const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/trigger-transcript-ingest`;
+  const key = import.meta.env.VITE_SUPABASE_ANON_KEY;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(key && { Authorization: `Bearer ${key}` }),
+    },
+  });
+  const data = await res.json().catch(() => ({}));
+  return { ok: data.ok ?? false, triggered: data.triggered ?? false, message: data.message };
 }
 
 /** Trigger processing of pending queue items (creates strategy_videos entries) */
