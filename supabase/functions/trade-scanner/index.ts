@@ -99,13 +99,11 @@ interface YahooQuote {
   _atrPct?: number;
   _dayRangePct?: number;
   _gapPct?: number;
-  _trendScore?: number;
-  _extensionPenalty?: number;
   // SwingSetupScore debug (swing pre-ranking)
   _swingSetupScore?: number;
-  _trendScore?: number;   // swing trendScore 0-10
+  _trendScore?: number;    // 0-10 (day: InPlayScore trendScore; swing: SwingSetupScore trendScore)
   _pullbackScore?: number; // swing pullbackScore 0-10
-  _extensionPenalty?: number; // day=InPlayScore ext; swing=SwingSetupScore ext
+  _extensionPenalty?: number; // day: InPlayScore ext penalty; swing: SwingSetupScore ext penalty
 }
 
 // AI response shape for one stock
@@ -991,7 +989,7 @@ Candles:
 News:
 {{SENTIMENT_DATA}}`;
 
-const FA_SWING_USER = `Inputs: (1) Pre-computed indicators (primary), (2) 4h/1d/1w candles (validation), (3) News headlines (must not contradict technicals).
+const FA_SWING_USER = `Inputs: (1) Pre-computed indicators (primary), (2) 1d daily candles (scanner uses daily only; full analysis also includes 4h/1w), (3) News headlines (must not contradict technicals).
 
 ${SWING_TRADE_RULES}
 
@@ -1038,28 +1036,61 @@ async function runPass2(
     ? await fetchFundamentalsBatch(tickers)
     : new Map();
 
-  // ── Data: fetch candles (day = 15min from Twelve Data, swing = reuse daily Yahoo) ──
-  const candleMap = new Map<string, { ohlcvBars: OHLCV[]; trimmed: Record<string, unknown> }>();
+  // ── Data: fetch candles ──
+  // Day trade: fetch 1min/15min/1h so the LLM can verify VWAP structure on 1m candles
+  //            (15min-only was causing direction mismatches vs full analysis)
+  // Swing:    reuse daily Yahoo OHLCV from enrichment — zero extra fetches
+  const candleMap = new Map<string, { ohlcvBars: OHLCV[]; trimmed: Record<string, unknown>; currentPrice1min?: number }>();
 
   if (mode === 'DAY_TRADE') {
     const candleResults = await Promise.all(
       tickers.map(async (ticker) => {
         try {
-          const c15m = await fetchCandles(ticker, '15min', 150);
+          // Fetch all three intraday timeframes in parallel (lite sizes: 60 bars each)
+          const [c1m, c15m, c1h] = await Promise.all([
+            fetchCandles(ticker, '1min', 60),
+            fetchCandles(ticker, '15min', 60),
+            fetchCandles(ticker, '1h', 60),
+          ]);
           if (!c15m?.values?.length) return { ticker, data: null };
+
+          // Indicators use 15min (same as full analysis INDICATOR_INTERVAL['DAY_TRADE'])
           const ohlcvBars = c15m.values.map(v => ({
             o: parseFloat(v.open), h: parseFloat(v.high),
             l: parseFloat(v.low), c: parseFloat(v.close),
             v: v.volume ? parseFloat(v.volume) : 0,
           }));
-          const trimmed = {
+
+          const trimmed: Record<string, unknown> = {
             '15min': c15m.values.slice(0, 40).map(v => ({
               t: v.datetime, o: parseFloat(v.open), h: parseFloat(v.high),
               l: parseFloat(v.low), c: parseFloat(v.close),
               v: v.volume ? parseFloat(v.volume) : 0,
             })),
           };
-          return { ticker, data: { ohlcvBars, trimmed } };
+
+          // Include 1min bars for VWAP/structure analysis (required for BUY/SELL structure gate)
+          let currentPrice1min: number | undefined;
+          if (c1m?.values?.length) {
+            trimmed['1min'] = c1m.values.slice(0, 40).map(v => ({
+              t: v.datetime, o: parseFloat(v.open), h: parseFloat(v.high),
+              l: parseFloat(v.low), c: parseFloat(v.close),
+              v: v.volume ? parseFloat(v.volume) : 0,
+            }));
+            const p = parseFloat(c1m.values[0].close);
+            if (!Number.isNaN(p)) currentPrice1min = p;
+          }
+
+          // Include 1h bars for broader intraday context
+          if (c1h?.values?.length) {
+            trimmed['1h'] = c1h.values.slice(0, 40).map(v => ({
+              t: v.datetime, o: parseFloat(v.open), h: parseFloat(v.high),
+              l: parseFloat(v.low), c: parseFloat(v.close),
+              v: v.volume ? parseFloat(v.volume) : 0,
+            }));
+          }
+
+          return { ticker, data: { ohlcvBars, trimmed, currentPrice1min } };
         } catch { return { ticker, data: null }; }
       })
     );
@@ -1093,7 +1124,8 @@ async function runPass2(
 
       try {
         const indicators = computeAllIndicators(candles.ohlcvBars);
-        const currentPrice = candles.ohlcvBars[0]?.c ?? rawVal(quoteMap.get(ticker)?.regularMarketPrice);
+        // Use 1min close for current price when available (most accurate); fall back to 15min
+        const currentPrice = candles.currentPrice1min ?? candles.ohlcvBars[0]?.c ?? rawVal(quoteMap.get(ticker)?.regularMarketPrice);
         const indicatorText = formatIndicatorsForPrompt(indicators, currentPrice, marketCtxStr);
 
         let extraContext = '';
