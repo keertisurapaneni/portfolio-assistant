@@ -1,139 +1,195 @@
 # Supabase Edge Functions
 
-This folder contains Supabase Edge Functions (serverless Deno functions) for Portfolio Assistant.
+Serverless Deno functions for Portfolio Assistant.
+
+---
 
 ## Shared Modules (`_shared/`)
 
-All shared code lives in `_shared/` and is imported by both `trading-signals` and `trade-scanner`. Edit shared modules → deploy both functions.
+All shared code lives in `_shared/` and is imported by both `trading-signals` and `trade-scanner`. **When editing `_shared/`, redeploy both functions.**
 
 ### `_shared/prompts.ts`
-
-Single source of truth for AI trading prompts, rules, and system instructions. Both functions import the same `DAY_TRADE_SYSTEM`, `SWING_TRADE_SYSTEM`, rules, and scanner Pass 2 refine prompts.
+Single source of truth for AI trading prompts and rules. Both scanner and FA import the same `DAY_TRADE_SYSTEM`, `SWING_TRADE_SYSTEM`, `DAY_TRADE_RULES`, `SWING_TRADE_RULES`, and scanner Pass 2 refine prompts.
 
 ### `_shared/indicators.ts`
-
-Full technical indicator engine — 13 indicators computed from OHLCV candle data:
-
-- RSI (14), MACD (12/26/9), EMA (20), SMA (50/200), ATR (14), ADX (14)
-- Volume Ratio, Support/Resistance, EMA/SMA Crossover, Trend Classification
-- Recent Move, Gap Detection
-
-Both the scanner (Pass 2) and full analysis use `computeAllIndicators()` + `formatIndicatorsForPrompt()` from this module, guaranteeing identical indicator values for the same data.
+Full 13-indicator engine from OHLCV data: RSI (14), MACD (12/26/9), EMA (20), SMA (50/200), ATR (14), ADX (14), Volume Ratio, Support/Resistance, EMA/SMA Crossover, Trend Classification, Recent Move, Gap Detection. Both scanner Pass 2 and full analysis call `computeAllIndicators()` + `formatIndicatorsForPrompt()`.
 
 ### `_shared/data-fetchers.ts`
-
-Yahoo Finance data utilities (no API key needed):
-
-- `fetchCandles(ticker, interval, size)` — OHLCV candles (1min to weekly), with 1h→4h aggregation
-- `fetchMarketSnapshot()` — SPY trend + VIX for market context
-- `fetchYahooNews(ticker)` — recent headlines
-- `fetchFundamentalsBatch(symbols)` — P/E, earnings date, analyst ratings (v7 quote API)
-- `formatFundamentalsForAI()` / `formatNewsForAI()` — AI prompt formatters
+Yahoo Finance utilities (no API key): `fetchCandles`, `fetchMarketSnapshot`, `fetchYahooNews`, `fetchFundamentalsBatch`, formatters.
 
 ### `_shared/analysis.ts`
-
-Shared analysis pipeline used by `trading-signals` (full analysis):
-
-- `prepareAnalysisContext(ticker, mode, lite?)` — fetches candles, computes all 13 indicators, gets market snapshot + news, formats everything for AI
-- `MODE_INTERVALS` — candle timeframes per mode (day: 1m/15m/1h, swing: 4h/1d/1w)
-- `CANDLE_SIZES` — how many candles to fetch per timeframe
+Shared analysis pipeline used by `trading-signals`: `prepareAnalysisContext(ticker, mode)` — candles, 13 indicators, market snapshot, news, all formatted for AI.
 
 ---
 
 ## Functions
 
-### `trading-signals`
+### Trade Analysis
 
-Full AI analysis for a single ticker. Uses `prepareAnalysisContext` from `_shared/analysis.ts` to fetch Yahoo Finance candles, compute indicators, and build prompts. Runs parallel Gemini agents for sentiment + trade signal + long-term outlook.
+#### `trading-signals`
+Full AI analysis for a single ticker. Uses `prepareAnalysisContext` (Yahoo Finance candles + Finnhub fundamentals + indicators). Runs parallel Gemini agents: sentiment + trade signal + long-term outlook.
 
-**Data sources:** Yahoo Finance (candles, news, market context), Finnhub (fundamentals, earnings calendar).
-
-### `trade-scanner`
-
+#### `trade-scanner`
 Two-pass AI scanner for Trade Ideas:
+- **Pass 1:** Yahoo screener → lightweight indicators → Gemini batch filter → top 5
+- **Pass 2:** Each ticker gets full `computeAllIndicators` + `formatIndicatorsForPrompt` (same code as FA). Day: fetches 15min candles. Swing: reuses daily OHLCV from Pass 1.
 
-- **Pass 1:** Yahoo screener finds movers → lightweight indicators → Gemini batch filters to top 5
-- **Pass 2:** Each shortlisted ticker gets full 13-indicator analysis using the **same shared `computeAllIndicators` + `formatIndicatorsForPrompt`** code as full analysis. Day trades fetch 15min candles (matching FA); swing trades reuse daily OHLCV from chart enrichment (zero extra fetches).
+Results cached in `trade_scans` (day: 30 min TTL, swing: 6 hr TTL).
 
-Results cached in `trade_scans` table (day: 30 min TTL, swing: 6 hr TTL).
+#### `fetch-stock-data`
+Secure Finnhub proxy with 15-min server-side cache. Endpoints: `quote`, `metrics`, `recommendations`, `earnings`.
 
-### `fetch-stock-data`
+---
 
-Secure proxy for Finnhub API calls with server-side caching (15 min TTL).
+### Strategy Video Ingest Pipeline
 
-**Endpoints:** `quote`, `metrics`, `recommendations`, `earnings`
+```
+User pastes URL
+  → process-strategy-video-queue
+      YouTube  → fetch-youtube-transcript → extract-strategy-metadata-from-transcript
+      Instagram/Twitter → trigger-instagram-ingest → GitHub Actions → extract-strategy-metadata-from-transcript
+  → extract-strategy-metadata-from-transcript
+      → import-strategy-signals  (if daily_signal)
+```
 
-### `process-strategy-video-queue`
+#### `process-strategy-video-queue`
+Processes pending `strategy_video_queue` items:
+- Resolves `source_name` from existing `strategy_videos` by `source_handle`
+- For Instagram URLs without handle: fetches page `og:url` to extract handle
+- Upserts minimal `strategy_videos` row (`ingest_status: pending`) → visible in Strategy Perf immediately
+- Auto-triggers platform-specific ingest (YouTube → caption fetch, Instagram/Twitter → GitHub Actions)
 
-Processes pending `strategy_video_queue` items (quick add):
+#### `fetch-youtube-transcript`
+Fetches YouTube captions directly (no yt-dlp):
+- Calls internal YouTube API to get caption tracks
+- Picks best English track (manual > auto-generated)
+- Sets `ingest_status: transcribing` → calls `extract-strategy-metadata-from-transcript` → `done`
 
-- Resolves `source_name` from existing `strategy_videos` by `source_handle` so new videos from same source (e.g. kaycapitals) group under canonical name (e.g. "Somesh | Day Trader | Investor")
-- For Instagram URLs without handle in path, fetches page to extract handle from og:url
-- Creates minimal `strategy_videos` row (video_id, platform, source, url) → shows in Strategy Perf immediately
-- `strategy_type`, `extracted_signals`, `video_heading`, etc. are set by the transcript pipeline (see below)
+**POST body:** `{ video_id: string }`
 
-### `extract-strategy-metadata-from-transcript`
+#### `trigger-instagram-ingest`
+Dispatches GitHub Actions `repository_dispatch` event to run `ingest-instagram.yml`:
+- Requires `GITHUB_TOKEN` (PAT with `repo` scope) and optionally `GITHUB_REPO` (default: `keertisurapaneni/portfolio-assistant`) Supabase secrets
+- GitHub Actions installs ffmpeg + yt-dlp + groq, runs `scripts/ingest_video.py`
 
-Extracts metadata from transcript via Groq (Llama 3.3 70B) and upserts to `strategy_videos`. Called by the ingest script. Uses `GROQ_API_KEY` (same as ai-proxy).
+**POST body:** `{ video_ids?: string[] }` — specific reel IDs, or omit to process all pending
 
-**POST body:** `{ video_id, platform?, reel_url?, canonical_url?, transcript }`  
-**Extracts:** source_name, source_handle, strategy_type, video_heading, trade_date, extracted_signals, summary, etc.
+#### `extract-strategy-metadata-from-transcript`
+Extracts metadata from transcript via **Groq Llama 3.3 70B**. Upserts to `strategy_videos`. Requires `GROQ_API_KEY`.
 
-### Transcript pipeline (automatic)
+**POST body:** `{ video_id, platform?, reel_url?, canonical_url?, transcript }`
 
-1. User adds URLs → `process-strategy-video-queue` creates minimal rows
-2. Auto-trader runs `scripts/ingest_video.py --from-strategy-videos` every 10 min
-3. Ingest: yt-dlp downloads → faster-whisper transcribes → calls `extract-strategy-metadata-from-transcript` → upserts
+**Extracts:** `source_name`, `source_handle`, `strategy_type` (daily_signal/generic_strategy), `video_heading`, `trade_date`, `execution_window_et`, `timeframe`, `applicable_timeframes`, `extracted_signals`, `summary`
 
-Requires: `pip install -r scripts/requirements.txt` (yt-dlp, faster-whisper, requests)
+**Auto-trigger:** If `strategy_type = 'daily_signal'` and `extracted_signals` is non-empty, fires `import-strategy-signals` (non-blocking).
 
-### `fix-unknown-strategy-sources`
+#### `import-strategy-signals`
+Converts `extracted_signals` from a `strategy_videos` row into PENDING `external_strategy_signals`. Called automatically after extraction for daily_signal videos.
 
-Repairs `strategy_videos` with `source_name = 'Unknown'`: fetches Instagram page, extracts handle, looks up canonical source from existing videos, updates the row. Auto-runs when Strategy Perf tab loads and Unknown sources exist.
+- `longTriggerAbove` → BUY signal with `entry_price`, `target_price` (longTargets[0]), `stop_loss`
+- `shortTriggerBelow` → SELL signal with `entry_price`, `target_price` (shortTargets[0]), `stop_loss`
+- Sets `execute_on_date = trade_date`, `execute_at/expires_at` from `execution_window_et` (defaults to market close)
+- Idempotent: skips existing signals for same `video_id + ticker + signal` on the same date
 
-### `assign-strategy-videos-to-source`
+**POST body:** `{ video_id: string }`
 
-Manual fallback when auto-fix fails (e.g. Instagram blocks server-side fetch). Assigns Unknown videos to a known source.
+---
 
-**POST body:** `{ source_handle: string, source_name: string, video_ids?: string[] }`  
-- If `video_ids` provided: only assign those videos  
-- If omitted: assign all Unknown videos to the given source  
+### Source Management
 
-UI: Strategy Perf → Unknown row → "Assign to:" dropdown + Assign button.
+#### `fix-unknown-strategy-sources`
+Auto-repairs `strategy_videos` with `source_name = 'Unknown'`: fetches Instagram page, extracts handle, looks up canonical source. Also updates `external_strategy_signals` and `paper_trades` to remove duplicates. Auto-runs when Strategy Performance tab loads with Unknown sources.
+
+#### `assign-strategy-videos-to-source`
+Manual fallback for Unknown videos. Assigns to a known source + propagates to `external_strategy_signals` and `paper_trades`.
+
+**POST body:** `{ source_handle, source_name, video_ids?, strategy_type?, cleanup? }`
+- `video_ids`: specific videos (omit = all Unknown)
+- `cleanup: true`: sync all assigned videos to remove stale Unknown references
+
+#### `update-strategy-video-metadata`
+Updates `strategy_type` or source on an existing `strategy_videos` row.
+
+---
+
+### Other Functions
+
+#### `daily-suggestions`
+Long-term AI stock suggestions (Quiet Compounders / Gold Mines). Uses HuggingFace.
+
+#### `fetch-yahoo-news` / `scrape-market-movers`
+News and market movers data.
+
+#### `broker-connect` / `broker-sync`
+SnapTrade broker integration (OAuth, positions sync).
+
+#### `paper-trading-performance`
+Computes performance metrics from `paper_trades` table.
+
+#### `ai-proxy` / `gemini-proxy` / `huggingface-proxy`
+Secure AI API proxies — serve API keys server-side.
+
+#### `regime-spy`
+Market regime detection.
+
+#### `trade-performance-log-close`
+Logs closed trade performance.
+
+#### `trigger-transcript-ingest` *(legacy)*
+Calls `INGEST_TRIGGER_URL` (old auto-trader trigger). Kept for backward compat but no longer used in the main flow.
+
+---
+
+## Secrets
+
+```bash
+# AI + transcription
+supabase secrets set GROQ_API_KEY=<key>                       # Whisper transcription + Llama extraction
+supabase secrets set GEMINI_API_KEY=<key>                     # trading-signals, trade-scanner
+supabase secrets set GEMINI_API_KEY_2=<key>                   # rotate through up to _13
+
+# Data
+supabase secrets set FINNHUB_API_KEY=<key>
+supabase secrets set ALPHA_VANTAGE_API_KEY=<key>
+
+# Instagram ingest trigger
+supabase secrets set GITHUB_TOKEN=<PAT with repo scope>        # trigger-instagram-ingest → GitHub Actions
+supabase secrets set GITHUB_REPO=keertisurapaneni/portfolio-assistant  # optional, this is default
+
+# Optional legacy
+supabase secrets set INGEST_TRIGGER_URL=<url>                  # legacy Vercel trigger, no longer needed
+```
+
+### GitHub Actions secrets (set via `gh secret set`)
+
+```bash
+gh secret set SUPABASE_URL --body "https://..."
+gh secret set SUPABASE_SERVICE_ROLE_KEY --body "eyJ..."
+gh secret set GROQ_API_KEY --body "gsk_..."
+```
 
 ---
 
 ## Deployment
 
-### Prerequisites
-
-- Supabase CLI: `brew install supabase/tap/supabase`
-- Logged in: `supabase login`
-- Project linked: `supabase link --project-ref <ref>`
-
-### Secrets
-
 ```bash
-supabase secrets set FINNHUB_API_KEY=<key>
-supabase secrets set GROQ_API_KEY=<key>        # ai-proxy + extract-strategy-metadata
-supabase secrets set INGEST_TRIGGER_URL=<url>  # Optional: Vercel api/run_ingest URL for transcript ingest (no auto-trader)
-supabase secrets set GEMINI_API_KEY=<key>
-supabase secrets set GEMINI_API_KEY_2=<key>
-# ... up to GEMINI_API_KEY_13 (sequential, no gaps)
-```
-
-### Deploy
-
-```bash
-# Deploy both signal functions (shared modules are bundled automatically)
+# Core signal functions (always deploy together when _shared/ changes)
 npx supabase functions deploy trading-signals --no-verify-jwt
 npx supabase functions deploy trade-scanner --no-verify-jwt
+
+# Data proxies
 npx supabase functions deploy fetch-stock-data --no-verify-jwt
+npx supabase functions deploy fetch-yahoo-news --no-verify-jwt
+
+# Strategy ingest pipeline
 npx supabase functions deploy process-strategy-video-queue --no-verify-jwt
+npx supabase functions deploy fetch-youtube-transcript --no-verify-jwt
+npx supabase functions deploy trigger-instagram-ingest --no-verify-jwt
+npx supabase functions deploy extract-strategy-metadata-from-transcript --no-verify-jwt
+npx supabase functions deploy import-strategy-signals --no-verify-jwt
+
+# Source management
 npx supabase functions deploy fix-unknown-strategy-sources --no-verify-jwt
 npx supabase functions deploy assign-strategy-videos-to-source --no-verify-jwt
-npx supabase functions deploy extract-strategy-metadata-from-transcript --no-verify-jwt
-npx supabase functions deploy trigger-transcript-ingest --no-verify-jwt
+npx supabase functions deploy update-strategy-video-metadata --no-verify-jwt
 ```
-
-**Important:** When editing `_shared/` modules, redeploy **both** `trading-signals` and `trade-scanner`.

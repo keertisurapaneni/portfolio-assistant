@@ -1,68 +1,89 @@
-# Ingest Pipeline: Lessons Learned (Ask Codex for Advice)
+# Ingest Pipeline: Lessons Learned & How They Were Fixed
 
-**Context:** Strategy video ingest = download (yt-dlp) → transcribe (Whisper) → extract metadata (LLM) → upsert to DB. Videos show in Strategy Perf under correct source.
+**Last updated:** 2026-02-20
 
 ---
 
-## What Went Wrong
+## What Went Wrong (Original Problems)
 
-### 1. **Over-engineered the extract step**
-- Used Gemini for metadata extraction (source_name, strategy_type, video_heading, extracted_signals)
-- User correctly pointed out: **why do we need AI?** — most of this is regex/pattern matching
-- Ticker + levels ("TSLA above 414"), source intro ("it's X from Y"), date patterns — all rule-based
-- **Should have:** Built a rule-based extractor first. Zero cost, no quota, no API dependency.
-
-### 2. **Tight coupling to auto-trader**
+### 1. Tight coupling to auto-trader
 - Ingest only ran every 10 min from auto-trader scheduler
-- User: "transcription and extract should work once a user uploads a video" — correct
-- **Should have:** Triggered ingest when videos are added, not on a cron.
+- Result: users waited up to 10 min to see transcription results
+- **Fix:** GitHub Actions triggers instantly when URLs are queued. YouTube auto-fetches captions serverlessly.
 
-### 3. **Vercel serverless as "solution"**
-- Added `api/run_ingest.py` to run Python ingest in Vercel
-- **Problems:**
-  - Vercel has no ffmpeg → Instagram downloads fail (yt-dlp needs it for DASH postprocessing)
-  - 60s timeout → might not finish for multiple videos
-  - User now has to configure INGEST_TRIGGER_URL, Vercel env vars, Supabase secrets
-- **Result:** More moving parts, still doesn't work for Instagram.
+### 2. Vercel serverless as "solution"
+- `api/run_ingest.py` was added to run Python ingest in Vercel
+- Vercel has no ffmpeg → Instagram downloads failed
+- 60s timeout → could not finish multiple videos
+- **Fix:** Removed Vercel path. GitHub Actions provides ffmpeg + yt-dlp. YouTube bypasses yt-dlp entirely via captions API.
 
-### 4. **Switched to Groq instead of fixing root cause**
-- Gemini hit 429 quota → switched extract to Groq
-- Groq Whisper for transcribe (when GROQ_API_KEY set) — good for serverless bundle size
-- But we never removed the AI dependency for extract when rule-based would have sufficed.
+### 3. Multiple confusing trigger paths
+- `process-strategy-video-queue` called INGEST_TRIGGER_URL
+- Frontend called `trigger-transcript-ingest` → which also called INGEST_TRIGGER_URL
+- Auto-trader still ran ingest every 10 min
+- **Fix:** Single clear path per platform (see current architecture below).
 
-### 5. **Multiple trigger paths**
-- process-strategy-video-queue calls INGEST_TRIGGER_URL
-- Frontend calls trigger-transcript-ingest → which calls INGEST_TRIGGER_URL
-- Auto-trader still runs ingest every 10 min if venv exists
-- **Result:** Three ways to trigger, unclear which one "wins," harder to debug.
+### 4. No bridge from extracted signals to auto-trader
+- Even when extraction succeeded, `extracted_signals` in `strategy_videos` didn't automatically create rows in `external_strategy_signals`
+- Result: no trades ever fired from daily_signal videos
+- **Fix:** New `import-strategy-signals` edge function is called automatically after extraction. It converts `extracted_signals` → `PENDING external_strategy_signals` with correct `execute_on_date`, `execute_at`, `expires_at`.
 
----
-
-## Current State (Messy)
-
-| Component | Purpose |
-|-----------|---------|
-| `scripts/ingest_video.py` | Download (yt-dlp) + transcribe (faster-whisper or Groq Whisper) + call extract edge fn |
-| `extract-strategy-metadata-from-transcript` | Groq LLM extracts metadata from transcript |
-| `trigger-transcript-ingest` | Edge fn that calls INGEST_TRIGGER_URL |
-| `api/run_ingest.py` | Vercel serverless — runs ingest (no ffmpeg, Instagram fails) |
-| Auto-trader scheduler | Runs ingest every 10 min (works, but user didn't want this dependency) |
-
-**Dependencies:** yt-dlp, ffmpeg, faster-whisper (or Groq Whisper), Groq for extract, Python venv or Vercel.
+### 5. Add Strategies as a separate page
+- Disconnected from Strategy Performance — you'd add videos, then navigate away to see results
+- No per-video progress visibility
+- **Fix:** Add Videos panel merged directly into Strategy Performance tab with 3-step pipeline UI.
 
 ---
 
-## Questions for Codex
+## Current Architecture (Working)
 
-1. **Rule-based extractor:** Should we replace the Groq extract with regex/heuristics? What's the minimal set of patterns for source_name, source_handle, strategy_type, extracted_signals?
+### Per-platform ingest paths
 
-2. **Where should ingest run?** Options:
-   - Auto-trader (works, user doesn't want it)
-   - Vercel (no ffmpeg, Instagram fails)
-   - Supabase Edge Function (can't run yt-dlp or Python)
-   - Separate worker (Railway, Render) — another service to maintain
-   - "Paste transcript" only — user does manual step
+| Platform | Transcript method | Where it runs |
+|----------|------------------|---------------|
+| YouTube | YouTube captions API (serverless) | `fetch-youtube-transcript` edge function |
+| Instagram | yt-dlp + Groq Whisper | GitHub Actions (`ingest-instagram.yml`) |
+| Twitter | yt-dlp + Groq Whisper | GitHub Actions (`ingest-instagram.yml`) |
 
-3. **Simpler architecture:** What's the minimal path from "user pastes URL" to "video shows in Strategy Perf with correct source"? Can we avoid Python entirely (e.g., Groq Whisper API + rule-based extract in edge fn, but we still need to get audio from Instagram URL)?
+### Full flow
 
-4. **Instagram without yt-dlp:** Is there a serverless-friendly way to get audio from an Instagram reel URL? Or should we just document "use Paste transcript for Instagram" and only auto-ingest YouTube/Twitter?
+```
+User pastes URL in Add Videos panel
+  → addUrlsToQueue() → strategy_video_queue
+  → processQueue() → process-strategy-video-queue edge function
+      • Creates minimal strategy_videos row (visible in UI immediately)
+      • YouTube → triggers fetch-youtube-transcript (serverless, instant)
+      • Instagram/Twitter → triggers trigger-instagram-ingest
+          → dispatches GitHub Actions repository_dispatch
+          → Actions: ffmpeg + yt-dlp download → Groq Whisper transcribe
+          → calls extract-strategy-metadata-from-transcript
+
+extract-strategy-metadata-from-transcript (Groq Llama 3.3 70B)
+  • Upserts transcript, strategy_type, video_heading, extracted_signals, trade_date
+  • If daily_signal → fires import-strategy-signals (non-blocking)
+
+import-strategy-signals
+  • Reads extracted_signals from strategy_videos
+  • Creates PENDING rows in external_strategy_signals
+  • Sets execute_on_date = trade_date, execute_at/expires_at from execution_window_et
+
+Auto-trader (runs every 15 min on market days)
+  • getDueExternalStrategySignals() picks up PENDING rows for today
+  • Checks execution window, FA validation, allocation
+  • Executes via IB Gateway → paper_trade created
+```
+
+### Fallback (if GitHub Actions fails)
+
+Instagram blocked by IP → video stays at ingest_status='pending' → user sees "Paste transcript" button in Strategy Perf tab → pastes text → extract fires → import fires.
+
+---
+
+## Secrets Required
+
+| Secret | Location | Purpose |
+|--------|----------|---------|
+| `GROQ_API_KEY` | Supabase + GitHub | Transcription + metadata extraction |
+| `GITHUB_TOKEN` | Supabase | `trigger-instagram-ingest` dispatches GitHub Actions |
+| `SUPABASE_URL` | GitHub | Actions callback to Supabase |
+| `SUPABASE_SERVICE_ROLE_KEY` | GitHub | Actions write to strategy_videos |

@@ -1,10 +1,10 @@
-# Instagram Strategy System — Architecture
+# Strategy System — Architecture
 
-> Reference: [WORKLOG-2026-02-19.md](./WORKLOG-2026-02-19.md) for implementation details and commits.
+**Last updated:** 2026-02-20
 
 ## Overview
 
-The portfolio-assistant ingests trading strategies from Instagram videos, queues them as external signals, executes them via IB Gateway, and tracks performance per source/video. This document describes the architecture and data flow.
+The portfolio-assistant ingests trading strategies from Instagram/YouTube/Twitter videos, extracts signals, executes them via IB Gateway as paper trades, and tracks performance per source/video.
 
 ---
 
@@ -14,193 +14,164 @@ The portfolio-assistant ingests trading strategies from Instagram videos, queues
 |-------------|---------|----------|
 | **app** | React 19 + Vite 7 frontend | `app/` |
 | **auto-trader** | Node.js service (port 3001) — scheduler, IB Gateway bridge | `auto-trader/` |
-| **Supabase Edge Functions** | Deno serverless (ai-proxy, trade-scanner, trading-signals, daily-suggestions) | `supabase/functions/` |
+| **Supabase Edge Functions** | Deno serverless | `supabase/functions/` |
 | **Supabase PostgreSQL** | DB with RLS | `supabase/migrations/` |
+| **GitHub Actions** | Instagram/Twitter ingest (yt-dlp + ffmpeg) | `.github/workflows/ingest-instagram.yml` |
 
-**Flow:** Browser → Supabase Edge Functions (AI, data) + auto-trader (IB Gateway) → IB paper account.
-
-**Routes:** `/` (Portfolio), `/signals` (Trade Signals), `/finds` (Suggested Finds), `/movers`, `/paper-trading`.
+**Routes:** `/` (Portfolio), `/signals` (Trade Signals), `/finds` (Suggested Finds), `/movers`, `/paper-trading` (includes Strategy Performance).
 
 ---
 
 ## 1. Strategy Ingestion
 
-### Strategy Video Ingestion Flow
+### Entry point
 
-1. **Add URLs** — User pastes Instagram/YouTube/Twitter URLs on Add Strategies page → `strategy_video_queue`
-2. **Quick add** — `process-strategy-video-queue` Edge Function runs automatically:
-   - Resolves `source_name` from existing `strategy_videos` by `source_handle` (e.g. kaycapitals → "Somesh | Day Trader | Investor")
-   - For Instagram URLs without handle in path, fetches page to extract handle from og:url
-   - Creates minimal `strategy_videos` row (video_id, platform, source, url) → **shows in Strategy Perf immediately** under correct source
-3. **Transcript pipeline** (when run) — Transcribes video, extracts metadata, calls `upsert-strategy-video` with full payload:
-   - Updates same row with `strategy_type`, `extracted_signals`, `video_heading`, `trade_date`, etc.
-   - Strategy Perf then shows complete metadata (daily vs generic, applicable date, etc.)
+**Paper Trading → Strategies tab → "Add Strategy Videos" panel** (collapsible, top of page)
 
-**Key:** Quick add creates the row so videos appear in Strategy Perf under the right source. Transcript enriches that same row.
+Paste URLs → queue → auto-triggered per platform:
+- **YouTube:** `fetch-youtube-transcript` edge function (serverless, no yt-dlp)
+- **Instagram/Twitter:** GitHub Actions `ingest-instagram.yml` (yt-dlp + ffmpeg + Groq Whisper)
 
-### Config Files
-
-| File | Purpose |
-|------|---------|
-| `strategy_videos` table | Single source of truth for app and auto-trader |
-| `strategy_video_queue` table | URLs pasted from Add Strategies; processed by `process-strategy-video-queue` |
-| `auto-trader/strategy-sources.json` | Source metadata (handle, URL) — legacy; source resolution now uses `strategy_videos.source_handle` |
+See [`docs/cursor/2026-02-20-strategy-video-ingestion-flow.md`](./cursor/2026-02-20-strategy-video-ingestion-flow.md) for the full detailed flow.
 
 ### Strategy Types
 
-| Type | Description | Behavior |
-|------|-------------|----------|
-| **daily_signal** | Videos with `extractedSignals` (concrete levels) | Creates BUY/SELL signals with entry, stop, target for today ET |
-| **generic_strategy** | Videos with no levels (e.g. candlestick rules) | Uses scanner ideas (confidence ≥ minScannerConfidence) and creates one signal per video per ticker. Use `applicableTimeframes` to scope: `["DAY_TRADE"]`, `["SWING_TRADE"]`, or both |
+| Type | Description | Signal creation |
+|------|-------------|-----------------|
+| **daily_signal** | Video with concrete levels (e.g. "TSLA above 414, target 420, stop 407") | `import-strategy-signals` edge function auto-creates PENDING `external_strategy_signals` immediately after extraction |
+| **generic_strategy** | Rules/patterns (e.g. "enter on pullback to EMA") | Auto-trader creates signals from scanner candidates matching the strategy's timeframe |
 
-### Source Attribution & Video Metadata
+### Source Attribution
 
 Each signal and paper trade carries:
-
-- `strategy_source` — source name (e.g. "Casper Clipping")
+- `strategy_source` — source name (e.g. "Casper SMC Wisdom")
 - `strategy_source_url` — `https://www.instagram.com/{handle}/`
 - `strategy_video_id` — video ID
-- `strategy_video_heading` — video title/heading
+- `strategy_video_heading` — extracted title/heading
 
 ---
 
-## 2. Auto-Queue Logic
+## 2. Edge Functions — Ingest Pipeline
+
+| Function | Purpose |
+|----------|---------|
+| `process-strategy-video-queue` | Creates minimal `strategy_videos` row; triggers platform-specific ingest |
+| `fetch-youtube-transcript` | Fetches YouTube captions; calls extract |
+| `trigger-instagram-ingest` | Dispatches GitHub Actions `repository_dispatch` for Instagram/Twitter |
+| `extract-strategy-metadata-from-transcript` | Groq Llama 3.3 70B extracts metadata; triggers `import-strategy-signals` if daily_signal |
+| `import-strategy-signals` | Converts `extracted_signals` → PENDING `external_strategy_signals` (idempotent) |
+| `fix-unknown-strategy-sources` | Resolves Unknown sources by fetching Instagram og:url |
+| `assign-strategy-videos-to-source` | Manual assignment of Unknown videos to a known source |
+
+---
+
+## 3. Auto-Queue Logic
 
 **Location:** `auto-trader/src/scheduler.ts`
 
 ### Daily Signals (`autoQueueDailySignalsFromTrackedVideos`)
 
-- Filters videos: `strategyType === 'daily_signal'`, `tradeDate` = today ET, `extractedSignals` present
-- For each `extractedSignals` entry:
-  - `longTriggerAbove` + `longTargets` → BUY signal (confidence 8)
-  - `shortTriggerBelow` + `shortTargets` → SELL signal (confidence 8)
-- Deduplicates by `sourceName + ticker + signal + mode + executeOnDate + strategyVideoId`
+Runs as a safety net — `import-strategy-signals` should have already created these via edge function. Filters videos: `strategyType === 'daily_signal'`, `tradeDate` = today ET, `extractedSignals` present. Deduplicates by `sourceName + ticker + signal + mode + executeOnDate + strategyVideoId`.
 
 ### Generic Signals (`autoQueueGenericSignalsFromTrackedVideos`)
 
 - Filters videos: `strategyType === 'generic_strategy'`
-- For each scanner idea (confidence ≥ `minScannerConfidence`), creates one signal per video bucket (one ticker can be queued for multiple strategies)
+- For each scanner idea (confidence ≥ `minScannerConfidence`), creates one signal per applicable strategy
 - Skips tickers with active trades
 - Deduplicates per signal
 
 ---
 
-## 3. Execution Pipeline
+## 4. Execution Pipeline
 
-**Flow:**
+```
+runSchedulerCycle()
+  → autoQueueDailySignalsFromTrackedVideos()
+  → autoQueueGenericSignalsFromTrackedVideos(allIdeas)
+  → processExternalStrategySignals()
+      → getDueExternalStrategySignals()   // PENDING, execute_on_date <= today ET
+      → for each signal:
+          - check execute_at (not yet in window? skip)
+          - check expires_at (past window? mark EXPIRED)
+          - for generic: FA validation (confidence, direction, HOLD rejection)
+          - runPreTradeChecks() (allocation, sector, earnings)
+          - executeExternalStrategySignal() → IB order → paper_trade
+```
 
-1. `runSchedulerCycle()` → `autoQueueDailySignalsFromTrackedVideos()` → `autoQueueGenericSignalsFromTrackedVideos(allIdeas)` → `processExternalStrategySignals()`
-2. `getDueExternalStrategySignals()` returns PENDING signals with `execute_on_date <= today` (ET)
-3. For each signal: check execution window, then `executeExternalStrategySignal()`
+### Execution window (time-based signals)
 
-### Validation for Generic External Signals
-
-When `entry_price` is null (generic strategy):
-
-| Guardrail | Behavior |
-|-----------|----------|
-| **Confidence threshold** | `faConf < config.minFAConfidence` → SKIPPED |
-| **HOLD rejection** | `faRec === 'HOLD'` → SKIPPED |
-| **Direction match** | `faRec !== signal.signal` → SKIPPED |
-
-Additional checks: `shouldMarkStrategyX()` (consecutive losses), `runPreTradeChecks()` (allocation cap, sector, earnings), execution window (for First Candle).
+`execution_window_et: { start: "09:35", end: "10:30" }` in `strategy_videos` → `import-strategy-signals` converts to UTC `execute_at` / `expires_at` on the signal.
 
 ---
 
-## 4. Scheduler & Timing
-
-**ET day boundaries:** `getETDateString()` / `formatDateToEtIso()` use `America/New_York`.
-
-**Cron jobs:**
+## 5. Scheduler Timing
 
 | Schedule | Description |
 |----------|-------------|
 | `*/15 9-16 * * 1-5` | Main scheduler — every 15 min, 9:00–16:30 ET, weekdays |
 | `36 9 * * 1-5` | First Candle — 09:36 ET, weekdays |
 
-**Realtime-triggered execution:** When `trade_scans` is updated (e.g. user opens TradeIdeas and triggers a scanner refresh), the auto-trader runs trade execution immediately via Supabase Realtime instead of waiting for the next 15-min tick. No extra Gemini calls — same scanner refresh cadence.
-
-**First Candle strategy:**
-
-- `execution_window_et: { start: "09:35", end: "10:30" }` in `strategy_videos`
-- `strategyWindowByVideoId` enforces this window
-- Outside window → EXPIRED or WAITING
+Realtime-triggered execution: when `trade_scans` is updated, auto-trader runs execution immediately via Supabase Realtime (no waiting for next tick).
 
 ---
 
-## 5. Allocation Logic
+## 6. Allocation Logic
 
-**Per-stock multi-strategy allocation** (`processExternalStrategySignals`):
-
-1. Group PENDING generic signals by `ticker::mode::signal::execute_on_date`
-2. If group has > 1 signal (same ticker, multiple strategies):
-   - `allocationSplit = group.length`
-   - `allocationIndex = 1..n` per signal
-   - `allowDuplicateTicker = true`
-3. `executeExternalStrategySignal()`:
-   - `splitDollarSize = baseSizing.dollarSize / allocationSplit`
-   - `splitQuantity = Math.floor(splitDollarSize / referencePrice)`
-   - Each strategy gets `1/n` of the base size for that ticker
-
-**Purpose:** Compare strategies on the same underlying with equal allocation.
+Per-stock multi-strategy allocation (`processExternalStrategySignals`):
+- Group PENDING generic signals by `ticker::mode::signal::execute_on_date`
+- If group > 1 (same ticker, multiple strategies): `allocationSplit = group.length`, each gets `1/n` of base size
+- Purpose: compare strategies on same underlying with equal allocation
 
 ---
 
-## 6. Strategy Performance UI
+## 7. Strategy Performance UI
 
-**Location:** Paper Trading → **Strategies** tab (`tab === 'strategies'`)
+**Location:** Paper Trading → **Strategies** tab
 
-**Components:**
+| Component | Purpose |
+|-----------|---------|
+| Add Videos panel (top) | Collapsible URL input; live queue polling |
+| 3-step pipeline per video | Source → Transcript → Metadata; platform-aware retry buttons |
+| Source Leaderboard | Trades, Win Rate, Avg P&L, Total P&L, Videos — expand/collapse |
+| Video drill-down | Per-video rows with trade samples, status, category selector |
 
-- `StrategyPerformanceTab` in `app/src/components/PaperTrading.tsx`
-- Data: `recalculatePerformanceByStrategyVideo()`, `getStrategySignalStatusSummaries()` in `app/src/lib/paperTradesApi.ts`
-
-**Source leaderboard:** Source, Trades, Win Rate, Avg P&L, Total P&L, Videos — expand/collapse per source.
-
-**Drill-down by video:** Per-video rows with columns: Strategy (heading), Date, Trade Count, Trade 1–3 samples, Win Rate, Avg %, Total P&L, Status. Video links: `https://www.instagram.com/reel/{videoId}/`.
-
-**Tracked videos:** `strategy_videos` table merged into `getStrategySignalStatusSummaries()` for videos with no trades yet.
-
----
-
-## 7. Scanner vs Suggested Finds
-
-| Universe | Purpose | Source |
-|----------|---------|--------|
-| **Swing scanner** | `buildDynamicSwingUniverse()` — core stocks, sector ETFs, Yahoo movers, earnings, portfolio | `supabase/functions/trade-scanner/index.ts` |
-| **Suggested Finds** | Long-term Quiet Compounders / Gold Mines | `daily-suggestions` edge function, HuggingFace |
-
-Suggested Finds are **not** part of the swing scanner universe.
+Video links are platform-aware:
+- Instagram: `https://www.instagram.com/reel/{videoId}/`
+- YouTube: `https://www.youtube.com/watch?v={videoId}`
+- Twitter: `https://twitter.com/i/status/{videoId}`
 
 ---
 
 ## 8. Data Models
 
-### Strategy Video Record (`strategy_videos` table)
+### strategy_videos (DB table)
 
 ```typescript
-interface StrategyVideoRecord {
-  videoId: string;
-  sourceHandle?: string;
-  sourceName?: string;
-  reelUrl?: string;
-  canonicalUrl?: string;
-  videoHeading?: string;
-  strategyType?: 'daily_signal' | 'generic_strategy';
+{
+  video_id: string;
+  platform: 'instagram' | 'youtube' | 'twitter';
+  source_handle?: string;
+  source_name?: string;
+  reel_url?: string;
+  canonical_url?: string;
+  video_heading?: string;
+  strategy_type?: 'daily_signal' | 'generic_strategy';
   timeframe?: 'DAY_TRADE' | 'SWING_TRADE' | 'LONG_TERM';
-  applicableTimeframes?: Array<'DAY_TRADE' | 'SWING_TRADE' | 'LONG_TERM'>;
-  executionWindowEt?: { start?: string; end?: string };
-  tradeDate?: string;
-  /** If true, source is exempt from auto-deactivation (3 losses on separate days). No hardcoded source names. */
-  exemptFromAutoDeactivation?: boolean;
-  extractedSignals?: DailyVideoSignal[];
+  applicable_timeframes?: string[];
+  execution_window_et?: { start?: string; end?: string };
+  trade_date?: string;
+  ingest_status?: 'pending' | 'transcribing' | 'done' | 'failed';
+  ingest_error?: string;
+  transcript?: string;
+  extracted_signals?: DailyVideoSignal[];
+  status: 'tracked';
 }
 ```
 
-### External Strategy Signal
+### external_strategy_signals (DB table)
 
 ```typescript
-interface ExternalStrategySignal {
+{
   id: string;
   source_name: string;
   source_url: string | null;
@@ -210,47 +181,37 @@ interface ExternalStrategySignal {
   signal: 'BUY' | 'SELL';
   mode: 'DAY_TRADE' | 'SWING_TRADE' | 'LONG_TERM';
   confidence: number;
-  entry_price: number | null;
+  entry_price: number | null;   // null for generic strategies
   stop_loss: number | null;
   target_price: number | null;
-  execute_on_date: string;
+  execute_on_date: string;       // YYYY-MM-DD ET
+  execute_at: string | null;     // UTC ISO — start of execution window
+  expires_at: string | null;     // UTC ISO — end of execution window
   status: 'PENDING' | 'EXECUTED' | 'FAILED' | 'SKIPPED' | 'EXPIRED' | 'CANCELLED';
-  // ...
-}
-```
-
-### Paper Trade (with strategy attribution)
-
-```typescript
-interface PaperTrade {
-  strategy_source: string | null;
-  strategy_source_url: string | null;
-  strategy_video_id: string | null;
-  strategy_video_heading: string | null;
-  // ... mode, signal, pnl, etc.
 }
 ```
 
 ---
 
-## Key File Reference
+## 9. Key File Reference
 
 | Concern | Primary Files |
 |---------|---------------|
-| Add Strategies UI | `app/src/components/StrategyQueue.tsx` |
+| Add Videos UI + 3-step pipeline | `app/src/components/PaperTrading/tabs/StrategyPerformanceTab.tsx` |
+| Strategy API client | `app/src/lib/strategyVideoQueueApi.ts` |
 | Queue processing | `supabase/functions/process-strategy-video-queue/index.ts` |
-| Upsert (transcript) | `supabase/functions/upsert-strategy-video/index.ts` |
+| YouTube captions | `supabase/functions/fetch-youtube-transcript/index.ts` |
+| Instagram trigger | `supabase/functions/trigger-instagram-ingest/index.ts` |
+| GitHub Actions ingest | `.github/workflows/ingest-instagram.yml` |
+| Metadata extraction | `supabase/functions/extract-strategy-metadata-from-transcript/index.ts` |
+| Signal import | `supabase/functions/import-strategy-signals/index.ts` |
 | Scheduler & queue | `auto-trader/src/scheduler.ts` |
-| External signals CRUD | `auto-trader/src/lib/supabase.ts` |
 | Strategy performance API | `app/src/lib/paperTradesApi.ts` |
-| Strategy Performance UI | `app/src/components/PaperTrading.tsx` (StrategyPerformanceTab) |
-| Strategy video config | `strategy_videos` table (Supabase) — single source of truth |
-| Swing universe | `supabase/functions/trade-scanner/index.ts` (buildDynamicSwingUniverse) |
-| Migrations | `supabase/migrations/20260219000001_external_strategy_signals.sql`, `20260220000002_strategy_video_queue.sql`, `20260221000001_strategy_videos.sql` |
 
 ---
 
 ## Related Docs
 
-- [WORKLOG-2026-02-19.md](./WORKLOG-2026-02-19.md) — Implementation log and commits
-- [auto-trader/SMART_TRADING_PLAN.md](../auto-trader/SMART_TRADING_PLAN.md) — Trading system overview, data flow, scheduler API
+- [docs/cursor/2026-02-20-strategy-video-ingestion-flow.md](./cursor/2026-02-20-strategy-video-ingestion-flow.md) — Full ingest flow detail
+- [docs/cursor/2026-02-20-ingest-pipeline-lessons-learned.md](./cursor/2026-02-20-ingest-pipeline-lessons-learned.md) — What went wrong and how it was fixed
+- [supabase/functions/README.md](../supabase/functions/README.md) — Edge function docs
