@@ -81,6 +81,25 @@ export async function getQueue(limit = 50): Promise<StrategyVideoQueueItem[]> {
   return (data ?? []) as StrategyVideoQueueItem[];
 }
 
+/** Fix strategy_videos with source_name = 'Unknown' by re-resolving from URL */
+export async function fixUnknownSources(): Promise<{ fixed: number; results: { video_id: string; source_name: string; status: 'fixed' | 'failed' }[] }> {
+  const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/fix-unknown-strategy-sources`;
+  const key = import.meta.env.VITE_SUPABASE_ANON_KEY;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(key && { Authorization: `Bearer ${key}` }),
+    },
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err?.error ?? `Fix failed: ${res.status}`);
+  }
+  const data = await res.json();
+  return { fixed: data.fixed ?? 0, results: data.results ?? [] };
+}
+
 /** Trigger processing of pending queue items (creates strategy_videos entries) */
 export async function processQueue(): Promise<{ processed: number; results: { id: string; status: 'done' | 'failed'; error?: string }[] }> {
   const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/process-strategy-video-queue`;

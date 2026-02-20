@@ -28,7 +28,7 @@ function parseUrl(url: string): { platform: 'instagram' | 'twitter' | 'youtube';
   return null;
 }
 
-const UA = 'Mozilla/5.0 (compatible; PortfolioAssistant/1.0)';
+const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
 function toSourceName(handle: string): string {
   return handle
@@ -37,17 +37,24 @@ function toSourceName(handle: string): string {
     .trim();
 }
 
-/** For instagram.com/reel/ID (no handle in path), fetch page and extract handle from og:url if possible */
+/** For instagram.com/reel/ID (no handle in path), fetch page and extract handle */
 async function fetchInstagramHandle(url: string): Promise<string | null> {
   try {
-    const res = await fetch(url, { headers: { 'User-Agent': UA }, signal: AbortSignal.timeout(8_000) });
+    const res = await fetch(url, { headers: { 'User-Agent': UA }, signal: AbortSignal.timeout(10_000) });
     const html = await res.text();
     const ogUrl = html.match(/<meta[^>]+property="og:url"[^>]+content="([^"]*)"/i)?.[1] ?? '';
     const m = /instagram\.com\/([^/]+)\/(?:reel|p)\//i.exec(ogUrl);
-    return m?.[1]?.trim() || null;
+    if (m?.[1]) return m[1].trim().toLowerCase();
+
+    const profileMatch = html.match(/instagram\.com\/([a-zA-Z0-9_.]+)(?:\/|["'\s>])/);
+    if (profileMatch?.[1]) {
+      const h = profileMatch[1].toLowerCase();
+      if (!['reel', 'p', 'stories', 'explore', 'accounts', 'direct'].includes(h)) return h;
+    }
   } catch {
-    return null;
+    // ignore
   }
+  return null;
 }
 
 /** Resolve source_name from handle: use existing strategy_videos if same handle, else humanize handle */

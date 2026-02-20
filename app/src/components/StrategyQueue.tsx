@@ -5,6 +5,7 @@ import {
   addUrlsToQueue,
   getQueue,
   processQueue,
+  fixUnknownSources,
   type StrategyVideoQueueItem,
   type QueueItemPlatform,
 } from '../lib/strategyVideoQueueApi';
@@ -42,6 +43,7 @@ export function StrategyQueue() {
   const [loading, setLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [processing, setProcessing] = useState(false);
+  const [fixing, setFixing] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error' | 'info'; text: string } | null>(null);
 
   const pendingCount = queue.filter((i) => i.status === 'pending').length;
@@ -153,6 +155,25 @@ export function StrategyQueue() {
         <div className="flex items-center justify-between mb-3">
           <h2 className="text-lg font-semibold text-[hsl(var(--foreground))]">Videos</h2>
           <div className="flex items-center gap-2">
+            <button
+              onClick={async () => {
+                setFixing(true);
+                setMessage(null);
+                try {
+                  const { fixed } = await fixUnknownSources();
+                  setMessage({ type: 'success', text: fixed > 0 ? `Fixed ${fixed} video${fixed === 1 ? '' : 's'} with Unknown source. Refresh Strategy Perf.` : 'No Unknown sources to fix.' });
+                } catch (err) {
+                  setMessage({ type: 'error', text: err instanceof Error ? err.message : 'Fix failed' });
+                } finally {
+                  setFixing(false);
+                }
+              }}
+              disabled={fixing}
+              className="px-3 py-1.5 text-sm rounded-lg bg-amber-600 text-white hover:opacity-90 disabled:opacity-50"
+              title="Re-resolve source for videos showing under Unknown"
+            >
+              {fixing ? 'Fixing...' : 'Fix Unknown sources'}
+            </button>
             <button
               onClick={async () => {
                 if (pendingCount === 0) return;

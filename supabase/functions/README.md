@@ -72,6 +72,10 @@ Processes pending `strategy_video_queue` items (quick add):
 - Creates minimal `strategy_videos` row (video_id, platform, source, url) → shows in Strategy Perf immediately
 - `strategy_type`, `extracted_signals`, `video_heading`, etc. are set later when transcript pipeline runs and calls `upsert-strategy-video`
 
+### `fix-unknown-strategy-sources`
+
+Repairs `strategy_videos` with `source_name = 'Unknown'`: fetches Instagram page, extracts handle, looks up canonical source from existing videos, updates the row. Call from Add Strategies "Fix Unknown sources" button.
+
 ---
 
 ## Deployment
@@ -99,6 +103,7 @@ npx supabase functions deploy trading-signals --no-verify-jwt
 npx supabase functions deploy trade-scanner --no-verify-jwt
 npx supabase functions deploy fetch-stock-data --no-verify-jwt
 npx supabase functions deploy process-strategy-video-queue --no-verify-jwt
+npx supabase functions deploy fix-unknown-strategy-sources --no-verify-jwt
 ```
 
 **Important:** When editing `_shared/` modules, redeploy **both** `trading-signals` and `trade-scanner`.
