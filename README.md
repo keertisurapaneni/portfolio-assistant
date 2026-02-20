@@ -172,10 +172,10 @@ npm run lint     # ESLint
 | [`docs/DAY-TRADE-PROMPTS-SEQUENCE.md`](docs/DAY-TRADE-PROMPTS-SEQUENCE.md) | Day trade scanner + FA prompt flow |
 | [`docs/SWING-TRADE-PROMPTS-SEQUENCE.md`](docs/SWING-TRADE-PROMPTS-SEQUENCE.md) | Swing trade scanner + FA prompt flow |
 | [`docs/DAY-TRADE-VALIDATION-QUERIES.md`](docs/DAY-TRADE-VALIDATION-QUERIES.md) | Day trade performance analysis queries |
-| [`docs/SWING-TRADE-VALIDATION-QUERIES.md`](docs/SWING-TRADE-VALIDATION-QUERIES.md) | Swing underperformance diagnostics |
+| [`docs/SWING-TRADE-VALIDATION-QUERIES.md`](docs/SWING-TRADE-VALIDATION-QUERIES.md) | Swing funnel + diagnostics (UI: Paper Trading → Validation → Swing) |
 | [`docs/INSTAGRAM-STRATEGY-ARCHITECTURE.md`](docs/INSTAGRAM-STRATEGY-ARCHITECTURE.md) | External strategy signals from videos |
 | [`supabase/functions/README.md`](supabase/functions/README.md) | Edge functions, prompts, API keys |
-| [`auto-trader/README.md`](auto-trader/README.md) | IB Gateway setup, scheduler, swing diagnostics |
+| [`auto-trader/README.md`](auto-trader/README.md) | IB Gateway setup, scheduler |
 
 ## Commit Conventions
 

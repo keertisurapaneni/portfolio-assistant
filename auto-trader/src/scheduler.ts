@@ -34,6 +34,7 @@ import {
   countActivePositions,
   createPaperTrade,
   updatePaperTrade,
+  upsertSwingMetrics,
   createAutoTradeEvent,
   getRecentDipBuyEvents,
   getPastTrimEvents,
@@ -1193,6 +1194,7 @@ async function executeScannerTrade(
       const distPct = Math.abs(currentPrice - entryPrice) / entryPrice;
       if (distPct > 0.04) {
         log(`${ticker}: Entry skipped — price too far from entry level (${(distPct * 100).toFixed(1)}% away)`);
+        upsertSwingMetrics({ date: getETDateString(), swing_skipped_distance: 1 }).catch(() => {});
         return 'skipped:price_too_far';
       }
     }
@@ -1233,6 +1235,9 @@ async function executeScannerTrade(
 
     recordPendingOrder(sizing.dollarSize);
     log(`${ticker}: ORDER PLACED — ${signal} ${sizing.quantity} @ $${entryPrice}`);
+    if (mode === 'SWING_TRADE') {
+      upsertSwingMetrics({ date: getETDateString(), swing_orders_placed: 1 }).catch(() => {});
+    }
     persistEvent(ticker, 'success', `Order placed: ${signal} ${sizing.quantity} @ $${entryPrice}`, {
       action: 'executed', source: 'scanner', mode,
       scanner_signal: signal, scanner_confidence: scannerConf,
@@ -1530,6 +1535,7 @@ async function executeExternalStrategySignal(
     const distPct = Math.abs(quote - effectiveEntryPrice!) / effectiveEntryPrice!;
     if (distPct > 0.04) {
       log(`${ticker}: Entry skipped — price too far from entry level (${(distPct * 100).toFixed(1)}% away)`);
+      upsertSwingMetrics({ date: getETDateString(), swing_skipped_distance: 1 }).catch(() => {});
       await updateExternalStrategySignal(signal.id, {
         status: 'SKIPPED',
         failure_reason: `Price ${(distPct * 100).toFixed(1)}% away from entry — entry precision required`,
@@ -1558,6 +1564,9 @@ async function executeExternalStrategySignal(
         tif: signal.mode === 'DAY_TRADE' ? 'DAY' : 'GTC',
       });
       ibOrderId = String(result.parentOrderId);
+      if (signal.mode === 'SWING_TRADE') {
+        upsertSwingMetrics({ date: getETDateString(), swing_orders_placed: 1 }).catch(() => {});
+      }
     } else {
       const result = await placeMarketOrder({
         symbol: ticker,
@@ -1781,6 +1790,9 @@ async function syncPositions(
 
     if (ibPos && ibPos.position !== 0) {
       if (trade.status === 'SUBMITTED' || trade.status === 'PENDING') {
+        if (trade.mode === 'SWING_TRADE' && trade.entry_trigger_type === 'bracket_limit') {
+          upsertSwingMetrics({ date: getETDateString(), swing_orders_filled: 1 }).catch(() => {});
+        }
         const fillPrice = ibPos.avgCost;
         const updates: Record<string, unknown> = {
           status: 'FILLED',
@@ -1910,6 +1922,7 @@ async function syncPositions(
             log(`${trade.ticker}: Cancel failed — ${err instanceof Error ? err.message : 'unknown'}`);
           }
         }
+        upsertSwingMetrics({ date: getETDateString(), swing_orders_expired: 1 }).catch(() => {});
         await updatePaperTrade(trade.id, {
           status: 'CLOSED', close_reason: 'manual',
           closed_at: new Date().toISOString(),

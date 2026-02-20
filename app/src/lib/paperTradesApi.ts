@@ -300,6 +300,167 @@ export async function getDayTradeValidationReport(): Promise<DayTradeValidationR
   return { trendVsChop, confidence7Plus, inPlayScoreBuckets, recentTrades };
 }
 
+/** Swing trade validation report — funnel metrics + diagnostics (same as day trade) */
+export interface SwingTradeValidationReport {
+  funnel: {
+    signals: number;
+    confident: number;
+    skippedDistance: number;
+    ordersPlaced: number;
+    ordersExpired: number;
+    ordersFilled: number;
+    signalsPerWeek: number;
+  };
+  trendVsChop: Array<{
+    marketCondition: string;
+    trades: number;
+    wins: number;
+    winRatePct: number;
+    avgPnl: number;
+  }>;
+  closeReason: Array<{
+    reason: string;
+    trades: number;
+    totalPnl: number;
+    avgDaysHeld: number;
+  }>;
+  quickStops: { count: number; pnl: number; pctOfLosses: number };
+  fillRate: number;
+  verdict: string;
+  recentTrades: Array<{
+    ticker: string;
+    signal: string;
+    filledAt: string;
+    closedAt: string | null;
+    pnl: number | null;
+    closeReason: string | null;
+    marketCondition: string | null;
+  }>;
+}
+
+export async function getSwingTradeValidationReport(): Promise<SwingTradeValidationReport> {
+  const twentyOneDaysAgo = new Date();
+  twentyOneDaysAgo.setDate(twentyOneDaysAgo.getDate() - 21);
+  const fromDate = twentyOneDaysAgo.toISOString().slice(0, 10);
+
+  const [metricsRes, tradesRes] = await Promise.all([
+    supabase.from('swing_trade_metrics').select('*').gte('date', fromDate).order('date', { ascending: false }),
+    supabase.from('paper_trades').select('*').eq('mode', 'SWING_TRADE').order('opened_at', { ascending: false }).limit(100),
+  ]);
+
+  const metrics = (metricsRes.data ?? []) as Array<{
+    date: string;
+    swing_signals: number;
+    swing_confident: number;
+    swing_skipped_distance: number;
+    swing_orders_placed: number;
+    swing_orders_expired: number;
+    swing_orders_filled: number;
+  }>;
+  const trades = (tradesRes.data ?? []) as PaperTrade[];
+
+  const funnel = {
+    signals: metrics.reduce((s, m) => s + (m.swing_signals ?? 0), 0),
+    confident: metrics.reduce((s, m) => s + (m.swing_confident ?? 0), 0),
+    skippedDistance: metrics.reduce((s, m) => s + (m.swing_skipped_distance ?? 0), 0),
+    ordersPlaced: metrics.reduce((s, m) => s + (m.swing_orders_placed ?? 0), 0),
+    ordersExpired: metrics.reduce((s, m) => s + (m.swing_orders_expired ?? 0), 0),
+    ordersFilled: metrics.reduce((s, m) => s + (m.swing_orders_filled ?? 0), 0),
+    signalsPerWeek: 0,
+  };
+  const days = metrics.length;
+  funnel.signalsPerWeek = days >= 1 ? Math.round((funnel.signals / days) * 5) : 0; // ~5 trading days/week
+
+  const closed = trades.filter(
+    t => t.fill_price != null && ['STOPPED', 'TARGET_HIT', 'CLOSED'].includes(t.status)
+  );
+  const bracketOrders = trades.filter(t => t.entry_trigger_type === 'bracket_limit');
+  const filled = bracketOrders.filter(t => t.fill_price != null);
+  const fillRate = bracketOrders.length > 0 ? Math.round(100 * filled.length / bracketOrders.length) : 0;
+
+  const byRegime = new Map<string, { trades: number; wins: number; pnl: number }>();
+  for (const t of closed) {
+    const mc = t.market_condition ?? 'unknown';
+    const cur = byRegime.get(mc) ?? { trades: 0, wins: 0, pnl: 0 };
+    cur.trades++;
+    if ((t.pnl ?? 0) > 0) cur.wins++;
+    cur.pnl += t.pnl ?? 0;
+    byRegime.set(mc, cur);
+  }
+  const trendVsChop = [...byRegime.entries()].map(([mc, s]) => ({
+    marketCondition: mc,
+    trades: s.trades,
+    wins: s.wins,
+    winRatePct: s.trades > 0 ? Math.round(100 * s.wins / s.trades) : 0,
+    avgPnl: s.trades > 0 ? Math.round(100 * s.pnl / s.trades) / 100 : 0,
+  }));
+
+  const byReason = new Map<string, { trades: number; pnl: number; daysHeld: number[] }>();
+  for (const t of closed) {
+    const r = t.close_reason ?? 'unknown';
+    const cur = byReason.get(r) ?? { trades: 0, pnl: 0, daysHeld: [] };
+    cur.trades++;
+    cur.pnl += t.pnl ?? 0;
+    if (t.filled_at && t.closed_at) {
+      cur.daysHeld.push((new Date(t.closed_at).getTime() - new Date(t.filled_at).getTime()) / 86400000);
+    }
+    byReason.set(r, cur);
+  }
+  const closeReason = [...byReason.entries()].map(([r, s]) => ({
+    reason: r,
+    trades: s.trades,
+    totalPnl: Math.round(100 * s.pnl) / 100,
+    avgDaysHeld: s.daysHeld.length > 0
+      ? Math.round(10 * s.daysHeld.reduce((a, b) => a + b, 0) / s.daysHeld.length) / 10
+      : 0,
+  }));
+
+  const quickStops = closed.filter(t => {
+    if (t.close_reason !== 'stop_loss' || !t.filled_at || !t.closed_at) return false;
+    const days = (new Date(t.closed_at).getTime() - new Date(t.filled_at).getTime()) / 86400000;
+    return days < 2;
+  });
+  const totalLosses = closed.filter(t => (t.pnl ?? 0) < 0);
+  const totalLossPnl = totalLosses.reduce((s, t) => s + (t.pnl ?? 0), 0);
+  const quickStopPnl = quickStops.reduce((s, t) => s + (t.pnl ?? 0), 0);
+  const pctOfLosses = totalLosses.length > 0 && totalLossPnl !== 0
+    ? Math.round(100 * quickStopPnl / totalLossPnl)
+    : 0;
+
+  let verdict = 'Need more data (fewer than 5 closed swing trades)';
+  const chop = byRegime.get('chop');
+  const trend = byRegime.get('trend');
+  if (chop && trend && chop.trades >= 3 && chop.pnl < trend.pnl - 50) {
+    verdict = 'A) Regime refinement (chop underperforming)';
+  } else if (quickStops.length >= totalLosses.length * 0.5 && totalLosses.length >= 2) {
+    verdict = 'C) Pullback quality refinement (quick failures)';
+  } else if (filled.length < bracketOrders.length * 0.5 && bracketOrders.length >= 5) {
+    verdict = 'E) Execution refinement (low fill rate)';
+  } else if (closed.length >= 5) {
+    verdict = 'Run full analysis; no single dominant pattern yet.';
+  }
+
+  const recentTrades = closed.slice(0, 20).map(t => ({
+    ticker: t.ticker,
+    signal: t.signal,
+    filledAt: t.filled_at ?? t.opened_at ?? '',
+    closedAt: t.closed_at ?? null,
+    pnl: t.pnl ?? null,
+    closeReason: t.close_reason ?? null,
+    marketCondition: t.market_condition ?? null,
+  }));
+
+  return {
+    funnel,
+    trendVsChop,
+    closeReason,
+    quickStops: { count: quickStops.length, pnl: Math.round(100 * quickStopPnl) / 100, pctOfLosses },
+    fillRate,
+    verdict,
+    recentTrades,
+  };
+}
+
 /** Get completed trades for a specific ticker */
 export async function getTradesByTicker(ticker: string): Promise<PaperTrade[]> {
   const { data, error } = await supabase

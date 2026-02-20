@@ -1185,6 +1185,21 @@ async function runPass2(
     .sort((a, b) => b.confidence - a.confidence)
     .slice(0, 6);
 
+  // Swing diagnostics: log signals + confident (logging only)
+  if (mode === 'SWING_TRADE' && (withDirection.length > 0 || strictCandidates.length > 0)) {
+    try {
+      const date = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+      const sb = getSupabase();
+      await sb.rpc('upsert_swing_metrics', {
+        p_date: date,
+        p_swing_signals: withDirection.length,
+        p_swing_confident: strictCandidates.length,
+      });
+    } catch (e) {
+      console.warn('[Trade Scanner] Swing metrics log failed:', e);
+    }
+  }
+
   console.log(`[Trade Scanner] ${mode} Pass 2: ${pass1.length} refined → ${ideas.length} final (${ideas.map(d => `${d.ticker}:${d.signal}/${d.confidence}`).join(', ')})`);
   return ideas;
 }

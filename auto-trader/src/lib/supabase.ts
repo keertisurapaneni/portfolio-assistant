@@ -331,6 +331,30 @@ export async function updatePaperTrade(
   if (error) throw new Error(`updatePaperTrade: ${error.message}`);
 }
 
+// ── Swing Trade Metrics (diagnostics logging) ─────────────
+
+export async function upsertSwingMetrics(params: {
+  date: string;
+  swing_signals?: number;
+  swing_confident?: number;
+  swing_skipped_distance?: number;
+  swing_orders_placed?: number;
+  swing_orders_expired?: number;
+  swing_orders_filled?: number;
+}): Promise<void> {
+  const sb = getSupabase();
+  const { error } = await sb.rpc('upsert_swing_metrics', {
+    p_date: params.date,
+    p_swing_signals: params.swing_signals ?? 0,
+    p_swing_confident: params.swing_confident ?? 0,
+    p_swing_skipped_distance: params.swing_skipped_distance ?? 0,
+    p_swing_orders_placed: params.swing_orders_placed ?? 0,
+    p_swing_orders_expired: params.swing_orders_expired ?? 0,
+    p_swing_orders_filled: params.swing_orders_filled ?? 0,
+  });
+  if (error) console.warn('[SwingMetrics] upsert failed:', error.message);
+}
+
 // ── External Strategy Signals ────────────────────────────
 
 export async function createExternalStrategySignal(

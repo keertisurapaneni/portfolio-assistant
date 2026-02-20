@@ -1,6 +1,37 @@
 # Swing Trade Validation — Underperformance Diagnostics
 
-Run these queries to identify where underperformance comes from.
+**Automated:** Paper Trading → Validation tab → Swing Trade. Funnel, verdict, chop vs trend, and recent trades load automatically. No manual scripts.
+
+For raw SQL or custom analysis, use the queries below.
+
+## Daily Funnel Metrics (`swing_trade_metrics`)
+
+| Column | Description |
+|--------|-------------|
+| `date` | ET date (YYYY-MM-DD) |
+| `swing_signals` | Total BUY/SELL from Pass 2 (with direction) |
+| `swing_confident` | Those with confidence ≥ 7 |
+| `swing_skipped_distance` | Skipped due to 4% price-distance rule |
+| `swing_orders_placed` | Bracket limit orders placed |
+| `swing_orders_expired` | Expired unfilled (2 trading days) |
+| `swing_orders_filled` | Filled |
+
+```sql
+SELECT * FROM swing_trade_metrics ORDER BY date DESC LIMIT 14;
+```
+
+### Decision rules (after 2–3 weeks)
+
+| If you see… | Likely cause | Action |
+|-------------|--------------|--------|
+| 80%+ skipped due to distance | Entry logic too strict | Loosen 4% rule or widen entry bands |
+| 80%+ expire unfilled | Pullback levels too deep | Shallower pullbacks, tighter to price |
+| Fill rate high, win rate low | Pullback quality problem | Better confirmation, avoid FOMO entries |
+| No signals pass confidence | Scoring too strict | Lower threshold or refine regime bias |
+
+**You need numbers before making decisions.**
+
+---
 
 ## Logged Fields (per filled swing)
 
