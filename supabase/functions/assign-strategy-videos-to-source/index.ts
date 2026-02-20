@@ -42,8 +42,64 @@ Deno.serve(async (req) => {
     Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
   );
 
-  // Cleanup mode: sync external_strategy_signals and paper_trades for already-assigned videos
+  // Cleanup mode:
+  // 1. For already-assigned videos: sync any signals/trades still saying 'Unknown'
+  // 2. For Unknown videos: auto-assign if their signals have a consistent known source
   if (body.cleanup === true) {
+    let autoAssigned = 0;
+
+    // Step A: auto-assign Unknown videos by inferring source from their signals
+    const { data: unknownVideos } = await supabase
+      .from('strategy_videos')
+      .select('id, video_id, source_name')
+      .eq('status', 'tracked')
+      .eq('source_name', 'Unknown')
+      .not('video_id', 'is', null)
+      .limit(100);
+
+    for (const vid of unknownVideos ?? []) {
+      const vidId = (vid.video_id ?? '').trim();
+      if (!vidId) continue;
+
+      // Check signals for a consistent non-Unknown source
+      const { data: sigs } = await supabase
+        .from('external_strategy_signals')
+        .select('source_name, source_url')
+        .eq('strategy_video_id', vidId)
+        .neq('source_name', 'Unknown')
+        .not('source_name', 'is', null)
+        .limit(10);
+
+      if (!sigs?.length) continue;
+
+      // Use the most common non-Unknown source_name from signals
+      const tally: Record<string, { count: number; url: string | null }> = {};
+      for (const s of sigs) {
+        const n = (s.source_name ?? '').trim();
+        if (!n || n === 'Unknown') continue;
+        tally[n] = { count: (tally[n]?.count ?? 0) + 1, url: s.source_url ?? tally[n]?.url ?? null };
+      }
+      const entries = Object.entries(tally).sort((a, b) => b[1].count - a[1].count);
+      if (!entries.length) continue;
+
+      const [inferredSource, { url: inferredUrl }] = entries[0];
+      // Infer source_handle from URL if possible
+      const handleMatch = (inferredUrl ?? '').match(/instagram\.com\/([^/]+)/);
+      const inferredHandle = handleMatch?.[1]?.toLowerCase() ?? null;
+
+      await supabase
+        .from('strategy_videos')
+        .update({
+          source_name: inferredSource,
+          ...(inferredHandle ? { source_handle: inferredHandle } : {}),
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', vid.id);
+
+      autoAssigned++;
+    }
+
+    // Step B: for already-assigned videos, fix any signals/trades still marked Unknown
     const { data: assigned } = await supabase
       .from('strategy_videos')
       .select('video_id, source_name, source_handle')
@@ -51,6 +107,7 @@ Deno.serve(async (req) => {
       .neq('source_name', 'Unknown')
       .not('video_id', 'is', null)
       .limit(200);
+
     for (const row of assigned ?? []) {
       const vidId = (row.video_id ?? '').trim();
       const sourceName = (row.source_name ?? '').trim();
@@ -68,8 +125,9 @@ Deno.serve(async (req) => {
         .eq('strategy_video_id', vidId)
         .eq('strategy_source', 'Unknown');
     }
+
     return new Response(
-      JSON.stringify({ ok: true, cleanup: true, processed: (assigned ?? []).length }),
+      JSON.stringify({ ok: true, cleanup: true, autoAssigned, synced: (assigned ?? []).length }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
   }

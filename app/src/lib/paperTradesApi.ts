@@ -1340,24 +1340,39 @@ export async function getPendingStrategySignals(limit = 200): Promise<PendingStr
 }
 
 /**
- * Mark all PENDING signals whose expires_at has passed as EXPIRED.
- * Called after market close during daily rehydration.
+ * Mark all PENDING signals that can no longer be traded as EXPIRED:
+ *   1. Signals whose expires_at window has passed
+ *   2. Daily signals whose execute_on_date is before today (market closed, too late to trade)
+ * Safe to call any time — harmless outside market hours.
  * Returns the number of rows updated.
  */
 export async function expireStaleSignals(): Promise<number> {
   const now = new Date().toISOString();
-  const { data, error } = await supabase
+  // today in ET — signals for yesterday's date should expire
+  const todayET = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' }); // YYYY-MM-DD
+
+  // Sweep 1: signals with an explicit expires_at that has passed
+  const { data: byTime, error: e1 } = await supabase
     .from('external_strategy_signals')
     .update({ status: 'EXPIRED', updated_at: now })
     .eq('status', 'PENDING')
+    .not('expires_at', 'is', null)
     .lt('expires_at', now)
     .select('id');
 
-  if (error) {
-    console.warn('[expireStaleSignals] Failed:', error.message);
-    return 0;
-  }
-  return (data ?? []).length;
+  // Sweep 2: daily signals whose trade date is before today (no expires_at set)
+  const { data: byDate, error: e2 } = await supabase
+    .from('external_strategy_signals')
+    .update({ status: 'EXPIRED', updated_at: now })
+    .eq('status', 'PENDING')
+    .not('execute_on_date', 'is', null)
+    .lt('execute_on_date', todayET)
+    .select('id');
+
+  if (e1) console.warn('[expireStaleSignals] expires_at sweep failed:', e1.message);
+  if (e2) console.warn('[expireStaleSignals] execute_on_date sweep failed:', e2.message);
+
+  return ((byTime ?? []).length + (byDate ?? []).length);
 }
 
 // ── Portfolio Snapshots ──────────────────────────────────

@@ -240,6 +240,16 @@ export function useAutoTradeScheduler() {
       const config = await loadAutoTraderConfig();
       if (!config.enabled) return;
 
+      // Always run: expire stale signals (safe to run any time, no market hours needed)
+      expireStaleSignals().then(count => {
+        if (count > 0) console.log(`[AutoTradeScheduler] Expired ${count} stale signals`);
+      }).catch(() => {});
+
+      // Always run: daily rehydration after market close (runs once per day after 4:15 PM ET)
+      if (config.accountId) {
+        runDailyRehydration(config.accountId).catch(() => {});
+      }
+
       // Pre-generate Suggested Finds daily at 9 AM ET (runs before market open)
       // IMPORTANT: Await this — do NOT fire-and-forget, otherwise it races with
       // scanner processing and both check the allocation cap against stale IB data.
@@ -311,8 +321,6 @@ export function useAutoTradeScheduler() {
             }
           } catch { /* non-critical */ }
 
-          // Daily rehydration (after 4:15 PM ET)
-          runDailyRehydration(config.accountId).catch(() => {});
         }
 
         const allIdeas = [...(data.dayTrades ?? []), ...(data.swingTrades ?? [])];
