@@ -1,5 +1,5 @@
 import { Fragment, useState, useEffect, useMemo } from 'react';
-import { BarChart3 } from 'lucide-react';
+import { BarChart3, Wrench } from 'lucide-react';
 import { cn } from '../../../lib/utils';
 import type {
   StrategySourcePerformance,
@@ -7,6 +7,7 @@ import type {
   StrategySignalStatusSummary,
   TradeStatus,
 } from '../../../lib/paperTradesApi';
+import { fixUnknownSources } from '../../../lib/strategyVideoQueueApi';
 import { fmtUsd, toEtIsoDate } from '../utils';
 import { StatusBadge } from '../shared';
 
@@ -14,6 +15,7 @@ export interface StrategyPerformanceTabProps {
   sources: StrategySourcePerformance[];
   videos: StrategyVideoPerformance[];
   statuses: StrategySignalStatusSummary[];
+  onRefresh?: () => void;
 }
 
 type StrategyRow = {
@@ -42,8 +44,9 @@ type StrategyRow = {
   latestSignalStatus: string | null;
 };
 
-export function StrategyPerformanceTab({ sources, videos, statuses }: StrategyPerformanceTabProps) {
+export function StrategyPerformanceTab({ sources, videos, statuses, onRefresh }: StrategyPerformanceTabProps) {
   const [expandedSources, setExpandedSources] = useState<Set<string>>(new Set());
+  const [fixing, setFixing] = useState(false);
 
   const { todayET, isPastMarketCloseET } = useMemo(() => {
     const dateFormatter = new Intl.DateTimeFormat('en-US', {
@@ -297,14 +300,35 @@ export function StrategyPerformanceTab({ sources, videos, statuses }: StrategyPe
         <div className="rounded-xl border border-[hsl(var(--border))] bg-white overflow-hidden">
           <div className="px-4 py-2.5 border-b border-[hsl(var(--border))] bg-[hsl(var(--secondary))] flex items-center justify-between gap-3">
             <h3 className="text-sm font-semibold text-[hsl(var(--foreground))]">Source Leaderboard (Drill Down by Video)</h3>
-            {expandableSourceNames.length > 0 && (
-              <button
-                onClick={() => setExpandedSources(allExpanded ? new Set() : new Set(expandableSourceNames))}
-                className="text-xs text-blue-600 hover:text-blue-700 font-medium whitespace-nowrap"
-              >
-                {allExpanded ? 'Collapse all' : 'Expand all'}
-              </button>
-            )}
+            <div className="flex items-center gap-2">
+              {sourceNames.includes('Unknown') && (
+                <button
+                  onClick={async () => {
+                    setFixing(true);
+                    try {
+                      const { fixed } = await fixUnknownSources();
+                      if (fixed > 0 && onRefresh) onRefresh();
+                    } finally {
+                      setFixing(false);
+                    }
+                  }}
+                  disabled={fixing}
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg bg-amber-600 text-white hover:opacity-90 disabled:opacity-50"
+                  title="Re-resolve source for videos under Unknown"
+                >
+                  <Wrench className="h-3.5 w-3.5" />
+                  {fixing ? 'Fixing...' : 'Fix Unknown sources'}
+                </button>
+              )}
+              {expandableSourceNames.length > 0 && (
+                <button
+                  onClick={() => setExpandedSources(allExpanded ? new Set() : new Set(expandableSourceNames))}
+                  className="text-xs text-blue-600 hover:text-blue-700 font-medium whitespace-nowrap"
+                >
+                  {allExpanded ? 'Collapse all' : 'Expand all'}
+                </button>
+              )}
+            </div>
           </div>
           <table className="w-full text-sm">
             <thead>

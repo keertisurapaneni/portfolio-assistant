@@ -444,7 +444,7 @@ export function PaperTrading() {
             />
           )}
           {tab === 'strategies' && (
-            <StrategyPerformanceTab sources={sourcePerf} videos={videoPerf} statuses={strategyStatuses} />
+            <StrategyPerformanceTab sources={sourcePerf} videos={videoPerf} statuses={strategyStatuses} onRefresh={loadData} />
           )}
           {tab === 'validation' && (
             <ValidationTab
