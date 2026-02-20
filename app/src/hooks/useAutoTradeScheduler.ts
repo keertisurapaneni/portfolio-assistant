@@ -26,7 +26,7 @@ import {
   assessPortfolioHealth,
   resetHealthCache,
 } from '../lib/autoTrader';
-import { getPositions, isLocalhost } from '../lib/ibClient';
+import { getPositions } from '../lib/ibClient';
 import {
   savePortfolioSnapshot,
   getActiveTrades,
@@ -41,9 +41,6 @@ const SCHEDULER_CHECK_BACKOFF_MS = 5 * 60 * 1000; // 5 min after failure
 let _lastSchedulerCheckFail = 0;
 
 async function isServerSchedulerRunning(): Promise<boolean> {
-  if (!isLocalhost()) {
-    return true; // Deployed — no auto-trader, pretend server runs so we skip browser fallback
-  }
   if (Date.now() - _lastSchedulerCheckFail < SCHEDULER_CHECK_BACKOFF_MS) {
     return false; // Recently failed, avoid repeated 404s
   }
@@ -229,8 +226,8 @@ export function useAutoTradeScheduler() {
     }, 5 * 60 * 1000);
 
     const runScannerAutoTrade = async () => {
-      // If server scheduler is running, or we're deployed (no localhost), skip browser-side scheduling
-      if (serverSchedulerRef.current || !isLocalhost()) return;
+      // If server scheduler is running, skip browser-side scheduling entirely
+      if (serverSchedulerRef.current) return;
       // Load fresh config from Supabase (in case settings changed from another tab/device)
       const config = await loadAutoTraderConfig();
       if (!config.enabled) return;

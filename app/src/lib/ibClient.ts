@@ -87,9 +87,6 @@ async function ibFetch<T>(
   path: string,
   options: RequestInit = {}
 ): Promise<T> {
-  if (!isLocalhost()) {
-    throw new Error('Auto-trader only available on localhost (deployed app cannot reach it)');
-  }
   const url = `${IB_BASE_URL}${path}`;
   const res = await fetch(url, {
     ...options,
