@@ -1159,12 +1159,14 @@ export async function recalculatePerformanceByStrategyVideo(): Promise<StrategyV
 export async function getStrategySignalStatusSummaries(): Promise<StrategySignalStatusSummary[]> {
   const { data, error } = await supabase
     .from('external_strategy_signals')
-    .select('source_name, source_url, strategy_video_id, strategy_video_heading, execute_on_date, status, created_at')
+    .select('source_name, source_url, strategy_video_id, strategy_video_heading, execute_on_date, status, expires_at, created_at')
     .not('source_name', 'is', null)
     .order('created_at', { ascending: false })
     .limit(1000);
 
   if (error || !data) return [];
+
+  const nowMs = Date.now();
 
   const grouped = new Map<string, StrategySignalStatusSummary & { sortKey: string }>();
   const trackedTypeByKey = new Map<string, 'daily_signal' | 'generic_strategy'>();
@@ -1176,6 +1178,7 @@ export async function getStrategySignalStatusSummaries(): Promise<StrategySignal
     strategy_video_heading: string | null;
     execute_on_date: string | null;
     status: string | null;
+    expires_at: string | null;
     created_at: string | null;
   }>) {
     const source = (row.source_name ?? '').trim();
@@ -1183,6 +1186,11 @@ export async function getStrategySignalStatusSummaries(): Promise<StrategySignal
     const videoId = (row.strategy_video_id ?? '').trim() || null;
     const videoHeading = (row.strategy_video_heading ?? '').trim() || null;
     if (!videoId && !videoHeading) continue;
+
+    // Treat PENDING signals whose expires_at has passed as EXPIRED (client-side until DB syncs)
+    const effectiveStatus = (row.status === 'PENDING' && row.expires_at && new Date(row.expires_at).getTime() < nowMs)
+      ? 'EXPIRED'
+      : (row.status ?? null);
 
     const key = `${source}::${videoId ?? videoHeading}`;
     const sortKey = `${row.execute_on_date ?? ''}|${row.created_at ?? ''}`;
@@ -1197,7 +1205,7 @@ export async function getStrategySignalStatusSummaries(): Promise<StrategySignal
         strategyType: null,
         applicableDate: row.execute_on_date ?? null,
         applicableTimeframes: null,
-        latestSignalStatus: row.status ?? null,
+        latestSignalStatus: effectiveStatus,
         sortKey,
       });
     }
@@ -1318,15 +1326,38 @@ export async function getStrategySignalStatusSummaries(): Promise<StrategySignal
 }
 
 export async function getPendingStrategySignals(limit = 200): Promise<PendingStrategySignal[]> {
+  const now = new Date().toISOString();
   const { data, error } = await supabase
     .from('external_strategy_signals')
     .select('id,ticker,signal,mode,source_name,source_url,strategy_video_id,strategy_video_heading,entry_price,execute_on_date,status,created_at')
     .eq('status', 'PENDING')
+    .or(`expires_at.is.null,expires_at.gt.${now}`) // exclude signals whose window has already passed
     .order('created_at', { ascending: false })
     .limit(limit);
 
   if (error) return [];
   return (data ?? []) as PendingStrategySignal[];
+}
+
+/**
+ * Mark all PENDING signals whose expires_at has passed as EXPIRED.
+ * Called after market close during daily rehydration.
+ * Returns the number of rows updated.
+ */
+export async function expireStaleSignals(): Promise<number> {
+  const now = new Date().toISOString();
+  const { data, error } = await supabase
+    .from('external_strategy_signals')
+    .update({ status: 'EXPIRED', updated_at: now })
+    .eq('status', 'PENDING')
+    .lt('expires_at', now)
+    .select('id');
+
+  if (error) {
+    console.warn('[expireStaleSignals] Failed:', error.message);
+    return 0;
+  }
+  return (data ?? []).length;
 }
 
 // ── Portfolio Snapshots ──────────────────────────────────
