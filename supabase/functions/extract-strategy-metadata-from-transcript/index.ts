@@ -217,6 +217,18 @@ Deno.serve(async (req) => {
     );
   }
 
+  // For daily_signal videos with extracted signals: auto-import into external_strategy_signals
+  // so the auto-trader picks them up on trade_date. Fire-and-forget (non-blocking).
+  if (strategy_type === 'daily_signal' && extracted_signals.length > 0) {
+    const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+    const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+    fetch(`${supabaseUrl}/functions/v1/import-strategy-signals`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${supabaseKey}` },
+      body: JSON.stringify({ video_id: video_id, platform }),
+    }).catch((e) => console.error('[extract] import-strategy-signals trigger failed:', e));
+  }
+
   return new Response(
     JSON.stringify({
       ok: true,

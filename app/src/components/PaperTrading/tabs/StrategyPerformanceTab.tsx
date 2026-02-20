@@ -1,5 +1,5 @@
-import { Fragment, useState, useEffect, useMemo, useRef } from 'react';
-import { BarChart3 } from 'lucide-react';
+import { Fragment, useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import { BarChart3, Link2, Plus, ChevronDown, ChevronUp } from 'lucide-react';
 import { cn } from '../../../lib/utils';
 import type {
   StrategySourcePerformance,
@@ -7,7 +7,11 @@ import type {
   StrategySignalStatusSummary,
   TradeStatus,
 } from '../../../lib/paperTradesApi';
-import { fixUnknownSources, assignUnknownToSource, updateStrategyVideoMetadata, extractFromTranscript, cleanupStrategyAssignments } from '../../../lib/strategyVideoQueueApi';
+import {
+  fixUnknownSources, assignUnknownToSource, updateStrategyVideoMetadata,
+  extractFromTranscript, cleanupStrategyAssignments, fetchYouTubeTranscript,
+  addUrlsToQueue, processQueue, getQueue, type StrategyVideoQueueItem,
+} from '../../../lib/strategyVideoQueueApi';
 import { fmtUsd, toEtIsoDate } from '../utils';
 import { StatusBadge } from '../shared';
 
@@ -23,6 +27,7 @@ type StrategyRow = {
   sourceUrl: string | null;
   videoId: string | null;
   videoHeading: string;
+  platform: 'instagram' | 'twitter' | 'youtube' | null;
   strategyType: 'daily_signal' | 'generic_strategy' | null;
   applicableTimeframes: Array<'DAY_TRADE' | 'SWING_TRADE'> | null;
   totalTrades: number;
@@ -57,8 +62,69 @@ export function StrategyPerformanceTab({ sources, videos, statuses, onRefresh }:
   const [pasteTranscriptVideoId, setPasteTranscriptVideoId] = useState<string | null>(null);
   const [pasteTranscriptText, setPasteTranscriptText] = useState('');
   const [extractingVideoId, setExtractingVideoId] = useState<string | null>(null);
+  const [fetchingCaptionsVideoId, setFetchingCaptionsVideoId] = useState<string | null>(null);
   const [videoAssignSelections, setVideoAssignSelections] = useState<Record<string, { source: string; category: string }>>({});
   const autoFixAttempted = useRef(false);
+
+  // Add Videos panel state
+  const [addPanelOpen, setAddPanelOpen] = useState(false);
+  const [addUrlInput, setAddUrlInput] = useState('');
+  const [addingUrls, setAddingUrls] = useState(false);
+  const [addError, setAddError] = useState<string | null>(null);
+  const [recentQueue, setRecentQueue] = useState<StrategyVideoQueueItem[]>([]);
+  const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const pollQueue = useCallback(async () => {
+    try {
+      const items = await getQueue({ limit: 10, order: 'desc' });
+      setRecentQueue(items);
+      // Stop polling when nothing is in-flight
+      const hasActive = items.some(i => i.status === 'pending' || i.status === 'processing');
+      if (!hasActive && pollingRef.current) {
+        clearInterval(pollingRef.current);
+        pollingRef.current = null;
+        if (onRefresh) onRefresh();
+      }
+    } catch { /* ignore */ }
+  }, [onRefresh]);
+
+  const startPolling = useCallback(() => {
+    if (pollingRef.current) return;
+    pollingRef.current = setInterval(pollQueue, 4000);
+    void pollQueue();
+  }, [pollQueue]);
+
+  useEffect(() => () => { if (pollingRef.current) clearInterval(pollingRef.current); }, []);
+
+  const handleAddUrls = async () => {
+    const raw = addUrlInput.trim();
+    if (!raw) return;
+    const urls = raw.split(/[\n,]+/).map(u => u.trim()).filter(Boolean);
+    if (urls.length === 0) return;
+    setAddingUrls(true);
+    setAddError(null);
+    try {
+      await addUrlsToQueue(urls);
+      await processQueue();
+      setAddUrlInput('');
+      startPolling();
+    } catch (e) {
+      setAddError((e as Error).message ?? 'Failed to add URLs');
+    } finally {
+      setAddingUrls(false);
+    }
+  };
+
+  const handleFetchCaptions = async (videoId: string) => {
+    if (!onRefresh) return;
+    setFetchingCaptionsVideoId(videoId);
+    try {
+      await fetchYouTubeTranscript({ video_id: videoId });
+      startPolling();
+    } finally {
+      setFetchingCaptionsVideoId(null);
+    }
+  };
 
   const { todayET, isPastMarketCloseET } = useMemo(() => {
     const dateFormatter = new Intl.DateTimeFormat('en-US', {
@@ -119,6 +185,7 @@ export function StrategyPerformanceTab({ sources, videos, statuses, onRefresh }:
         sourceUrl: video.sourceUrl,
         videoId: video.videoId,
         videoHeading: video.videoHeading,
+        platform: status?.platform ?? null,
         strategyType: status?.strategyType ?? null,
         applicableTimeframes: status?.applicableTimeframes ?? null,
         totalTrades: video.totalTrades,
@@ -149,6 +216,7 @@ export function StrategyPerformanceTab({ sources, videos, statuses, onRefresh }:
         sourceUrl: status.sourceUrl,
         videoId: status.videoId,
         videoHeading: status.videoHeading ?? status.videoId ?? 'Untitled strategy',
+        platform: status.platform ?? null,
         strategyType: status.strategyType ?? null,
         applicableTimeframes: status.applicableTimeframes ?? null,
         totalTrades: 0,
@@ -340,8 +408,74 @@ export function StrategyPerformanceTab({ sources, videos, statuses, onRefresh }:
     return { label: 'active ✓', tone: 'green' };
   };
 
+  const videoUrlFor = (videoId: string, platform: StrategyRow['platform']) => {
+    if (platform === 'youtube') return `https://www.youtube.com/watch?v=${videoId}`;
+    if (platform === 'twitter') return `https://twitter.com/i/status/${videoId}`;
+    return `https://www.instagram.com/reel/${videoId}/`;
+  };
+
   return (
     <div className="space-y-3">
+      {/* Add Videos Panel */}
+      <div className="rounded-xl border border-[hsl(var(--border))] bg-white overflow-hidden">
+        <button
+          onClick={() => setAddPanelOpen(v => !v)}
+          className="w-full px-4 py-2.5 flex items-center justify-between gap-3 bg-[hsl(var(--secondary))] hover:bg-[hsl(var(--secondary))]/80 transition-colors"
+        >
+          <span className="flex items-center gap-2 text-sm font-semibold text-[hsl(var(--foreground))]">
+            <Plus className="w-4 h-4" />
+            Add Strategy Videos
+          </span>
+          {addPanelOpen ? <ChevronUp className="w-4 h-4 text-[hsl(var(--muted-foreground))]" /> : <ChevronDown className="w-4 h-4 text-[hsl(var(--muted-foreground))]" />}
+        </button>
+        {addPanelOpen && (
+          <div className="p-4 space-y-3">
+            <p className="text-xs text-[hsl(var(--muted-foreground))]">
+              Paste one or more Instagram / YouTube / Twitter URLs (one per line). YouTube captions are fetched automatically. Instagram videos require a GitHub Actions run — if that fails you can paste the transcript manually.
+            </p>
+            <textarea
+              value={addUrlInput}
+              onChange={e => setAddUrlInput(e.target.value)}
+              placeholder="https://www.instagram.com/reel/ABC123/&#10;https://www.youtube.com/watch?v=XYZ"
+              className="w-full min-h-[80px] p-2 text-sm border rounded bg-white resize-y font-mono"
+              rows={3}
+            />
+            <div className="flex items-center gap-2">
+              <button
+                onClick={handleAddUrls}
+                disabled={addingUrls || !addUrlInput.trim()}
+                className="px-3 py-1.5 rounded text-sm font-medium bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {addingUrls ? 'Adding…' : 'Add & Queue'}
+              </button>
+              {addError && <span className="text-xs text-red-600">{addError}</span>}
+            </div>
+
+            {recentQueue.length > 0 && (
+              <div className="mt-2 space-y-1">
+                <p className="text-xs font-medium text-[hsl(var(--muted-foreground))]">Recent queue</p>
+                {recentQueue.map(item => (
+                  <div key={item.id} className="flex items-center gap-2 text-xs">
+                    <span className={cn(
+                      'inline-flex px-1.5 py-0.5 rounded font-medium text-[10px]',
+                      item.status === 'done' && 'bg-emerald-100 text-emerald-700',
+                      item.status === 'processing' && 'bg-blue-100 text-blue-700',
+                      item.status === 'pending' && 'bg-amber-100 text-amber-700',
+                      item.status === 'failed' && 'bg-red-100 text-red-700',
+                    )}>
+                      {item.status === 'processing' ? 'processing…' : item.status}
+                    </span>
+                    <Link2 className="w-3 h-3 text-[hsl(var(--muted-foreground))]" />
+                    <a href={item.url} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline truncate max-w-[280px]">{item.url}</a>
+                    {item.error_message && <span className="text-red-600 truncate max-w-[200px]" title={item.error_message}>{item.error_message}</span>}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
       <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
         <div className="rounded-xl border border-blue-200 bg-blue-50 p-4">
           <p className="text-[10px] text-blue-700/80 font-medium">Tracked Sources</p>
@@ -567,7 +701,7 @@ export function StrategyPerformanceTab({ sources, videos, statuses, onRefresh }:
                                           {video.videoId && (
                                             <div className="flex items-center gap-2 text-[10px]">
                                               <span className="text-[hsl(var(--muted-foreground))]">{video.videoId}</span>
-                                              <a href={`https://www.instagram.com/reel/${video.videoId}/`} target="_blank" rel="noreferrer" className="text-blue-600 hover:text-blue-700">Open video</a>
+                                              <a href={videoUrlFor(video.videoId, video.platform)} target="_blank" rel="noreferrer" className="text-blue-600 hover:text-blue-700">Open {video.platform ?? 'video'}</a>
                                             </div>
                                           )}
                                           {(video.strategyType || video.applicableDate) && (
@@ -580,82 +714,133 @@ export function StrategyPerformanceTab({ sources, videos, statuses, onRefresh }:
                                               )}
                                             </div>
                                           )}
-                                          {(video.ingestStatus || video.transcript) && (
-                                            <div className="mt-2 space-y-1.5">
-                                              {video.ingestStatus && (
-                                                <div className="flex items-center gap-2 flex-wrap">
-                                                  <span className="text-[10px] text-[hsl(var(--muted-foreground))]">Ingest:</span>
-                                                  <span className={cn(
-                                                    'px-1.5 py-0.5 rounded text-[10px] font-medium',
-                                                    video.ingestStatus === 'done' && 'bg-emerald-100 text-emerald-700',
-                                                    video.ingestStatus === 'transcribing' && 'bg-blue-100 text-blue-700',
-                                                    video.ingestStatus === 'pending' && 'bg-amber-100 text-amber-700',
-                                                    video.ingestStatus === 'failed' && 'bg-red-100 text-red-700'
-                                                  )}>
-                                                    {video.ingestStatus === 'done' && '✓ Transcribed'}
-                                                    {video.ingestStatus === 'transcribing' && 'Transcribing…'}
-                                                    {video.ingestStatus === 'pending' && 'Pending'}
-                                                    {video.ingestStatus === 'failed' && 'Failed'}
-                                                  </span>
+                                          {/* 3-step ingest pipeline */}
+                                          {video.videoId && (
+                                            <div className="mt-2 space-y-1">
+                                              {/* Step 1: Source */}
+                                              <div className="flex items-center gap-1.5 text-[10px]">
+                                                <span className={cn(
+                                                  'w-4 h-4 rounded-full flex items-center justify-center text-white font-bold text-[9px] shrink-0',
+                                                  sourceName !== 'Unknown' ? 'bg-emerald-500' : 'bg-amber-400'
+                                                )}>1</span>
+                                                <span className="text-[hsl(var(--muted-foreground))]">Source:</span>
+                                                <span className={sourceName !== 'Unknown' ? 'text-emerald-600 font-medium' : 'text-amber-600 font-medium'}>
+                                                  {sourceName !== 'Unknown' ? sourceName : 'Unknown — needs assignment'}
+                                                </span>
+                                              </div>
+                                              {/* Step 2: Transcript */}
+                                              <div className="flex items-start gap-1.5 text-[10px]">
+                                                <span className={cn(
+                                                  'w-4 h-4 rounded-full flex items-center justify-center text-white font-bold text-[9px] shrink-0 mt-0.5',
+                                                  video.ingestStatus === 'done' ? 'bg-emerald-500'
+                                                    : video.ingestStatus === 'transcribing' ? 'bg-blue-500'
+                                                    : video.ingestStatus === 'failed' ? 'bg-red-500'
+                                                    : 'bg-amber-400'
+                                                )}>2</span>
+                                                <div className="flex-1 min-w-0">
+                                                  <div className="flex items-center gap-1.5 flex-wrap">
+                                                    <span className="text-[hsl(var(--muted-foreground))]">Transcript:</span>
+                                                    <span className={cn(
+                                                      'font-medium',
+                                                      video.ingestStatus === 'done' ? 'text-emerald-600'
+                                                        : video.ingestStatus === 'transcribing' ? 'text-blue-600'
+                                                        : video.ingestStatus === 'failed' ? 'text-red-600'
+                                                        : 'text-amber-600'
+                                                    )}>
+                                                      {video.ingestStatus === 'done' ? 'Transcribed' : video.ingestStatus === 'transcribing' ? 'Transcribing…' : video.ingestStatus === 'failed' ? 'Failed' : 'Pending'}
+                                                    </span>
+                                                    {video.ingestStatus !== 'done' && video.ingestStatus !== 'transcribing' && (
+                                                      video.platform === 'youtube' ? (
+                                                        <button
+                                                          onClick={() => handleFetchCaptions(video.videoId!)}
+                                                          disabled={fetchingCaptionsVideoId === video.videoId}
+                                                          className="px-1.5 py-0.5 rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
+                                                        >
+                                                          {fetchingCaptionsVideoId === video.videoId ? 'Fetching…' : 'Fetch captions'}
+                                                        </button>
+                                                      ) : (
+                                                        <button
+                                                          type="button"
+                                                          onClick={() => { setPasteTranscriptVideoId(video.videoId); setPasteTranscriptText(''); }}
+                                                          className="text-blue-600 hover:text-blue-700 font-medium"
+                                                        >
+                                                          {video.platform === 'instagram' ? 'Instagram: paste transcript' : 'Paste transcript'}
+                                                        </button>
+                                                      )
+                                                    )}
+                                                  </div>
                                                   {video.ingestError && (
-                                                    <span className="text-[10px] text-red-600 max-w-[200px] truncate" title={video.ingestError}>{video.ingestError}</span>
+                                                    <p className="text-red-600 truncate max-w-[240px] mt-0.5" title={video.ingestError}>{video.ingestError}</p>
                                                   )}
-                                                </div>
-                                              )}
-                                              {video.transcript && (
-                                                <div>
-                                                  <button
-                                                    type="button"
-                                                    onClick={() => setExpandedTranscript(expandedTranscript === baseKey ? null : baseKey)}
-                                                    className="text-[10px] text-blue-600 hover:text-blue-700 font-medium"
-                                                  >
-                                                    {expandedTranscript === baseKey ? 'Hide transcript' : 'Show transcript'}
-                                                  </button>
-                                                  {expandedTranscript === baseKey && (
+                                                  {video.transcript && (
+                                                    <button
+                                                      type="button"
+                                                      onClick={() => setExpandedTranscript(expandedTranscript === baseKey ? null : baseKey)}
+                                                      className="text-blue-600 hover:text-blue-700 font-medium mt-0.5"
+                                                    >
+                                                      {expandedTranscript === baseKey ? 'Hide transcript' : 'Show transcript'}
+                                                    </button>
+                                                  )}
+                                                  {expandedTranscript === baseKey && video.transcript && (
                                                     <pre className="mt-1 p-2 bg-[hsl(var(--muted))]/30 rounded text-[10px] whitespace-pre-wrap max-h-40 overflow-y-auto font-sans">
                                                       {video.transcript}
                                                     </pre>
                                                   )}
+                                                  {/* Paste transcript inline form */}
+                                                  {pasteTranscriptVideoId === video.videoId && (
+                                                    <div className="mt-2 space-y-1.5">
+                                                      <textarea
+                                                        value={pasteTranscriptText}
+                                                        onChange={(e) => setPasteTranscriptText(e.target.value)}
+                                                        placeholder="Paste transcript here…"
+                                                        className="w-full min-h-[80px] p-2 text-xs border rounded bg-white resize-y"
+                                                        rows={4}
+                                                      />
+                                                      <div className="flex items-center gap-2">
+                                                        <button
+                                                          onClick={() => handlePasteTranscript(video.videoId!)}
+                                                          disabled={!pasteTranscriptText.trim() || extractingVideoId === video.videoId}
+                                                          className="text-xs px-2 py-1 rounded bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50"
+                                                        >
+                                                          {extractingVideoId === video.videoId ? 'Extracting…' : 'Extract metadata'}
+                                                        </button>
+                                                        <button
+                                                          onClick={() => { setPasteTranscriptVideoId(null); setPasteTranscriptText(''); }}
+                                                          className="text-xs px-2 py-1 rounded border hover:bg-[hsl(var(--secondary))]"
+                                                        >
+                                                          Cancel
+                                                        </button>
+                                                      </div>
+                                                    </div>
+                                                  )}
                                                 </div>
-                                              )}
-                                            </div>
-                                          )}
-                                          {sourceName === 'Unknown' && video.videoId && (
-                                            <div className="mt-2">
-                                              {pasteTranscriptVideoId === video.videoId ? (
-                                                <div className="space-y-2">
-                                                  <textarea
-                                                    value={pasteTranscriptText}
-                                                    onChange={(e) => setPasteTranscriptText(e.target.value)}
-                                                    placeholder="Paste transcript here… AI will extract source and category."
-                                                    className="w-full min-h-[80px] p-2 text-xs border rounded bg-white resize-y"
-                                                    rows={4}
-                                                  />
-                                                  <div className="flex items-center gap-2">
+                                              </div>
+                                              {/* Step 3: Metadata extraction */}
+                                              <div className="flex items-center gap-1.5 text-[10px]">
+                                                <span className={cn(
+                                                  'w-4 h-4 rounded-full flex items-center justify-center text-white font-bold text-[9px] shrink-0',
+                                                  video.ingestStatus === 'done' && video.strategyType ? 'bg-emerald-500'
+                                                    : video.ingestStatus === 'done' ? 'bg-amber-400'
+                                                    : 'bg-gray-300'
+                                                )}>3</span>
+                                                <span className="text-[hsl(var(--muted-foreground))]">Metadata:</span>
+                                                {video.ingestStatus === 'done' && video.strategyType ? (
+                                                  <span className="text-emerald-600 font-medium">Extracted ({video.strategyType === 'daily_signal' ? 'daily' : 'generic'})</span>
+                                                ) : video.ingestStatus === 'done' ? (
+                                                  <div className="flex items-center gap-1.5">
+                                                    <span className="text-amber-600 font-medium">Not extracted</span>
                                                     <button
-                                                      onClick={() => handlePasteTranscript(video.videoId!)}
-                                                      disabled={!pasteTranscriptText.trim() || extractingVideoId === video.videoId}
-                                                      className="text-xs px-2 py-1 rounded bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                                                      type="button"
+                                                      onClick={() => { setPasteTranscriptVideoId(video.videoId); setPasteTranscriptText(video.transcript ?? ''); }}
+                                                      className="text-blue-600 hover:text-blue-700 font-medium"
                                                     >
-                                                      {extractingVideoId === video.videoId ? 'Extracting…' : 'Extract metadata'}
-                                                    </button>
-                                                    <button
-                                                      onClick={() => { setPasteTranscriptVideoId(null); setPasteTranscriptText(''); }}
-                                                      className="text-xs px-2 py-1 rounded border hover:bg-[hsl(var(--secondary))]"
-                                                    >
-                                                      Cancel
+                                                      Re-extract
                                                     </button>
                                                   </div>
-                                                </div>
-                                              ) : (
-                                                <button
-                                                  type="button"
-                                                  onClick={() => { setPasteTranscriptVideoId(video.videoId); setPasteTranscriptText(''); }}
-                                                  className="text-[10px] text-blue-600 hover:text-blue-700 font-medium"
-                                                >
-                                                  Paste transcript to auto-assign source & category
-                                                </button>
-                                              )}
+                                                ) : (
+                                                  <span className="text-gray-400">Waiting for transcript</span>
+                                                )}
+                                              </div>
                                             </div>
                                           )}
                                           {sourceName === 'Unknown' && video.videoId && assignOptions.length > 0 && (

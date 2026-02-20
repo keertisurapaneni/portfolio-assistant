@@ -774,6 +774,7 @@ export interface StrategySignalStatusSummary {
   sourceUrl: string | null;
   videoId: string | null;
   videoHeading: string | null;
+  platform: 'instagram' | 'twitter' | 'youtube' | null;
   strategyType: 'daily_signal' | 'generic_strategy' | null;
   applicableDate: string | null;
   /** For generic_strategy: DAY_TRADE, SWING_TRADE, or both */
@@ -1192,6 +1193,7 @@ export async function getStrategySignalStatusSummaries(): Promise<StrategySignal
         sourceUrl: row.source_url ?? null,
         videoId,
         videoHeading,
+        platform: null,
         strategyType: null,
         applicableDate: row.execute_on_date ?? null,
         applicableTimeframes: null,
@@ -1205,12 +1207,13 @@ export async function getStrategySignalStatusSummaries(): Promise<StrategySignal
   try {
     const { data: tracked } = await supabase
       .from('strategy_videos')
-      .select('video_id, source_handle, source_name, canonical_url, reel_url, video_heading, strategy_type, trade_date, timeframe, applicable_timeframes, transcript, ingest_status, ingest_error')
+      .select('video_id, platform, source_handle, source_name, canonical_url, reel_url, video_heading, strategy_type, trade_date, timeframe, applicable_timeframes, transcript, ingest_status, ingest_error')
       .eq('status', 'tracked');
 
     if (tracked && Array.isArray(tracked)) {
       for (const item of tracked as Array<{
         video_id: string | null;
+        platform: string | null;
         source_handle: string | null;
         source_name: string | null;
         canonical_url: string | null;
@@ -1259,6 +1262,9 @@ export async function getStrategySignalStatusSummaries(): Promise<StrategySignal
           ? item.ingest_status
           : null;
         const ingestError = (item.ingest_error ?? '').trim() || null;
+        const platform = (item.platform === 'instagram' || item.platform === 'twitter' || item.platform === 'youtube')
+          ? item.platform
+          : null;
 
         if (!grouped.has(key)) {
           grouped.set(key, {
@@ -1266,6 +1272,7 @@ export async function getStrategySignalStatusSummaries(): Promise<StrategySignal
             sourceUrl: inferredSourceUrl,
             videoId,
             videoHeading,
+            platform,
             strategyType,
             applicableDate: strategyType === 'daily_signal' ? (item.trade_date ?? null) : null,
             applicableTimeframes: timeframes.length > 0 ? timeframes : null,
@@ -1280,6 +1287,7 @@ export async function getStrategySignalStatusSummaries(): Promise<StrategySignal
           if (existing) {
             const updates: Partial<StrategySignalStatusSummary> = {};
             if (strategyType && existing.strategyType == null) updates.strategyType = strategyType;
+            if (platform && existing.platform == null) updates.platform = platform;
             if (timeframes.length > 0) updates.applicableTimeframes = timeframes;
             if (transcript != null) updates.transcript = transcript;
             if (ingestStatus != null) updates.ingestStatus = ingestStatus;

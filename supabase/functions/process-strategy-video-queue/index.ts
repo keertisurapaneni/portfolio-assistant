@@ -185,7 +185,7 @@ Deno.serve(async (req) => {
     results.push({ id: item.id, status: 'done' });
   }
 
-  // Trigger transcript ingest (no auto-trader needed — runs in configured worker)
+  // Trigger transcript ingest (legacy INGEST_TRIGGER_URL or GitHub Actions)
   const ingestUrl = Deno.env.get('INGEST_TRIGGER_URL');
   if (results.length > 0 && ingestUrl?.trim()) {
     fetch(ingestUrl.trim(), {
@@ -193,6 +193,34 @@ Deno.serve(async (req) => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ source: 'process-strategy-video-queue' }),
     }).catch((e) => console.error('[process-strategy-video-queue] ingest trigger:', e));
+  }
+
+  // For YouTube videos: auto-trigger caption fetch (serverless, free)
+  const youtubeVideoIds = items
+    .filter(item => item.platform === 'youtube' && results.find(r => r.id === item.id && r.status === 'done'))
+    .map(item => parseUrl(item.url)?.videoId)
+    .filter((id): id is string => !!id);
+
+  for (const ytId of youtubeVideoIds) {
+    fetch(`${supabaseUrl}/functions/v1/fetch-youtube-transcript`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${supabaseKey}` },
+      body: JSON.stringify({ video_id: ytId }),
+    }).catch((e) => console.error(`[process-strategy-video-queue] YT transcript trigger for ${ytId}:`, e));
+  }
+
+  // For Instagram videos: trigger GitHub Actions (requires GITHUB_TOKEN secret)
+  const instagramVideoIds = items
+    .filter(item => item.platform === 'instagram' && results.find(r => r.id === item.id && r.status === 'done'))
+    .map(item => parseUrl(item.url)?.videoId)
+    .filter((id): id is string => !!id);
+
+  if (instagramVideoIds.length > 0) {
+    fetch(`${supabaseUrl}/functions/v1/trigger-instagram-ingest`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${supabaseKey}` },
+      body: JSON.stringify({ video_ids: instagramVideoIds }),
+    }).catch((e) => console.error('[process-strategy-video-queue] Instagram ingest trigger:', e));
   }
 
   return new Response(
