@@ -107,6 +107,20 @@ Deno.serve(async (req) => {
     if (updateErr) {
       results.push({ video_id: row.video_id, source_name: 'Unknown', status: 'failed' });
     } else {
+      const vidId = (row.video_id ?? '').trim();
+      const sourceUrl = `https://www.instagram.com/${sourceHandle}/`;
+      if (vidId) {
+        await supabase
+          .from('external_strategy_signals')
+          .update({ source_name: sourceName, source_url: sourceUrl, updated_at: new Date().toISOString() })
+          .eq('strategy_video_id', vidId)
+          .eq('source_name', 'Unknown');
+        await supabase
+          .from('paper_trades')
+          .update({ strategy_source: sourceName, strategy_source_url: sourceUrl })
+          .eq('strategy_video_id', vidId)
+          .eq('strategy_source', 'Unknown');
+      }
       results.push({ video_id: row.video_id, source_name: sourceName, status: 'fixed' });
     }
   }

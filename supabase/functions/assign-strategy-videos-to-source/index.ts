@@ -2,10 +2,12 @@
  * Manually assign strategy_videos with source_name = 'Unknown' to a known source.
  * Use when auto-fix fails (e.g. Instagram blocks server-side fetch).
  *
- * POST body: { source_handle: string, source_name: string, video_ids?: string[], strategy_type?: 'daily_signal' | 'generic_strategy' }
+ * POST body: { source_handle: string, source_name: string, video_ids?: string[], strategy_type?: 'daily_signal' | 'generic_strategy', cleanup?: boolean }
  * - If video_ids provided: only assign those videos (by video_id)
  * - If omitted: assign all Unknown videos to the given source
  * - strategy_type: optional, also update category
+ * - cleanup: if true, sync external_strategy_signals and paper_trades for already-assigned videos
+ *   (fixes duplicates showing in both Unknown and the correct source)
  */
 
 import { createClient } from 'jsr:@supabase/supabase-js@2';
@@ -25,13 +27,50 @@ Deno.serve(async (req) => {
     });
   }
 
-  let body: { source_handle?: string; source_name?: string; video_ids?: string[]; strategy_type?: string };
+  let body: { source_handle?: string; source_name?: string; video_ids?: string[]; strategy_type?: string; cleanup?: boolean };
   try {
     body = (await req.json()) ?? {};
   } catch {
     return new Response(
       JSON.stringify({ error: 'Invalid JSON body' }),
       { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+    );
+  }
+
+  const supabase = createClient(
+    Deno.env.get('SUPABASE_URL')!,
+    Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
+  );
+
+  // Cleanup mode: sync external_strategy_signals and paper_trades for already-assigned videos
+  if (body.cleanup === true) {
+    const { data: assigned } = await supabase
+      .from('strategy_videos')
+      .select('video_id, source_name, source_handle')
+      .eq('status', 'tracked')
+      .neq('source_name', 'Unknown')
+      .not('video_id', 'is', null)
+      .limit(200);
+    for (const row of assigned ?? []) {
+      const vidId = (row.video_id ?? '').trim();
+      const sourceName = (row.source_name ?? '').trim();
+      const handle = (row.source_handle ?? '').trim().toLowerCase();
+      if (!vidId || !sourceName) continue;
+      const sourceUrl = handle ? `https://www.instagram.com/${handle}/` : null;
+      await supabase
+        .from('external_strategy_signals')
+        .update({ source_name: sourceName, source_url: sourceUrl, updated_at: new Date().toISOString() })
+        .eq('strategy_video_id', vidId)
+        .eq('source_name', 'Unknown');
+      await supabase
+        .from('paper_trades')
+        .update({ strategy_source: sourceName, strategy_source_url: sourceUrl })
+        .eq('strategy_video_id', vidId)
+        .eq('strategy_source', 'Unknown');
+    }
+    return new Response(
+      JSON.stringify({ ok: true, cleanup: true, processed: (assigned ?? []).length }),
+      { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
   }
 
@@ -47,11 +86,6 @@ Deno.serve(async (req) => {
       { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
   }
-
-  const supabase = createClient(
-    Deno.env.get('SUPABASE_URL')!,
-    Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
-  );
 
   let query = supabase
     .from('strategy_videos')
@@ -80,6 +114,9 @@ Deno.serve(async (req) => {
   }
 
   const ids = unknowns.map((r) => r.id);
+  const vidIds = unknowns.map((r) => r.video_id).filter(Boolean) as string[];
+  const sourceUrl = `https://www.instagram.com/${sourceHandle}/`;
+
   const updatePayload: Record<string, unknown> = {
     source_handle: sourceHandle,
     source_name: sourceName,
@@ -98,6 +135,22 @@ Deno.serve(async (req) => {
       JSON.stringify({ error: updateErr.message }),
       { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
+  }
+
+  // Clear from Unknown: update external_strategy_signals and paper_trades so the video
+  // no longer appears under Unknown (getStrategySignalStatusSummaries + recalculatePerformanceByStrategySource)
+  if (vidIds.length > 0) {
+    await supabase
+      .from('external_strategy_signals')
+      .update({ source_name: sourceName, source_url: sourceUrl, updated_at: new Date().toISOString() })
+      .in('strategy_video_id', vidIds)
+      .eq('source_name', 'Unknown');
+
+    await supabase
+      .from('paper_trades')
+      .update({ strategy_source: sourceName, strategy_source_url: sourceUrl })
+      .in('strategy_video_id', vidIds)
+      .eq('strategy_source', 'Unknown');
   }
 
   return new Response(
