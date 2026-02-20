@@ -20,6 +20,7 @@ import { createClient } from 'jsr:@supabase/supabase-js@2';
 import {
   DAY_TRADE_SYSTEM,
   DAY_TRADE_RULES,
+  DAY_TRADE_STRUCTURE_REQUIREMENTS,
   SWING_TRADE_SYSTEM,
   SWING_TRADE_RULES,
 } from '../_shared/prompts.ts';
@@ -52,10 +53,14 @@ interface TradeIdea {
   change: number;
   changePercent: number;
   signal: 'BUY' | 'SELL';
-  confidence: number;     // 0-10 from AI (matches full analysis scale)
-  reason: string;         // AI-generated 1-sentence rationale
+  confidence: number;     // 0-10 from AI (Pass 2 / full analysis scale)
+  reason: string;        // AI-generated 1-sentence rationale
   tags: string[];
   mode: 'DAY_TRADE' | 'SWING_TRADE';
+  // Validation log (for 10–20 day analysis)
+  in_play_score?: number;
+  pass1_confidence?: number;
+  market_condition?: 'trend' | 'chop';
 }
 
 interface ScanResult {
@@ -87,6 +92,20 @@ interface YahooQuote {
   _pass1Indicators?: Pass1Indicators;
   // Raw OHLCV bars from chart data (newest-first, for Pass 2 reuse)
   _ohlcvBars?: OHLCV[];
+  // InPlayScore debug (large-cap day trade ranking)
+  _inPlayScore?: number;
+  _volRatio?: number;
+  _dollarVol?: number;
+  _atrPct?: number;
+  _dayRangePct?: number;
+  _gapPct?: number;
+  _trendScore?: number;
+  _extensionPenalty?: number;
+  // SwingSetupScore debug (swing pre-ranking)
+  _swingSetupScore?: number;
+  _trendScore?: number;   // swing trendScore 0-10
+  _pullbackScore?: number; // swing pullbackScore 0-10
+  _extensionPenalty?: number; // day=InPlayScore ext; swing=SwingSetupScore ext
 }
 
 // AI response shape for one stock
@@ -705,6 +724,7 @@ function buildIdea(
   eval_: AIEval,
   quote: YahooQuote,
   mode: 'DAY_TRADE' | 'SWING_TRADE',
+  opts?: { pass1Confidence?: number; marketCondition?: 'trend' | 'chop' },
 ): TradeIdea | null {
   if (eval_.signal === 'SKIP' || eval_.confidence < 6) return null;
   const price = rawVal(quote.regularMarketPrice);
@@ -735,6 +755,9 @@ function buildIdea(
     reason: eval_.reason,
     tags,
     mode,
+    in_play_score: quote._inPlayScore,
+    pass1_confidence: opts?.pass1Confidence,
+    market_condition: opts?.marketCondition,
   };
 }
 
@@ -784,20 +807,162 @@ function isStale(row: DBRow | null): boolean {
 
 // ── Pre-filter candidates before AI ─────────────────────
 
+const largeCapMode = true; // TSLA/NVDA style; set false for small-cap
+
 function preDayFilter(q: YahooQuote): boolean {
   const price = rawVal(q.regularMarketPrice);
   const absPct = Math.abs(rawVal(q.regularMarketChangePercent));
   const volume = rawVal(q.regularMarketVolume);
-  if (price < 3 || !q.symbol) return false;
-  if (absPct < 3) return false;
-  if (volume < 500_000) return false;
+  if (!q.symbol) return false;
+  if (largeCapMode) {
+    if (price < 20) return false;
+    if (absPct < 1) return false;
+    if (volume < 1_000_000) return false;
+  } else {
+    if (price < 3) return false;
+    if (absPct < 3) return false;
+    if (volume < 500_000) return false;
+  }
   return true;
+}
+
+/** Convert rank (1=best) to 0..10 score. Higher rank = higher score. */
+function rankToScore(rank: number, total: number): number {
+  if (total <= 1) return 10;
+  return round(10 * (total - rank) / (total - 1), 2);
+}
+
+/** Compute trendScore 0..10 from price vs SMAs, MACD, RSI sweet spot. */
+function computeTrendScore(q: YahooQuote): number {
+  const price = rawVal(q.regularMarketPrice);
+  const sma20 = q._pass1Indicators?.sma20 ?? null;
+  const sma50 = rawVal(q.fiftyDayAverage);
+  const sma200 = rawVal(q.twoHundredDayAverage);
+  const macd = q._pass1Indicators?.macdHistogram ?? null;
+  const rsi = q._pass1Indicators?.rsi14 ?? null;
+  let score = 0;
+  if (sma20 != null && price > sma20) score += 2;
+  if (sma50 > 0 && price > sma50) score += 2;
+  if (sma200 > 0 && price > sma200) score += 2;
+  if (macd != null && macd > 0) score += 2;
+  if (rsi != null && rsi >= 45 && rsi <= 65) score += 2;
+  return Math.min(10, Math.max(0, score));
+}
+
+/** Compute InPlayScore and attach debug metrics to quote. Returns score. */
+function computeInPlayScore(q: YahooQuote, candidates: YahooQuote[]): number {
+  const price = rawVal(q.regularMarketPrice);
+  const changePct = rawVal(q.regularMarketChangePercent);
+  const volume = rawVal(q.regularMarketVolume);
+  const avgVol = rawVal(q.averageDailyVolume10Day);
+  const high = rawVal(q.regularMarketDayHigh);
+  const low = rawVal(q.regularMarketDayLow);
+  const open = rawVal(q.regularMarketOpen);
+  const prevClose = rawVal(q.regularMarketPreviousClose);
+  const atr14 = q._pass1Indicators?.atr14 ?? null;
+
+  const volRatio = avgVol > 0 ? volume / avgVol : 0;
+  const dollarVol = price * volume;
+  const atrPct = (price > 0 && atr14 != null && atr14 > 0) ? (atr14 / price) * 100 : 0;
+  const dayRangePct = (price > 0 && high > 0 && low > 0) ? ((high - low) / price) * 100 : 0;
+  const gapPct = prevClose > 0 ? ((open - prevClose) / prevClose) * 100 : 0;
+
+  (q as YahooQuote & { _volRatio: number })._volRatio = round(volRatio, 2);
+  (q as YahooQuote & { _dollarVol: number })._dollarVol = round(dollarVol, 0);
+  (q as YahooQuote & { _atrPct: number })._atrPct = round(atrPct, 2);
+  (q as YahooQuote & { _dayRangePct: number })._dayRangePct = round(dayRangePct, 2);
+  (q as YahooQuote & { _gapPct: number })._gapPct = round(gapPct, 2);
+
+  const trendScore = computeTrendScore(q);
+  (q as YahooQuote & { _trendScore: number })._trendScore = trendScore;
+
+  const extensionPenalty = Math.max(0, Math.abs(changePct) - 3) * 0.7;
+  (q as YahooQuote & { _extensionPenalty: number })._extensionPenalty = round(extensionPenalty, 2);
+
+  const n = candidates.length;
+  const volRatios = candidates.map(c => rawVal(c.regularMarketVolume) / Math.max(1, rawVal(c.averageDailyVolume10Day)));
+  const dollarVols = candidates.map(c => rawVal(c.regularMarketPrice) * rawVal(c.regularMarketVolume));
+  const atrPcts = candidates.map(c => {
+    const p = rawVal(c.regularMarketPrice);
+    const a = c._pass1Indicators?.atr14 ?? null;
+    return (p > 0 && a != null && a > 0) ? (a / p) * 100 : 0;
+  });
+
+  const volRank = volRatios
+    .map((v, i) => ({ v, i }))
+    .sort((a, b) => b.v - a.v)
+    .findIndex(x => x.i === candidates.indexOf(q)) + 1;
+  const dollarRank = dollarVols
+    .map((v, i) => ({ v, i }))
+    .sort((a, b) => b.v - a.v)
+    .findIndex(x => x.i === candidates.indexOf(q)) + 1;
+  const atrRank = atrPcts
+    .map((v, i) => ({ v, i }))
+    .sort((a, b) => b.v - a.v)
+    .findIndex(x => x.i === candidates.indexOf(q)) + 1;
+
+  const volRatioScore = rankToScore(volRank, n);
+  const dollarVolScore = rankToScore(dollarRank, n);
+  const atrPctScore = rankToScore(atrRank, n);
+
+  const inPlayScore = round(
+    0.30 * volRatioScore + 0.25 * dollarVolScore + 0.20 * atrPctScore + 0.25 * trendScore - extensionPenalty,
+    2
+  );
+  (q as YahooQuote & { _inPlayScore: number })._inPlayScore = inPlayScore;
+  return inPlayScore;
 }
 
 function preSwingFilter(q: YahooQuote): boolean {
   const price = rawVal(q.regularMarketPrice);
   if (price < 5 || !q.symbol) return false;
   return true;
+}
+
+/** Compute SwingSetupScore and attach debug metrics. Uses daily data already fetched. */
+function computeSwingSetupScore(q: YahooQuote): number {
+  const price = rawVal(q.regularMarketPrice);
+  const sma20 = q._pass1Indicators?.sma20 ?? null;
+  const sma50 = rawVal(q.fiftyDayAverage);
+  const sma200 = rawVal(q.twoHundredDayAverage);
+  const rsi = q._pass1Indicators?.rsi14 ?? null;
+  const macd = q._pass1Indicators?.macdHistogram ?? null;
+  const bars = q._ohlcvBars ?? [];
+
+  // Recent bar moves (newest-first: bars[0]=today, bars[4]=5 bars ago)
+  const recent5BarMove = bars.length >= 5 && bars[4].c > 0
+    ? Math.abs((bars[0].c - bars[4].c) / bars[4].c) * 100
+    : 0;
+  const recent10BarMove = bars.length >= 10 && bars[9].c > 0
+    ? Math.abs((bars[0].c - bars[9].c) / bars[9].c) * 100
+    : 0;
+
+  // trendScore (0-10)
+  let trendScore = 0;
+  if (sma50 > 0 && price > sma50) trendScore += 3;
+  if (sma200 > 0 && price > sma200) trendScore += 3;
+  if (sma50 > 0 && sma200 > 0 && sma50 > sma200) trendScore += 2;
+  if (macd != null && macd > 0) trendScore += 2;
+  trendScore = Math.min(10, trendScore);
+
+  // pullbackScore (0-10)
+  let pullbackScore = 0;
+  if (sma20 != null && sma20 > 0 && Math.abs((price - sma20) / sma20) <= 0.03) pullbackScore += 5;
+  if (rsi != null && rsi >= 40 && rsi <= 55) pullbackScore += 3;
+  if (recent5BarMove < 8) pullbackScore += 2;
+  pullbackScore = Math.min(10, pullbackScore);
+
+  // extensionPenalty
+  let penalty = 0;
+  if (recent5BarMove > 15) penalty += 3;
+  if (recent10BarMove > 25) penalty += 3;
+
+  const swingSetupScore = round(0.6 * trendScore + 0.4 * pullbackScore - penalty, 2);
+  (q as YahooQuote & { _swingSetupScore: number })._swingSetupScore = swingSetupScore;
+  (q as YahooQuote & { _trendScore: number })._trendScore = trendScore;
+  (q as YahooQuote & { _pullbackScore: number })._pullbackScore = pullbackScore;
+  (q as YahooQuote & { _extensionPenalty: number })._extensionPenalty = penalty;
+  return swingSetupScore;
 }
 
 // ── Pass 2: FA-grade prompt analysis ────────────────────
@@ -810,6 +975,8 @@ function preSwingFilter(q: YahooQuote): boolean {
 const FA_DAY_USER = `Inputs: (1) Pre-computed indicators (primary), (2) 1m/15m/1h candles (validation), (3) News headlines (confirmation only).
 
 ${DAY_TRADE_RULES}
+
+${DAY_TRADE_STRUCTURE_REQUIREMENTS}
 
 Output (STRICT JSON only, no markdown):
 {"mode":"DAY_TRADE","recommendation":"BUY"|"SELL"|"HOLD","bias":"short phrase","entryPrice":number|null,"stopLoss":number|null,"targetPrice":number|null,"targetPrice2":number|null,"riskReward":"1:x"|null,"rationale":{"technical":"2-3 sentences","sentiment":"1 sentence","risk":"1-2 sentences"},"confidence":0-10,"scenarios":{"bullish":{"probability":0-100,"summary":"1 sentence"},"neutral":{"probability":0-100,"summary":"1 sentence"},"bearish":{"probability":0-100,"summary":"1 sentence"}}}
@@ -861,6 +1028,10 @@ async function runPass2(
   const marketCtxStr = marketSnapshot
     ? `SPY: ${marketSnapshot.spyTrend} | VIX: ${marketSnapshot.vix} (${marketSnapshot.volatility} fear)`
     : undefined;
+  const marketCondition: 'trend' | 'chop' | undefined = marketSnapshot
+    ? (marketSnapshot.vix < 20 ? 'trend' : 'chop')
+    : undefined;
+  const pass1ConfMap = new Map(pass1.map(e => [e.ticker, e.confidence]));
 
   // Fetch fundamentals for all swing tickers in ONE batch
   const fundMap = mode === 'SWING_TRADE'
@@ -968,6 +1139,30 @@ async function runPass2(
 
   const results = evalResults.filter((r): r is AIEval => r !== null);
 
+  // ── Market regime bias (SWING only): adjust confidence before final filter ──
+  if (mode === 'SWING_TRADE' && results.length > 0) {
+    const spyQuote = await fetchChartQuote('SPY');
+    if (spyQuote && spyQuote.fiftyDayAverage > 0 && spyQuote.twoHundredDayAverage > 0) {
+      const price = spyQuote.regularMarketPrice ?? 0;
+      const sma50 = spyQuote.fiftyDayAverage;
+      const sma200 = spyQuote.twoHundredDayAverage;
+      const spyAbove50 = price > sma50;
+      const spyAbove200 = price > sma200;
+
+      for (const e of results) {
+        let c = e.confidence;
+        if (!spyAbove50 && !spyAbove200) {
+          if (e.signal === 'BUY') c -= 1.5;
+          else if (e.signal === 'SELL') c += 1;
+        } else if (spyAbove50 && spyAbove200) {
+          if (e.signal === 'SELL') c -= 1;
+        }
+        e.confidence = Math.max(0, Math.min(10, c));
+      }
+      console.log(`[Trade Scanner] SPY regime: above50=${spyAbove50} above200=${spyAbove200} → confidence adjusted`);
+    }
+  }
+
   const withDirection = results.filter(e => e.signal === 'BUY' || e.signal === 'SELL');
   // Keep day strict. For swing, fall back to 6 if strict threshold yields no ideas.
   const strictMinConfidence = 7;
@@ -981,7 +1176,10 @@ async function runPass2(
     .filter(e => e.signal === 'BUY' || e.signal === 'SELL')
     .map(e => {
       const q = quoteMap.get(e.ticker);
-      return q ? buildIdea(e, q, mode) : null;
+      return q ? buildIdea(e, q, mode, {
+        pass1Confidence: pass1ConfMap.get(e.ticker),
+        marketCondition,
+      }) : null;
     })
     .filter((x): x is TradeIdea => x !== null)
     .sort((a, b) => b.confidence - a.confidence)
@@ -1094,11 +1292,9 @@ Deno.serve(async (req) => {
           deduped.set(sym, q);
         }
       }
-      let candidates = [...deduped.values()]
-        .sort((a, b) => Math.abs(rawVal(b.regularMarketChangePercent)) - Math.abs(rawVal(a.regularMarketChangePercent)))
-        .slice(0, 15);
+      let candidates = [...deduped.values()];
 
-      // Enrich day trade candidates with chart data for Pass 1 indicators + OHLCV bars
+      // Enrich ALL candidates with chart data (needed for InPlayScore + Pass 1 indicators)
       const enrichedQuotes = await fetchSwingQuotes(candidates.map(q => q.symbol));
       const enrichMap = new Map(enrichedQuotes.map(q => [q.symbol, q]));
       candidates = candidates.map(q => {
@@ -1116,6 +1312,25 @@ Deno.serve(async (req) => {
         }
         return q;
       });
+
+      // Large-cap: rank by InPlayScore; take top 30, then top 15 for Gemini
+      if (largeCapMode && candidates.length > 0) {
+        for (const q of candidates) {
+          computeInPlayScore(q, candidates);
+        }
+        candidates = candidates
+          .filter(q => (q._inPlayScore ?? -999) > -999)
+          .sort((a, b) => (b._inPlayScore ?? -999) - (a._inPlayScore ?? -999))
+          .slice(0, 30);
+        candidates = candidates.slice(0, 15);
+        if (candidates.length > 0) {
+          console.log(`[Trade Scanner] Day InPlayScore top 5: ${candidates.slice(0, 5).map(q => `${q.symbol}:${q._inPlayScore?.toFixed(2)}(${q._extensionPenalty ?? 0})`).join(', ')}`);
+        }
+      } else if (!largeCapMode) {
+        candidates = candidates
+          .sort((a, b) => Math.abs(rawVal(b.regularMarketChangePercent)) - Math.abs(rawVal(a.regularMarketChangePercent)))
+          .slice(0, 15);
+      }
 
       if (candidates.length > 0) {
         const stockData = candidates.map((q, i) => formatQuoteForAI(q, i)).join('\n');
@@ -1171,10 +1386,23 @@ Deno.serve(async (req) => {
         sources: Object.fromEntries(Object.entries(swingSources).map(([k, v]) => [k, v.length])),
       };
       const swingQuotes = await fetchSwingQuotes(swingSymbols);
-      const candidates = swingQuotes.filter(preSwingFilter);
+      let candidates = swingQuotes.filter(preSwingFilter);
+
+      // SwingSetupScore pre-ranking: score → sort → top 30 → Pass 1
+      if (candidates.length > 0) {
+        for (const q of candidates) {
+          computeSwingSetupScore(q);
+        }
+        candidates = candidates
+          .filter(q => (q._swingSetupScore ?? -999) > -999)
+          .sort((a, b) => (b._swingSetupScore ?? -999) - (a._swingSetupScore ?? -999))
+          .slice(0, 30);
+        if (candidates.length > 0) {
+          console.log(`[Trade Scanner] Swing SwingSetupScore top 5: ${candidates.slice(0, 5).map(q => `${q.symbol}:${q._swingSetupScore?.toFixed(2)}(${q._extensionPenalty ?? 0})`).join(', ')}`);
+        }
+      }
 
       if (candidates.length > 0) {
-
         try {
           // ── Pass 1: Quick scan with lightweight indicators ──
           // Split into batches of 20 to keep AI JSON output manageable

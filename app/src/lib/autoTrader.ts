@@ -1753,6 +1753,10 @@ async function processSingleIdea(
       status: 'SUBMITTED',
       scanner_reason: idea.reason,
       fa_rationale: fa.trade.rationale,
+      in_play_score: idea.in_play_score,
+      pass1_confidence: idea.pass1_confidence,
+      entry_trigger_type: 'bracket_limit',
+      market_condition: idea.market_condition,
     });
 
     // Track pending order for allocation cap enforcement
@@ -2149,6 +2153,15 @@ export async function syncPositions(accountId: string): Promise<void> {
           : closeReason === 'target_hit' ? 'TARGET_HIT'
           : 'CLOSED';
 
+        let rMultiple: number | null = null;
+        if (trade.stop_loss != null && trade.entry_price != null && trade.entry_price !== trade.stop_loss) {
+          const riskPerShare = Math.abs(trade.entry_price - trade.stop_loss);
+          rMultiple = isLong
+            ? (actualClosePrice - fillPrice) / riskPerShare
+            : (fillPrice - actualClosePrice) / riskPerShare;
+          rMultiple = parseFloat(rMultiple.toFixed(2));
+        }
+
         await updatePaperTrade(trade.id, {
           status: status as PaperTrade['status'],
           close_reason: closeReason,
@@ -2156,6 +2169,7 @@ export async function syncPositions(accountId: string): Promise<void> {
           closed_at: new Date().toISOString(),
           pnl: parseFloat(pnl.toFixed(2)),
           pnl_percent: fillPrice > 0 ? parseFloat(((pnl / (fillPrice * qty)) * 100).toFixed(2)) : null,
+          r_multiple: rMultiple,
         });
 
         const emoji = pnl > 0 ? 'success' : pnl < 0 ? 'warning' : 'info';

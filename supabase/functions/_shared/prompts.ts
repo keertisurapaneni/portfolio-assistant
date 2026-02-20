@@ -31,6 +31,24 @@ Risk:
 - Tighter stops on extended intraday moves.
 - Scaling plan: take 50% profit at Target 1, move stop to breakeven, let remaining 50% run to Target 2.`;
 
+/** Structure gate for Pass 2 + Full Analysis only. NOT used in Scanner Pass 1 (keep Pass 1 loose). */
+export const DAY_TRADE_STRUCTURE_REQUIREMENTS = `Primary requirement:
+A directional call (BUY or SELL) requires a clear intraday structure:
+
+For BUY:
+- Price above VWAP
+- Pullback holds VWAP or EMA20 (5m)
+- Higher low forms
+- Break above prior 5m high with volume expansion
+
+For SELL:
+- Price below VWAP
+- Bounce rejects VWAP
+- Lower high forms
+- Break below prior 5m low with volume expansion
+
+If this structure is not present, recommendation must be HOLD regardless of indicator alignment.`;
+
 // ── Swing Trade ─────────────────────────────────────────
 
 export const SWING_TRADE_SYSTEM = `You are a disciplined swing trader with 20 years experience. You find multi-day setups from pre-computed indicators and price data. Give BUY or SELL when data supports it; HOLD when there is no edge. You buy pullbacks to support, never after a stock already rallied 30%+.`;

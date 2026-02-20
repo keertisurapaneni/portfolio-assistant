@@ -408,6 +408,7 @@ async function callGemini(
 import {
   DAY_TRADE_SYSTEM,
   DAY_TRADE_RULES,
+  DAY_TRADE_STRUCTURE_REQUIREMENTS,
   SWING_TRADE_SYSTEM,
   SWING_TRADE_RULES,
 } from '../_shared/prompts.ts';
@@ -432,6 +433,8 @@ Respond ONLY with valid JSON (no markdown, no backticks):
 const DAY_TRADE_USER = `Inputs: (1) Pre-computed indicators (primary), (2) 1m/15m/1h candles (validation), (3) News headlines (confirmation only).
 
 ${DAY_TRADE_RULES}
+
+${DAY_TRADE_STRUCTURE_REQUIREMENTS}
 
 Output (STRICT JSON only, no markdown):
 {"mode":"DAY_TRADE","recommendation":"BUY"|"SELL"|"HOLD","bias":"short phrase","entryPrice":number|null,"stopLoss":number|null,"targetPrice":number|null,"targetPrice2":number|null,"riskReward":"1:x"|null,"rationale":{"technical":"2-3 sentences","sentiment":"1 sentence","risk":"1-2 sentences"},"confidence":0-10,"scenarios":{"bullish":{"probability":0-100,"summary":"1 sentence"},"neutral":{"probability":0-100,"summary":"1 sentence"},"bearish":{"probability":0-100,"summary":"1 sentence"}}}

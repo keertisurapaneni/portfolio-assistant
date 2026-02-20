@@ -15,6 +15,7 @@ import {
   Settings,
   BarChart3,
   Activity,
+  ClipboardCheck,
   Zap,
   Briefcase,
   TrendingUp,
@@ -55,6 +56,7 @@ import {
   type StrategySignalStatusSummary,
   type PendingStrategySignal,
   type TradeStatus,
+  type DayTradeValidationReport,
   getAllTrades,
   getPerformance,
   recalculatePerformance,
@@ -65,6 +67,7 @@ import {
   getPendingStrategySignals,
   getAutoTradeEvents,
   getTodaysExecutedEvents,
+  getDayTradeValidationReport,
 } from '../lib/paperTradesApi';
 import { getTotalDeployed, getMarketRegime, calculateKellyMultiplier, type MarketRegime } from '../lib/autoTrader';
 import { Spinner } from './Spinner';
@@ -96,7 +99,7 @@ function toEtIsoDate(value: string | null | undefined): string | null {
 
 // ── Main Component ──────────────────────────────────────
 
-type Tab = 'portfolio' | 'today' | 'smart' | 'signals' | 'strategies' | 'history' | 'settings';
+type Tab = 'portfolio' | 'today' | 'smart' | 'signals' | 'strategies' | 'validation' | 'history' | 'settings';
 
 export function PaperTrading() {
   const [config, setConfig] = useState<AutoTraderConfig>(getAutoTraderConfig);
@@ -113,6 +116,7 @@ export function PaperTrading() {
   const [videoPerf, setVideoPerf] = useState<StrategyVideoPerformance[]>([]);
   const [strategyStatuses, setStrategyStatuses] = useState<StrategySignalStatusSummary[]>([]);
   const [pendingSignals, setPendingSignals] = useState<PendingStrategySignal[]>([]);
+  const [validationReport, setValidationReport] = useState<DayTradeValidationReport | null>(null);
   const [totalDeployed, setTotalDeployed] = useState(0);
   const [marketRegime, setMarketRegime] = useState<MarketRegime | null>(null);
   const [kellyMultiplier, setKellyMultiplier] = useState<number>(1.0);
@@ -124,7 +128,7 @@ export function PaperTrading() {
   const loadData = useCallback(async () => {
     setLoading(true);
     try {
-      const [all, perf, savedEvents, todayEvents, catPerf, srcPerf, vidPerf, signalStatuses, pending, deployed, regime, kelly] = await Promise.all([
+      const [all, perf, savedEvents, todayEvents, catPerf, srcPerf, vidPerf, signalStatuses, pending, deployed, regime, kelly, validation] = await Promise.all([
         getAllTrades(50),
         getPerformance(),
         getAutoTradeEvents(100),
@@ -137,6 +141,7 @@ export function PaperTrading() {
         getTotalDeployed(),
         getMarketRegime(config),
         calculateKellyMultiplier(config),
+        getDayTradeValidationReport(),
       ]);
       setAllTrades(all);
       setPerformance(perf);
@@ -150,6 +155,7 @@ export function PaperTrading() {
       setTotalDeployed(deployed);
       setMarketRegime(regime);
       setKellyMultiplier(kelly);
+      setValidationReport(validation);
     } catch (err) {
       console.error('Failed to load paper trading data:', err);
     } finally {
@@ -425,6 +431,7 @@ export function PaperTrading() {
           { id: 'history' as Tab, label: 'Trade History', icon: Clock, count: allTrades.length },
           { id: 'signals' as Tab, label: 'Signal Quality', icon: Target },
           { id: 'strategies' as Tab, label: 'Strategy Perf', icon: BarChart3, count: sourcePerf.length },
+          { id: 'validation' as Tab, label: 'Day Validation', icon: ClipboardCheck },
           { id: 'smart' as Tab, label: 'Smart Trading', icon: Brain },
           { id: 'settings' as Tab, label: 'Settings', icon: Settings },
         ].map(t => (
@@ -491,6 +498,9 @@ export function PaperTrading() {
           )}
           {tab === 'strategies' && (
             <StrategyPerformanceTab sources={sourcePerf} videos={videoPerf} statuses={strategyStatuses} />
+          )}
+          {tab === 'validation' && (
+            <DayTradeValidationTab report={validationReport} onRefresh={loadData} />
           )}
           {tab === 'history' && (
             <HistoryTab trades={allTrades} pendingSignals={pendingSignals} />
@@ -2041,6 +2051,161 @@ function FeatureCard({ label, enabled, detail }: { label: string; enabled: boole
         {detail && <p className="text-[10px] text-[hsl(var(--muted-foreground))] truncate">{detail}</p>}
         {!enabled && !detail && <p className="text-[10px] text-[hsl(var(--muted-foreground))]">Off</p>}
       </div>
+    </div>
+  );
+}
+
+// ── Day Trade Validation Tab ─────────────────────────────
+
+function DayTradeValidationTab({ report, onRefresh }: {
+  report: DayTradeValidationReport | null;
+  onRefresh: () => void;
+}) {
+  if (!report) {
+    return (
+      <div className="rounded-xl border border-[hsl(var(--border))] bg-white p-8 text-center text-[hsl(var(--muted-foreground))]">
+        No validation data yet. Run day trades for 10–20 days to see results.
+      </div>
+    );
+  }
+
+  const hasData = report.trendVsChop.length > 0 || report.confidence7Plus.length > 0 || report.recentTrades.length > 0;
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <h2 className="text-lg font-semibold">Day Trade Validation (10–20 day analysis)</h2>
+        <button
+          onClick={onRefresh}
+          className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-[hsl(var(--border))] hover:bg-[hsl(var(--secondary))] text-sm"
+        >
+          <RefreshCw className="w-4 h-4" />
+          Refresh
+        </button>
+      </div>
+
+      {!hasData ? (
+        <div className="rounded-xl border border-[hsl(var(--border))] bg-white p-8 text-center text-[hsl(var(--muted-foreground))]">
+          No closed day trades with validation data yet. Trades need entry_trigger_type=bracket_limit.
+        </div>
+      ) : (
+        <>
+          {/* Trend vs Chop */}
+          {report.trendVsChop.length > 0 && (
+            <div className="rounded-xl border border-[hsl(var(--border))] bg-white overflow-hidden">
+              <div className="px-4 py-2.5 border-b border-[hsl(var(--border))] bg-[hsl(var(--secondary))]">
+                <h3 className="text-sm font-semibold">Are large-cap trend days working? Chop days killing it?</h3>
+              </div>
+              <div className="p-4">
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                  {report.trendVsChop.map(row => (
+                    <div key={row.marketCondition} className="rounded-lg border border-[hsl(var(--border))] p-4">
+                      <p className="text-xs font-medium text-[hsl(var(--muted-foreground))] capitalize">{row.marketCondition}</p>
+                      <p className="text-2xl font-bold tabular-nums">{row.trades} trades</p>
+                      <p className={cn('text-sm', row.winRatePct >= 50 ? 'text-emerald-600' : 'text-red-600')}>
+                        Win rate: {row.winRatePct}%
+                      </p>
+                      <p className="text-sm text-[hsl(var(--muted-foreground))]">
+                        Avg R: {row.avgRMultiple} · Avg P&L: {fmtUsd(row.avgPnl, 2, true)}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Confidence ≥7 */}
+          {report.confidence7Plus.length > 0 && (
+            <div className="rounded-xl border border-[hsl(var(--border))] bg-white overflow-hidden">
+              <div className="px-4 py-2.5 border-b border-[hsl(var(--border))] bg-[hsl(var(--secondary))]">
+                <h3 className="text-sm font-semibold">Is confidence ≥7 actually predictive?</h3>
+              </div>
+              <div className="p-4">
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                  {report.confidence7Plus.map(row => (
+                    <div key={row.confBucket} className="rounded-lg border border-[hsl(var(--border))] p-4">
+                      <p className="text-xs font-medium text-[hsl(var(--muted-foreground))]">{row.confBucket}</p>
+                      <p className="text-2xl font-bold tabular-nums">{row.trades} trades</p>
+                      <p className={cn('text-sm', row.winRatePct >= 50 ? 'text-emerald-600' : 'text-red-600')}>
+                        Win rate: {row.winRatePct}%
+                      </p>
+                      <p className="text-sm text-[hsl(var(--muted-foreground))]">Avg R: {row.avgRMultiple}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* InPlayScore buckets */}
+          {report.inPlayScoreBuckets.length > 0 && (
+            <div className="rounded-xl border border-[hsl(var(--border))] bg-white overflow-hidden">
+              <div className="px-4 py-2.5 border-b border-[hsl(var(--border))] bg-[hsl(var(--secondary))]">
+                <h3 className="text-sm font-semibold">InPlayScore vs outcome</h3>
+              </div>
+              <div className="p-4">
+                <div className="grid grid-cols-3 gap-4">
+                  {report.inPlayScoreBuckets.map(row => (
+                    <div key={row.bucket} className="rounded-lg border border-[hsl(var(--border))] p-4">
+                      <p className="text-xs font-medium text-[hsl(var(--muted-foreground))]">{row.bucket}</p>
+                      <p className="text-xl font-bold tabular-nums">{row.trades} trades</p>
+                      <p className="text-sm">Win rate: {row.winRatePct}% · Avg R: {row.avgRMultiple}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Recent trades log */}
+          {report.recentTrades.length > 0 && (
+            <div className="rounded-xl border border-[hsl(var(--border))] bg-white overflow-hidden">
+              <div className="px-4 py-2.5 border-b border-[hsl(var(--border))] bg-[hsl(var(--secondary))]">
+                <h3 className="text-sm font-semibold">Recent day trades (validation log)</h3>
+              </div>
+              <div className="overflow-x-auto max-h-80 overflow-y-auto">
+                <table className="w-full text-sm">
+                  <thead className="sticky top-0 bg-[hsl(var(--secondary))]">
+                    <tr className="border-b border-[hsl(var(--border))]">
+                      <th className="px-4 py-2 text-left font-medium">Ticker</th>
+                      <th className="px-4 py-2 text-left font-medium">Entry</th>
+                      <th className="px-4 py-2 text-right font-medium">InPlay</th>
+                      <th className="px-4 py-2 text-right font-medium">P1</th>
+                      <th className="px-4 py-2 text-right font-medium">P2</th>
+                      <th className="px-4 py-2 text-left font-medium">Cond</th>
+                      <th className="px-4 py-2 text-right font-medium">R</th>
+                      <th className="px-4 py-2 text-right font-medium">P&L</th>
+                      <th className="px-4 py-2 text-left font-medium">Close</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {report.recentTrades.map((t, i) => (
+                      <tr key={i} className="border-b border-[hsl(var(--border))]/50 hover:bg-[hsl(var(--secondary))]/30">
+                        <td className="px-4 py-2 font-medium">{t.ticker}</td>
+                        <td className="px-4 py-2 text-[hsl(var(--muted-foreground))]">
+                          {new Date(t.openedAt).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' })}
+                        </td>
+                        <td className="px-4 py-2 text-right tabular-nums">{t.inPlayScore ?? '—'}</td>
+                        <td className="px-4 py-2 text-right tabular-nums">{t.pass1Confidence ?? '—'}</td>
+                        <td className="px-4 py-2 text-right tabular-nums">{t.pass2Confidence ?? '—'}</td>
+                        <td className="px-4 py-2 text-[hsl(var(--muted-foreground))] capitalize">{t.marketCondition ?? '—'}</td>
+                        <td className={cn('px-4 py-2 text-right tabular-nums font-medium', (t.rMultiple ?? 0) >= 0 ? 'text-emerald-600' : 'text-red-600')}>
+                          {t.rMultiple != null ? t.rMultiple : '—'}
+                        </td>
+                        <td className={cn('px-4 py-2 text-right tabular-nums font-medium', (t.pnl ?? 0) >= 0 ? 'text-emerald-600' : 'text-red-600')}>
+                          {t.pnl != null ? fmtUsd(t.pnl, 2, true) : '—'}
+                        </td>
+                        <td className="px-4 py-2 text-[hsl(var(--muted-foreground))]">{t.closeReason ?? '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </>
+      )}
     </div>
   );
 }

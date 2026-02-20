@@ -13,10 +13,13 @@ export interface TradeIdea {
   change: number;
   changePercent: number;
   signal: 'BUY' | 'SELL';
-  confidence: number;     // 0-10 AI confidence (same scale as full analysis)
-  reason: string;         // AI-generated 1-sentence rationale
-  tags: string[];         // e.g. ["momentum", "volume-surge"]
+  confidence: number;     // 0-10 Pass 2 confidence (same scale as full analysis)
+  reason: string;        // AI-generated 1-sentence rationale
+  tags: string[];        // e.g. ["momentum", "volume-surge"]
   mode: 'DAY_TRADE' | 'SWING_TRADE';
+  in_play_score?: number;
+  pass1_confidence?: number;
+  market_condition?: 'trend' | 'chop';
 }
 
 export interface ScanResult {

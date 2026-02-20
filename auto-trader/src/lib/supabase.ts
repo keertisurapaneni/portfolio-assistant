@@ -199,6 +199,16 @@ export interface PaperTrade {
   fa_rationale: Record<string, string> | null;
   notes: string | null;
   created_at: string;
+  in_play_score?: number | null;
+  pass1_confidence?: number | null;
+  entry_trigger_type?: string | null;
+  r_multiple?: number | null;
+  market_condition?: string | null;
+  // Swing entry log (post-trade metrics — collect only)
+  pct_distance_sma20_at_entry?: number | null;
+  macd_histogram_slope_at_entry?: string | null;
+  volume_vs_10d_avg_at_entry?: number | null;
+  regime_alignment_at_entry?: string | null;
 }
 
 export type ExternalStrategySignalStatus =

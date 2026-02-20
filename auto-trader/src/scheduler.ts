@@ -19,6 +19,7 @@ import {
   searchContract,
   placeBracketOrder,
   placeMarketOrder,
+  cancelOrder,
   type PositionData,
 } from './ib-connection.js';
 import {
@@ -68,6 +69,9 @@ interface TradeIdea {
   reason: string;
   tags: string[];
   mode: 'DAY_TRADE' | 'SWING_TRADE';
+  in_play_score?: number;
+  pass1_confidence?: number;
+  market_condition?: 'trend' | 'chop';
 }
 
 interface TradingSignalsResponse {
@@ -694,6 +698,118 @@ async function getQuotePrice(symbol: string): Promise<number | null> {
   } catch { return null; }
 }
 
+// ── Swing entry log (post-trade metrics — collect only) ──
+
+interface SwingEntryLog {
+  pct_distance_sma20_at_entry: number | null;
+  macd_histogram_slope_at_entry: 'increasing' | 'decreasing' | null;
+  volume_vs_10d_avg_at_entry: number | null;
+  regime_alignment_at_entry: 'above_both' | 'below_both' | 'mixed' | null;
+}
+
+async function fetchYahooDailyBars(symbol: string): Promise<{ closes: number[]; volumes: number[] } | null> {
+  try {
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=1y&interval=1d&includePrePost=false`;
+    const res = await fetch(url, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; PortfolioAssistant/1.0)' },
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const result = data?.chart?.result?.[0];
+    if (!result) return null;
+    const quotes = result.indicators?.quote?.[0] ?? {};
+    const closes = (quotes.close ?? []).filter((c: number | null) => c != null) as number[];
+    const volumes = (quotes.volume ?? []).map((v: number | null) => v ?? 0);
+    if (closes.length < 30) return null;
+    return { closes, volumes };
+  } catch { return null; }
+}
+
+function ema(closes: number[], period: number): number[] {
+  const k = 2 / (period + 1);
+  const out: number[] = [];
+  let prev = closes.slice(0, period).reduce((a, b) => a + b, 0) / period;
+  for (let i = 0; i < period - 1; i++) out.push(NaN);
+  out.push(prev);
+  for (let i = period; i < closes.length; i++) {
+    prev = closes[i] * k + prev * (1 - k);
+    out.push(prev);
+  }
+  return out;
+}
+
+function macdHistogram(closes: number[]): number | null {
+  if (closes.length < 35) return null;
+  const fast = ema(closes, 12);
+  const slow = ema(closes, 26);
+  const macdLine: number[] = [];
+  for (let i = 0; i < closes.length; i++) {
+    macdLine.push(isNaN(fast[i]) || isNaN(slow[i]) ? NaN : fast[i] - slow[i]);
+  }
+  const valid = macdLine.filter(v => !isNaN(v));
+  if (valid.length < 9) return null;
+  const sigEma = ema(valid, 9);
+  const lastSig = sigEma[sigEma.length - 1];
+  const lastMacd = valid[valid.length - 1];
+  return lastMacd - lastSig;
+}
+
+async function computeSwingEntryLog(
+  ticker: string,
+  entryPrice: number,
+): Promise<SwingEntryLog> {
+  const out: SwingEntryLog = {
+    pct_distance_sma20_at_entry: null,
+    macd_histogram_slope_at_entry: null,
+    volume_vs_10d_avg_at_entry: null,
+    regime_alignment_at_entry: null,
+  };
+
+  const bars = await fetchYahooDailyBars(ticker);
+  if (!bars || bars.closes.length < 20) return out;
+
+  const closes = bars.closes;
+  const volumes = bars.volumes;
+
+  // % distance from SMA20 at entry
+  const sma20 = closes.slice(-20).reduce((a, b) => a + b, 0) / 20;
+  if (sma20 > 0) {
+    out.pct_distance_sma20_at_entry = parseFloat((((entryPrice - sma20) / sma20) * 100).toFixed(2));
+  }
+
+  // MACD histogram slope (increasing/decreasing)
+  const histNow = macdHistogram(closes);
+  const histPrev = macdHistogram(closes.slice(0, -1));
+  if (histNow != null && histPrev != null) {
+    out.macd_histogram_slope_at_entry = histNow > histPrev ? 'increasing' : 'decreasing';
+  }
+
+  // Volume vs 10-day average on entry day
+  if (volumes.length >= 11) {
+    const entryVol = volumes[volumes.length - 1] || 0;
+    const avgVol10 = volumes.slice(-11, -1).reduce((a, b) => a + b, 0) / 10;
+    if (avgVol10 > 0) {
+      out.volume_vs_10d_avg_at_entry = parseFloat((entryVol / avgVol10).toFixed(2));
+    }
+  }
+
+  // Regime alignment (SPY above/below 50/200)
+  const spyBars = await fetchYahooDailyBars('SPY');
+  if (spyBars && spyBars.closes.length >= 200) {
+    const spyCloses = spyBars.closes;
+    const price = spyCloses[spyCloses.length - 1];
+    const sma50 = spyCloses.slice(-50).reduce((a, b) => a + b, 0) / 50;
+    const sma200 = spyCloses.slice(-200).reduce((a, b) => a + b, 0) / 200;
+    const above50 = price > sma50;
+    const above200 = price > sma200;
+    if (above50 && above200) out.regime_alignment_at_entry = 'above_both';
+    else if (!above50 && !above200) out.regime_alignment_at_entry = 'below_both';
+    else out.regime_alignment_at_entry = 'mixed';
+  }
+
+  return out;
+}
+
 async function getEnrichedPositions(): Promise<EnrichedPosition[]> {
   const positions = await requestPositions();
   const open = positions.filter(p => p.position !== 0);
@@ -1007,6 +1123,17 @@ async function runPreTradeChecks(
   return true;
 }
 
+/** Parse "1:x" risk/reward string; returns reward multiple or null. */
+function parseRiskReward(rr: string | null | undefined): number | null {
+  if (!rr || typeof rr !== 'string') return null;
+  const m = rr.trim().match(/\d+(?:\.\d+)?\s*:\s*([\d.]+)/);
+  if (!m) return null;
+  const x = parseFloat(m[1]);
+  return Number.isFinite(x) ? x : null;
+}
+
+const MIN_DAY_TRADE_RISK_REWARD = 1.8;
+
 // ── Trade Execution ──────────────────────────────────────
 
 async function executeScannerTrade(
@@ -1037,6 +1164,14 @@ async function executeScannerTrade(
   const { entryPrice, stopLoss, targetPrice } = fa.trade;
   if (!entryPrice || !stopLoss || !targetPrice) return 'skipped:missing_levels';
 
+  // Day trade: require min 1:1.8 risk/reward for auto-trade (structure + confidence already gated by FA prompt)
+  if (mode === 'DAY_TRADE' && faConf >= config.minFAConfidence) {
+    const rr = parseRiskReward(fa.trade.riskReward);
+    if (rr == null || rr < MIN_DAY_TRADE_RISK_REWARD) {
+      return `skipped:rr_${rr?.toFixed(1) ?? 'null'}_min_${MIN_DAY_TRADE_RISK_REWARD}`;
+    }
+  }
+
   const dd = assessDrawdownMultiplier(positions);
   const sizing = calculatePositionSize(config, {
     price: entryPrice, mode, entryPrice, stopLoss,
@@ -1050,6 +1185,18 @@ async function executeScannerTrade(
 
   const contract = await searchContract(ticker);
   if (!contract) return 'failed:no_contract';
+
+  // SWING only: skip if price too far from entry (entry precision matters)
+  if (mode === 'SWING_TRADE' && entryPrice > 0) {
+    const currentPrice = await getQuotePrice(ticker);
+    if (currentPrice != null) {
+      const distPct = Math.abs(currentPrice - entryPrice) / entryPrice;
+      if (distPct > 0.04) {
+        log(`${ticker}: Entry skipped — price too far from entry level (${(distPct * 100).toFixed(1)}% away)`);
+        return 'skipped:price_too_far';
+      }
+    }
+  }
 
   try {
     const result = await placeBracketOrder({
@@ -1078,6 +1225,10 @@ async function executeScannerTrade(
       status: 'SUBMITTED',
       scanner_reason: idea.reason,
       fa_rationale: fa.trade.rationale,
+      in_play_score: idea.in_play_score,
+      pass1_confidence: idea.pass1_confidence,
+      entry_trigger_type: 'bracket_limit',
+      market_condition: idea.market_condition,
     });
 
     recordPendingOrder(sizing.dollarSize);
@@ -1147,6 +1298,7 @@ async function executeSuggestedFindTrade(
       status: 'SUBMITTED',
       scanner_reason: `${stock.tag}: ${stock.reason}`,
       notes: `Long-term hold | ${stock.tag} | Conviction: ${conviction}/10 | ${stock.valuationTag}`,
+      entry_trigger_type: 'market',
     });
 
     recordPendingOrder(sizing.dollarSize);
@@ -1259,6 +1411,13 @@ async function executeExternalStrategySignal(
       if (faRec !== signal.signal) {
         return skipExternalSignal(`Direction mismatch: external ${signal.signal} vs full analysis ${faRec}`, 'fa_direction_mismatch');
       }
+      // Day trade: require min 1:1.8 risk/reward for auto-trade
+      if (signal.mode === 'DAY_TRADE' && (faConf ?? 0) >= config.minFAConfidence) {
+        const rr = parseRiskReward(fa.trade.riskReward);
+        if (rr == null || rr < MIN_DAY_TRADE_RISK_REWARD) {
+          return skipExternalSignal(`Risk/reward ${rr?.toFixed(1) ?? 'null'} below min 1:${MIN_DAY_TRADE_RISK_REWARD}`, 'fa_risk_reward');
+        }
+      }
       validatedFA = fa.trade;
     } catch (err) {
       const reason = `Full analysis validation failed: ${err instanceof Error ? err.message : 'unknown'}`;
@@ -1355,13 +1514,32 @@ async function executeExternalStrategySignal(
     return 'failed';
   }
 
+  const hasBracketLevels = (
+    effectiveEntryPrice != null &&
+    effectiveStopLoss != null &&
+    effectiveTargetPrice != null
+  );
+
+  // SWING only: skip bracket limit if price too far from entry
+  if (
+    signal.mode === 'SWING_TRADE' &&
+    hasBracketLevels &&
+    effectiveEntryPrice! > 0 &&
+    quote != null
+  ) {
+    const distPct = Math.abs(quote - effectiveEntryPrice!) / effectiveEntryPrice!;
+    if (distPct > 0.04) {
+      log(`${ticker}: Entry skipped — price too far from entry level (${(distPct * 100).toFixed(1)}% away)`);
+      await updateExternalStrategySignal(signal.id, {
+        status: 'SKIPPED',
+        failure_reason: `Price ${(distPct * 100).toFixed(1)}% away from entry — entry precision required`,
+      });
+      return 'skipped';
+    }
+  }
+
   try {
     const side = signal.signal;
-    const hasBracketLevels = (
-      effectiveEntryPrice != null &&
-      effectiveStopLoss != null &&
-      effectiveTargetPrice != null
-    );
 
     let ibOrderId: string;
     const entryForRecord = effectiveEntryPrice ?? referencePrice;
@@ -1405,6 +1583,7 @@ async function executeExternalStrategySignal(
       target_price: effectiveTargetPrice,
       quantity: sizing.quantity,
       position_size: sizing.dollarSize,
+      entry_trigger_type: effectiveEntryPrice != null ? 'bracket_limit' : 'market',
       ib_order_id: ibOrderId,
       status: 'SUBMITTED',
       scanner_reason: `External strategy signal from ${signal.source_name}`,
@@ -1602,12 +1781,34 @@ async function syncPositions(
 
     if (ibPos && ibPos.position !== 0) {
       if (trade.status === 'SUBMITTED' || trade.status === 'PENDING') {
-        await updatePaperTrade(trade.id, {
+        const fillPrice = ibPos.avgCost;
+        const updates: Record<string, unknown> = {
           status: 'FILLED',
-          fill_price: ibPos.avgCost,
+          fill_price: fillPrice,
           filled_at: new Date().toISOString(),
-        });
-        log(`${trade.ticker}: Filled @ $${ibPos.avgCost.toFixed(2)}`);
+        };
+        // Swing: collect entry log metrics (no automated decisions yet)
+        if (trade.mode === 'SWING_TRADE') {
+          try {
+            const entryLog = await computeSwingEntryLog(trade.ticker, fillPrice);
+            if (entryLog.pct_distance_sma20_at_entry != null) {
+              updates.pct_distance_sma20_at_entry = entryLog.pct_distance_sma20_at_entry;
+            }
+            if (entryLog.macd_histogram_slope_at_entry != null) {
+              updates.macd_histogram_slope_at_entry = entryLog.macd_histogram_slope_at_entry;
+            }
+            if (entryLog.volume_vs_10d_avg_at_entry != null) {
+              updates.volume_vs_10d_avg_at_entry = entryLog.volume_vs_10d_avg_at_entry;
+            }
+            if (entryLog.regime_alignment_at_entry != null) {
+              updates.regime_alignment_at_entry = entryLog.regime_alignment_at_entry;
+            }
+          } catch (err) {
+            log(`${trade.ticker}: Entry log failed — ${err instanceof Error ? err.message : 'unknown'}`);
+          }
+        }
+        await updatePaperTrade(trade.id, updates);
+        log(`${trade.ticker}: Filled @ $${fillPrice.toFixed(2)}`);
       }
 
       if (trade.status === 'FILLED' && ibPos.mktPrice > 0 && trade.fill_price) {
@@ -1651,11 +1852,20 @@ async function syncPositions(
       const closedAt = new Date().toISOString();
       const pnlVal = parseFloat(pnl.toFixed(2));
       const pnlPct = fillPrice > 0 ? parseFloat(((pnl / (fillPrice * qty)) * 100).toFixed(2)) : null;
+      let rMultiple: number | null = null;
+      if (trade.stop_loss != null && trade.entry_price != null && trade.entry_price !== trade.stop_loss) {
+        const riskPerShare = Math.abs(trade.entry_price - trade.stop_loss);
+        rMultiple = isLong
+          ? (actual - fillPrice) / riskPerShare
+          : (fillPrice - actual) / riskPerShare;
+        rMultiple = parseFloat(rMultiple.toFixed(2));
+      }
       await updatePaperTrade(trade.id, {
         status, close_reason: closeReason, close_price: actual,
         closed_at: closedAt,
         pnl: pnlVal,
         pnl_percent: pnlPct,
+        r_multiple: rMultiple,
       });
       log(`${trade.ticker}: Closed (${closeReason}) — P&L $${pnl.toFixed(2)}`);
       // Trigger trade analysis immediately so feedback loop runs without waiting for rehydration
@@ -1674,8 +1884,8 @@ async function syncPositions(
         })
         .catch(err => log(`Trade analysis failed for ${trade.ticker}: ${err instanceof Error ? err.message : 'unknown'}`));
     } else if (trade.status === 'SUBMITTED') {
-      // Stale day trades
       const tradeAge = Date.now() - new Date(trade.created_at).getTime();
+      // Stale day trades
       if (trade.mode === 'DAY_TRADE' && tradeAge > 86400000) {
         await updatePaperTrade(trade.id, {
           status: 'CLOSED', close_reason: 'manual',
@@ -1683,6 +1893,28 @@ async function syncPositions(
           notes: (trade.notes ?? '') + ' | Expired: DAY order not filled within 1 day',
         });
         log(`${trade.ticker}: Day trade expired`);
+      }
+      // Swing bracket limit: expire after 2 trading days (~48h), cancel IB order
+      const TWO_TRADING_DAYS_MS = 2 * 24 * 60 * 60 * 1000;
+      if (
+        trade.mode === 'SWING_TRADE' &&
+        trade.entry_trigger_type === 'bracket_limit' &&
+        tradeAge > TWO_TRADING_DAYS_MS
+      ) {
+        const orderId = trade.ib_order_id ? parseInt(trade.ib_order_id, 10) : NaN;
+        if (!Number.isNaN(orderId)) {
+          try {
+            cancelOrder(orderId);
+            log(`${trade.ticker}: Swing bracket limit cancelled (expired >2 trading days)`);
+          } catch (err) {
+            log(`${trade.ticker}: Cancel failed — ${err instanceof Error ? err.message : 'unknown'}`);
+          }
+        }
+        await updatePaperTrade(trade.id, {
+          status: 'CLOSED', close_reason: 'manual',
+          closed_at: new Date().toISOString(),
+          notes: (trade.notes ?? '') + ' | Expired: SWING limit not filled within 2 trading days',
+        });
       }
     }
   }
@@ -1751,6 +1983,7 @@ async function checkDipBuyOpportunities(
         ib_order_id: String(result.orderId),
         status: 'SUBMITTED',
         notes: `Dip buy ${triggered.label} at -${absDip.toFixed(1)}%`,
+        entry_trigger_type: 'dip_buy',
       });
 
       recordPendingOrder(addOnDollar);
@@ -1815,6 +2048,7 @@ async function checkProfitTakeOpportunities(
         position_size: actualTrimQty * ibPos.mktPrice,
         status: 'SUBMITTED',
         notes: `Profit take ${triggered.label} at +${gainPct.toFixed(1)}%`,
+        entry_trigger_type: 'profit_take',
       });
 
       log(`${trade.ticker}: PROFIT TAKE ${triggered.label} — sold ${actualTrimQty} shares at +${gainPct.toFixed(1)}%`);
@@ -1884,6 +2118,7 @@ async function checkLossCutOpportunities(
         position_size: sellQty * ibPos.mktPrice,
         status: 'SUBMITTED',
         notes: `Loss cut ${triggered.label} at -${lossPct.toFixed(1)}%`,
+        entry_trigger_type: 'loss_cut',
       });
 
       log(`${trade.ticker}: LOSS CUT ${triggered.label} — sold ${sellQty} shares at -${lossPct.toFixed(1)}%`);

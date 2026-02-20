@@ -60,6 +60,17 @@ export interface PaperTrade {
   fa_rationale: { technical?: string; sentiment?: string; risk?: string } | null;
   notes: string | null;
   created_at: string;
+  // Validation log (day-trade analysis)
+  in_play_score?: number | null;
+  pass1_confidence?: number | null;
+  entry_trigger_type?: string | null;
+  r_multiple?: number | null;
+  market_condition?: string | null;
+  // Swing entry log (post-trade metrics — collect only)
+  pct_distance_sma20_at_entry?: number | null;
+  macd_histogram_slope_at_entry?: string | null;
+  volume_vs_10d_avg_at_entry?: number | null;
+  regime_alignment_at_entry?: string | null;
 }
 
 export interface TradeLearning {
@@ -166,6 +177,127 @@ export async function getAllTrades(limit = 50): Promise<PaperTrade[]> {
 
   if (error) throw new Error(`Failed to fetch trades: ${error.message}`);
   return (data ?? []) as PaperTrade[];
+}
+
+/** Day trade validation report — answers: trend vs chop? confidence ≥7 predictive? */
+export interface DayTradeValidationReport {
+  trendVsChop: Array<{
+    marketCondition: string;
+    trades: number;
+    wins: number;
+    winRatePct: number;
+    avgPnl: number;
+    avgRMultiple: number;
+  }>;
+  confidence7Plus: Array<{
+    confBucket: string;
+    trades: number;
+    wins: number;
+    winRatePct: number;
+    avgRMultiple: number;
+  }>;
+  inPlayScoreBuckets: Array<{
+    bucket: string;
+    trades: number;
+    avgRMultiple: number;
+    winRatePct: number;
+  }>;
+  recentTrades: Array<{
+    ticker: string;
+    signal: string;
+    openedAt: string;
+    inPlayScore: number | null;
+    pass1Confidence: number | null;
+    pass2Confidence: number | null;
+    entryTriggerType: string | null;
+    rMultiple: number | null;
+    pnl: number | null;
+    pnlPercent: number | null;
+    closeReason: string | null;
+    marketCondition: string | null;
+  }>;
+}
+
+export async function getDayTradeValidationReport(): Promise<DayTradeValidationReport> {
+  const { data, error } = await supabase
+    .from('paper_trades')
+    .select('*')
+    .eq('mode', 'DAY_TRADE')
+    .not('closed_at', 'is', null)
+    .order('opened_at', { ascending: false })
+    .limit(100);
+
+  if (error) throw new Error(`Failed to fetch day trades: ${error.message}`);
+  const trades = (data ?? []) as PaperTrade[];
+
+  const scannerTrades = trades.filter(t => t.entry_trigger_type === 'bracket_limit' && t.fill_price != null);
+  const withMarket = scannerTrades.filter(t => t.market_condition);
+
+  const trendVsChop = ['trend', 'chop'].map(mc => {
+    const subset = withMarket.filter(t => t.market_condition === mc);
+    const wins = subset.filter(t => (t.pnl ?? 0) > 0).length;
+    const rMults = subset.map(t => t.r_multiple).filter((r): r is number => r != null);
+    return {
+      marketCondition: mc,
+      trades: subset.length,
+      wins,
+      winRatePct: subset.length > 0 ? Math.round(100 * wins / subset.length) : 0,
+      avgPnl: subset.length > 0 ? Math.round(100 * subset.reduce((s, t) => s + (t.pnl ?? 0), 0) / subset.length) / 100 : 0,
+      avgRMultiple: rMults.length > 0 ? Math.round(100 * rMults.reduce((a, b) => a + b, 0) / rMults.length) / 100 : 0,
+    };
+  }).filter(r => r.trades > 0);
+
+  const conf7Plus = scannerTrades.filter(t => (t.fa_confidence ?? 0) >= 7);
+  const confBelow7 = scannerTrades.filter(t => (t.fa_confidence ?? 0) < 7);
+  const confidence7Plus = [
+    { subset: conf7Plus, label: 'conf ≥7' },
+    { subset: confBelow7, label: 'conf <7' },
+  ].map(({ subset, label }) => {
+    const wins = subset.filter(t => (t.pnl ?? 0) > 0).length;
+    const rMults = subset.map(t => t.r_multiple).filter((r): r is number => r != null);
+    return {
+      confBucket: label,
+      trades: subset.length,
+      wins,
+      winRatePct: subset.length > 0 ? Math.round(100 * wins / subset.length) : 0,
+      avgRMultiple: rMults.length > 0 ? Math.round(100 * rMults.reduce((a, b) => a + b, 0) / rMults.length) / 100 : 0,
+    };
+  }).filter(r => r.trades > 0);
+
+  const highInPlay = scannerTrades.filter(t => (t.in_play_score ?? 0) >= 2.5);
+  const midInPlay = scannerTrades.filter(t => (t.in_play_score ?? 0) >= 1.5 && (t.in_play_score ?? 0) < 2.5);
+  const lowInPlay = scannerTrades.filter(t => (t.in_play_score ?? 0) < 1.5 && t.in_play_score != null);
+  const inPlayScoreBuckets = [
+    { subset: highInPlay, label: 'high (≥2.5)' },
+    { subset: midInPlay, label: 'mid (1.5–2.5)' },
+    { subset: lowInPlay, label: 'low (<1.5)' },
+  ].map(({ subset, label }) => {
+    const wins = subset.filter(t => (t.pnl ?? 0) > 0).length;
+    const rMults = subset.map(t => t.r_multiple).filter((r): r is number => r != null);
+    return {
+      bucket: label,
+      trades: subset.length,
+      avgRMultiple: rMults.length > 0 ? Math.round(100 * rMults.reduce((a, b) => a + b, 0) / rMults.length) / 100 : 0,
+      winRatePct: subset.length > 0 ? Math.round(100 * wins / subset.length) : 0,
+    };
+  }).filter(r => r.trades > 0);
+
+  const recentTrades = scannerTrades.slice(0, 30).map(t => ({
+    ticker: t.ticker,
+    signal: t.signal,
+    openedAt: t.opened_at ?? t.created_at ?? '',
+    inPlayScore: t.in_play_score ?? null,
+    pass1Confidence: t.pass1_confidence ?? null,
+    pass2Confidence: t.fa_confidence ?? null,
+    entryTriggerType: t.entry_trigger_type ?? null,
+    rMultiple: t.r_multiple ?? null,
+    pnl: t.pnl ?? null,
+    pnlPercent: t.pnl_percent ?? null,
+    closeReason: t.close_reason ?? null,
+    marketCondition: t.market_condition ?? null,
+  }));
+
+  return { trendVsChop, confidence7Plus, inPlayScoreBuckets, recentTrades };
 }
 
 /** Get completed trades for a specific ticker */
