@@ -7,7 +7,7 @@ import type {
   StrategySignalStatusSummary,
   TradeStatus,
 } from '../../../lib/paperTradesApi';
-import { fixUnknownSources } from '../../../lib/strategyVideoQueueApi';
+import { fixUnknownSources, assignUnknownToSource } from '../../../lib/strategyVideoQueueApi';
 import { fmtUsd, toEtIsoDate } from '../utils';
 import { StatusBadge } from '../shared';
 
@@ -42,11 +42,17 @@ type StrategyRow = {
     status: TradeStatus;
   }>;
   latestSignalStatus: string | null;
+  transcript?: string | null;
+  ingestStatus?: 'pending' | 'transcribing' | 'done' | 'failed' | null;
+  ingestError?: string | null;
 };
 
 export function StrategyPerformanceTab({ sources, videos, statuses, onRefresh }: StrategyPerformanceTabProps) {
   const [expandedSources, setExpandedSources] = useState<Set<string>>(new Set());
+  const [expandedTranscript, setExpandedTranscript] = useState<string | null>(null);
   const [fixing, setFixing] = useState(false);
+  const [assigning, setAssigning] = useState(false);
+  const [assignTarget, setAssignTarget] = useState<string>('');
   const autoFixAttempted = useRef(false);
 
   const { todayET, isPastMarketCloseET } = useMemo(() => {
@@ -120,6 +126,9 @@ export function StrategyPerformanceTab({ sources, videos, statuses, onRefresh }:
         lastTradeAt: video.lastTradeAt,
         recentTrades: video.recentTrades ?? [],
         latestSignalStatus: status?.latestSignalStatus ?? null,
+        transcript: status?.transcript ?? null,
+        ingestStatus: status?.ingestStatus ?? null,
+        ingestError: status?.ingestError ?? null,
       });
     }
 
@@ -147,6 +156,9 @@ export function StrategyPerformanceTab({ sources, videos, statuses, onRefresh }:
         lastTradeAt: null,
         recentTrades: [],
         latestSignalStatus: status.latestSignalStatus,
+        transcript: status.transcript ?? null,
+        ingestStatus: status.ingestStatus ?? null,
+        ingestError: status.ingestError ?? null,
       });
     }
 
@@ -205,6 +217,19 @@ export function StrategyPerformanceTab({ sources, videos, statuses, onRefresh }:
     });
   }, [sources, statuses, sourcePerfByName]);
 
+  const assignOptions = useMemo(() => {
+    return sourceNames
+      .filter((s) => s !== 'Unknown')
+      .map((sourceName) => {
+        const perf = sourcePerfByName.get(sourceName);
+        const rows = rowsBySource.get(sourceName) ?? [];
+        const url = perf?.sourceUrl ?? rows[0]?.sourceUrl;
+        const handle = url ? (url.match(/instagram\.com\/([^/]+)/i)?.[1] ?? null) : null;
+        return { sourceName, sourceHandle: handle ?? sourceName.toLowerCase().replace(/\s+/g, '') };
+      })
+      .filter((o) => o.sourceHandle);
+  }, [sourceNames, sourcePerfByName, rowsBySource]);
+
   const hasUnknown = sourceNames.includes('Unknown');
   useEffect(() => {
     if (!hasUnknown || autoFixAttempted.current || !onRefresh) return;
@@ -253,6 +278,21 @@ export function StrategyPerformanceTab({ sources, videos, statuses, onRefresh }:
       return next;
     });
   }, [sourceNames]);
+
+  const handleAssignUnknown = async () => {
+    const opt = assignOptions.find((o) => o.sourceName === assignTarget);
+    if (!opt || !onRefresh) return;
+    setAssigning(true);
+    try {
+      const { assigned } = await assignUnknownToSource({
+        source_handle: opt.sourceHandle,
+        source_name: opt.sourceName,
+      });
+      if (assigned > 0) onRefresh();
+    } finally {
+      setAssigning(false);
+    }
+  };
 
   const getStrategyState = (row: StrategyRow): { label: string; tone: 'green' | 'amber' | 'red' } => {
     if (row.isMarkedX) return { label: 'deactivated X --', tone: 'red' };
@@ -374,6 +414,30 @@ export function StrategyPerformanceTab({ sources, videos, statuses, onRefresh }:
                               {sourceUrl}
                             </a>
                           )}
+                          {sourceName === 'Unknown' && assignOptions.length > 0 && (
+                            <div className="mt-2 flex flex-wrap items-center gap-2">
+                              <span className="text-[10px] text-[hsl(var(--muted-foreground))]">Assign to:</span>
+                              <select
+                                value={assignTarget}
+                                onChange={(e) => setAssignTarget(e.target.value)}
+                                className="text-xs border rounded px-2 py-1 bg-white min-w-[140px]"
+                              >
+                                <option value="">Select source…</option>
+                                {assignOptions.map((o) => (
+                                  <option key={o.sourceHandle} value={o.sourceName}>
+                                    {o.sourceName}
+                                  </option>
+                                ))}
+                              </select>
+                              <button
+                                onClick={handleAssignUnknown}
+                                disabled={!assignTarget || assigning}
+                                className="text-xs px-2 py-1 rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                              >
+                                {assigning ? 'Assigning…' : 'Assign'}
+                              </button>
+                            </div>
+                          )}
                         </div>
                       </td>
                       <td className="px-4 py-2.5 text-right tabular-nums">
@@ -478,6 +542,56 @@ export function StrategyPerformanceTab({ sources, videos, statuses, onRefresh }:
                                             <div className="flex items-center gap-2 text-[10px]">
                                               <span className="text-[hsl(var(--muted-foreground))]">{video.videoId}</span>
                                               <a href={`https://www.instagram.com/reel/${video.videoId}/`} target="_blank" rel="noreferrer" className="text-blue-600 hover:text-blue-700">Open video</a>
+                                            </div>
+                                          )}
+                                          {(video.strategyType || video.applicableDate) && (
+                                            <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-0.5 text-[10px] text-[hsl(var(--muted-foreground))]">
+                                              {video.strategyType === 'daily_signal' && video.applicableDate && (
+                                                <span>Applicable: {video.applicableDate}</span>
+                                              )}
+                                              {video.strategyType === 'generic_strategy' && video.applicableTimeframes && video.applicableTimeframes.length > 0 && (
+                                                <span>Scope: {video.applicableTimeframes.includes('DAY_TRADE') && video.applicableTimeframes.includes('SWING_TRADE') ? 'day + swing' : video.applicableTimeframes.includes('DAY_TRADE') ? 'day trade' : 'swing'}</span>
+                                              )}
+                                            </div>
+                                          )}
+                                          {(video.ingestStatus || video.transcript) && (
+                                            <div className="mt-2 space-y-1.5">
+                                              {video.ingestStatus && (
+                                                <div className="flex items-center gap-2 flex-wrap">
+                                                  <span className="text-[10px] text-[hsl(var(--muted-foreground))]">Ingest:</span>
+                                                  <span className={cn(
+                                                    'px-1.5 py-0.5 rounded text-[10px] font-medium',
+                                                    video.ingestStatus === 'done' && 'bg-emerald-100 text-emerald-700',
+                                                    video.ingestStatus === 'transcribing' && 'bg-blue-100 text-blue-700',
+                                                    video.ingestStatus === 'pending' && 'bg-amber-100 text-amber-700',
+                                                    video.ingestStatus === 'failed' && 'bg-red-100 text-red-700'
+                                                  )}>
+                                                    {video.ingestStatus === 'done' && '✓ Transcribed'}
+                                                    {video.ingestStatus === 'transcribing' && 'Transcribing…'}
+                                                    {video.ingestStatus === 'pending' && 'Pending'}
+                                                    {video.ingestStatus === 'failed' && 'Failed'}
+                                                  </span>
+                                                  {video.ingestError && (
+                                                    <span className="text-[10px] text-red-600 max-w-[200px] truncate" title={video.ingestError}>{video.ingestError}</span>
+                                                  )}
+                                                </div>
+                                              )}
+                                              {video.transcript && (
+                                                <div>
+                                                  <button
+                                                    type="button"
+                                                    onClick={() => setExpandedTranscript(expandedTranscript === baseKey ? null : baseKey)}
+                                                    className="text-[10px] text-blue-600 hover:text-blue-700 font-medium"
+                                                  >
+                                                    {expandedTranscript === baseKey ? 'Hide transcript' : 'Show transcript'}
+                                                  </button>
+                                                  {expandedTranscript === baseKey && (
+                                                    <pre className="mt-1 p-2 bg-[hsl(var(--muted))]/30 rounded text-[10px] whitespace-pre-wrap max-h-40 overflow-y-auto font-sans">
+                                                      {video.transcript}
+                                                    </pre>
+                                                  )}
+                                                </div>
+                                              )}
                                             </div>
                                           )}
                                         </div>

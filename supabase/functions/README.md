@@ -70,11 +70,36 @@ Processes pending `strategy_video_queue` items (quick add):
 - Resolves `source_name` from existing `strategy_videos` by `source_handle` so new videos from same source (e.g. kaycapitals) group under canonical name (e.g. "Somesh | Day Trader | Investor")
 - For Instagram URLs without handle in path, fetches page to extract handle from og:url
 - Creates minimal `strategy_videos` row (video_id, platform, source, url) → shows in Strategy Perf immediately
-- `strategy_type`, `extracted_signals`, `video_heading`, etc. are set later when transcript pipeline runs and calls `upsert-strategy-video`
+- `strategy_type`, `extracted_signals`, `video_heading`, etc. are set by the transcript pipeline (see below)
+
+### `extract-strategy-metadata-from-transcript`
+
+Extracts metadata from transcript via Gemini and upserts to `strategy_videos`. Called by the ingest script.
+
+**POST body:** `{ video_id, platform?, reel_url?, canonical_url?, transcript }`  
+**Extracts:** source_name, source_handle, strategy_type, video_heading, trade_date, extracted_signals, summary, etc.
+
+### Transcript pipeline (automatic)
+
+1. User adds URLs → `process-strategy-video-queue` creates minimal rows
+2. Auto-trader runs `scripts/ingest_video.py --from-strategy-videos` every 10 min
+3. Ingest: yt-dlp downloads → faster-whisper transcribes → calls `extract-strategy-metadata-from-transcript` → upserts
+
+Requires: `pip install -r scripts/requirements.txt` (yt-dlp, faster-whisper, requests)
 
 ### `fix-unknown-strategy-sources`
 
-Repairs `strategy_videos` with `source_name = 'Unknown'`: fetches Instagram page, extracts handle, looks up canonical source from existing videos, updates the row. Call from Add Strategies "Fix Unknown sources" button.
+Repairs `strategy_videos` with `source_name = 'Unknown'`: fetches Instagram page, extracts handle, looks up canonical source from existing videos, updates the row. Auto-runs when Strategy Perf tab loads and Unknown sources exist.
+
+### `assign-strategy-videos-to-source`
+
+Manual fallback when auto-fix fails (e.g. Instagram blocks server-side fetch). Assigns Unknown videos to a known source.
+
+**POST body:** `{ source_handle: string, source_name: string, video_ids?: string[] }`  
+- If `video_ids` provided: only assign those videos  
+- If omitted: assign all Unknown videos to the given source  
+
+UI: Strategy Perf → Unknown row → "Assign to:" dropdown + Assign button.
 
 ---
 
@@ -104,6 +129,8 @@ npx supabase functions deploy trade-scanner --no-verify-jwt
 npx supabase functions deploy fetch-stock-data --no-verify-jwt
 npx supabase functions deploy process-strategy-video-queue --no-verify-jwt
 npx supabase functions deploy fix-unknown-strategy-sources --no-verify-jwt
+npx supabase functions deploy assign-strategy-videos-to-source --no-verify-jwt
+npx supabase functions deploy extract-strategy-metadata-from-transcript --no-verify-jwt
 ```
 
 **Important:** When editing `_shared/` modules, redeploy **both** `trading-signals` and `trade-scanner`.

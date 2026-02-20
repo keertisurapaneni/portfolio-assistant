@@ -27,6 +27,7 @@ export function getSupabase(): SupabaseClient {
 
 export function getSupabaseUrl(): string { return SUPABASE_URL; }
 export function getSupabaseAnonKey(): string { return SUPABASE_ANON_KEY; }
+export function getSupabaseServiceRoleKey(): string { return SUPABASE_SERVICE_KEY; }
 export function isConfigured(): boolean {
   return !!(SUPABASE_URL && SUPABASE_SERVICE_KEY && SUPABASE_ANON_KEY);
 }

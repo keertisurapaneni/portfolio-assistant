@@ -1,0 +1,4 @@
+# For scripts/ingest_video.py — transcript pipeline
+yt-dlp>=2024.1.0
+faster-whisper>=1.0.0
+requests>=2.28.0

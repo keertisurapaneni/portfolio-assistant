@@ -153,6 +153,7 @@ Deno.serve(async (req) => {
       timeframe: null,
       applicable_timeframes: [],
       status: 'tracked',
+      ingest_status: 'pending',
     };
 
     const { data: inserted, error: upsertErr } = await supabase

@@ -11,6 +11,8 @@
  */
 
 import cron from 'node-cron';
+import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -27,6 +29,7 @@ import {
   getSupabase,
   getSupabaseUrl,
   getSupabaseAnonKey,
+  getSupabaseServiceRoleKey,
   loadConfig,
   saveConfigPartial,
   getActiveTrades,
@@ -197,6 +200,21 @@ export function startScheduler(): void {
     timezone: 'America/New_York',
   });
 
+  // Transcript ingest: every 10 min, process strategy_videos with null video_heading
+  const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
+  const ingestScript = resolve(projectRoot, 'scripts', 'ingest_video.py');
+  if (existsSync(ingestScript)) {
+    cron.schedule('*/10 * * * *', () => {
+      runTranscriptIngest(ingestScript).catch(err => {
+        console.error('[Scheduler] Transcript ingest failed:', err);
+      });
+    });
+    log('Transcript ingest: every 10 min (python scripts/ingest_video.py)');
+    setTimeout(() => runTranscriptIngest(ingestScript).catch(() => {}), 60_000);
+  } else {
+    log('Transcript ingest skipped: scripts/ingest_video.py not found');
+  }
+
   console.log('[Scheduler] Started — every 15 min + 9:36 ET first-candle pass (weekdays)');
 
   // Realtime: execute trades immediately when scanner refreshes (e.g. from TradeIdeas UI)
@@ -256,6 +274,36 @@ export async function triggerManualRun(): Promise<string> {
 
 function log(msg: string): void {
   console.log(`[Scheduler] ${msg}`);
+}
+
+async function runTranscriptIngest(scriptPath: string): Promise<void> {
+  const supabaseUrl = getSupabaseUrl();
+  const supabaseKey = getSupabaseAnonKey();
+  if (!supabaseUrl || !supabaseKey) return;
+
+  const serviceKey = getSupabaseServiceRoleKey();
+  return new Promise((resolve, reject) => {
+    const proc = spawn('python3', [scriptPath, '--from-strategy-videos'], {
+      env: {
+        ...process.env,
+        SUPABASE_URL: supabaseUrl,
+        SUPABASE_ANON_KEY: supabaseKey,
+        ...(serviceKey && { SUPABASE_SERVICE_ROLE_KEY: serviceKey }),
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let out = '';
+    let err = '';
+    proc.stdout?.on('data', (d) => { out += d; });
+    proc.stderr?.on('data', (d) => { err += d; });
+    proc.on('close', (code) => {
+      if (out) log(`[Ingest] ${out.trim().split('\n').join(' ')}`);
+      if (err && code !== 0) console.error('[Ingest]', err.trim());
+      if (code === 0) resolve();
+      else reject(new Error(`ingest exit ${code}`));
+    });
+    proc.on('error', reject);
+  });
 }
 
 function isMarketHoursET(): boolean {
@@ -368,10 +416,16 @@ async function loadStrategyVideos(): Promise<StrategyVideoRecord[]> {
     videoHeading: r.video_heading ?? undefined,
     strategyType: (r.strategy_type === 'daily_signal' || r.strategy_type === 'generic_strategy' ? r.strategy_type : undefined) as StrategyVideoRecord['strategyType'],
     timeframe: (r.timeframe === 'DAY_TRADE' || r.timeframe === 'SWING_TRADE' || r.timeframe === 'LONG_TERM' ? r.timeframe : undefined) as StrategyVideoRecord['timeframe'],
-    applicableTimeframes: r.applicable_timeframes ?? undefined,
+    applicableTimeframes: (() => {
+      const arr = r.applicable_timeframes ?? [];
+      const filtered = arr.filter((t): t is 'DAY_TRADE' | 'SWING_TRADE' | 'LONG_TERM' =>
+        t === 'DAY_TRADE' || t === 'SWING_TRADE' || t === 'LONG_TERM'
+      );
+      return filtered.length > 0 ? filtered : undefined;
+    })(),
     executionWindowEt: r.execution_window_et ?? undefined,
     tradeDate: r.trade_date ?? undefined,
-    extractedSignals: r.extracted_signals ?? undefined,
+    extractedSignals: (r.extracted_signals ?? undefined) as DailyVideoSignal[] | undefined,
     status: 'tracked',
   }));
 
@@ -1308,7 +1362,7 @@ async function executeSuggestedFindTrade(
   const dd = assessDrawdownMultiplier(positions);
   const sizing = calculatePositionSize(config, {
     price: currentPrice, mode: 'LONG_TERM', conviction,
-    suggestedFindTag: stock.tag,
+    suggestedFindTag: (stock.tag === 'Gold Mine' || stock.tag === 'Steady Compounder') ? stock.tag : undefined,
     drawdownMultiplier: dd.multiplier,
   });
 
