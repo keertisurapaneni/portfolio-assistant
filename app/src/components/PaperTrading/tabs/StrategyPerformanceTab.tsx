@@ -63,6 +63,8 @@ export function StrategyPerformanceTab({ sources, videos, statuses, onRefresh }:
   const [pasteTranscriptVideoId, setPasteTranscriptVideoId] = useState<string | null>(null);
   const [pasteTranscriptText, setPasteTranscriptText] = useState('');
   const [extractingVideoId, setExtractingVideoId] = useState<string | null>(null);
+  const [transcriptSubmitError, setTranscriptSubmitError] = useState<string | null>(null);
+  const [transcriptSubmitSuccess, setTranscriptSubmitSuccess] = useState<string | null>(null);
   const [fetchingCaptionsVideoId, setFetchingCaptionsVideoId] = useState<string | null>(null);
   const [videoAssignSelections, setVideoAssignSelections] = useState<Record<string, { source: string; category: string }>>({});
   const autoFixAttempted = useRef(false);
@@ -409,11 +411,17 @@ export function StrategyPerformanceTab({ sources, videos, statuses, onRefresh }:
     const text = pasteTranscriptText.trim();
     if (!text || !onRefresh) return;
     setExtractingVideoId(videoId);
+    setTranscriptSubmitError(null);
+    setTranscriptSubmitSuccess(null);
     try {
       await extractFromTranscript({ video_id: videoId, transcript: text });
       setPasteTranscriptVideoId(null);
       setPasteTranscriptText('');
+      setTranscriptSubmitSuccess(videoId);
+      setTimeout(() => setTranscriptSubmitSuccess(null), 5000);
       onRefresh();
+    } catch (err) {
+      setTranscriptSubmitError(err instanceof Error ? err.message : 'Submission failed — try again');
     } finally {
       setExtractingVideoId(null);
     }
@@ -860,12 +868,12 @@ export function StrategyPerformanceTab({ sources, videos, statuses, onRefresh }:
                                                     <div className="mt-2 space-y-1.5">
                                                       <textarea
                                                         value={pasteTranscriptText}
-                                                        onChange={(e) => setPasteTranscriptText(e.target.value)}
+                                                        onChange={(e) => { setPasteTranscriptText(e.target.value); setTranscriptSubmitError(null); }}
                                                         placeholder="Paste transcript here…"
                                                         className="w-full min-h-[80px] p-2 text-xs border rounded bg-white resize-y"
                                                         rows={4}
                                                       />
-                                                      <div className="flex items-center gap-2">
+                                                      <div className="flex items-center gap-2 flex-wrap">
                                                         <button
                                                           onClick={() => handlePasteTranscript(video.videoId!)}
                                                           disabled={!pasteTranscriptText.trim() || extractingVideoId === video.videoId}
@@ -874,13 +882,20 @@ export function StrategyPerformanceTab({ sources, videos, statuses, onRefresh }:
                                                           {extractingVideoId === video.videoId ? 'Submitting…' : 'Submit'}
                                                         </button>
                                                         <button
-                                                          onClick={() => { setPasteTranscriptVideoId(null); setPasteTranscriptText(''); }}
+                                                          onClick={() => { setPasteTranscriptVideoId(null); setPasteTranscriptText(''); setTranscriptSubmitError(null); }}
                                                           className="text-xs px-2 py-1 rounded border hover:bg-[hsl(var(--secondary))]"
                                                         >
                                                           Cancel
                                                         </button>
+                                                        {transcriptSubmitError && pasteTranscriptVideoId === video.videoId && (
+                                                          <span className="text-[10px] text-red-600 font-medium">⚠ {transcriptSubmitError}</span>
+                                                        )}
                                                       </div>
                                                     </div>
+                                                  )}
+                                                  {/* Success confirmation after submit */}
+                                                  {transcriptSubmitSuccess === video.videoId && (
+                                                    <div className="mt-1 text-[10px] text-emerald-600 font-medium">✓ Transcript submitted — extracting metadata…</div>
                                                   )}
                                                 </div>
                                               </div>
