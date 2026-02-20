@@ -32,6 +32,7 @@ import {
   getActiveTrades,
   recalculatePerformance,
   recalculatePerformanceByCategory,
+  expireStaleSignals,
 } from '../lib/paperTradesApi';
 import { analyzeUnreviewedTrades, updatePerformancePatterns } from '../lib/aiFeedback';
 import { discoverStocks } from '../lib/aiSuggestedFinds';
@@ -180,6 +181,13 @@ async function runDailyRehydration(accountId: string) {
   try {
     console.log('[AutoTradeScheduler] Running daily rehydration...');
     await syncPositions(accountId);
+
+    // Expire any PENDING signals whose window has closed
+    const expired = await expireStaleSignals();
+    if (expired > 0) {
+      console.log(`[AutoTradeScheduler] Expired ${expired} stale strategy signals`);
+    }
+
     await recalculatePerformance();
     await recalculatePerformanceByCategory();
     const analyzed = await analyzeUnreviewedTrades();
