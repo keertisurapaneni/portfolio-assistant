@@ -1513,7 +1513,10 @@ async function executeExternalStrategySignal(
     signal.stop_loss != null &&
     signal.target_price != null
   );
-  const requiresFaValidation = !hasProvidedLevels && (
+  // Signals imported from influencer strategy videos (daily_signal / generic_strategy) are
+  // trusted as-is — we're testing the strategy, not second-guessing it with our own FA checks.
+  const isInfluencerSignal = signal.strategy_video_id != null;
+  const requiresFaValidation = !isInfluencerSignal && !hasProvidedLevels && (
     signal.mode === 'DAY_TRADE' || signal.mode === 'SWING_TRADE'
   );
   let validatedFA: TradingSignalsResponse['trade'] | null = null;
