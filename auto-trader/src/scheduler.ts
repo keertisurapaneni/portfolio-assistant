@@ -1360,13 +1360,12 @@ async function executeSuggestedFindTrade(
     if (below) return 'skipped:spy_below_sma200';
   }
 
-  // Conviction verification via trading-signals
+  // Only block on an active SELL recommendation — swing-trade confidence scores
+  // are not comparable to long-term AI conviction and should not gate execution.
   try {
     const freshFA = await fetchTradingSignal(ticker, 'SWING_TRADE');
-    const freshConf = freshFA.trade?.confidence ?? 0;
     const freshRec = freshFA.trade?.recommendation ?? 'HOLD';
     if (freshRec === 'SELL') return 'skipped:fa_says_sell';
-    if (conviction - freshConf >= 3) return `skipped:conviction_drop_${conviction}_to_${freshConf}`;
   } catch {
     // verification failed — proceed with cached conviction
   }
