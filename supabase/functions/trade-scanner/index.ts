@@ -114,6 +114,15 @@ interface AIEval {
   reason: string;
 }
 
+// ── Day trade core: always included regardless of Yahoo mover lists ──
+// These are the highest-volume, most-liquid day trade vehicles. They don't
+// need to be in the Yahoo gainers/losers to be worth scanning.
+const DAY_CORE = [
+  'TSLA', 'AMD', 'NVDA', 'AAPL', 'MSFT', 'META', 'AMZN', 'GOOGL',
+  'SPY', 'QQQ',
+  'NFLX', 'CRM',
+];
+
 // ── Swing universe: Core (always scanned) + Dynamic (refreshed daily) ──
 // Hybrid approach: blue chips always covered, dynamic layer catches emerging opportunities
 
@@ -1339,6 +1348,22 @@ Deno.serve(async (req) => {
           deduped.set(sym, q);
         }
       }
+
+      // Inject DAY_CORE tickers not already in the mover list (looser filter: just price+volume)
+      const coreMissing = DAY_CORE.filter(sym => !deduped.has(sym));
+      if (coreMissing.length > 0) {
+        const coreQuotes = await fetchSwingQuotes(coreMissing);
+        for (const q of coreQuotes) {
+          if (!q.symbol) continue;
+          const price = rawVal(q.regularMarketPrice);
+          const volume = rawVal(q.regularMarketVolume);
+          if (price >= 10 && volume >= 1_000_000) {
+            deduped.set(q.symbol, q);
+          }
+        }
+        console.log(`[Trade Scanner] DAY_CORE injected: ${coreQuotes.map(q => q.symbol).filter(Boolean).join(', ')}`);
+      }
+
       let candidates = [...deduped.values()];
 
       // Enrich ALL candidates with chart data (needed for InPlayScore + Pass 1 indicators)
