@@ -1360,15 +1360,9 @@ async function executeSuggestedFindTrade(
     if (below) return 'skipped:spy_below_sma200';
   }
 
-  // Only block on an active SELL recommendation — swing-trade confidence scores
-  // are not comparable to long-term AI conviction and should not gate execution.
-  try {
-    const freshFA = await fetchTradingSignal(ticker, 'SWING_TRADE');
-    const freshRec = freshFA.trade?.recommendation ?? 'HOLD';
-    if (freshRec === 'SELL') return 'skipped:fa_says_sell';
-  } catch {
-    // verification failed — proceed with cached conviction
-  }
+  // No FA check here — Suggested Finds already runs a full AI pipeline daily
+  // (Finnhub fundamentals + macro news + conviction scoring). The trading-signals
+  // FA is a short-term swing/day trade tool and should not gate long-term picks.
 
   const currentPrice = await getQuotePrice(ticker);
   if (!currentPrice) return 'failed:no_price';
