@@ -236,6 +236,15 @@ export function useAutoTradeScheduler() {
     const runScannerAutoTrade = async () => {
       // If server scheduler is running, skip browser-side scheduling entirely
       if (serverSchedulerRef.current) return;
+
+      // Pre-generate Suggested Finds daily at 9 AM ET — runs regardless of auto-trader
+      // being enabled so the /finds page is always populated after login.
+      try {
+        await preGenerateSuggestedFinds();
+      } catch (err) {
+        console.warn('[AutoTradeScheduler] Suggested Finds pre-generation failed:', err);
+      }
+
       // Load fresh config from Supabase (in case settings changed from another tab/device)
       const config = await loadAutoTraderConfig();
       if (!config.enabled) return;
@@ -248,15 +257,6 @@ export function useAutoTradeScheduler() {
       // Always run: daily rehydration after market close (runs once per day after 4:15 PM ET)
       if (config.accountId) {
         runDailyRehydration(config.accountId).catch(() => {});
-      }
-
-      // Pre-generate Suggested Finds daily at 9 AM ET (runs before market open)
-      // IMPORTANT: Await this — do NOT fire-and-forget, otherwise it races with
-      // scanner processing and both check the allocation cap against stale IB data.
-      try {
-        await preGenerateSuggestedFinds();
-      } catch (err) {
-        console.warn('[AutoTradeScheduler] Suggested Finds pre-generation failed:', err);
       }
 
       if (!isMarketHoursET()) return;
