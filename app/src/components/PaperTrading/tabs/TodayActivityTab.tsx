@@ -83,8 +83,9 @@ export function TodayActivityTab({ events, trades }: TodayActivityTabProps) {
               const metaPnl = isSystemClose && event.metadata ? (event.metadata as { pnl?: number }).pnl : undefined;
               const eventPnl = metaPnl ?? matched?.pnl;
               const pnl = eventPnl ?? null;
-              const isClosed = isSystemClose || (matched?.close_price != null);
-              const isActive = !isSystemClose && matched && !matched.close_price && ['FILLED', 'PARTIAL'].includes(matched.status);
+              const CLOSED_STATUSES = ['CLOSED', 'TARGET_HIT', 'STOPPED', 'CANCELLED'];
+              const isClosed = isSystemClose || (matched?.close_price != null) || CLOSED_STATUSES.includes(matched?.status ?? '');
+              const isActive = !isClosed && matched && ['FILLED', 'PARTIAL'].includes(matched.status);
               const msg = event.message;
               const qtyMatch = msg.match(/(\d+)\s+shares.*?@\s*~?\$?([\d.]+)/i);
 
