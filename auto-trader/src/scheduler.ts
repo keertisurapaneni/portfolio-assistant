@@ -1057,7 +1057,7 @@ function calculatePositionSize(
 
 function recordPendingOrder(dollarSize: number): void {
   _pendingDeployedDollar += dollarSize;
-  const today = new Date().toISOString().slice(0, 10);
+  const today = getETDateString(); // ET date — trading day resets at ET midnight, not UTC
   if (_dailyDeployedDate !== today) {
     _dailyDeployedDollar = 0;
     _dailyDeployedDate = today;
@@ -1098,7 +1098,7 @@ async function checkAllocationCap(
     return false;
   }
 
-  const today = new Date().toISOString().slice(0, 10);
+  const today = getETDateString(); // ET date — consistent with recordPendingOrder
   if (_dailyDeployedDate !== today) { _dailyDeployedDollar = 0; _dailyDeployedDate = today; }
   if (_dailyDeployedDollar + positionSize > config.maxDailyDeployment) {
     log(`Daily limit for ${ticker}: $${_dailyDeployedDollar.toFixed(0)} + $${positionSize.toFixed(0)} > $${config.maxDailyDeployment}/day`);
