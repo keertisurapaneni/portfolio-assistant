@@ -137,6 +137,11 @@ Deno.serve(async (req) => {
     .eq('video_id', video_id)
     .maybeSingle();
 
+  // Preserve existing source/handle so INSERT (new row) never violates NOT NULL on source_name,
+  // and UPDATE never clears a manually-assigned source with a blank value.
+  const existingSourceName = (current?.source_name ?? '').trim() || 'Unknown';
+  const existingSourceHandle = (current?.source_handle ?? '').trim() || null;
+
   const { data: savedVideo, error: saveErr } = await supabase
     .from('strategy_videos')
     .upsert({
@@ -146,6 +151,8 @@ Deno.serve(async (req) => {
       ingest_status: 'done',
       ingest_error: null,
       status: 'tracked',
+      source_name: existingSourceName,
+      ...(existingSourceHandle ? { source_handle: existingSourceHandle } : {}),
       ...(reel_url ? { reel_url } : {}),
       ...(canonical_url ? { canonical_url } : {}),
     }, { onConflict: 'platform,video_id', ignoreDuplicates: false })
