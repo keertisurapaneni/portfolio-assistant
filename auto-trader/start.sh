@@ -17,6 +17,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
 PORT="${PORT:-3001}"
+service_already_running="no"
 
 # ── Colors ──
 RED='\033[0;31m'
@@ -58,7 +59,7 @@ if [ -n "$listener_pids" ]; then
   while IFS= read -r pid; do
     [ -z "$pid" ] && continue
     cmd="$(ps -p "$pid" -o command= 2>/dev/null || true)"
-    if echo "$cmd" | grep -q "/auto-trader/dist/index.js"; then
+    if echo "$cmd" | grep -Eq "portfolio-assistant/auto-trader.*dist/index\\.js|node( .*)?dist/index\\.js"; then
       running_our_service="yes"
       break
     fi
@@ -66,29 +67,29 @@ if [ -n "$listener_pids" ]; then
 
   if [ "$running_our_service" = "yes" ]; then
     echo -e "${GREEN}✅ Auto-trader already running on port $PORT${NC}"
-    echo "   No restart needed."
-    exit 0
-  fi
+    echo "   No restart needed for Node service; continuing with IB Gateway checks."
+    service_already_running="yes"
+  else
+    echo "   Attempting to stop stale listener(s): $listener_pids"
+    echo "$listener_pids" | xargs kill -TERM 2>/dev/null || true
 
-  echo "   Attempting to stop stale listener(s): $listener_pids"
-  echo "$listener_pids" | xargs kill -TERM 2>/dev/null || true
+    for _ in 1 2 3 4 5; do
+      sleep 1
+      if ! lsof -tiTCP:"$PORT" -sTCP:LISTEN > /dev/null 2>&1; then
+        break
+      fi
+    done
 
-  for _ in 1 2 3 4 5; do
-    sleep 1
-    if ! lsof -tiTCP:"$PORT" -sTCP:LISTEN > /dev/null 2>&1; then
-      break
+    if lsof -tiTCP:"$PORT" -sTCP:LISTEN > /dev/null 2>&1; then
+      echo "   Listener still active; forcing stop."
+      lsof -tiTCP:"$PORT" -sTCP:LISTEN | xargs kill -KILL 2>/dev/null || true
+      sleep 1
     fi
-  done
 
-  if lsof -tiTCP:"$PORT" -sTCP:LISTEN > /dev/null 2>&1; then
-    echo "   Listener still active; forcing stop."
-    lsof -tiTCP:"$PORT" -sTCP:LISTEN | xargs kill -KILL 2>/dev/null || true
-    sleep 1
-  fi
-
-  if lsof -tiTCP:"$PORT" -sTCP:LISTEN > /dev/null 2>&1; then
-    echo -e "${RED}❌ Unable to free port $PORT${NC}"
-    exit 1
+    if lsof -tiTCP:"$PORT" -sTCP:LISTEN > /dev/null 2>&1; then
+      echo -e "${RED}❌ Unable to free port $PORT${NC}"
+      exit 1
+    fi
   fi
 fi
 
@@ -137,6 +138,11 @@ else
 fi
 
 # ── Start auto-trader Node.js service ──
+
+if [ "$service_already_running" = "yes" ]; then
+  echo -e "${GREEN}✅ Leaving existing auto-trader process running${NC}"
+  exit 0
+fi
 
 echo -e "${GREEN}🤖 Starting auto-trader service on port $PORT...${NC}"
 echo ""
