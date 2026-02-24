@@ -341,6 +341,26 @@ def main():
                     set_ingest_status(supabase_url, supabase_key, video_id, platform, "failed", "Download failed")
                 except Exception:
                     pass
+                # Even though download failed, update source_name if yt-dlp got uploader info.
+                # This prevents the video from remaining in "Unknowns" when only the audio is inaccessible.
+                if uploader.get("name"):
+                    import requests as _req
+                    try:
+                        _req.patch(
+                            f"{supabase_url}/rest/v1/strategy_videos",
+                            params={"video_id": f"eq.{video_id}", "platform": f"eq.{platform}", "source_name": "eq.Unknown"},
+                            json={"source_name": uploader["name"], "source_handle": uploader.get("handle")},
+                            headers={
+                                "apikey": supabase_key,
+                                "Authorization": f"Bearer {supabase_key}",
+                                "Content-Type": "application/json",
+                                "Prefer": "return=minimal",
+                            },
+                            timeout=10,
+                        ).raise_for_status()
+                        print(f"  Updated source_name → {uploader['name']} (despite download failure)")
+                    except Exception as e:
+                        print(f"  Warning: could not update source_name: {e}")
                 continue
 
             transcript = transcribe(downloaded)
