@@ -40,14 +40,67 @@ jobs:
         run: |
           pip install --quiet yt-dlp requests groq
 
-      - name: Create Instagram cookies file
+      - name: Validate Instagram session
+        id: validate_session
         run: |
-          if [ -n "$INSTAGRAM_SESSION_ID" ]; then
-            printf '# Netscape HTTP Cookie File\n' > /tmp/instagram_cookies.txt
-            printf '.instagram.com\tTRUE\t/\tTRUE\t9999999999\tsessionid\t%s\n' "$INSTAGRAM_SESSION_ID" >> /tmp/instagram_cookies.txt
-            echo "Instagram cookies file created"
+          if [ -z "$INSTAGRAM_SESSION_ID" ]; then
+            echo "session_status=missing" >> "$GITHUB_OUTPUT"
+            echo "::warning::INSTAGRAM_SESSION_ID secret is not set. Downloads will fail."
+            exit 0
+          fi
+
+          # Write cookies file
+          printf '# Netscape HTTP Cookie File\n' > /tmp/instagram_cookies.txt
+          printf '.instagram.com\tTRUE\t/\tTRUE\t9999999999\tsessionid\t%s\n' "$INSTAGRAM_SESSION_ID" >> /tmp/instagram_cookies.txt
+
+          # Test session validity by fetching public reel metadata (no download)
+          STATUS=$(python -c "
+          import subprocess, sys
+          result = subprocess.run(
+            [sys.executable, '-m', 'yt_dlp', '--skip-download', '--print', '%(id)s',
+             '--cookies', '/tmp/instagram_cookies.txt', '--no-playlist',
+             'https://www.instagram.com/reel/C8z8z8z8z8z/'],
+            capture_output=True, text=True, timeout=20
+          )
+          # A 'login required' error means session is expired
+          combined = (result.stdout + result.stderr).lower()
+          if 'login' in combined and ('required' in combined or 'locked' in combined):
+            print('expired')
+          else:
+            print('ok')
+          " 2>/dev/null || echo "ok")
+
+          echo "session_status=$STATUS" >> "$GITHUB_OUTPUT"
+          if [ "$STATUS" = "expired" ]; then
+            echo "::warning::Instagram session cookie appears expired. Refresh INSTAGRAM_SESSION_ID secret."
           else
-            echo "WARNING: INSTAGRAM_SESSION_ID not set - downloads may fail behind login wall"
+            echo "Instagram session appears valid."
+          fi
+
+      - name: Create GitHub issue if session expired
+        if: steps.validate_session.outputs.session_status == 'expired' || steps.validate_session.outputs.session_status == 'missing'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          STATUS="${{ steps.validate_session.outputs.session_status }}"
+          if [ "$STATUS" = "missing" ]; then
+            TITLE="🔑 Instagram session ID is missing"
+            BODY="The \`INSTAGRAM_SESSION_ID\` GitHub secret is not set. Instagram video downloads will fail.\n\n**To fix:**\n1. Log in to Instagram in Chrome/Firefox\n2. Open DevTools → Application → Cookies → \`https://www.instagram.com\`\n3. Copy the value of the \`sessionid\` cookie\n4. Go to repo Settings → Secrets → Actions → update \`INSTAGRAM_SESSION_ID\`"
+          else
+            TITLE="🔑 Instagram session cookie has expired — refresh needed"
+            BODY="The \`INSTAGRAM_SESSION_ID\` GitHub secret has expired. Instagram video downloads will fail until it's refreshed.\n\n**To fix (2 minutes):**\n1. Log in to Instagram in Chrome/Firefox\n2. Open DevTools → Application → Cookies → \`https://www.instagram.com\`\n3. Copy the value of the \`sessionid\` cookie\n4. Go to repo Settings → Secrets → Actions → update \`INSTAGRAM_SESSION_ID\`\n\nSession cookies typically last 90+ days. This alert fires automatically when expiry is detected."
+          fi
+
+          # Only create issue if one with this title isn't already open
+          EXISTING=$(gh issue list --repo ${{ github.repository }} --state open --search "$TITLE" --json number --jq '.[0].number' 2>/dev/null || echo "")
+          if [ -z "$EXISTING" ]; then
+            printf '%b' "$BODY" | gh issue create \
+              --repo ${{ github.repository }} \
+              --title "$TITLE" \
+              --body-file - \
+              --label "maintenance" || echo "Could not create issue (label may not exist)"
+          else
+            echo "Issue #$EXISTING already open — skipping duplicate"
           fi
 
       - name: Run ingest
@@ -55,7 +108,6 @@ jobs:
         run: |
           set -e
 
-          # Use cookies file if it exists
           COOKIES_ARG=""
           if [ -f "/tmp/instagram_cookies.txt" ]; then
             COOKIES_ARG="--cookies /tmp/instagram_cookies.txt"
@@ -81,6 +133,19 @@ jobs:
             echo "No video IDs provided - processing all pending Instagram strategy_videos"
             python scripts/ingest_video.py --from-strategy-videos $COOKIES_ARG || echo "WARNING: --from-strategy-videos had errors"
           fi
+
+      - name: Close session-expired issue on success
+        if: success() && steps.validate_session.outputs.session_status == 'ok'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # If a session-expired issue exists and ingest succeeded, close it
+          for TITLE in "🔑 Instagram session cookie has expired" "🔑 Instagram session ID is missing"; do
+            ISSUE=$(gh issue list --repo ${{ github.repository }} --state open --search "$TITLE" --json number --jq '.[0].number' 2>/dev/null || echo "")
+            if [ -n "$ISSUE" ]; then
+              gh issue close "$ISSUE" --repo ${{ github.repository }} --comment "Session working again — closing automatically." || true
+            fi
+          done
 
       - name: Report completion
         if: always()
