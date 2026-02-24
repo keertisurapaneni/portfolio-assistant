@@ -43,14 +43,9 @@ jobs:
       - name: Create Instagram cookies file
         run: |
           if [ -n "$INSTAGRAM_SESSION_ID" ]; then
-            python3 -c "
-import os
-sid = os.environ['INSTAGRAM_SESSION_ID']
-with open('/tmp/instagram_cookies.txt', 'w') as f:
-    f.write('# Netscape HTTP Cookie File\n')
-    f.write(f'.instagram.com\tTRUE\t/\tTRUE\t9999999999\tsessionid\t{sid}\n')
-print('Instagram cookies file created')
-"
+            printf '# Netscape HTTP Cookie File\n' > /tmp/instagram_cookies.txt
+            printf '.instagram.com\tTRUE\t/\tTRUE\t9999999999\tsessionid\t%s\n' "$INSTAGRAM_SESSION_ID" >> /tmp/instagram_cookies.txt
+            echo "Instagram cookies file created"
           else
             echo "WARNING: INSTAGRAM_SESSION_ID not set - downloads may fail behind login wall"
           fi
