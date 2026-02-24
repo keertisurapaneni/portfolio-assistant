@@ -1617,11 +1617,12 @@ async function executeSuggestedFindTrade(
   if (!currentPrice) return 'failed:no_price';
 
   const dd = assessDrawdownMultiplier(positions);
-  const kellyMult = await calculateKellyMultiplier(config);
+  // Kelly NOT applied to long-term: conviction-based sizing already scales with signal quality,
+  // and the Kelly multiplier is derived from day/swing history — different risk profile.
   const sizing = calculatePositionSize(config, {
     price: currentPrice, mode: 'LONG_TERM', conviction,
     suggestedFindTag: (stock.tag === 'Gold Mine' || stock.tag === 'Steady Compounder') ? stock.tag : undefined,
-    drawdownMultiplier: dd.multiplier * kellyMult,
+    drawdownMultiplier: dd.multiplier,
   });
 
   // Tag-level cap: Gold Mine cannot exceed 40% of LONG_TERM sleeve
