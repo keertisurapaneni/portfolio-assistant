@@ -1,0 +1,15 @@
+name: Test Repo Dispatch
+on:
+  repository_dispatch:
+    types: [test-event]
+  workflow_dispatch:
+    inputs:
+      msg:
+        description: 'Test message'
+        required: false
+        default: 'hello'
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "It works! msg=${{ github.event.inputs.msg }}"
