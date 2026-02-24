@@ -57,6 +57,11 @@ interface TradeIdea {
   reason: string;        // AI-generated 1-sentence rationale
   tags: string[];
   mode: 'DAY_TRADE' | 'SWING_TRADE';
+  // Pass 2 FA levels — carried through so auto-trader skips redundant FA re-run
+  entryPrice?: number | null;
+  stopLoss?: number | null;
+  targetPrice?: number | null;
+  riskReward?: string | null;
   // Validation log (for 10–20 day analysis)
   in_play_score?: number;
   pass1_confidence?: number;
@@ -110,6 +115,10 @@ interface YahooQuote {
 interface AIEval {
   ticker: string;
   signal: 'BUY' | 'SELL' | 'SKIP' | 'HOLD';
+  entryPrice?: number | null;
+  stopLoss?: number | null;
+  targetPrice?: number | null;
+  riskReward?: string | null;
   confidence: number;  // 0-10
   reason: string;
 }
@@ -767,6 +776,10 @@ function buildIdea(
     reason: eval_.reason,
     tags,
     mode,
+    entryPrice: eval_.entryPrice ?? null,
+    stopLoss: eval_.stopLoss ?? null,
+    targetPrice: eval_.targetPrice ?? null,
+    riskReward: eval_.riskReward ?? null,
     in_play_score: quote._inPlayScore,
     pass1_confidence: opts?.pass1Confidence,
     market_condition: opts?.marketCondition,
@@ -1168,13 +1181,19 @@ async function runPass2(
         const recommendation = parsed.recommendation ?? parsed.signal ?? 'HOLD';
         const confidence = parsed.confidence ?? 0;
         const reason = parsed.rationale?.technical ?? parsed.reason ?? '';
+        // Carry FA levels so auto-trader skips redundant re-run
+        const entryPrice = typeof parsed.entryPrice === 'number' ? parsed.entryPrice : null;
+        const stopLoss = typeof parsed.stopLoss === 'number' ? parsed.stopLoss : null;
+        const targetPrice = typeof parsed.targetPrice === 'number' ? parsed.targetPrice : null;
+        const riskReward = typeof parsed.riskReward === 'string' ? parsed.riskReward : null;
 
-        console.log(`[Trade Scanner] ${ticker}: ${recommendation}/${confidence} (FA-prompt)`);
+        console.log(`[Trade Scanner] ${ticker}: ${recommendation}/${confidence} entry=${entryPrice} stop=${stopLoss} target=${targetPrice} (FA-prompt)`);
         return {
           ticker,
           signal: recommendation as AIEval['signal'],
           confidence,
           reason: typeof reason === 'string' ? reason : '',
+          entryPrice, stopLoss, targetPrice, riskReward,
         } as AIEval;
       } catch (err) {
         console.warn(`[Trade Scanner] ${ticker} Pass 2 failed:`, err);
@@ -1210,10 +1229,12 @@ async function runPass2(
   }
 
   const withDirection = results.filter(e => e.signal === 'BUY' || e.signal === 'SELL');
-  // Keep day strict. For swing, fall back to 6 if strict threshold yields no ideas.
+  // Day trades: use 6 as base (scanner already did 2 passes of vetting; 7 was too strict)
+  // Swing trades: try 7 first, fall back to 6 if nothing qualifies
   const strictMinConfidence = 7;
-  const fallbackMinConfidence = mode === 'SWING_TRADE' ? 6 : strictMinConfidence;
-  const strictCandidates = withDirection.filter(e => e.confidence >= strictMinConfidence);
+  const baseMinConfidence = mode === 'DAY_TRADE' ? 6 : strictMinConfidence;
+  const fallbackMinConfidence = 6;
+  const strictCandidates = withDirection.filter(e => e.confidence >= baseMinConfidence);
   const selectedCandidates = strictCandidates.length > 0
     ? strictCandidates
     : withDirection.filter(e => e.confidence >= fallbackMinConfidence);

@@ -76,6 +76,11 @@ interface TradeIdea {
   reason: string;
   tags: string[];
   mode: 'DAY_TRADE' | 'SWING_TRADE';
+  // Pass 2 FA levels carried from scanner — present means skip redundant FA re-run
+  entryPrice?: number | null;
+  stopLoss?: number | null;
+  targetPrice?: number | null;
+  riskReward?: string | null;
   in_play_score?: number;
   pass1_confidence?: number;
   market_condition?: 'trend' | 'chop';
@@ -1308,28 +1313,50 @@ async function executeScannerTrade(
 
   if (await hasActiveTrade(ticker)) return 'skipped:duplicate';
 
-  // Full analysis
-  let fa: TradingSignalsResponse;
-  try {
-    const faMode = mode === 'DAY_TRADE' ? 'DAY_TRADE' : 'SWING_TRADE';
-    fa = await fetchTradingSignal(ticker, faMode);
-  } catch (err) {
-    log(`${ticker}: FA failed — ${err instanceof Error ? err.message : 'unknown'}`);
-    return 'failed:fa';
+  let entryPrice: number | null;
+  let stopLoss: number | null;
+  let targetPrice: number | null;
+  let faConf: number;
+  let faRec: string;
+  let faRiskReward: string | null;
+
+  if (mode === 'DAY_TRADE' && idea.entryPrice && idea.stopLoss && idea.targetPrice) {
+    // Scanner Pass 2 already ran FA — reuse its levels and confidence.
+    // No need to call FA a third time; the scanner's second pass IS the full analysis.
+    entryPrice = idea.entryPrice;
+    stopLoss = idea.stopLoss;
+    targetPrice = idea.targetPrice;
+    faConf = scannerConf; // Pass 2 confidence is on the same 0-10 scale
+    faRec = signal;       // Signal already reflects FA direction from Pass 2
+    faRiskReward = idea.riskReward ?? null;
+    log(`${ticker}: using Pass 2 FA levels (entry=${entryPrice}, stop=${stopLoss}, target=${targetPrice}, conf=${faConf})`);
+  } else {
+    // Swing trades or day trades without levels: run a fresh FA call
+    let fa: TradingSignalsResponse;
+    try {
+      const faMode = mode === 'DAY_TRADE' ? 'DAY_TRADE' : 'SWING_TRADE';
+      fa = await fetchTradingSignal(ticker, faMode);
+    } catch (err) {
+      log(`${ticker}: FA failed — ${err instanceof Error ? err.message : 'unknown'}`);
+      return 'failed:fa';
+    }
+    faConf = fa.trade.confidence;
+    faRec = fa.trade.recommendation;
+    entryPrice = fa.trade.entryPrice;
+    stopLoss = fa.trade.stopLoss;
+    targetPrice = fa.trade.targetPrice;
+    faRiskReward = fa.trade.riskReward;
   }
 
-  const faConf = fa.trade.confidence;
-  const faRec = fa.trade.recommendation;
   if (faConf < config.minFAConfidence) return `skipped:fa_conf_${faConf}`;
   if (faRec === 'HOLD') return 'skipped:fa_hold';
   if (faRec !== signal) return `skipped:direction_mismatch`;
 
-  const { entryPrice, stopLoss, targetPrice } = fa.trade;
   if (!entryPrice || !stopLoss || !targetPrice) return 'skipped:missing_levels';
 
-  // Day trade: require min 1:1.8 risk/reward for auto-trade (structure + confidence already gated by FA prompt)
-  if (mode === 'DAY_TRADE' && faConf >= config.minFAConfidence) {
-    const rr = parseRiskReward(fa.trade.riskReward);
+  // Day trade: require min 1:1.8 risk/reward
+  if (mode === 'DAY_TRADE') {
+    const rr = parseRiskReward(faRiskReward);
     if (rr == null || rr < MIN_DAY_TRADE_RISK_REWARD) {
       return `skipped:rr_${rr?.toFixed(1) ?? 'null'}_min_${MIN_DAY_TRADE_RISK_REWARD}`;
     }
@@ -1381,14 +1408,14 @@ async function executeScannerTrade(
       entry_price: entryPrice,
       stop_loss: stopLoss,
       target_price: targetPrice,
-      target_price2: fa.trade.targetPrice2,
-      risk_reward: fa.trade.riskReward,
+      target_price2: null,
+      risk_reward: faRiskReward,
       quantity: sizing.quantity,
       position_size: sizing.dollarSize,
       ib_order_id: String(result.parentOrderId),
       status: 'SUBMITTED',
       scanner_reason: idea.reason,
-      fa_rationale: fa.trade.rationale,
+      fa_rationale: null,
       in_play_score: idea.in_play_score,
       pass1_confidence: idea.pass1_confidence,
       entry_trigger_type: 'bracket_limit',

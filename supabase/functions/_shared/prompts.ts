@@ -32,22 +32,24 @@ Risk:
 - Scaling plan: take 50% profit at Target 1, move stop to breakeven, let remaining 50% run to Target 2.`;
 
 /** Structure gate for Pass 2 + Full Analysis only. NOT used in Scanner Pass 1 (keep Pass 1 loose). */
-export const DAY_TRADE_STRUCTURE_REQUIREMENTS = `Primary requirement:
-A directional call (BUY or SELL) requires a clear intraday structure:
+export const DAY_TRADE_STRUCTURE_REQUIREMENTS = `Structure guidance (use judgment — not a hard checklist):
 
-For BUY:
-- Price above VWAP
-- Pullback holds VWAP or EMA20 (5m)
-- Higher low forms
-- Break above prior 5m high with volume expansion
+For BUY — look for at least 2 of these:
+- Price at or above VWAP
+- Recent pullback held a key level (VWAP, EMA20, prior support)
+- Higher low pattern forming on 5m/15m
+- Volume expanding on the move up (ratio > 1.5×)
+- Momentum continuation: RSI rising, MACD histogram positive/turning up
 
-For SELL:
-- Price below VWAP
-- Bounce rejects VWAP
-- Lower high forms
-- Break below prior 5m low with volume expansion
+For SELL (short) — look for at least 2 of these:
+- Price at or below VWAP
+- Bounce rejected at VWAP or resistance
+- Lower high pattern on 5m/15m
+- Volume expanding on the move down
+- Momentum deteriorating: RSI falling, MACD histogram negative/turning down
 
-If this structure is not present, recommendation must be HOLD regardless of indicator alignment.`;
+Note: Strong momentum + volume confirmation (ratio > 2.5×) can override structure requirements.
+HOLD only when there is genuine ambiguity with no directional edge.`;
 
 // ── Swing Trade ─────────────────────────────────────────
 
