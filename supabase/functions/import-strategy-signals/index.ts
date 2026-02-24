@@ -147,6 +147,10 @@ Deno.serve(async (req) => {
       : 'DAY_TRADE'; // default to day trade for daily signals
 
   // Build execute_at / expires_at from execution_window_et
+  // For pre-market day trade signals without an explicit window, use a smart default:
+  //   - Start: 9:35 AM ET (skip the chaotic first 5 minutes: wide spreads, false breakouts)
+  //   - End:   11:30 AM ET (if setup hasn't triggered in 2 hours, pre-market thesis is stale)
+  // The influencer's entry_price trigger still gates execution within this window.
   let executeAt: string | null = null;
   let expiresAt: string | null = null;
   if (executionWindow?.start) {
@@ -155,11 +159,22 @@ Deno.serve(async (req) => {
   if (executionWindow?.end) {
     expiresAt = toUtcTimestamp(tradeDate, executionWindow.end);
   }
-  // Default expiry: end of trading day (16:00 ET = 21:00 UTC)
-  if (!expiresAt) {
-    const month = parseInt(tradeDate.split('-')[1], 10);
-    const etOffset = month >= 3 && month <= 11 ? 4 : 5;
-    expiresAt = `${tradeDate}T${16 + etOffset}:00:00Z`;
+
+  if (primaryMode === 'DAY_TRADE') {
+    // Smart defaults for day trades — only apply when explicit window not provided
+    if (!executeAt) {
+      executeAt = toUtcTimestamp(tradeDate, '09:35');  // skip opening 5 min chaos
+    }
+    if (!expiresAt) {
+      expiresAt = toUtcTimestamp(tradeDate, '11:30');  // pre-market thesis expires mid-morning
+    }
+  } else {
+    // Swing/long-term: default expiry is end of trading day
+    if (!expiresAt) {
+      const month = parseInt(tradeDate.split('-')[1], 10);
+      const etOffset = month >= 3 && month <= 11 ? 4 : 5;
+      expiresAt = `${tradeDate}T${16 + etOffset}:00:00Z`;
+    }
   }
 
   const toInsert: Record<string, unknown>[] = [];
