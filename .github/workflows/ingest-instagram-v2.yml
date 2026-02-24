@@ -84,7 +84,7 @@ print('Instagram cookies file created')
               fi
             done
           else
-            echo "No video IDs provided — processing all pending Instagram strategy_videos"
+            echo "No video IDs provided - processing all pending Instagram strategy_videos"
             python scripts/ingest_video.py --from-strategy-videos $COOKIES_ARG || echo "WARNING: --from-strategy-videos had errors"
           fi
 
