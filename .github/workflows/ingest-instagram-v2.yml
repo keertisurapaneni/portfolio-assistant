@@ -1,5 +1,4 @@
 name: Ingest Instagram Strategy Videos
-# v2 — forces workflow re-registration with GitHub Actions
 
 # Triggered via repository_dispatch from the trigger-instagram-ingest Supabase edge function.
 # Also supports manual trigger from GitHub Actions UI (workflow_dispatch).
