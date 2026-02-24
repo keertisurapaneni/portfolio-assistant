@@ -2237,14 +2237,22 @@ export async function syncPositions(accountId: string): Promise<void> {
         if (trade.status === 'FILLED' && ibPos.mktPrice > 0 && trade.fill_price) {
           const qty = trade.quantity ?? 1;
           const isLong = trade.signal === 'BUY';
-          const unrealizedPnl = isLong
-            ? (ibPos.mktPrice - trade.fill_price) * qty
-            : (trade.fill_price - ibPos.mktPrice) * qty;
+
+          // For a SELL trade where the IB position is still long (i.e. a partial profit take),
+          // P&L is realized: (sell_price - avg_cost) × qty. Treating it as a short position
+          // gives wrong results — a rising stock after the sale would show as a loss.
+          const isSellIntoLong = !isLong && ibPos.position > 0 && ibPos.avgCost > 0;
+          const unrealizedPnl = isSellIntoLong
+            ? (trade.fill_price - ibPos.avgCost) * qty
+            : isLong
+              ? (ibPos.mktPrice - trade.fill_price) * qty
+              : (trade.fill_price - ibPos.mktPrice) * qty;
+          const costBasis = isSellIntoLong ? ibPos.avgCost * qty : trade.fill_price * qty;
 
           // Update pnl fields (unrealized while position is open)
           await updatePaperTrade(trade.id, {
             pnl: parseFloat(unrealizedPnl.toFixed(2)),
-            pnl_percent: parseFloat(((unrealizedPnl / (trade.fill_price * qty)) * 100).toFixed(2)),
+            pnl_percent: parseFloat(((unrealizedPnl / costBasis) * 100).toFixed(2)),
           });
         }
 
