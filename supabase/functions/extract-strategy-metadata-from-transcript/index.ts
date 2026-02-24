@@ -188,7 +188,7 @@ Deno.serve(async (req) => {
     uploaderHandle ? `Creator handle (from platform metadata, authoritative): @${uploaderHandle}` : null,
     videoDescription ? `Video caption/description: ${videoDescription}` : null,
   ].filter(Boolean).join('\n');
-  const userPrompt = `${contextLines}\n\nTranscript:\n\n${transcript}\n\nExtract metadata from this trading strategy video transcript. For trade_date, resolve relative references like "today", "tomorrow", "Friday" to an actual YYYY-MM-DD date using today's date above. Use the creator name/handle above as-is for source_name/source_handle — do not guess or substitute a different name.`;
+  const userPrompt = `${contextLines}\n\nTranscript:\n\n${transcript}\n\nExtract metadata from this trading strategy video transcript.\n\nFor trade_date: trading videos are almost always posted ON the day they cover (or the night before for pre-market). Resolve day-of-week references like "today", "Tuesday's trading day", "Monday's gameplan" to today's date (${todayEt}) unless a specific future date is explicitly stated. Only use a future date if the transcript clearly says "tomorrow" or names a specific future date. Use the creator name/handle above as-is for source_name/source_handle — do not guess or substitute a different name.`;
 
   let extracted: Record<string, unknown>;
   try {
