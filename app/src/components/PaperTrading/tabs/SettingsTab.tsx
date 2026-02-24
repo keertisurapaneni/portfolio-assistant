@@ -60,7 +60,7 @@ export function SettingsTab({ config, onUpdate }: SettingsTabProps) {
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         <div>
           <label className="block text-sm font-medium text-[hsl(var(--foreground))] mb-1.5">
-            Position Size (per trade)
+            Flat Position Size (dynamic sizing off)
           </label>
           <div className="flex items-center gap-2">
             <span className="text-sm text-[hsl(var(--muted-foreground))]">$</span>
@@ -73,7 +73,7 @@ export function SettingsTab({ config, onUpdate }: SettingsTabProps) {
               step={100}
             />
           </div>
-          <p className="text-xs text-[hsl(var(--muted-foreground))] mt-1">Paper money allocated per trade</p>
+          <p className="text-xs text-[hsl(var(--muted-foreground))] mt-1">Fixed $ per trade — only used when dynamic sizing is disabled</p>
         </div>
 
         <div>
@@ -172,6 +172,28 @@ export function SettingsTab({ config, onUpdate }: SettingsTabProps) {
 
       <div className="border-t border-[hsl(var(--border))] pt-6 mt-2">
         <h4 className="text-sm font-semibold text-[hsl(var(--foreground))] mb-4">Testing Budget</h4>
+        <div className="mb-5 p-4 rounded-lg bg-slate-50 border border-[hsl(var(--border))]">
+          <div className="flex items-center justify-between mb-2">
+            <p className="text-sm font-medium text-[hsl(var(--foreground))]">Allocation Split</p>
+            <p className="text-xs text-[hsl(var(--muted-foreground))]">
+              Long-term: {config.longTermBucketPct}% &nbsp;·&nbsp; Day/Swing: {100 - config.longTermBucketPct}%
+            </p>
+          </div>
+          <input
+            type="range"
+            min={10} max={80} step={5}
+            value={config.longTermBucketPct}
+            onChange={e => onUpdate({ longTermBucketPct: Number(e.target.value) })}
+            className="w-full accent-emerald-600"
+          />
+          <div className="flex justify-between text-[10px] text-[hsl(var(--muted-foreground))] mt-1">
+            <span>10% long-term</span>
+            <span>80% long-term</span>
+          </div>
+          <p className="text-xs text-[hsl(var(--muted-foreground))] mt-2">
+            Suggested Finds + dip buys use the long-term bucket. Scanner + influencer strategies use the rest.
+          </p>
+        </div>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           <div>
             <label className="block text-sm font-medium text-[hsl(var(--foreground))] mb-1.5">
@@ -224,8 +246,8 @@ export function SettingsTab({ config, onUpdate }: SettingsTabProps) {
         {config.useDynamicSizing && (
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pl-14">
             <SettingsInput label="Base Allocation %" value={config.baseAllocationPct}
-              onChange={v => onUpdate({ baseAllocationPct: v })} min={0.5} max={10} step={0.5}
-              help="% of portfolio per long-term position" />
+              onChange={v => onUpdate({ baseAllocationPct: v })} min={0.5} max={20} step={0.5}
+              help="% of max allocation per trade (day/swing/long-term)" />
             <SettingsInput label="Max Position %" value={config.maxPositionPct}
               onChange={v => onUpdate({ maxPositionPct: v })} min={1} max={20} step={1}
               help="Max single-position % of portfolio" />

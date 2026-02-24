@@ -70,6 +70,7 @@ export interface AutoTraderConfig {
   earningsAvoidEnabled: boolean;
   earningsBlackoutDays: number;
   kellyAdaptiveEnabled: boolean;
+  longTermBucketPct: number;
 }
 
 const DEFAULT_CONFIG: AutoTraderConfig = {
@@ -97,6 +98,7 @@ const DEFAULT_CONFIG: AutoTraderConfig = {
   marketRegimeEnabled: true, maxSectorPct: 30,
   earningsAvoidEnabled: true, earningsBlackoutDays: 3,
   kellyAdaptiveEnabled: false,
+  longTermBucketPct: 40,
 };
 
 export async function loadConfig(): Promise<AutoTraderConfig> {
@@ -154,6 +156,7 @@ export async function loadConfig(): Promise<AutoTraderConfig> {
     earningsAvoidEnabled: data.earnings_avoid_enabled ?? DEFAULT_CONFIG.earningsAvoidEnabled,
     earningsBlackoutDays: data.earnings_blackout_days ?? DEFAULT_CONFIG.earningsBlackoutDays,
     kellyAdaptiveEnabled: data.kelly_adaptive_enabled ?? DEFAULT_CONFIG.kellyAdaptiveEnabled,
+    longTermBucketPct: Number(data.long_term_bucket_pct) || DEFAULT_CONFIG.longTermBucketPct,
   };
 }
 

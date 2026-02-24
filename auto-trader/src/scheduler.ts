@@ -1043,7 +1043,9 @@ function calculatePositionSize(
     const qty = Math.floor(riskBudget / riskPerShare);
     dollarSize = qty * price;
   } else {
-    dollarSize = config.positionSize;
+    // No stop/entry levels — use base_allocation_pct so size scales with allocation,
+    // not the static positionSize fallback.
+    dollarSize = alloc * (config.baseAllocationPct / 100);
   }
 
   dollarSize = dollarSize * regimeMultiplier * drawdownMultiplier;
@@ -1076,15 +1078,55 @@ async function getTotalDeployed(positions: EnrichedPosition[]): Promise<number> 
   return trades.reduce((sum, t) => sum + (t.position_size ?? 0), 0) + _pendingDeployedDollar;
 }
 
+/**
+ * Compute deployed capital split by bucket using paper_trades mode tags matched
+ * against IB positions (cost basis). Falls back to position_size when IB unavailable.
+ */
+async function getDeployedByBucket(positions: EnrichedPosition[]): Promise<{
+  longTerm: number;
+  daySwing: number;
+}> {
+  const trades = await getActiveTrades();
+  const ltTickers = new Set(
+    trades.filter(t => t.mode === 'LONG_TERM').map(t => t.ticker.toUpperCase())
+  );
+  const dsTickers = new Set(
+    trades.filter(t => t.mode !== 'LONG_TERM').map(t => t.ticker.toUpperCase())
+  );
+
+  if (positions.length > 0) {
+    let longTerm = 0;
+    let daySwing = 0;
+    for (const p of positions) {
+      const sym = p.symbol.toUpperCase();
+      const cost = Math.abs(p.position) * p.avgCost;
+      if (ltTickers.has(sym)) longTerm += cost;
+      else if (dsTickers.has(sym)) daySwing += cost;
+      else longTerm += cost; // unknown positions count as long-term (conservative)
+    }
+    return { longTerm, daySwing };
+  }
+
+  const longTerm = trades
+    .filter(t => t.mode === 'LONG_TERM')
+    .reduce((s, t) => s + (t.position_size ?? 0), 0);
+  const daySwing = trades
+    .filter(t => t.mode !== 'LONG_TERM')
+    .reduce((s, t) => s + (t.position_size ?? 0), 0);
+  return { longTerm, daySwing };
+}
+
 async function checkAllocationCap(
   config: AutoTraderConfig,
   positionSize: number,
   ticker: string,
   positions: EnrichedPosition[],
+  mode: 'LONG_TERM' | 'DAY_TRADE' | 'SWING_TRADE' = 'DAY_TRADE',
 ): Promise<boolean> {
   const deployed = await getTotalDeployed(positions);
   const cap = config.maxTotalAllocation;
 
+  // Overall circuit breaker
   if (deployed >= cap * 0.95) {
     log(`CIRCUIT BREAKER: ${ticker} — already at $${deployed.toFixed(0)} of $${cap} cap`);
     persistEvent(ticker, 'warning', 'Circuit breaker: at cap limit', {
@@ -1096,6 +1138,30 @@ async function checkAllocationCap(
   if (deployed + positionSize > cap) {
     log(`Allocation cap hit for ${ticker}: $${deployed.toFixed(0)} + $${positionSize.toFixed(0)} > $${cap}`);
     return false;
+  }
+
+  // Bucket cap — long-term gets longTermBucketPct, day/swing gets the rest
+  const buckets = await getDeployedByBucket(positions);
+  if (mode === 'LONG_TERM') {
+    const ltCap = cap * (config.longTermBucketPct / 100);
+    if (buckets.longTerm + positionSize > ltCap) {
+      log(`Long-term bucket cap for ${ticker}: $${buckets.longTerm.toFixed(0)} + $${positionSize.toFixed(0)} > $${ltCap.toFixed(0)} (${config.longTermBucketPct}% of $${cap})`);
+      persistEvent(ticker, 'warning', `Long-term bucket full (${config.longTermBucketPct}% cap)`, {
+        action: 'skipped', source: 'system',
+        skip_reason: `Long-term bucket cap: ${config.longTermBucketPct}% of allocation`,
+      });
+      return false;
+    }
+  } else {
+    const dsCap = cap * ((100 - config.longTermBucketPct) / 100);
+    if (buckets.daySwing + positionSize > dsCap) {
+      log(`Day/swing bucket cap for ${ticker}: $${buckets.daySwing.toFixed(0)} + $${positionSize.toFixed(0)} > $${dsCap.toFixed(0)} (${100 - config.longTermBucketPct}% of $${cap})`);
+      persistEvent(ticker, 'warning', `Day/swing bucket full (${100 - config.longTermBucketPct}% cap)`, {
+        action: 'skipped', source: 'system',
+        skip_reason: `Day/swing bucket cap: ${100 - config.longTermBucketPct}% of allocation`,
+      });
+      return false;
+    }
   }
 
   const today = getETDateString(); // ET date — consistent with recordPendingOrder
@@ -1207,13 +1273,14 @@ async function runPreTradeChecks(
   ticker: string,
   positionSize: number,
   positions: EnrichedPosition[],
+  mode: 'LONG_TERM' | 'DAY_TRADE' | 'SWING_TRADE' = 'DAY_TRADE',
 ): Promise<boolean> {
   const dd = assessDrawdownMultiplier(positions);
   if (dd.level === 'critical') {
     log(`DRAWDOWN PROTECTION: portfolio at ${dd.pnlPct.toFixed(1)}% — blocking new entries`);
     return false;
   }
-  if (!(await checkAllocationCap(config, positionSize, ticker, positions))) return false;
+  if (!(await checkAllocationCap(config, positionSize, ticker, positions, mode))) return false;
   if (!(await checkSectorExposure(config, ticker, positionSize))) return false;
   if (!(await checkEarningsBlackout(config, ticker))) return false;
   return true;
@@ -1275,7 +1342,7 @@ async function executeScannerTrade(
   });
   if (sizing.quantity < 1) return 'skipped:size_too_small';
 
-  if (!(await runPreTradeChecks(config, ticker, sizing.dollarSize, positions))) {
+  if (!(await runPreTradeChecks(config, ticker, sizing.dollarSize, positions, mode))) {
     return 'skipped:pre_trade_check';
   }
 
@@ -1384,7 +1451,7 @@ async function executeSuggestedFindTrade(
     }
   }
 
-  if (!(await runPreTradeChecks(config, ticker, sizing.dollarSize, positions))) {
+  if (!(await runPreTradeChecks(config, ticker, sizing.dollarSize, positions, 'LONG_TERM'))) {
     return 'skipped:pre_trade_check';
   }
 
@@ -1606,7 +1673,7 @@ async function executeExternalStrategySignal(
     return 'failed';
   }
 
-  if (!(await runPreTradeChecks(config, ticker, sizing.dollarSize, positions))) {
+  if (!(await runPreTradeChecks(config, ticker, sizing.dollarSize, positions, (signal.mode ?? 'DAY_TRADE') as 'DAY_TRADE' | 'SWING_TRADE'))) {
     await updateExternalStrategySignal(signal.id, {
       status: 'SKIPPED',
       failure_reason: 'Pre-trade risk checks blocked execution',
@@ -2121,7 +2188,7 @@ async function checkDipBuyOpportunities(
     const addOnQty = Math.max(1, Math.floor(originalQty * (sizePct / 100)));
     const addOnDollar = addOnQty * ibPos.mktPrice;
 
-    if (!(await checkAllocationCap(config, addOnDollar, ticker, positions))) continue;
+    if (!(await checkAllocationCap(config, addOnDollar, ticker, positions, 'LONG_TERM'))) continue;
 
     try {
       const contract = await searchContract(ticker);
