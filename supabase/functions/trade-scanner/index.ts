@@ -118,9 +118,14 @@ interface AIEval {
 // These are the highest-volume, most-liquid day trade vehicles. They don't
 // need to be in the Yahoo gainers/losers to be worth scanning.
 const DAY_CORE = [
+  // Mega-cap tech — always liquid, always in play
   'TSLA', 'AMD', 'NVDA', 'AAPL', 'MSFT', 'META', 'AMZN', 'GOOGL',
-  'SPY', 'QQQ',
-  'NFLX', 'CRM',
+  // Broad market ETFs — SPY/QQQ for market direction, IWM for small-cap momentum, DIA for Dow
+  'SPY', 'QQQ', 'IWM', 'DIA',
+  // Sector ETFs — gold (GLD) and bonds (TLT) for macro plays, semis (SOXL/SOXS are too volatile but SMH works)
+  'GLD', 'TLT', 'SMH',
+  // Other high-volume single names
+  'NFLX', 'CRM', 'UBER', 'COIN', 'MSTR',
 ];
 
 // ── Swing universe: Core (always scanned) + Dynamic (refreshed daily) ──
@@ -1335,12 +1340,21 @@ Deno.serve(async (req) => {
     let dayIdeas: TradeIdea[] = (dayFromPreviousDay || forceRefresh) ? [] : (dayRow?.data ?? []);
     if (needDayRefresh) {
       console.log('[Trade Scanner] Refreshing day trades...');
-      const [gainers, losers] = await Promise.all([
+      const [gainers, losers, actives] = await Promise.all([
         fetchMovers('day_gainers'),
         fetchMovers('day_losers'),
+        fetchMovers('most_actives'),
       ]);
 
-      const allMovers = [...gainers, ...losers].filter(preDayFilter);
+      // most_actives uses a looser filter (volume surge enough — don't need 1% move)
+      const activeFiltered = actives.filter(q => {
+        const price = rawVal(q.regularMarketPrice);
+        const vol = rawVal(q.regularMarketVolume);
+        const avgVol = rawVal(q.averageDailyVolume10Day);
+        return price >= 10 && vol >= 2_000_000 && (avgVol > 0 ? vol / avgVol >= 1.3 : false);
+      });
+
+      const allMovers = [...gainers, ...losers, ...activeFiltered].filter(preDayFilter);
       const deduped = new Map<string, YahooQuote>();
       for (const q of allMovers) {
         const sym = q.symbol;
@@ -1393,8 +1407,8 @@ Deno.serve(async (req) => {
         candidates = candidates
           .filter(q => (q._inPlayScore ?? -999) > -999)
           .sort((a, b) => (b._inPlayScore ?? -999) - (a._inPlayScore ?? -999))
-          .slice(0, 30);
-        candidates = candidates.slice(0, 15);
+          .slice(0, 40);
+        candidates = candidates.slice(0, 20);
         if (candidates.length > 0) {
           console.log(`[Trade Scanner] Day InPlayScore top 5: ${candidates.slice(0, 5).map(q => `${q.symbol}:${q._inPlayScore?.toFixed(2)}(${q._extensionPenalty ?? 0})`).join(', ')}`);
         }
@@ -1417,7 +1431,7 @@ Deno.serve(async (req) => {
           const pass1 = evals
             .filter(e => e.signal !== 'SKIP' && e.signal !== 'HOLD' && e.confidence >= 6)
             .sort((a, b) => b.confidence - a.confidence)
-            .slice(0, 5);
+            .slice(0, 8);
 
           console.log(`[Trade Scanner] Day Pass 1: ${candidates.length} → ${pass1.length} shortlisted (${pass1.map(e => `${e.ticker}:${e.signal}/${e.confidence}`).join(', ')})`);
 
