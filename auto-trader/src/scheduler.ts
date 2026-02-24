@@ -1252,6 +1252,66 @@ async function checkAllocationCap(
 
 // ── Portfolio Health / Drawdown ──────────────────────────
 
+// ── Half-Kelly Adaptive Sizing ───────────────────────────
+// Cached so we don't re-query on every single trade in a cycle
+let _kellyMultiplierCache: { value: number; computedAt: number } | null = null;
+const KELLY_CACHE_MS = 15 * 60 * 1000; // refresh every 15 min
+
+async function calculateKellyMultiplier(config: AutoTraderConfig): Promise<number> {
+  if (!config.kellyAdaptiveEnabled) return 1.0;
+
+  const now = Date.now();
+  if (_kellyMultiplierCache && now - _kellyMultiplierCache.computedAt < KELLY_CACHE_MS) {
+    return _kellyMultiplierCache.value;
+  }
+
+  try {
+    const sb = getSupabase();
+    // Use last 30 closed DAY_TRADE + SWING_TRADE results (exclude LONG_TERM — different risk profile)
+    const { data, error } = await sb
+      .from('paper_trades')
+      .select('pnl_percent, fill_price, mode')
+      .eq('status', 'CLOSED')
+      .in('mode', ['DAY_TRADE', 'SWING_TRADE'])
+      .not('pnl_percent', 'is', null)
+      .not('fill_price', 'is', null)
+      .order('closed_at', { ascending: false })
+      .limit(30);
+
+    if (error || !data || data.length < 10) {
+      _kellyMultiplierCache = { value: 1.0, computedAt: now };
+      return 1.0;
+    }
+
+    const wins  = data.filter(t => (t.pnl_percent ?? 0) > 0);
+    const losses = data.filter(t => (t.pnl_percent ?? 0) < 0);
+    if (wins.length === 0 || losses.length === 0) {
+      _kellyMultiplierCache = { value: 1.0, computedAt: now };
+      return 1.0;
+    }
+
+    const p = wins.length / data.length; // win rate
+    const avgWin  = wins.reduce((s, t) => s + (t.pnl_percent ?? 0), 0) / wins.length;
+    const avgLoss = Math.abs(losses.reduce((s, t) => s + (t.pnl_percent ?? 0), 0) / losses.length);
+
+    // Kelly fraction: f* = (p*b - (1-p)) / b   where b = avgWin/avgLoss (payoff ratio)
+    const b = avgWin / avgLoss;
+    const kelly = (p * b - (1 - p)) / b;
+
+    // Half-Kelly for safety, clamped between 0.25x and 1.5x
+    const halfKelly = kelly / 2;
+    const mult = Math.max(0.25, Math.min(1.5, halfKelly));
+
+    log(`[Kelly] n=${data.length} win%=${(p * 100).toFixed(0)}% avgWin=${avgWin.toFixed(1)}% avgLoss=${avgLoss.toFixed(1)}% b=${b.toFixed(2)} kelly=${kelly.toFixed(2)} half=${mult.toFixed(2)}x`);
+    _kellyMultiplierCache = { value: mult, computedAt: now };
+    return mult;
+  } catch (e) {
+    log(`[Kelly] failed to compute — defaulting to 1.0: ${e}`);
+    _kellyMultiplierCache = { value: 1.0, computedAt: now };
+    return 1.0;
+  }
+}
+
 function assessDrawdownMultiplier(positions: EnrichedPosition[]): {
   multiplier: number;
   level: string;
@@ -1457,9 +1517,10 @@ async function executeScannerTrade(
   }
 
   const dd = assessDrawdownMultiplier(positions);
+  const kellyMult = await calculateKellyMultiplier(config);
   const sizing = calculatePositionSize(config, {
     price: entryPrice, mode, entryPrice, stopLoss,
-    drawdownMultiplier: dd.multiplier,
+    drawdownMultiplier: dd.multiplier * kellyMult,
   });
   if (sizing.quantity < 1) return 'skipped:size_too_small';
 
@@ -1556,10 +1617,11 @@ async function executeSuggestedFindTrade(
   if (!currentPrice) return 'failed:no_price';
 
   const dd = assessDrawdownMultiplier(positions);
+  const kellyMult = await calculateKellyMultiplier(config);
   const sizing = calculatePositionSize(config, {
     price: currentPrice, mode: 'LONG_TERM', conviction,
     suggestedFindTag: (stock.tag === 'Gold Mine' || stock.tag === 'Steady Compounder') ? stock.tag : undefined,
-    drawdownMultiplier: dd.multiplier,
+    drawdownMultiplier: dd.multiplier * kellyMult,
   });
 
   // Tag-level cap: Gold Mine cannot exceed 40% of LONG_TERM sleeve
@@ -1790,6 +1852,8 @@ async function executeExternalStrategySignal(
   }
 
   const dd = assessDrawdownMultiplier(positions);
+  const kellyMult = await calculateKellyMultiplier(config);
+  const sizingMultiplier = dd.multiplier * kellyMult;
 
   // Determine flat dollar size: per-signal override > config flat size > dynamic sizing
   const flatDollarSize = signal.position_size_override && signal.position_size_override > 0
@@ -1800,7 +1864,7 @@ async function executeExternalStrategySignal(
 
   const baseSizing = flatDollarSize
     ? (() => {
-      const adjusted = flatDollarSize * dd.multiplier;
+      const adjusted = flatDollarSize * sizingMultiplier;
       const quantity = Math.max(1, Math.floor(adjusted / referencePrice));
       return { quantity, dollarSize: quantity * referencePrice };
     })()
@@ -1810,7 +1874,7 @@ async function executeExternalStrategySignal(
       conviction: signal.confidence,
       entryPrice: effectiveEntryPrice ?? undefined,
       stopLoss: effectiveStopLoss ?? undefined,
-      drawdownMultiplier: dd.multiplier,
+      drawdownMultiplier: sizingMultiplier,
     });
 
   const splitDollarSize = baseSizing.dollarSize / allocationSplit;
