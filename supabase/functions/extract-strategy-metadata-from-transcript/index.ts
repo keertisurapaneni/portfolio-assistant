@@ -107,7 +107,10 @@ Deno.serve(async (req) => {
     );
   }
 
-  let body: { video_id?: string; platform?: string; reel_url?: string; canonical_url?: string; transcript?: string };
+  let body: {
+    video_id?: string; platform?: string; reel_url?: string; canonical_url?: string;
+    transcript?: string; uploader_name?: string; uploader_handle?: string; description?: string;
+  };
   try {
     body = (await req.json()) ?? {};
   } catch {
@@ -129,6 +132,10 @@ Deno.serve(async (req) => {
   const platform = (body.platform ?? 'instagram') as 'instagram' | 'twitter' | 'youtube';
   const reel_url = (body.reel_url ?? '').trim() || null;
   const canonical_url = (body.canonical_url ?? '').trim() || null;
+  // Authoritative creator info from yt-dlp metadata (beats LLM guessing)
+  const uploaderName = (body.uploader_name ?? '').trim() || null;
+  const uploaderHandle = (body.uploader_handle ?? '').trim().toLowerCase().replace(/^@+/, '') || null;
+  const videoDescription = (body.description ?? '').trim() || null;
 
   const supabase = createClient(
     Deno.env.get('SUPABASE_URL')!,
@@ -175,7 +182,13 @@ Deno.serve(async (req) => {
 
   // ── Step 2: LLM extraction — transcript already saved, so failures are non-fatal ──
   const todayEt = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' }); // YYYY-MM-DD
-  const userPrompt = `Today's date (ET): ${todayEt}\n\nTranscript:\n\n${transcript}\n\nExtract metadata from this trading strategy video transcript. For trade_date, resolve relative references like "today", "tomorrow", "Friday" to an actual YYYY-MM-DD date using today's date above.`;
+  const contextLines = [
+    `Today's date (ET): ${todayEt}`,
+    uploaderName ? `Creator name (from platform metadata, authoritative): ${uploaderName}` : null,
+    uploaderHandle ? `Creator handle (from platform metadata, authoritative): @${uploaderHandle}` : null,
+    videoDescription ? `Video caption/description: ${videoDescription}` : null,
+  ].filter(Boolean).join('\n');
+  const userPrompt = `${contextLines}\n\nTranscript:\n\n${transcript}\n\nExtract metadata from this trading strategy video transcript. For trade_date, resolve relative references like "today", "tomorrow", "Friday" to an actual YYYY-MM-DD date using today's date above. Use the creator name/handle above as-is for source_name/source_handle — do not guess or substitute a different name.`;
 
   let extracted: Record<string, unknown>;
   try {
@@ -192,6 +205,10 @@ Deno.serve(async (req) => {
 
   let source_name = String(extracted.source_name ?? '').trim();
   let source_handle = (extracted.source_handle ? String(extracted.source_handle).trim().toLowerCase().replace(/^@+/, '') : null) as string | null;
+
+  // yt-dlp metadata beats LLM guessing — use it as authoritative source
+  if (uploaderName) source_name = uploaderName;
+  if (uploaderHandle) source_handle = uploaderHandle;
 
   // Resolve canonical source_name from existing strategy_videos if we have a handle
   if (source_handle) {

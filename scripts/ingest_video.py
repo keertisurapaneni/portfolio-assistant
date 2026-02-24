@@ -56,6 +56,38 @@ def parse_url(url: str) -> dict | None:
     return None
 
 
+def get_uploader_info(url: str, cookies_file: str | None = None) -> dict:
+    """Fetch uploader name, handle, and description from yt-dlp metadata (no audio download).
+    Returns {name, handle, description}."""
+    cmd = [
+        sys.executable, "-m", "yt_dlp",
+        "--skip-download",
+        "--print", "%(uploader)s|||%(title)s|||%(description)s",
+        "--no-playlist",
+        url,
+    ]
+    if cookies_file and os.path.isfile(cookies_file):
+        cmd.extend(["--cookies", cookies_file])
+    try:
+        result = subprocess.run(cmd, capture_output=True, timeout=30, text=True)
+        if result.returncode == 0:
+            line = (result.stdout or "").strip().split("\n")[0]
+            parts = line.split("|||")
+            name = parts[0].strip().rstrip(".") if parts else ""
+            title = parts[1].strip() if len(parts) > 1 else ""
+            description = parts[2].strip() if len(parts) > 2 else ""
+            # Extract handle from "Video by handle" title pattern (Instagram)
+            handle = None
+            handle_match = re.search(r"[Vv]ideo by\s+([^\s]+)", title)
+            if handle_match:
+                handle = handle_match.group(1).strip().lstrip("@")
+            if name and name not in ("NA", "none", ""):
+                return {"name": name, "handle": handle, "description": description}
+    except Exception:
+        pass
+    return {}
+
+
 def download_audio(url: str, out_path: str, cookies_file: str | None = None) -> str | None:
     """Download audio from URL using yt-dlp. Returns path to downloaded file or None on failure."""
     # Use python -m yt_dlp so it works when run from venv (yt-dlp may not be in PATH)
@@ -166,6 +198,9 @@ def call_extract(
     transcript: str,
     reel_url: str | None = None,
     canonical_url: str | None = None,
+    uploader_name: str | None = None,
+    uploader_handle: str | None = None,
+    description: str | None = None,
 ) -> dict:
     """Call extract-strategy-metadata-from-transcript edge function."""
     import requests
@@ -177,6 +212,9 @@ def call_extract(
         "transcript": transcript,
         "reel_url": reel_url,
         "canonical_url": canonical_url,
+        "uploader_name": uploader_name,
+        "uploader_handle": uploader_handle,
+        "description": description,
     }
     resp = requests.post(
         url,
@@ -290,6 +328,10 @@ def main():
         except Exception as e:
             print(f"  Warning: could not set transcribing status: {e}")
 
+        uploader = get_uploader_info(url, cookies)
+        if uploader.get("name"):
+            print(f"  Uploader: {uploader['name']}" + (f" (@{uploader['handle']})" if uploader.get('handle') else ""))
+
         with tempfile.TemporaryDirectory() as tmp:
             audio_path = os.path.join(tmp, "audio")
             downloaded = download_audio(url, audio_path, cookies)
@@ -324,6 +366,9 @@ def main():
                     transcript,
                     reel_url=reel_url,
                     canonical_url=canonical_url,
+                    uploader_name=uploader.get("name"),
+                    uploader_handle=uploader.get("handle"),
+                    description=uploader.get("description"),
                 )
                 print(f"  OK: {result.get('extracted', {})}")
             except Exception as e:
