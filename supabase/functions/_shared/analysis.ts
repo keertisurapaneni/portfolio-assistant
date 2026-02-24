@@ -10,6 +10,7 @@ import {
   type OHLCV,
   type IndicatorSummary,
   computeAllIndicators,
+  computeVWAP,
   formatIndicatorsForPrompt,
 } from './indicators.ts';
 import {
@@ -117,6 +118,19 @@ export async function prepareAnalysisContext(
   if (ohlcvBars.length < 30) return null; // Not enough data for meaningful indicators
 
   const indicators: IndicatorSummary = computeAllIndicators(ohlcvBars);
+
+  // ── VWAP from 1m bars for day trades (intraday anchor) ──
+  if (mode === 'DAY_TRADE') {
+    const bars1m = timeframes['1min']?.values;
+    if (bars1m && bars1m.length > 0) {
+      const ohlcv1m: OHLCV[] = bars1m.map(v => ({
+        o: parseFloat(v.open), h: parseFloat(v.high),
+        l: parseFloat(v.low), c: parseFloat(v.close),
+        v: v.volume ? parseFloat(v.volume) : 0,
+      }));
+      indicators.vwap = computeVWAP(ohlcv1m);
+    }
+  }
 
   // ── Current price from primary entry timeframe ──
   const primaryInterval = intervals[0]; // 1min for day, 4h for swing

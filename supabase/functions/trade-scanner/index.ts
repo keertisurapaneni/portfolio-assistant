@@ -34,6 +34,7 @@ import {
 import {
   type OHLCV,
   computeAllIndicators,
+  computeVWAP,
   formatIndicatorsForPrompt,
 } from '../_shared/indicators.ts';
 import { buildFeedbackContext } from '../_shared/feedback.ts';
@@ -62,6 +63,7 @@ interface TradeIdea {
   stopLoss?: number | null;
   targetPrice?: number | null;
   riskReward?: string | null;
+  atr?: number | null;  // from 15m indicators — used to re-anchor levels to live price
   // Validation log (for 10–20 day analysis)
   in_play_score?: number;
   pass1_confidence?: number;
@@ -119,6 +121,7 @@ interface AIEval {
   stopLoss?: number | null;
   targetPrice?: number | null;
   riskReward?: string | null;
+  atr?: number | null;
   confidence: number;  // 0-10
   reason: string;
 }
@@ -780,6 +783,7 @@ function buildIdea(
     stopLoss: eval_.stopLoss ?? null,
     targetPrice: eval_.targetPrice ?? null,
     riskReward: eval_.riskReward ?? null,
+    atr: eval_.atr ?? null,
     in_play_score: quote._inPlayScore,
     pass1_confidence: opts?.pass1Confidence,
     market_condition: opts?.marketCondition,
@@ -1153,6 +1157,16 @@ async function runPass2(
         const indicators = computeAllIndicators(candles.ohlcvBars);
         // Use 1min close for current price when available (most accurate); fall back to 15min
         const currentPrice = candles.currentPrice1min ?? candles.ohlcvBars[0]?.c ?? rawVal(quoteMap.get(ticker)?.regularMarketPrice);
+
+        // Inject VWAP from 1m bars for day trades (VWAP is an intraday anchor — not available on 15m)
+        if (mode === 'DAY_TRADE') {
+          const raw1m = candles.trimmed['1min'] as Array<{ o: number; h: number; l: number; c: number; v: number }> | undefined;
+          if (raw1m && raw1m.length > 0) {
+            const bars1m: OHLCV[] = raw1m.map(b => ({ o: b.o, h: b.h, l: b.l, c: b.c, v: b.v }));
+            indicators.vwap = computeVWAP(bars1m);
+          }
+        }
+
         const indicatorText = formatIndicatorsForPrompt(indicators, currentPrice, marketCtxStr);
 
         let extraContext = '';
@@ -1194,6 +1208,7 @@ async function runPass2(
           confidence,
           reason: typeof reason === 'string' ? reason : '',
           entryPrice, stopLoss, targetPrice, riskReward,
+          atr: indicators.atr ?? null,
         } as AIEval;
       } catch (err) {
         console.warn(`[Trade Scanner] ${ticker} Pass 2 failed:`, err);

@@ -188,6 +188,25 @@ export function computeATR(data: OHLCV[], period = 14): number | null {
   return atr;
 }
 
+// ── VWAP (Volume-Weighted Average Price) ────────────────
+// Computed from the current session's 1m bars (newest-first).
+// Resets daily — only meaningful for intraday (day trade) analysis.
+
+export function computeVWAP(bars: OHLCV[]): number | null {
+  if (!bars || bars.length === 0) return null;
+  const chronological = oldestFirst(bars);
+  let cumulativePV = 0;
+  let cumulativeV = 0;
+  for (const b of chronological) {
+    const typicalPrice = (b.h + b.l + b.c) / 3;
+    const vol = b.v ?? 0;
+    cumulativePV += typicalPrice * vol;
+    cumulativeV += vol;
+  }
+  if (cumulativeV === 0) return null;
+  return round(cumulativePV / cumulativeV);
+}
+
 // ── ADX (Average Directional Index) ─────────────────────
 
 export function computeADX(data: OHLCV[], period = 14): number | null {
@@ -458,6 +477,7 @@ export interface IndicatorSummary {
   sma200: number | null;
   atr: number | null;
   adx: number | null;
+  vwap: number | null;  // intraday only — set from 1m bars externally for day trades
   volumeRatio: { current: number; average: number; ratio: number } | null;
   supportResistance: SupportResistance;
   emaCrossover: CrossoverState;
@@ -485,6 +505,7 @@ export function computeAllIndicators(data: OHLCV[]): IndicatorSummary {
     sma200,
     atr: maybeRound(computeATR(data)),
     adx: maybeRound(computeADX(data)),
+    vwap: null, // populated externally for day trades (requires 1m session bars)
     volumeRatio: computeVolumeRatio(data),
     supportResistance: computeSupportResistance(data),
     emaCrossover: detectEMASMACrossover(data),
@@ -572,6 +593,18 @@ export function formatIndicatorsForPrompt(
   };
   lines.push(`  Overall Trend: ${trendLabels[ind.trend] ?? 'Unknown'}`);
 
+  // Intraday VWAP (day trades only — not present for swing)
+  if (ind.vwap !== null) {
+    lines.push('');
+    lines.push('Intraday:');
+    const vwapDiff = round(((currentPrice - ind.vwap) / ind.vwap) * 100);
+    const vwapBias = currentPrice > ind.vwap
+      ? `price ABOVE VWAP by ${vwapDiff}% — intraday BULLISH`
+      : `price BELOW VWAP by ${Math.abs(vwapDiff)}% — intraday BEARISH`;
+    lines.push(`  VWAP: $${ind.vwap} — ${vwapBias}`);
+    lines.push(`  (Use VWAP as primary entry/stop anchor for day trade levels)`);
+  }
+
   // Volatility
   lines.push('');
   lines.push('Volatility:');
@@ -579,6 +612,12 @@ export function formatIndicatorsForPrompt(
     const pct = round((ind.atr / currentPrice) * 100);
     const label = pct > 3 ? 'high' : pct > 1.5 ? 'moderate' : 'low';
     lines.push(`  ATR(14): $${ind.atr} (${pct}% of price) — ${label}`);
+    if (ind.vwap !== null) {
+      const stopDist = round(ind.atr * 1.0);
+      const target1Dist = round(ind.atr * 1.5);
+      const target2Dist = round(ind.atr * 2.5);
+      lines.push(`  Suggested day trade levels: stop=${round(currentPrice - stopDist)} (1×ATR below), T1=${round(currentPrice + target1Dist)} (1.5×ATR), T2=${round(currentPrice + target2Dist)} (2.5×ATR) — adjust for direction`);
+    }
   }
 
   // Volume

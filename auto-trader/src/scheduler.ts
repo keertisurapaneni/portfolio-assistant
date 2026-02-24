@@ -81,6 +81,7 @@ interface TradeIdea {
   stopLoss?: number | null;
   targetPrice?: number | null;
   riskReward?: string | null;
+  atr?: number | null;
   in_play_score?: number;
   pass1_confidence?: number;
   market_condition?: 'trend' | 'chop';
@@ -1322,14 +1323,36 @@ async function executeScannerTrade(
 
   if (mode === 'DAY_TRADE' && idea.entryPrice && idea.stopLoss && idea.targetPrice) {
     // Scanner Pass 2 already ran FA — reuse its levels and confidence.
-    // No need to call FA a third time; the scanner's second pass IS the full analysis.
-    entryPrice = idea.entryPrice;
-    stopLoss = idea.stopLoss;
-    targetPrice = idea.targetPrice;
+    // Re-anchor to live price so the bracket order isn't stale (scanner may be 30+ min old).
+    const livePrice = await getQuotePrice(ticker).catch(() => null);
+    const scannerEntry = idea.entryPrice;
+
+    const r2 = (n: number) => parseFloat(n.toFixed(2));
+    if (livePrice && Math.abs(livePrice - scannerEntry) / scannerEntry <= 0.03) {
+      // Price moved < 3% since scan — shift stop/target by the same delta to preserve R:R
+      const delta = livePrice - scannerEntry;
+      entryPrice = r2(livePrice);
+      stopLoss = r2(idea.stopLoss + delta);
+      targetPrice = r2(idea.targetPrice + delta);
+      log(`${ticker}: live price ${livePrice} (shifted ${delta > 0 ? '+' : ''}${delta.toFixed(2)} from scan entry ${scannerEntry})`);
+    } else if (livePrice && idea.atr && idea.atr > 0) {
+      // Price moved > 3% — levels are too stale. Recompute from ATR around live price.
+      const stopDist = idea.atr * 1.0;
+      const targetDist = idea.atr * 2.0;
+      entryPrice = r2(livePrice);
+      stopLoss   = signal === 'BUY' ? r2(livePrice - stopDist) : r2(livePrice + stopDist);
+      targetPrice = signal === 'BUY' ? r2(livePrice + targetDist) : r2(livePrice - targetDist);
+      log(`${ticker}: price moved >3% since scan — ATR-reanchored: entry=${entryPrice}, stop=${stopLoss}, target=${targetPrice}`);
+    } else {
+      // No live price available — use scanner levels as-is
+      entryPrice = idea.entryPrice;
+      stopLoss = idea.stopLoss;
+      targetPrice = idea.targetPrice;
+    }
+
     faConf = scannerConf; // Pass 2 confidence is on the same 0-10 scale
     faRec = signal;       // Signal already reflects FA direction from Pass 2
     faRiskReward = idea.riskReward ?? null;
-    log(`${ticker}: using Pass 2 FA levels (entry=${entryPrice}, stop=${stopLoss}, target=${targetPrice}, conf=${faConf})`);
   } else {
     // Swing trades or day trades without levels: run a fresh FA call
     let fa: TradingSignalsResponse;
