@@ -52,7 +52,7 @@ with open('/tmp/instagram_cookies.txt', 'w') as f:
 print('Instagram cookies file created')
 "
           else
-            echo "WARNING: INSTAGRAM_SESSION_ID secret not set — downloads may fail behind login wall"
+            echo "WARNING: INSTAGRAM_SESSION_ID secret not set - downloads may fail behind login wall"
           fi
 
       - name: Run ingest
