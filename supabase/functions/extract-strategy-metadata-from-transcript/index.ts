@@ -36,6 +36,7 @@ Return a single JSON object (no markdown, no code block) with these fields. Use 
   "timeframe": "DAY_TRADE" | "SWING_TRADE" | "LONG_TERM" | null,
   "applicable_timeframes": ["DAY_TRADE"] | ["SWING_TRADE"] | ["DAY_TRADE","SWING_TRADE"] | [],
   "execution_window_et": {"start":"09:35","end":"10:30"} | null,
+  "setup_type": "breakout" | "momentum" | "pullback_vwap" | "range" | null,
   "extracted_signals": [{"ticker":"TSLA","longTriggerAbove":414,"longTargets":[416.9,420],"shortTriggerBelow":409,"shortTargets":[405.3,402.65]}] | [],
   "summary": "1-2 sentence summary of the strategy"
 }
@@ -46,7 +47,13 @@ Rules:
 - source_name: from intro ("Hey it's Somesh from Kay Capitals"), outro, or channel branding. Humanize (e.g. "Kay Capitals" → "Somesh | Day Trader | Investor" if known).
 - source_handle: Instagram handle if mentioned. Infer from source_name (e.g. "Casper Clipping" → "casperclipping").
 - trade_date: only for daily_signal when date is explicit (e.g. "for Thursday", "today's levels").
-- execution_window_et: only if time window is specified (e.g. "9:30-9:35 levels", "first candle rule").`;
+- execution_window_et: only if time window is specified (e.g. "9:30-9:35 levels", "first candle rule").
+- setup_type: how the influencer intends execution:
+    "breakout"     — enter when price breaks above/below a pre-market high/low with volume (most common for daily signals with trigger levels)
+    "momentum"     — buy/short the directional move in the first hour, market order or aggressive limit
+    "pullback_vwap"— wait for a pullback to VWAP or a support level before entering (patient entry)
+    "range"        — stock is in a range; play the bounce off support or rejection at resistance
+    null           — unclear or generic strategy with no specific setup type`;
 
 async function callGroq(apiKey: string, systemPrompt: string, userPrompt: string): Promise<string> {
   const res = await fetch(GROQ_URL, {
@@ -238,6 +245,10 @@ Deno.serve(async (req) => {
     : null;
   const extracted_signals = Array.isArray(extracted.extracted_signals) ? extracted.extracted_signals : [];
   const summary = extracted.summary ? String(extracted.summary).trim() : null;
+  const VALID_SETUP_TYPES = ['breakout', 'momentum', 'pullback_vwap', 'range'] as const;
+  const setup_type = VALID_SETUP_TYPES.includes(extracted.setup_type as typeof VALID_SETUP_TYPES[number])
+    ? (extracted.setup_type as string)
+    : null;
 
   const { data: upserted, error } = await supabase
     .from('strategy_videos')
@@ -255,6 +266,7 @@ Deno.serve(async (req) => {
       execution_window_et,
       trade_date,
       extracted_signals,
+      setup_type,
       summary,
       transcript,
       ingest_status: 'done',

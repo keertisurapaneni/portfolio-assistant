@@ -86,7 +86,7 @@ Deno.serve(async (req) => {
   // Load the strategy_video
   const { data: video, error: fetchErr } = await supabase
     .from('strategy_videos')
-    .select('video_id, platform, source_name, source_handle, canonical_url, reel_url, video_heading, strategy_type, trade_date, timeframe, applicable_timeframes, execution_window_et, extracted_signals')
+    .select('video_id, platform, source_name, source_handle, canonical_url, reel_url, video_heading, strategy_type, trade_date, timeframe, applicable_timeframes, execution_window_et, extracted_signals, setup_type')
     .eq('video_id', videoId)
     .eq('status', 'tracked')
     .maybeSingle();
@@ -131,6 +131,7 @@ Deno.serve(async (req) => {
 
   const tradeDate = video.trade_date as string;
   const executionWindow = video.execution_window_et as ExecutionWindow | null;
+  const setupType = (video.setup_type as string | null) ?? null;
   const sourceHandle = (video.source_handle ?? '').trim().toLowerCase();
   const sourceUrl = sourceHandle
     ? `https://www.instagram.com/${sourceHandle}/`
@@ -146,11 +147,22 @@ Deno.serve(async (req) => {
       ? 'SWING_TRADE'
       : 'DAY_TRADE'; // default to day trade for daily signals
 
-  // Build execute_at / expires_at from execution_window_et
-  // For pre-market day trade signals without an explicit window, use a smart default:
-  //   - Start: 9:35 AM ET (skip the chaotic first 5 minutes: wide spreads, false breakouts)
-  //   - End:   11:30 AM ET (if setup hasn't triggered in 2 hours, pre-market thesis is stale)
-  // The influencer's entry_price trigger still gates execution within this window.
+  // Build execute_at / expires_at from execution_window_et.
+  // Influencer pre-market setups have different timing needs per setup type:
+  //
+  //   breakout      — enter when price breaks the pre-market level w/ volume
+  //                   9:35 AM start, 10:30 AM expiry (if it doesn't break in 1st hour, the setup failed)
+  //
+  //   momentum      — buy the directional move in the opening hour
+  //                   9:35 AM start, 11:00 AM expiry (full first hour of momentum)
+  //
+  //   pullback_vwap — wait for a retest of VWAP / support after the initial move
+  //                   9:35 AM start, 12:30 PM expiry (VWAP retests often come after the gap+run fades)
+  //
+  //   range         — support/resistance play, can trigger any time during regular hours
+  //                   9:35 AM start, 02:30 PM expiry (range plays work all day until late-day momentum)
+  //
+  //   default/null  — conservative default: 9:35 AM start, 11:00 AM expiry
   let executeAt: string | null = null;
   let expiresAt: string | null = null;
   if (executionWindow?.start) {
@@ -161,12 +173,20 @@ Deno.serve(async (req) => {
   }
 
   if (primaryMode === 'DAY_TRADE') {
-    // Smart defaults for day trades — only apply when explicit window not provided
     if (!executeAt) {
-      executeAt = toUtcTimestamp(tradeDate, '09:35');  // skip opening 5 min chaos
+      executeAt = toUtcTimestamp(tradeDate, '09:35'); // skip opening 5 min chaos
     }
     if (!expiresAt) {
-      expiresAt = toUtcTimestamp(tradeDate, '11:30');  // pre-market thesis expires mid-morning
+      // Expiry depends on setup type — tighter for breakout (thesis fails quickly),
+      // wider for pullback/range plays that need time to develop
+      const expiryBySetup: Record<string, string> = {
+        breakout:      '10:30', // didn't break in 1st hour → setup failed
+        momentum:      '11:00', // momentum fades after first hour
+        pullback_vwap: '12:30', // VWAP retest may come after the gap+run fades
+        range:         '14:30', // range plays are valid all day until late-session momentum
+      };
+      const defaultExpiry = '11:00';
+      expiresAt = toUtcTimestamp(tradeDate, expiryBySetup[setupType ?? ''] ?? defaultExpiry);
     }
   } else {
     // Swing/long-term: default expiry is end of trading day
