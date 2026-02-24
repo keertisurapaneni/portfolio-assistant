@@ -71,6 +71,8 @@ export interface AutoTraderConfig {
   earningsBlackoutDays: number;
   kellyAdaptiveEnabled: boolean;
   longTermBucketPct: number;
+  /** Flat dollar size for influencer daily signal trades. 0 = use dynamic sizing. */
+  externalSignalPositionSize: number;
 }
 
 const DEFAULT_CONFIG: AutoTraderConfig = {
@@ -99,6 +101,7 @@ const DEFAULT_CONFIG: AutoTraderConfig = {
   earningsAvoidEnabled: true, earningsBlackoutDays: 3,
   kellyAdaptiveEnabled: false,
   longTermBucketPct: 40,
+  externalSignalPositionSize: 5000,
 };
 
 export async function loadConfig(): Promise<AutoTraderConfig> {
@@ -157,6 +160,7 @@ export async function loadConfig(): Promise<AutoTraderConfig> {
     earningsBlackoutDays: data.earnings_blackout_days ?? DEFAULT_CONFIG.earningsBlackoutDays,
     kellyAdaptiveEnabled: data.kelly_adaptive_enabled ?? DEFAULT_CONFIG.kellyAdaptiveEnabled,
     longTermBucketPct: Number(data.long_term_bucket_pct) || DEFAULT_CONFIG.longTermBucketPct,
+    externalSignalPositionSize: Number(data.external_signal_position_size) || DEFAULT_CONFIG.externalSignalPositionSize,
   };
 }
 
