@@ -1790,9 +1790,18 @@ async function executeExternalStrategySignal(
   }
 
   const dd = assessDrawdownMultiplier(positions);
-  const baseSizing = signal.position_size_override && signal.position_size_override > 0
+
+  // Determine flat dollar size: per-signal override > config flat size > dynamic sizing
+  const flatDollarSize = signal.position_size_override && signal.position_size_override > 0
+    ? signal.position_size_override
+    : config.externalSignalPositionSize > 0
+      ? config.externalSignalPositionSize
+      : null;
+
+  const baseSizing = flatDollarSize
     ? (() => {
-      const quantity = Math.max(1, Math.floor(signal.position_size_override! / referencePrice));
+      const adjusted = flatDollarSize * dd.multiplier;
+      const quantity = Math.max(1, Math.floor(adjusted / referencePrice));
       return { quantity, dollarSize: quantity * referencePrice };
     })()
     : calculatePositionSize(config, {
