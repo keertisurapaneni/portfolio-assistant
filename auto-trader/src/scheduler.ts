@@ -821,6 +821,43 @@ async function fetchYahooDailyBars(symbol: string): Promise<{ closes: number[]; 
   } catch { return null; }
 }
 
+/**
+ * Compute intraday volume pace vs 10-day average daily volume.
+ * Returns the ratio of (current volume-per-minute) / (avg daily volume / 390 trading minutes).
+ * Returns null when data is unavailable or fewer than 3 bars have printed (< 15 min elapsed).
+ *
+ * Ratio > 1.3 → stock is trading at above-average pace → volume confirmation.
+ * Ratio < 1.0 → below-average pace → low-conviction setup, wait.
+ */
+async function fetchIntradayVolumeRatio(symbol: string): Promise<number | null> {
+  try {
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=1d&interval=5m&includePrePost=false`;
+    const res = await fetch(url, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; PortfolioAssistant/1.0)' },
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const result = data?.chart?.result?.[0];
+    if (!result) return null;
+    const quotes = result.indicators?.quote?.[0] ?? {};
+    const volumes = (quotes.volume ?? []).filter((v: number | null) => v != null) as number[];
+    // Need at least 3 completed 5-min bars (15 min) for meaningful data
+    if (volumes.length < 3) return null;
+
+    const todayVol = volumes.reduce((s: number, v: number) => s + v, 0);
+    const elapsedMinutes = volumes.length * 5;
+    const volPerMin = todayVol / elapsedMinutes;
+
+    const dailyBars = await fetchYahooDailyBars(symbol);
+    if (!dailyBars || dailyBars.volumes.length < 10) return null;
+    const avgDailyVol = dailyBars.volumes.slice(-10).reduce((a: number, b: number) => a + b, 0) / 10;
+    if (avgDailyVol <= 0) return null;
+
+    const avgVolPerMin = avgDailyVol / 390; // 390 trading minutes in a session
+    return volPerMin / avgVolPerMin;
+  } catch { return null; }
+}
+
 function ema(closes: number[], period: number): number[] {
   const k = 2 / (period + 1);
   const out: number[] = [];
@@ -1674,6 +1711,22 @@ async function executeExternalStrategySignal(
     }
     if (signal.signal === 'SELL' && quote > effectiveEntryPrice) {
       return 'waiting';
+    }
+  }
+
+  // Volume confirmation for day trades: require above-average intraday volume pace
+  // before entering. Low volume = thin conviction, wide spreads, fake moves.
+  // - ratio >= 1.3 → confirmed (stock trading 30%+ above average pace)
+  // - ratio null   → data unavailable, proceed (don't block on missing data)
+  // - ratio < 1.3  → return 'waiting' and retry next cycle
+  if (signal.mode === 'DAY_TRADE') {
+    const volRatio = await fetchIntradayVolumeRatio(ticker);
+    if (volRatio !== null && volRatio < 1.3) {
+      log(`${ticker}: volume pace ${volRatio.toFixed(2)}x avg — waiting for volume confirmation (need ≥1.3x)`);
+      return 'waiting';
+    }
+    if (volRatio !== null) {
+      log(`${ticker}: volume pace ${volRatio.toFixed(2)}x avg — confirmed`);
     }
   }
 
