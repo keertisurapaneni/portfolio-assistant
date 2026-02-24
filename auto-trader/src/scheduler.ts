@@ -2317,19 +2317,25 @@ async function syncPositions(
       }).catch(err => log(`Trade perf log failed for ${trade.ticker}: ${err instanceof Error ? err.message : 'unknown'}`));
     } else if (trade.status === 'SUBMITTED') {
       const tradeAge = Date.now() - new Date(trade.created_at).getTime();
-      // Stale day trades
-      if (trade.mode === 'DAY_TRADE' && tradeAge > 86400000) {
+      // Stale day trades — expire at market close (4:15 PM ET) if created today,
+      // or after 24h as a safety net for any that slip through.
+      const tradeDateET = new Date(trade.created_at).toLocaleDateString('en-US', { timeZone: 'America/New_York' });
+      const todayET = new Date().toLocaleDateString('en-US', { timeZone: 'America/New_York' });
+      const dayOrderExpired = trade.mode === 'DAY_TRADE' && (
+        (tradeDateET === todayET && isPastMarketCloseET()) || tradeAge > 86400000
+      );
+      if (dayOrderExpired) {
         const closedAt = new Date().toISOString();
         await updatePaperTrade(trade.id, {
           status: 'CLOSED', close_reason: 'manual',
           closed_at: closedAt,
-          notes: (trade.notes ?? '') + ' | Expired: DAY order not filled within 1 day',
+          notes: (trade.notes ?? '') + ' | Expired: DAY order not filled by market close',
         });
         logClosedTradePerformance(
           { ...trade, status: 'CLOSED', close_reason: 'manual', closed_at: closedAt } as import('./lib/supabase.js').PaperTrade,
           { source: 'scheduler', trigger: 'EXPIRED_DAY_ORDER' }
         ).catch(() => {});
-        log(`${trade.ticker}: Day trade expired`);
+        log(`${trade.ticker}: Day trade expired (market closed)`);
       }
       // Swing bracket limit: expire after 2 trading days (~48h), cancel IB order
       const TWO_TRADING_DAYS_MS = 2 * 24 * 60 * 60 * 1000;
