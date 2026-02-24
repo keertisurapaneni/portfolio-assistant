@@ -262,26 +262,18 @@ Deno.serve(async (req) => {
     );
   }
 
-  // Check for existing signals for this video to avoid duplicates
-  const { data: existing } = await supabase
+  // Delete all existing PENDING signals for this video before re-importing.
+  // This ensures a clean replacement when trade_date changes or signals are corrected —
+  // avoids duplicates across different execute_on_date values.
+  await supabase
     .from('external_strategy_signals')
-    .select('ticker, signal')
+    .delete()
     .eq('strategy_video_id', videoId)
-    .eq('execute_on_date', tradeDate);
-
-  const existingKeys = new Set((existing ?? []).map((r: { ticker: string; signal: string }) => `${r.ticker}::${r.signal}`));
-  const newSignals = toInsert.filter(r => !existingKeys.has(`${r.ticker}::${r.signal}`));
-
-  if (newSignals.length === 0) {
-    return new Response(
-      JSON.stringify({ ok: true, imported: 0, reason: 'All signals already exist for this video + date' }),
-      { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-    );
-  }
+    .eq('status', 'PENDING');
 
   const { error: insertErr } = await supabase
     .from('external_strategy_signals')
-    .insert(newSignals);
+    .insert(toInsert);
 
   if (insertErr) {
     return new Response(
@@ -293,8 +285,8 @@ Deno.serve(async (req) => {
   return new Response(
     JSON.stringify({
       ok: true,
-      imported: newSignals.length,
-      tickers: newSignals.map(s => `${s.ticker} ${s.signal}`),
+      imported: toInsert.length,
+      tickers: toInsert.map(s => `${s.ticker} ${s.signal}`),
       execute_on_date: tradeDate,
       execute_at: executeAt,
       expires_at: expiresAt,
