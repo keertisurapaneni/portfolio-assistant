@@ -52,7 +52,7 @@ with open('/tmp/instagram_cookies.txt', 'w') as f:
 print('Instagram cookies file created')
 "
           else
-            echo "WARNING: INSTAGRAM_SESSION_ID secret not set - downloads may fail behind login wall"
+            echo "WARNING: INSTAGRAM_SESSION_ID not set - downloads may fail behind login wall"
           fi
 
       - name: Run ingest
@@ -74,10 +74,9 @@ print('Instagram cookies file created')
 
           if [ -n "$VIDEO_IDS" ]; then
             echo "Ingesting specific video IDs: $VIDEO_IDS"
-            # Convert comma-separated IDs to Instagram reel URLs and process each
             IFS=',' read -ra IDS <<< "$VIDEO_IDS"
             for id in "${IDS[@]}"; do
-              id=$(echo "$id" | xargs)  # trim whitespace
+              id=$(echo "$id" | xargs)
               if [ -n "$id" ]; then
                 echo "=== Processing $id ==="
                 python scripts/ingest_video.py "https://www.instagram.com/reel/$id/" $COOKIES_ARG || echo "WARNING: Failed to process $id (continuing)"
