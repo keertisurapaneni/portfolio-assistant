@@ -1,12 +1,14 @@
 import { Fragment, useState, useEffect, useMemo, useRef, useCallback } from 'react';
-import { BarChart3, Link2, Plus, ChevronDown, ChevronUp } from 'lucide-react';
+import { BarChart3, Link2, Plus, ChevronDown, ChevronUp, Clock, TrendingUp } from 'lucide-react';
 import { cn } from '../../../lib/utils';
 import type {
   StrategySourcePerformance,
   StrategyVideoPerformance,
   StrategySignalStatusSummary,
   TradeStatus,
+  InfluencerTradePatterns,
 } from '../../../lib/paperTradesApi';
+import { fetchInfluencerTradePatterns } from '../../../lib/paperTradesApi';
 import {
   fixUnknownSources, assignUnknownToSource, updateStrategyVideoMetadata,
   extractFromTranscript, cleanupStrategyAssignments, fetchYouTubeTranscript,
@@ -71,6 +73,11 @@ export function StrategyPerformanceTab({ sources, videos, statuses, onRefresh }:
   const [fetchingCaptionsVideoId, setFetchingCaptionsVideoId] = useState<string | null>(null);
   const [videoAssignSelections, setVideoAssignSelections] = useState<Record<string, { source: string; category: string }>>({});
   const autoFixAttempted = useRef(false);
+  const [patterns, setPatterns] = useState<InfluencerTradePatterns | null>(null);
+
+  useEffect(() => {
+    fetchInfluencerTradePatterns().then(setPatterns).catch(() => {});
+  }, []);
 
   // Add Videos panel state
   const [addPanelOpen, setAddPanelOpen] = useState(true);
@@ -560,6 +567,140 @@ export function StrategyPerformanceTab({ sources, videos, statuses, onRefresh }:
           </p>
         </div>
       </div>
+
+      {/* Timing Patterns Panel — auto-builds as trades accumulate */}
+      {patterns && patterns.totalTrades >= 1 && (
+        <div className="rounded-xl border border-[hsl(var(--border))] bg-white overflow-hidden">
+          <div className="px-4 py-2.5 border-b border-[hsl(var(--border))] bg-[hsl(var(--secondary))] flex items-center gap-2">
+            <Clock className="w-4 h-4 text-[hsl(var(--muted-foreground))]" />
+            <h3 className="text-sm font-semibold text-[hsl(var(--foreground))]">Entry Timing Patterns</h3>
+            <span className="text-xs text-[hsl(var(--muted-foreground))]">— {patterns.totalTrades} day trades · {patterns.closedTrades} closed</span>
+            {patterns.closedTrades < 5 && (
+              <span className="ml-auto text-[10px] text-amber-600 font-medium">More data needed (need 5+ closed)</span>
+            )}
+          </div>
+          <div className="p-4 grid grid-cols-1 md:grid-cols-2 gap-6">
+            {/* Time-of-day breakdown */}
+            <div>
+              <p className="text-xs font-semibold text-[hsl(var(--muted-foreground))] mb-3 flex items-center gap-1.5">
+                <Clock className="w-3 h-3" /> By entry time (ET)
+              </p>
+              <div className="space-y-2">
+                {patterns.timeBuckets.map(b => {
+                  const closed = b.wins + b.losses;
+                  const barW = closed > 0 && b.winRate != null ? b.winRate : 0;
+                  const isHot = b.winRate != null && b.winRate >= 60 && closed >= 3;
+                  const isCold = b.winRate != null && b.winRate < 40 && closed >= 3;
+                  return (
+                    <div key={b.bucket}>
+                      <div className="flex items-center justify-between mb-0.5">
+                        <span className={cn(
+                          'text-xs font-medium tabular-nums',
+                          isHot ? 'text-emerald-700' : isCold ? 'text-red-600' : 'text-[hsl(var(--foreground))]'
+                        )}>
+                          {b.bucket}
+                          {isHot && <span className="ml-1 text-[10px]">★</span>}
+                        </span>
+                        <span className="text-xs text-[hsl(var(--muted-foreground))] tabular-nums">
+                          {b.winRate != null ? (
+                            <span className={cn('font-semibold', isHot ? 'text-emerald-600' : isCold ? 'text-red-600' : '')}>
+                              {b.winRate}%
+                            </span>
+                          ) : b.total > 0 ? (
+                            <span className="text-[hsl(var(--muted-foreground))]">pending</span>
+                          ) : '—'}
+                          {' '}
+                          <span className="text-[10px]">
+                            {b.wins}W {b.losses}L{b.pending > 0 ? ` ${b.pending}?` : ''}
+                          </span>
+                        </span>
+                      </div>
+                      <div className="h-1.5 rounded-full bg-[hsl(var(--secondary))] overflow-hidden">
+                        {closed > 0 && (
+                          <div
+                            className={cn(
+                              'h-full rounded-full transition-all',
+                              isHot ? 'bg-emerald-500' : isCold ? 'bg-red-400' : 'bg-slate-400'
+                            )}
+                            style={{ width: `${barW}%` }}
+                          />
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              <p className="text-[10px] text-[hsl(var(--muted-foreground))] mt-3">
+                ★ Hot window · Win rate shown after 2+ closed trades per bucket
+              </p>
+            </div>
+
+            {/* SPY alignment breakdown */}
+            <div>
+              <p className="text-xs font-semibold text-[hsl(var(--muted-foreground))] mb-3 flex items-center gap-1.5">
+                <TrendingUp className="w-3 h-3" /> SPY market alignment
+              </p>
+              {patterns.spyAlignment.aligned.total + patterns.spyAlignment.against.total === 0 ? (
+                <p className="text-xs text-[hsl(var(--muted-foreground))] italic">
+                  SPY data will populate once day trades execute with the new confirmation gates active.
+                </p>
+              ) : (
+                <div className="space-y-4">
+                  {[
+                    {
+                      label: 'SPY aligned with trade',
+                      sublabel: '(BUY on up day, SELL on down day)',
+                      stats: patterns.spyAlignment.aligned,
+                      color: 'emerald',
+                    },
+                    {
+                      label: 'SPY against trade',
+                      sublabel: '(BUY on down day, SELL on up day)',
+                      stats: patterns.spyAlignment.against,
+                      color: 'red',
+                    },
+                  ].map(row => (
+                    <div key={row.label}>
+                      <div className="flex items-center justify-between mb-1">
+                        <div>
+                          <p className="text-xs font-medium text-[hsl(var(--foreground))]">{row.label}</p>
+                          <p className="text-[10px] text-[hsl(var(--muted-foreground))]">{row.sublabel}</p>
+                        </div>
+                        <div className="text-right">
+                          {row.stats.winRate != null ? (
+                            <p className={cn(
+                              'text-sm font-bold tabular-nums',
+                              row.stats.winRate >= 55 ? 'text-emerald-600' : row.stats.winRate < 40 ? 'text-red-600' : 'text-[hsl(var(--foreground))]'
+                            )}>
+                              {row.stats.winRate}%
+                            </p>
+                          ) : (
+                            <p className="text-xs text-[hsl(var(--muted-foreground))]">need more data</p>
+                          )}
+                          <p className="text-[10px] text-[hsl(var(--muted-foreground))] tabular-nums">
+                            {row.stats.wins}W {row.stats.losses}L · {row.stats.total} trades
+                          </p>
+                        </div>
+                      </div>
+                      <div className="h-1.5 rounded-full bg-[hsl(var(--secondary))] overflow-hidden">
+                        {row.stats.total > 0 && (
+                          <div
+                            className={cn('h-full rounded-full', row.color === 'emerald' ? 'bg-emerald-500' : 'bg-red-400')}
+                            style={{ width: `${(row.stats.wins / row.stats.total) * 100}%` }}
+                          />
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                  <p className="text-[10px] text-[hsl(var(--muted-foreground))] mt-1">
+                    Goal: aligned win rate should significantly exceed against win rate
+                  </p>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {sourceNames.length === 0 ? (
         <div className="rounded-xl border border-[hsl(var(--border))] bg-white p-8 text-center">

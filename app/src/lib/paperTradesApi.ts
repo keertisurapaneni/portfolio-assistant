@@ -1440,3 +1440,171 @@ export async function getPortfolioSnapshots(days = 30): Promise<PortfolioSnapsho
   if (error) return [];
   return (data ?? []) as PortfolioSnapshot[];
 }
+
+// ── Influencer Trade Pattern Analysis ────────────────────
+
+export type TimeBucket = '9:30-10:00' | '10:00-10:30' | '10:30-11:00' | '11:00-12:00' | '12:00+';
+
+export interface TimeBucketStats {
+  bucket: TimeBucket;
+  total: number;
+  wins: number;
+  losses: number;
+  pending: number;
+  winRate: number | null; // null until enough closed trades
+  avgPnlPct: number | null;
+}
+
+export interface SpyAlignmentStats {
+  aligned: { total: number; wins: number; losses: number; winRate: number | null };
+  against: { total: number; wins: number; losses: number; winRate: number | null };
+}
+
+export interface InfluencerTradePatterns {
+  timeBuckets: TimeBucketStats[];
+  spyAlignment: SpyAlignmentStats;
+  totalTrades: number;
+  closedTrades: number;
+}
+
+/** Classify a filled_at UTC timestamp into an ET time bucket */
+function classifyTimeBucket(filledAt: string): TimeBucket {
+  const etTime = new Date(filledAt).toLocaleTimeString('en-US', {
+    timeZone: 'America/New_York',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  });
+  const [h, m] = etTime.split(':').map(Number);
+  const mins = (h ?? 0) * 60 + (m ?? 0);
+  if (mins < 10 * 60) return '9:30-10:00';
+  if (mins < 10 * 60 + 30) return '10:00-10:30';
+  if (mins < 11 * 60) return '10:30-11:00';
+  if (mins < 12 * 60) return '11:00-12:00';
+  return '12:00+';
+}
+
+/**
+ * Fetch influencer day trade execution patterns.
+ * Computes win/loss rates by entry time bucket and SPY alignment from
+ * paper_trades (filled_at for time) + auto_trade_events (spy_change_pct).
+ */
+export async function fetchInfluencerTradePatterns(): Promise<InfluencerTradePatterns> {
+  const BUCKETS: TimeBucket[] = ['9:30-10:00', '10:00-10:30', '10:30-11:00', '11:00-12:00', '12:00+'];
+
+  // Fetch all influencer day trades that have been filled
+  const { data: trades } = await supabase
+    .from('paper_trades')
+    .select('id, ticker, signal, strategy_video_id, pnl_percent, pnl, status, filled_at')
+    .not('strategy_video_id', 'is', null)
+    .eq('mode', 'DAY_TRADE')
+    .not('filled_at', 'is', null)
+    .order('filled_at', { ascending: false });
+
+  if (!trades || trades.length === 0) {
+    return {
+      timeBuckets: BUCKETS.map(b => ({ bucket: b, total: 0, wins: 0, losses: 0, pending: 0, winRate: null, avgPnlPct: null })),
+      spyAlignment: {
+        aligned: { total: 0, wins: 0, losses: 0, winRate: null },
+        against: { total: 0, wins: 0, losses: 0, winRate: null },
+      },
+      totalTrades: 0,
+      closedTrades: 0,
+    };
+  }
+
+  // Fetch execution events for spy_change_pct (only trades with metadata)
+  const { data: events } = await supabase
+    .from('auto_trade_events')
+    .select('ticker, strategy_video_id, metadata, created_at')
+    .eq('source', 'external_signal')
+    .eq('action', 'executed')
+    .eq('mode', 'DAY_TRADE')
+    .not('metadata', 'is', null);
+
+  // Build a spy_change_pct lookup: ticker+videoId → spy change
+  const spyMap = new Map<string, number>();
+  for (const ev of events ?? []) {
+    const meta = ev.metadata as Record<string, unknown> | null;
+    const pct = meta?.spy_change_pct;
+    if (typeof pct === 'number' && ev.strategy_video_id) {
+      spyMap.set(`${ev.ticker}::${ev.strategy_video_id}`, pct);
+    }
+  }
+
+  // Bucket stats accumulator
+  const bucketMap = new Map<TimeBucket, { wins: number; losses: number; pending: number; pnls: number[] }>(
+    BUCKETS.map(b => [b, { wins: 0, losses: 0, pending: 0, pnls: [] }])
+  );
+  const spyAligned = { wins: 0, losses: 0, total: 0 };
+  const spyAgainst = { wins: 0, losses: 0, total: 0 };
+
+  const CLOSED_STATUSES = ['CLOSED', 'STOPPED', 'TARGET_HIT', 'CANCELLED', 'EXPIRED', 'REJECTED'];
+
+  for (const trade of trades) {
+    const isClosed = CLOSED_STATUSES.includes(trade.status);
+    const isWin = isClosed && (trade.pnl ?? 0) > 0;
+    const isLoss = isClosed && (trade.pnl ?? 0) <= 0;
+
+    const bucket = classifyTimeBucket(trade.filled_at as string);
+    const b = bucketMap.get(bucket)!;
+    if (isWin) { b.wins++; if (trade.pnl_percent != null) b.pnls.push(trade.pnl_percent); }
+    else if (isLoss) { b.losses++; if (trade.pnl_percent != null) b.pnls.push(trade.pnl_percent); }
+    else b.pending++;
+
+    // SPY alignment: classify based on spy_change_pct at entry time
+    const spyPct = spyMap.get(`${trade.ticker}::${trade.strategy_video_id}`);
+    if (spyPct != null && isClosed) {
+      const aligned =
+        (trade.signal === 'BUY' && spyPct >= 0) ||
+        (trade.signal === 'SELL' && spyPct <= 0);
+      if (aligned) {
+        spyAligned.total++;
+        if (isWin) spyAligned.wins++;
+        else if (isLoss) spyAligned.losses++;
+      } else {
+        spyAgainst.total++;
+        if (isWin) spyAgainst.wins++;
+        else if (isLoss) spyAgainst.losses++;
+      }
+    }
+  }
+
+  const timeBuckets: TimeBucketStats[] = BUCKETS.map(b => {
+    const stats = bucketMap.get(b)!;
+    const closed = stats.wins + stats.losses;
+    return {
+      bucket: b,
+      total: closed + stats.pending,
+      wins: stats.wins,
+      losses: stats.losses,
+      pending: stats.pending,
+      winRate: closed >= 2 ? Math.round((stats.wins / closed) * 100) : null,
+      avgPnlPct: stats.pnls.length >= 2
+        ? parseFloat((stats.pnls.reduce((a, b) => a + b, 0) / stats.pnls.length).toFixed(2))
+        : null,
+    };
+  });
+
+  const closedTrades = trades.filter(t => CLOSED_STATUSES.includes(t.status)).length;
+
+  return {
+    timeBuckets,
+    spyAlignment: {
+      aligned: {
+        total: spyAligned.total,
+        wins: spyAligned.wins,
+        losses: spyAligned.losses,
+        winRate: spyAligned.total >= 2 ? Math.round((spyAligned.wins / spyAligned.total) * 100) : null,
+      },
+      against: {
+        total: spyAgainst.total,
+        wins: spyAgainst.wins,
+        losses: spyAgainst.losses,
+        winRate: spyAgainst.total >= 2 ? Math.round((spyAgainst.wins / spyAgainst.total) * 100) : null,
+      },
+    },
+    totalTrades: trades.length,
+    closedTrades,
+  };
+}
