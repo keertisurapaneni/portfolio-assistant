@@ -1345,10 +1345,16 @@ Deno.serve(async (req) => {
     // Swing trades: refresh in windows, or any market-hour cycle when today's list is empty.
     const swingNeverScanned = !swingRow || swingFromPreviousDay;
     const swingEmpty = (swingRow?.data?.length ?? 0) === 0;
-    const needSwingRefresh = forceRefresh ||
+
+    // Never run both heavy scans in the same call — each scan (day + swing) does 10+ API calls
+    // and 2 Gemini passes, which together exceed Supabase Edge Function compute limits.
+    // Priority: day trades during market hours, swing trades during swing windows / off-hours.
+    const needSwingRefresh = !needDayRefresh && (
+      forceRefresh ||
       swingNeverScanned ||
       (swingStale && swingWindow) ||
-      (marketOpen && swingEmpty);
+      (marketOpen && swingEmpty)
+    );
 
     console.log(`[Trade Scanner] day=${dayStale ? 'STALE' : 'FRESH'} dayPrevDay=${dayFromPreviousDay} swing=${swingStale ? 'STALE' : 'FRESH'} swingPrevDay=${swingFromPreviousDay} market=${marketOpen ? 'OPEN' : 'CLOSED'} swingWindow=${swingWindow} refreshDay=${needDayRefresh} refreshSwing=${needSwingRefresh}`);
 
@@ -1416,24 +1422,30 @@ Deno.serve(async (req) => {
 
       let candidates = [...deduped.values()];
 
-      // Enrich ALL candidates with chart data (needed for InPlayScore + Pass 1 indicators)
-      const enrichedQuotes = await fetchSwingQuotes(candidates.map(q => q.symbol));
-      const enrichMap = new Map(enrichedQuotes.map(q => [q.symbol, q]));
-      candidates = candidates.map(q => {
-        const enriched = enrichMap.get(q.symbol);
-        if (enriched) {
-          return {
-            ...q,
-            fiftyDayAverage: enriched.fiftyDayAverage,
-            twoHundredDayAverage: enriched.twoHundredDayAverage,
-            fiftyTwoWeekHigh: enriched.fiftyTwoWeekHigh,
-            fiftyTwoWeekLow: enriched.fiftyTwoWeekLow,
-            _pass1Indicators: enriched._pass1Indicators,
-            _ohlcvBars: enriched._ohlcvBars,
-          };
-        }
-        return q;
-      });
+      // Only enrich tickers that don't already have chart data (i.e. movers, not DAY_CORE).
+      // DAY_CORE tickers are fetched via fetchChartQuote and already have _pass1Indicators.
+      // Re-fetching 1y of daily data for all 40+ candidates is the primary compute bottleneck.
+      const needEnrichment = candidates.filter(q => !q._pass1Indicators).map(q => q.symbol);
+      if (needEnrichment.length > 0) {
+        const enrichedQuotes = await fetchSwingQuotes(needEnrichment);
+        const enrichMap = new Map(enrichedQuotes.map(q => [q.symbol, q]));
+        candidates = candidates.map(q => {
+          if (q._pass1Indicators) return q; // Already has chart data from DAY_CORE fetch
+          const enriched = enrichMap.get(q.symbol);
+          if (enriched) {
+            return {
+              ...q,
+              fiftyDayAverage: enriched.fiftyDayAverage,
+              twoHundredDayAverage: enriched.twoHundredDayAverage,
+              fiftyTwoWeekHigh: enriched.fiftyTwoWeekHigh,
+              fiftyTwoWeekLow: enriched.fiftyTwoWeekLow,
+              _pass1Indicators: enriched._pass1Indicators,
+              _ohlcvBars: enriched._ohlcvBars,
+            };
+          }
+          return q;
+        });
+      }
 
       // Large-cap: rank by InPlayScore; take top 30, then top 15 for Gemini
       if (largeCapMode && candidates.length > 0) {
@@ -1467,7 +1479,7 @@ Deno.serve(async (req) => {
           const pass1 = evals
             .filter(e => e.signal !== 'SKIP' && e.signal !== 'HOLD' && e.confidence >= 6)
             .sort((a, b) => b.confidence - a.confidence)
-            .slice(0, 8);
+            .slice(0, 5); // Cap at 5 to limit parallel Gemini + news fetches in Pass 2
 
           console.log(`[Trade Scanner] Day Pass 1: ${candidates.length} → ${pass1.length} shortlisted (${pass1.map(e => `${e.ticker}:${e.signal}/${e.confidence}`).join(', ')})`);
 
