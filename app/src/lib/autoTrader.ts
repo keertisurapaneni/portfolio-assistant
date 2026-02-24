@@ -158,6 +158,7 @@ export interface AutoTraderConfig {
   earningsAvoidEnabled: boolean; // skip trades near earnings
   earningsBlackoutDays: number;  // days before earnings to blackout
   kellyAdaptiveEnabled: boolean; // use Half-Kelly from trade history win rate
+  longTermBucketPct: number;     // % of maxTotalAllocation reserved for long-term positions
 }
 
 const CONFIG_KEY = 'auto-trader-config';
@@ -219,6 +220,7 @@ const DEFAULT_CONFIG: AutoTraderConfig = {
   earningsAvoidEnabled: true,
   earningsBlackoutDays: 3,
   kellyAdaptiveEnabled: false,
+  longTermBucketPct: 40,
 };
 
 /**
@@ -300,6 +302,7 @@ export async function loadAutoTraderConfig(): Promise<AutoTraderConfig> {
         earningsAvoidEnabled: data.earnings_avoid_enabled ?? DEFAULT_CONFIG.earningsAvoidEnabled,
         earningsBlackoutDays: data.earnings_blackout_days ?? DEFAULT_CONFIG.earningsBlackoutDays,
         kellyAdaptiveEnabled: data.kelly_adaptive_enabled ?? DEFAULT_CONFIG.kellyAdaptiveEnabled,
+        longTermBucketPct: Number(data.long_term_bucket_pct) || DEFAULT_CONFIG.longTermBucketPct,
       };
       localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
       return config;
@@ -376,6 +379,7 @@ export async function saveAutoTraderConfig(config: Partial<AutoTraderConfig>): P
         earnings_avoid_enabled: updated.earningsAvoidEnabled,
         earnings_blackout_days: updated.earningsBlackoutDays,
         kelly_adaptive_enabled: updated.kellyAdaptiveEnabled,
+        long_term_bucket_pct: updated.longTermBucketPct,
         updated_at: new Date().toISOString(),
       });
   } catch (err) {

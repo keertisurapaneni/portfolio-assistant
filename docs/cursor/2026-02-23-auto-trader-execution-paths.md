@@ -112,6 +112,29 @@ Scanner signals are purely technical (RSI, MACD, volume patterns). They have no 
 
 ---
 
+## Position Sizing
+
+`calculatePositionSize` in `scheduler.ts` — priority order:
+
+1. **LONG_TERM + conviction** → `alloc × base_allocation_pct × convictionMultiplier(conviction)` (× 0.75 for Gold Mine)
+2. **With entry + stop levels** → risk-based: `(alloc × risk_per_trade_pct) / riskPerShare × price`
+3. **Fallback (no levels)** → `alloc × base_allocation_pct` — applies to **all modes** (day/swing/long-term)
+
+All paths then apply `× regimeMultiplier × drawdownMultiplier`, capped at `min(portfolioValue × maxPositionPct, alloc × 10%)`.
+
+**Key sizing lever: `Base Allocation %` in Settings.** At `maxTotalAllocation = $500K`:
+
+| Base Alloc % | Per trade (no drawdown) | After 0.75× drawdown caution |
+|---|---|---|
+| 2% | $10,000 | $7,500 |
+| 4% | $20,000 | $15,000 |
+| 8% | $40,000 | $30,000 |
+| 10% | $50,000 | $37,500 |
+
+**Also check `Daily Deployment Limit`** — if running 3–5 day trades at 5%+ each, the daily cap can be hit before all signals execute.
+
+---
+
 ## PRs that established this architecture
 
 | PR | Change |
@@ -120,3 +143,4 @@ Scanner signals are purely technical (RSI, MACD, volume patterns). They have no 
 | #59 | Remove `conviction_drop` check for Suggested Finds (wrong metric) |
 | #60 | Remove remaining FA check for Suggested Finds (wrong tool entirely) |
 | #61 | Fix daily deployment limit using ET date instead of UTC |
+| #62 | Fix position sizing fallback to use `base_allocation_pct` for day/swing trades |
