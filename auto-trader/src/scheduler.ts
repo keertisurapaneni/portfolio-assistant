@@ -349,6 +349,16 @@ function getETDateString(): string {
   return formatDateToEtIso(new Date());
 }
 
+/** Returns current ET time as "HH:MM" (24h) — used for entry-time pattern analysis */
+function getETTimeString(): string {
+  return new Date().toLocaleTimeString('en-US', {
+    timeZone: 'America/New_York',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  });
+}
+
 function resetProcessedTickersIfNewDay(): void {
   const todayET = getETDateString();
   if (_processedTickersDate !== todayET) {
@@ -818,6 +828,30 @@ async function fetchYahooDailyBars(symbol: string): Promise<{ closes: number[]; 
     const volumes = (quotes.volume ?? []).map((v: number | null) => v ?? 0);
     if (closes.length < 30) return null;
     return { closes, volumes };
+  } catch { return null; }
+}
+
+/**
+ * Fetch SPY's intraday % change from previous close.
+ * Used to check broad-market alignment before executing a day trade.
+ * Returns null when data is unavailable — callers should proceed, not block.
+ */
+async function fetchSpyChangePct(): Promise<number | null> {
+  try {
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/SPY?range=1d&interval=5m&includePrePost=false`;
+    const res = await fetch(url, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; PortfolioAssistant/1.0)' },
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const result = data?.chart?.result?.[0];
+    if (!result) return null;
+    const prevClose: number | null = result.meta?.previousClose ?? null;
+    const quotes = result.indicators?.quote?.[0] ?? {};
+    const closes = (quotes.close ?? []).filter((c: number | null) => c != null) as number[];
+    if (!prevClose || prevClose <= 0 || closes.length === 0) return null;
+    const currentClose = closes[closes.length - 1];
+    return parseFloat((((currentClose - prevClose) / prevClose) * 100).toFixed(2));
   } catch { return null; }
 }
 
@@ -1714,12 +1748,11 @@ async function executeExternalStrategySignal(
     }
   }
 
-  // Volume confirmation for day trades: require above-average intraday volume pace
-  // before entering. Low volume = thin conviction, wide spreads, fake moves.
-  // - ratio >= 1.3 → confirmed (stock trading 30%+ above average pace)
-  // - ratio null   → data unavailable, proceed (don't block on missing data)
-  // - ratio < 1.3  → return 'waiting' and retry next cycle
+  // Confirmation gates for day trades — checks run in order, each can return 'waiting'
+  let spyChangePct: number | null = null;
   if (signal.mode === 'DAY_TRADE') {
+    // Gate 1: Volume — require above-average intraday pace (30%+ above avg)
+    // Low volume = thin conviction, wide spreads, fake breakouts
     const volRatio = await fetchIntradayVolumeRatio(ticker);
     if (volRatio !== null && volRatio < 1.3) {
       log(`${ticker}: volume pace ${volRatio.toFixed(2)}x avg — waiting for volume confirmation (need ≥1.3x)`);
@@ -1727,6 +1760,23 @@ async function executeExternalStrategySignal(
     }
     if (volRatio !== null) {
       log(`${ticker}: volume pace ${volRatio.toFixed(2)}x avg — confirmed`);
+    }
+
+    // Gate 2: SPY/market alignment — don't fight the tape
+    // BUY into a falling market or SHORT into a rising market = low-probability setup
+    // Threshold: SPY down >0.4% (for BUY) or up >0.4% (for SELL) blocks the trade
+    spyChangePct = await fetchSpyChangePct();
+    if (spyChangePct !== null) {
+      const MARKET_MISALIGN_PCT = 0.4;
+      if (signal.signal === 'BUY' && spyChangePct < -MARKET_MISALIGN_PCT) {
+        log(`${ticker}: SPY is ${spyChangePct}% — market working against BUY — waiting for alignment`);
+        return 'waiting';
+      }
+      if (signal.signal === 'SELL' && spyChangePct > MARKET_MISALIGN_PCT) {
+        log(`${ticker}: SPY is +${spyChangePct}% — market working against SELL — waiting for alignment`);
+        return 'waiting';
+      }
+      log(`${ticker}: SPY ${spyChangePct >= 0 ? '+' : ''}${spyChangePct}% — market aligned`);
     }
   }
 
@@ -1903,6 +1953,9 @@ async function executeExternalStrategySignal(
         external_signal_id: signal.id,
         allocation_split: allocationSplit,
         allocation_index: allocationIndex,
+        // Pattern-analysis fields — used to find "wins at 9:40-10:10, losses after 11 AM" patterns
+        entry_time_et: getETTimeString(),
+        spy_change_pct: spyChangePct,
       },
     });
     return 'executed';
