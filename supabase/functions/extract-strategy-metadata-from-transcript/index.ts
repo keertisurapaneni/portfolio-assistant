@@ -244,6 +244,8 @@ Deno.serve(async (req) => {
     }
   }
 
+  const extractedStrategyType = extracted.strategy_type === 'daily_signal' || extracted.strategy_type === 'generic_strategy'
+    ? extracted.strategy_type : null;
   const strategy_type = extractedStrategyType;
   const video_heading = extracted.video_heading ? String(extracted.video_heading).trim() : null;
   // Only accept ISO date strings — reject relative values like "Friday", "tomorrow", etc.
@@ -252,8 +254,6 @@ Deno.serve(async (req) => {
   // For daily_signal videos: if the LLM returned a future date, clamp to today.
   // Instagram daily signal videos are always for the current trading day — they're never posted
   // in advance. A future date is always an LLM inference error.
-  const extractedStrategyType = extracted.strategy_type === 'daily_signal' || extracted.strategy_type === 'generic_strategy'
-    ? extracted.strategy_type : null;
   if (trade_date && extractedStrategyType === 'daily_signal' && trade_date > todayEt) {
     console.warn(`[extract] trade_date ${trade_date} is in the future for daily_signal — clamping to today (${todayEt})`);
     trade_date = todayEt;

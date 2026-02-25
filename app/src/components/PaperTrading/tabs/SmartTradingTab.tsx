@@ -273,29 +273,48 @@ export function SmartTradingTab({ config, regime, kellyMultiplier, totalDeployed
             <h3 className="text-sm font-semibold text-[hsl(var(--foreground))]">Recent Smart Actions</h3>
           </div>
           <div className="divide-y divide-[hsl(var(--border))] max-h-64 overflow-y-auto">
-            {smartEvents.slice(0, 20).map(event => (
-              <div key={event.id} className="flex items-start gap-2 px-4 py-2 text-xs">
-                {event.source === 'dip_buy' && <TrendingDown className="w-3.5 h-3.5 text-blue-500 mt-0.5 flex-shrink-0" />}
-                {event.source === 'profit_take' && <TrendingUp className="w-3.5 h-3.5 text-emerald-500 mt-0.5 flex-shrink-0" />}
-                {event.source !== 'dip_buy' && event.source !== 'profit_take' && (
-                  <Shield className="w-3.5 h-3.5 text-amber-500 mt-0.5 flex-shrink-0" />
-                )}
-                <div className="flex-1 min-w-0">
-                  <span className="font-bold text-[hsl(var(--foreground))]">{event.ticker}</span>
-                  {event.action && (
-                    <span className={cn('ml-1.5 px-1.5 py-0.5 rounded text-[10px] font-medium', {
-                      'bg-emerald-100 text-emerald-700': event.action === 'executed',
-                      'bg-amber-100 text-amber-700': event.action === 'skipped',
-                      'bg-red-100 text-red-700': event.action === 'failed',
-                    })}>{event.source === 'dip_buy' ? 'dip buy' : event.source === 'profit_take' ? 'profit take' : 'blocked'}</span>
+            {smartEvents.slice(0, 20).map(event => {
+              const meta = (event.metadata ?? {}) as Record<string, unknown>;
+              const pnl = event.source === 'profit_take' && typeof meta.realizedPnl === 'number'
+                ? meta.realizedPnl
+                : event.source === 'loss_cut' && typeof meta.realizedLoss === 'number'
+                  ? -meta.realizedLoss
+                  : null;
+              const addOnDollar = event.source === 'dip_buy' && typeof meta.addOnDollar === 'number' ? meta.addOnDollar : null;
+              return (
+                <div key={event.id} className="flex items-start gap-2 px-4 py-2 text-xs">
+                  {event.source === 'dip_buy' && <TrendingDown className="w-3.5 h-3.5 text-blue-500 mt-0.5 flex-shrink-0" />}
+                  {event.source === 'profit_take' && <TrendingUp className="w-3.5 h-3.5 text-emerald-500 mt-0.5 flex-shrink-0" />}
+                  {event.source !== 'dip_buy' && event.source !== 'profit_take' && (
+                    <Shield className="w-3.5 h-3.5 text-amber-500 mt-0.5 flex-shrink-0" />
                   )}
-                  <span className="text-[hsl(var(--muted-foreground))] ml-1.5">{event.message}</span>
+                  <div className="flex-1 min-w-0">
+                    <span className="font-bold text-[hsl(var(--foreground))]">{event.ticker}</span>
+                    {event.action && (
+                      <span className={cn('ml-1.5 px-1.5 py-0.5 rounded text-[10px] font-medium', {
+                        'bg-emerald-100 text-emerald-700': event.action === 'executed',
+                        'bg-amber-100 text-amber-700': event.action === 'skipped',
+                        'bg-red-100 text-red-700': event.action === 'failed',
+                      })}>{event.source === 'dip_buy' ? 'dip buy' : event.source === 'profit_take' ? 'profit take' : event.source === 'loss_cut' ? 'loss cut' : 'blocked'}</span>
+                    )}
+                    <span className="text-[hsl(var(--muted-foreground))] ml-1.5">{event.message}</span>
+                    {pnl != null && (
+                      <span className={cn('ml-1.5 font-semibold tabular-nums', pnl >= 0 ? 'text-emerald-600' : 'text-red-600')}>
+                        {fmtUsd(pnl, 2, true)}
+                      </span>
+                    )}
+                    {addOnDollar != null && pnl == null && (
+                      <span className="ml-1.5 text-[hsl(var(--muted-foreground))] tabular-nums">
+                        {fmtUsd(addOnDollar, 0, true)}
+                      </span>
+                    )}
+                  </div>
+                  <span className="text-[hsl(var(--muted-foreground))] flex-shrink-0 tabular-nums whitespace-nowrap">
+                    {new Date(event.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
+                  </span>
                 </div>
-                <span className="text-[hsl(var(--muted-foreground))] flex-shrink-0 tabular-nums whitespace-nowrap">
-                  {new Date(event.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
-                </span>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}
