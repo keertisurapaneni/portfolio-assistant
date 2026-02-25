@@ -2235,12 +2235,21 @@ async function syncPositions(
       if (trade.status === 'FILLED' && ibPos.mktPrice > 0 && trade.fill_price) {
         const qty = trade.quantity ?? 1;
         const isLong = trade.signal === 'BUY';
-        const unrealizedPnl = isLong
-          ? (ibPos.mktPrice - trade.fill_price) * qty
-          : (trade.fill_price - ibPos.mktPrice) * qty;
+
+        // For a SELL that reduced a long position (partial profit take), P&L is realized:
+        // (sell_price - avg_cost) × qty. Using short-position formula gives wrong results
+        // when the stock rises after the sale.
+        const isSellIntoLong = !isLong && ibPos.position > 0 && ibPos.avgCost > 0;
+        const unrealizedPnl = isSellIntoLong
+          ? (trade.fill_price - ibPos.avgCost) * qty
+          : isLong
+            ? (ibPos.mktPrice - trade.fill_price) * qty
+            : (trade.fill_price - ibPos.mktPrice) * qty;
+        const costBasis = isSellIntoLong ? ibPos.avgCost * qty : trade.fill_price * qty;
+
         await updatePaperTrade(trade.id, {
           pnl: parseFloat(unrealizedPnl.toFixed(2)),
-          pnl_percent: parseFloat(((unrealizedPnl / (trade.fill_price * qty)) * 100).toFixed(2)),
+          pnl_percent: parseFloat(((unrealizedPnl / costBasis) * 100).toFixed(2)),
         });
       }
     } else if (trade.status === 'FILLED') {
@@ -2512,10 +2521,11 @@ async function checkProfitTakeOpportunities(
         entry_trigger_type: 'profit_take',
       });
 
-      log(`${trade.ticker}: PROFIT TAKE ${triggered.label} — sold ${actualTrimQty} shares at +${gainPct.toFixed(1)}%`);
+      const realizedPnl = actualTrimQty * (ibPos.mktPrice - ibPos.avgCost);
+      log(`${trade.ticker}: PROFIT TAKE ${triggered.label} — sold ${actualTrimQty} shares at +${gainPct.toFixed(1)}% ($${realizedPnl.toFixed(2)})`);
       persistEvent(trade.ticker, 'success', `Profit take ${triggered.label}: sold ${actualTrimQty} shares`, {
         action: 'executed', source: 'profit_take', mode: 'LONG_TERM',
-        metadata: { tier: triggered.label, gainPct, trimQty: actualTrimQty },
+        metadata: { tier: triggered.label, gainPct, trimQty: actualTrimQty, realizedPnl },
       });
     } catch (err) {
       log(`${trade.ticker}: Profit take failed — ${err instanceof Error ? err.message : 'unknown'}`);
@@ -2582,10 +2592,13 @@ async function checkLossCutOpportunities(
         entry_trigger_type: 'loss_cut',
       });
 
-      log(`${trade.ticker}: LOSS CUT ${triggered.label} — sold ${sellQty} shares at -${lossPct.toFixed(1)}%`);
+      const realizedLoss = ibPos.position > 0
+        ? sellQty * (ibPos.avgCost - ibPos.mktPrice)
+        : sellQty * (ibPos.mktPrice - ibPos.avgCost);
+      log(`${trade.ticker}: LOSS CUT ${triggered.label} — sold ${sellQty} shares at -${lossPct.toFixed(1)}% ($${realizedLoss.toFixed(2)})`);
       persistEvent(trade.ticker, 'success', `Loss cut ${triggered.label}: sold ${sellQty} shares`, {
         action: 'executed', source: 'loss_cut', mode: trade.mode,
-        metadata: { tier: triggered.label, lossPct, sellQty },
+        metadata: { tier: triggered.label, lossPct, sellQty, realizedLoss },
       });
     } catch (err) {
       log(`${trade.ticker}: Loss cut failed — ${err instanceof Error ? err.message : 'unknown'}`);
