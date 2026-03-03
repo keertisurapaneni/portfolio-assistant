@@ -1,14 +1,34 @@
-import { Zap } from 'lucide-react';
+import { useState } from 'react';
+import { Zap, Play, Clock } from 'lucide-react';
 import { cn } from '../../../lib/utils';
-import type { AutoTradeEventRecord, PaperTrade } from '../../../lib/paperTradesApi';
+import type { AutoTradeEventRecord, PaperTrade, PendingStrategySignal } from '../../../lib/paperTradesApi';
+import { executeSignal } from '../../../lib/paperTradesApi';
 import { fmtUsd } from '../utils';
 
 export interface TodayActivityTabProps {
   events: AutoTradeEventRecord[];
   trades: PaperTrade[];
+  todaySignalsForExecute?: PendingStrategySignal[];
+  onExecuteSignal?: () => void;
 }
 
-export function TodayActivityTab({ events, trades }: TodayActivityTabProps) {
+export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], onExecuteSignal }: TodayActivityTabProps) {
+  const [executingId, setExecutingId] = useState<string | null>(null);
+
+  const handleExecuteSignal = async (signal: PendingStrategySignal) => {
+    setExecutingId(signal.id);
+    try {
+      const out = await executeSignal(signal.id);
+      if (out.ok) {
+        onExecuteSignal?.();
+      } else {
+        console.error('[Execute signal]', out.error);
+        alert(out.error ?? 'Execution failed');
+      }
+    } finally {
+      setExecutingId(null);
+    }
+  };
   const tradesByTicker = new Map<string, PaperTrade[]>();
   for (const t of trades) {
     const arr = tradesByTicker.get(t.ticker) || [];
@@ -18,12 +38,67 @@ export function TodayActivityTab({ events, trades }: TodayActivityTabProps) {
 
   if (events.length === 0) {
     return (
-      <div className="text-center py-12">
-        <Zap className="w-10 h-10 text-[hsl(var(--muted-foreground))] opacity-40 mx-auto" />
-        <p className="mt-3 text-sm text-[hsl(var(--muted-foreground))]">No trades executed today</p>
-        <p className="text-xs text-[hsl(var(--muted-foreground))] opacity-70 mt-1">
-          Scanner runs at 10 AM and 3:30 PM ET
-        </p>
+      <div className="space-y-4">
+        <div className="text-center py-12">
+          <Zap className="w-10 h-10 text-[hsl(var(--muted-foreground))] opacity-40 mx-auto" />
+          <p className="mt-3 text-sm text-[hsl(var(--muted-foreground))]">No trades executed today</p>
+          <p className="text-xs text-[hsl(var(--muted-foreground))] opacity-70 mt-1">
+            Scanner runs at 10 AM and 3:30 PM ET
+          </p>
+        </div>
+
+        {todaySignalsForExecute.length > 0 && (
+          <div className="rounded-xl border border-[hsl(var(--border))] bg-white overflow-hidden">
+            <div className="px-4 py-2.5 border-b border-[hsl(var(--border))] bg-[hsl(var(--secondary))]">
+              <h3 className="text-sm font-semibold text-[hsl(var(--foreground))]">Execute Past Window</h3>
+              <p className="text-[10px] text-[hsl(var(--muted-foreground))] mt-0.5">
+                Today&apos;s signals that missed the execution window — execute manually
+              </p>
+            </div>
+            <div className="divide-y divide-[hsl(var(--border))]">
+              {todaySignalsForExecute.map((s) => (
+                <div key={s.id} className="flex items-center justify-between gap-3 px-4 py-2.5">
+                  <div className="min-w-0">
+                    <span className="font-bold text-sm text-[hsl(var(--foreground))]">{s.ticker}</span>
+                    <span className={cn('ml-1.5 px-1.5 py-0.5 rounded text-[10px] font-medium', s.signal === 'BUY' ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700')}>
+                      {s.signal}
+                    </span>
+                    <span className="ml-1.5 text-[10px] text-[hsl(var(--muted-foreground))]">{s.mode.replace('_', ' ')}</span>
+                    {s.source_name && (
+                      <p className="text-[10px] text-[hsl(var(--muted-foreground))] truncate mt-0.5">{s.source_name}</p>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2 flex-shrink-0">
+                    {s.status === 'EXPIRED' && (
+                      <span className="flex items-center gap-1 text-[10px] text-amber-600">
+                        <Clock className="w-3 h-3" />
+                        Expired
+                      </span>
+                    )}
+                    <button
+                      onClick={() => handleExecuteSignal(s)}
+                      disabled={executingId !== null}
+                      className={cn(
+                        'flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg border transition-all',
+                        'bg-emerald-50 border-emerald-200 text-emerald-700 hover:bg-emerald-100',
+                        executingId !== null && 'opacity-50 cursor-not-allowed'
+                      )}
+                    >
+                      {executingId === s.id ? (
+                        <span className="animate-pulse">Executing…</span>
+                      ) : (
+                        <>
+                          <Play className="w-3 h-3" />
+                          Execute
+                        </>
+                      )}
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     );
   }
@@ -142,6 +217,59 @@ export function TodayActivityTab({ events, trades }: TodayActivityTabProps) {
           </tbody>
         </table>
       </div>
+
+      {todaySignalsForExecute.length > 0 && (
+        <div className="rounded-xl border border-[hsl(var(--border))] bg-white overflow-hidden">
+          <div className="px-4 py-2.5 border-b border-[hsl(var(--border))] bg-[hsl(var(--secondary))]">
+            <h3 className="text-sm font-semibold text-[hsl(var(--foreground))]">Execute Past Window</h3>
+            <p className="text-[10px] text-[hsl(var(--muted-foreground))] mt-0.5">
+              Today&apos;s signals that missed the execution window — execute manually
+            </p>
+          </div>
+          <div className="divide-y divide-[hsl(var(--border))]">
+            {todaySignalsForExecute.map((s) => (
+              <div key={s.id} className="flex items-center justify-between gap-3 px-4 py-2.5">
+                <div className="min-w-0">
+                  <span className="font-bold text-sm text-[hsl(var(--foreground))]">{s.ticker}</span>
+                  <span className={cn('ml-1.5 px-1.5 py-0.5 rounded text-[10px] font-medium', s.signal === 'BUY' ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700')}>
+                    {s.signal}
+                  </span>
+                  <span className="ml-1.5 text-[10px] text-[hsl(var(--muted-foreground))]">{s.mode.replace('_', ' ')}</span>
+                  {s.source_name && (
+                    <p className="text-[10px] text-[hsl(var(--muted-foreground))] truncate mt-0.5">{s.source_name}</p>
+                  )}
+                </div>
+                <div className="flex items-center gap-2 flex-shrink-0">
+                  {s.status === 'EXPIRED' && (
+                    <span className="flex items-center gap-1 text-[10px] text-amber-600">
+                      <Clock className="w-3 h-3" />
+                      Expired
+                    </span>
+                  )}
+                  <button
+                    onClick={() => handleExecuteSignal(s)}
+                    disabled={executingId !== null}
+                    className={cn(
+                      'flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg border transition-all',
+                      'bg-emerald-50 border-emerald-200 text-emerald-700 hover:bg-emerald-100',
+                      executingId !== null && 'opacity-50 cursor-not-allowed'
+                    )}
+                  >
+                    {executingId === s.id ? (
+                      <span className="animate-pulse">Executing…</span>
+                    ) : (
+                      <>
+                        <Play className="w-3 h-3" />
+                        Execute
+                      </>
+                    )}
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
