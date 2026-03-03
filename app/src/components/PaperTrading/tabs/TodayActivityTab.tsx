@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Zap, Play, Clock } from 'lucide-react';
+import { Zap, Play, Clock, PlayCircle } from 'lucide-react';
 import { cn } from '../../../lib/utils';
 import type { AutoTradeEventRecord, PaperTrade, PendingStrategySignal } from '../../../lib/paperTradesApi';
 import { executeSignal } from '../../../lib/paperTradesApi';
@@ -14,6 +14,7 @@ export interface TodayActivityTabProps {
 
 export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], onExecuteSignal }: TodayActivityTabProps) {
   const [executingId, setExecutingId] = useState<string | null>(null);
+  const [executingAll, setExecutingAll] = useState(false);
 
   const handleExecuteSignal = async (signal: PendingStrategySignal) => {
     setExecutingId(signal.id);
@@ -27,6 +28,27 @@ export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], 
       }
     } finally {
       setExecutingId(null);
+    }
+  };
+
+  const handleExecuteAll = async () => {
+    if (todaySignalsForExecute.length === 0) return;
+    setExecutingAll(true);
+    let ok = 0;
+    let failed = 0;
+    for (const s of todaySignalsForExecute) {
+      const out = await executeSignal(s.id);
+      if (out.ok) {
+        ok += 1;
+        onExecuteSignal?.();
+      } else {
+        failed += 1;
+        console.error(`[Execute signal] ${s.ticker}:`, out.error);
+      }
+    }
+    setExecutingAll(false);
+    if (failed > 0) {
+      alert(`${ok} executed, ${failed} failed. Check console for details.`);
     }
   };
   const tradesByTicker = new Map<string, PaperTrade[]>();
@@ -49,11 +71,31 @@ export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], 
 
         {todaySignalsForExecute.length > 0 && (
           <div className="rounded-xl border border-[hsl(var(--border))] bg-white overflow-hidden">
-            <div className="px-4 py-2.5 border-b border-[hsl(var(--border))] bg-[hsl(var(--secondary))]">
-              <h3 className="text-sm font-semibold text-[hsl(var(--foreground))]">Execute Past Window</h3>
-              <p className="text-[10px] text-[hsl(var(--muted-foreground))] mt-0.5">
-                Today&apos;s signals that missed the execution window — execute manually
-              </p>
+            <div className="px-4 py-2.5 border-b border-[hsl(var(--border))] bg-[hsl(var(--secondary))] flex items-start justify-between gap-3">
+              <div>
+                <h3 className="text-sm font-semibold text-[hsl(var(--foreground))]">Execute Past Window</h3>
+                <p className="text-[10px] text-[hsl(var(--muted-foreground))] mt-0.5">
+                  Today&apos;s signals that missed the execution window — execute manually
+                </p>
+              </div>
+              <button
+                onClick={handleExecuteAll}
+                disabled={executingId !== null || executingAll}
+                className={cn(
+                  'flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border flex-shrink-0',
+                  'bg-emerald-600 border-emerald-700 text-white hover:bg-emerald-700',
+                  (executingId !== null || executingAll) && 'opacity-50 cursor-not-allowed'
+                )}
+              >
+                {executingAll ? (
+                  <span className="animate-pulse">Executing all…</span>
+                ) : (
+                  <>
+                    <PlayCircle className="w-3.5 h-3.5" />
+                    Execute All
+                  </>
+                )}
+              </button>
             </div>
             <div className="divide-y divide-[hsl(var(--border))]">
               {todaySignalsForExecute.map((s) => (
@@ -77,11 +119,11 @@ export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], 
                     )}
                     <button
                       onClick={() => handleExecuteSignal(s)}
-                      disabled={executingId !== null}
+                      disabled={executingId !== null || executingAll}
                       className={cn(
                         'flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg border transition-all',
                         'bg-emerald-50 border-emerald-200 text-emerald-700 hover:bg-emerald-100',
-                        executingId !== null && 'opacity-50 cursor-not-allowed'
+                        (executingId !== null || executingAll) && 'opacity-50 cursor-not-allowed'
                       )}
                     >
                       {executingId === s.id ? (
@@ -220,11 +262,31 @@ export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], 
 
       {todaySignalsForExecute.length > 0 && (
         <div className="rounded-xl border border-[hsl(var(--border))] bg-white overflow-hidden">
-          <div className="px-4 py-2.5 border-b border-[hsl(var(--border))] bg-[hsl(var(--secondary))]">
-            <h3 className="text-sm font-semibold text-[hsl(var(--foreground))]">Execute Past Window</h3>
-            <p className="text-[10px] text-[hsl(var(--muted-foreground))] mt-0.5">
-              Today&apos;s signals that missed the execution window — execute manually
-            </p>
+          <div className="px-4 py-2.5 border-b border-[hsl(var(--border))] bg-[hsl(var(--secondary))] flex items-start justify-between gap-3">
+            <div>
+              <h3 className="text-sm font-semibold text-[hsl(var(--foreground))]">Execute Past Window</h3>
+              <p className="text-[10px] text-[hsl(var(--muted-foreground))] mt-0.5">
+                Today&apos;s signals that missed the execution window — execute manually
+              </p>
+            </div>
+            <button
+              onClick={handleExecuteAll}
+              disabled={executingId !== null || executingAll}
+              className={cn(
+                'flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border flex-shrink-0',
+                'bg-emerald-600 border-emerald-700 text-white hover:bg-emerald-700',
+                (executingId !== null || executingAll) && 'opacity-50 cursor-not-allowed'
+              )}
+            >
+              {executingAll ? (
+                <span className="animate-pulse">Executing all…</span>
+              ) : (
+                <>
+                  <PlayCircle className="w-3.5 h-3.5" />
+                  Execute All
+                </>
+              )}
+            </button>
           </div>
           <div className="divide-y divide-[hsl(var(--border))]">
             {todaySignalsForExecute.map((s) => (
@@ -248,11 +310,11 @@ export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], 
                   )}
                   <button
                     onClick={() => handleExecuteSignal(s)}
-                    disabled={executingId !== null}
+                    disabled={executingId !== null || executingAll}
                     className={cn(
                       'flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg border transition-all',
                       'bg-emerald-50 border-emerald-200 text-emerald-700 hover:bg-emerald-100',
-                      executingId !== null && 'opacity-50 cursor-not-allowed'
+                      (executingId !== null || executingAll) && 'opacity-50 cursor-not-allowed'
                     )}
                   >
                     {executingId === s.id ? (
