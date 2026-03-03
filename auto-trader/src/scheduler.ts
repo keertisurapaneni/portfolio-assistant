@@ -47,6 +47,7 @@ import {
   createExternalStrategySignal,
   findExternalStrategySignal,
   getDueExternalStrategySignals,
+  getExternalStrategySignalById,
   updateExternalStrategySignal,
   savePortfolioSnapshot,
   getPerformance,
@@ -155,6 +156,7 @@ const REALTIME_DEBOUNCE_MS = 3000; // coalesce day_trades + swing_trades writes
 let _running = false;
 let _lastRun: Date | null = null;
 let _lastRunResult: string = 'never';
+let _lastCycleSummary: string[] = [];
 let _runCount = 0;
 let _lastSuggestedFindsDate = '';
 let _lastSnapshotDate = '';
@@ -259,6 +261,7 @@ export function getSchedulerStatus() {
     executing: _running,
     lastRun: _lastRun?.toISOString() ?? null,
     lastResult: _lastRunResult,
+    lastCycleSummary: _lastCycleSummary,
     runCount: _runCount,
     ibConnected: isConnected(),
     supabaseConfigured: isConfigured(),
@@ -276,10 +279,38 @@ export async function triggerManualRun(): Promise<string> {
   }
 }
 
+/** Force-execute an external strategy signal by ID (bypasses execution window). */
+export async function forceExecuteSignal(signalId: string): Promise<{ ok: boolean; result?: string; error?: string }> {
+  if (_running) return { ok: false, error: 'Scheduler cycle in progress' };
+  if (!isConnected()) return { ok: false, error: 'IB Gateway not connected' };
+  const signal = await getExternalStrategySignalById(signalId);
+  if (!signal) return { ok: false, error: 'Signal not found' };
+  if (signal.status !== 'PENDING' && signal.status !== 'EXPIRED') {
+    return { ok: false, error: `Signal status is ${signal.status} — cannot execute` };
+  }
+  const config = await loadConfig();
+  if (!config.enabled) return { ok: false, error: 'Auto-trading disabled' };
+  if (!config.accountId) return { ok: false, error: 'No IB account configured' };
+  const positions = await getEnrichedPositions();
+  // Re-open if expired so executeExternalStrategySignal can proceed
+  if (signal.status === 'EXPIRED') {
+    await updateExternalStrategySignal(signalId, { status: 'PENDING', failure_reason: null });
+  }
+  const result = await executeExternalStrategySignal(signal, config, positions);
+  return { ok: true, result };
+}
+
 // ── Helpers ──────────────────────────────────────────────
 
 function log(msg: string): void {
   console.log(`[Scheduler] ${msg}`);
+}
+
+/** Log and append to lastCycleSummary (kept for status API, max 30 lines) */
+function summaryLog(msg: string): void {
+  log(msg);
+  _lastCycleSummary.push(msg);
+  if (_lastCycleSummary.length > 30) _lastCycleSummary.shift();
 }
 
 async function runTranscriptIngest(scriptPath: string): Promise<void> {
@@ -1689,6 +1720,7 @@ async function executeExternalStrategySignal(
   const allocationIndex = Math.max(1, Math.floor(options?.allocationIndex ?? 1));
   const allowDuplicateTicker = options?.allowDuplicateTicker === true;
   const skipExternalSignal = async (failureReason: string, skipReason: string): Promise<'skipped'> => {
+    summaryLog(`${ticker}: skipped — ${failureReason}`);
     await updateExternalStrategySignal(signal.id, {
       status: 'SKIPPED',
       failure_reason: failureReason,
@@ -1799,14 +1831,17 @@ async function executeExternalStrategySignal(
 
   const quote = await getQuotePrice(ticker);
   if (effectiveEntryPrice != null && quote == null) {
+    summaryLog(`${ticker}: waiting — no quote`);
     return 'waiting';
   }
 
   if (effectiveEntryPrice != null && quote != null) {
     if (signal.signal === 'BUY' && quote < effectiveEntryPrice) {
+      summaryLog(`${ticker}: waiting — price $${quote.toFixed(2)} < entry $${effectiveEntryPrice.toFixed(2)}`);
       return 'waiting';
     }
     if (signal.signal === 'SELL' && quote > effectiveEntryPrice) {
+      summaryLog(`${ticker}: waiting — price $${quote.toFixed(2)} > entry $${effectiveEntryPrice.toFixed(2)}`);
       return 'waiting';
     }
   }
@@ -1818,6 +1853,7 @@ async function executeExternalStrategySignal(
     // Low volume = thin conviction, wide spreads, fake breakouts
     const volRatio = await fetchIntradayVolumeRatio(ticker);
     if (volRatio !== null && volRatio < 1.3) {
+      summaryLog(`${ticker}: waiting — volume ${volRatio.toFixed(2)}x (need ≥1.3x)`);
       log(`${ticker}: volume pace ${volRatio.toFixed(2)}x avg — waiting for volume confirmation (need ≥1.3x)`);
       return 'waiting';
     }
@@ -1832,10 +1868,12 @@ async function executeExternalStrategySignal(
     if (spyChangePct !== null) {
       const MARKET_MISALIGN_PCT = 0.4;
       if (signal.signal === 'BUY' && spyChangePct < -MARKET_MISALIGN_PCT) {
+        summaryLog(`${ticker}: waiting — SPY ${spyChangePct}% (market vs BUY)`);
         log(`${ticker}: SPY is ${spyChangePct}% — market working against BUY — waiting for alignment`);
         return 'waiting';
       }
       if (signal.signal === 'SELL' && spyChangePct > MARKET_MISALIGN_PCT) {
+        summaryLog(`${ticker}: waiting — SPY +${spyChangePct}% (market vs SELL)`);
         log(`${ticker}: SPY is +${spyChangePct}% — market working against SELL — waiting for alignment`);
         return 'waiting';
       }
@@ -2060,7 +2098,11 @@ async function processExternalStrategySignals(
   positions: EnrichedPosition[],
 ): Promise<void> {
   const pending = await getDueExternalStrategySignals();
-  if (pending.length === 0) return;
+  if (pending.length === 0) {
+    summaryLog('No pending external signals for today');
+    return;
+  }
+  summaryLog(`Processing ${pending.length} pending external signal(s)`);
 
   const executionOptionsBySignalId = new Map<string, {
     allocationSplit: number;
@@ -2180,7 +2222,9 @@ async function processExternalStrategySignals(
   }
 
   if (executed + skipped + failed + expired + waiting > 0) {
+    const extMsg = `External signals — executed:${executed} waiting:${waiting} skipped:${skipped} failed:${failed} expired:${expired}`;
     log(`External signals processed — executed:${executed} waiting:${waiting} skipped:${skipped} failed:${failed} expired:${expired}`);
+    summaryLog(extMsg);
   }
 }
 
@@ -2835,6 +2879,7 @@ async function runSchedulerCycle(): Promise<void> {
 
   _running = true;
   _runCount++;
+  _lastCycleSummary = [];
   const startTime = Date.now();
 
   try {
@@ -2915,7 +2960,9 @@ async function runSchedulerCycle(): Promise<void> {
       allIdeas = [...(data.dayTrades ?? []), ...(data.swingTrades ?? [])];
       scannerIdeasLoaded = true;
     } catch (err) {
-      log(`Scanner fetch failed: ${err instanceof Error ? err.message : 'unknown'}`);
+      const msg = `Scanner fetch failed: ${err instanceof Error ? err.message : 'unknown'}`;
+      log(msg);
+      summaryLog(msg);
     }
 
     // 7. Auto-queue daily ticker/trigger signals from tracked strategy videos
@@ -2952,7 +2999,9 @@ async function runSchedulerCycle(): Promise<void> {
         log(`Max positions reached (${config.maxPositions}) — skipping scanner ideas`);
       }
     } else if (scannerIdeasLoaded) {
-      log('No new scanner ideas');
+      const msg = allIdeas.length === 0 ? 'No scanner ideas' : `Scanner: ${allIdeas.length} ideas (all filtered or already processed)`;
+      log(msg);
+      summaryLog(msg);
     }
 
     // 11. Daily rehydration (after 4:15 PM ET)

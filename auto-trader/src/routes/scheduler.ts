@@ -11,6 +11,7 @@ import { Router } from 'express';
 import {
   getSchedulerStatus,
   triggerManualRun,
+  forceExecuteSignal,
   startScheduler,
   stopScheduler,
 } from '../scheduler.js';
@@ -24,6 +25,20 @@ router.get('/scheduler/status', (_req, res) => {
 router.post('/scheduler/run', async (_req, res) => {
   const result = await triggerManualRun();
   res.json({ result });
+});
+
+router.post('/scheduler/execute-signal', async (req, res) => {
+  const { signal_id } = req.body ?? {};
+  if (!signal_id || typeof signal_id !== 'string') {
+    return res.status(400).json({ ok: false, error: 'Missing signal_id' });
+  }
+  try {
+    const out = await forceExecuteSignal(signal_id);
+    if (!out.ok) return res.status(400).json(out);
+    res.json(out);
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err instanceof Error ? err.message : 'Unknown error' });
+  }
 });
 
 router.post('/scheduler/start', (_req, res) => {

@@ -457,6 +457,17 @@ export async function findExternalStrategySignal(params: {
   return ((data ?? [])[0] as ExternalStrategySignal | undefined) ?? null;
 }
 
+export async function getExternalStrategySignalById(id: string): Promise<ExternalStrategySignal | null> {
+  const sb = getSupabase();
+  const { data, error } = await sb
+    .from('external_strategy_signals')
+    .select('*')
+    .eq('id', id)
+    .maybeSingle();
+  if (error) throw new Error(`getExternalStrategySignalById: ${error.message}`);
+  return data as ExternalStrategySignal | null;
+}
+
 export async function getDueExternalStrategySignals(
   now = new Date()
 ): Promise<ExternalStrategySignal[]> {
