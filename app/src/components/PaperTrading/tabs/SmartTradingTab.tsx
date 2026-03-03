@@ -23,6 +23,7 @@ export interface SmartTradingTabProps {
   totalDeployed: number;
   events: AutoTradeEventRecord[];
   positions: IBPosition[];
+  lastCycleSummary?: string[];
 }
 
 function FeatureCard({ label, enabled, detail }: { label: string; enabled: boolean; detail?: string }) {
@@ -43,7 +44,7 @@ function FeatureCard({ label, enabled, detail }: { label: string; enabled: boole
   );
 }
 
-export function SmartTradingTab({ config, regime, kellyMultiplier, totalDeployed, events, positions }: SmartTradingTabProps) {
+export function SmartTradingTab({ config, regime, kellyMultiplier, totalDeployed, events, positions, lastCycleSummary = [] }: SmartTradingTabProps) {
   const smartEvents = events.filter(e =>
     e.source === 'dip_buy' || e.source === 'profit_take' || e.source === 'loss_cut' ||
     (e.skip_reason && (
@@ -263,6 +264,21 @@ export function SmartTradingTab({ config, regime, kellyMultiplier, totalDeployed
                 </div>
               );
             })}
+          </div>
+        </div>
+      )}
+
+      {lastCycleSummary.length > 0 && (
+        <div className="rounded-xl border border-[hsl(var(--border))] bg-white overflow-hidden">
+          <div className="px-4 py-2.5 border-b border-[hsl(var(--border))] bg-[hsl(var(--secondary))]">
+            <h3 className="text-sm font-semibold text-[hsl(var(--foreground))]">Last Cycle Log</h3>
+          </div>
+          <div className="divide-y divide-[hsl(var(--border))] max-h-48 overflow-y-auto">
+            {lastCycleSummary.map((line, i) => (
+              <div key={i} className="px-4 py-1.5 text-xs font-mono text-[hsl(var(--muted-foreground))]">
+                {line}
+              </div>
+            ))}
           </div>
         </div>
       )}

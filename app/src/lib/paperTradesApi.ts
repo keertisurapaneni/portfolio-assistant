@@ -1339,6 +1339,33 @@ export async function getPendingStrategySignals(limit = 200): Promise<PendingStr
   return (data ?? []) as PendingStrategySignal[];
 }
 
+/** Today's external strategy signals (PENDING or EXPIRED) for manual execution past the window. */
+export async function getTodaySignalsForManualExecute(): Promise<PendingStrategySignal[]> {
+  const todayET = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' }); // YYYY-MM-DD
+  const { data, error } = await supabase
+    .from('external_strategy_signals')
+    .select('id,ticker,signal,mode,source_name,source_url,strategy_video_id,strategy_video_heading,entry_price,execute_on_date,status,created_at')
+    .eq('execute_on_date', todayET)
+    .in('status', ['PENDING', 'EXPIRED'])
+    .order('created_at', { ascending: false })
+    .limit(50);
+
+  if (error) return [];
+  return (data ?? []) as PendingStrategySignal[];
+}
+
+/** Force-execute an external strategy signal via auto-trader (bypasses execution window). */
+export async function executeSignal(signalId: string): Promise<{ ok: boolean; result?: string; error?: string }> {
+  const res = await fetch('http://localhost:3001/api/scheduler/execute-signal', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ signal_id: signalId }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) return { ok: false, error: data.error ?? `HTTP ${res.status}` };
+  return data;
+}
+
 /**
  * Mark all PENDING signals that can no longer be traded as EXPIRED:
  *   1. Signals whose expires_at window has passed

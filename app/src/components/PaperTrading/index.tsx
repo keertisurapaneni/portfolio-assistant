@@ -58,6 +58,7 @@ import {
   recalculatePerformanceByStrategyVideo,
   getStrategySignalStatusSummaries,
   getPendingStrategySignals,
+  getTodaySignalsForManualExecute,
   getAutoTradeEvents,
   getTodaysExecutedEvents,
   getDayTradeValidationReport,
@@ -96,9 +97,11 @@ export function PaperTrading() {
   const [videoPerf, setVideoPerf] = useState<StrategyVideoPerformance[]>([]);
   const [strategyStatuses, setStrategyStatuses] = useState<StrategySignalStatusSummary[]>([]);
   const [pendingSignals, setPendingSignals] = useState<PendingStrategySignal[]>([]);
+  const [todaySignalsForExecute, setTodaySignalsForExecute] = useState<PendingStrategySignal[]>([]);
   const [validationReport, setValidationReport] = useState<DayTradeValidationReport | null>(null);
   const [swingValidationReport, setSwingValidationReport] = useState<SwingTradeValidationReport | null>(null);
   const [totalDeployed, setTotalDeployed] = useState(0);
+  const [lastCycleSummary, setLastCycleSummary] = useState<string[]>([]);
   const [marketRegime, setMarketRegime] = useState<MarketRegime | null>(null);
   const [kellyMultiplier, setKellyMultiplier] = useState<number>(1.0);
   const [tab, setTab] = useState<Tab>('portfolio');
@@ -108,7 +111,7 @@ export function PaperTrading() {
   const loadData = useCallback(async () => {
     setLoading(true);
     try {
-      const [all, perf, savedEvents, todayEvents, catPerf, srcPerf, vidPerf, signalStatuses, pending, deployed, regime, kelly, validation, swingValidation] = await Promise.all([
+      const [all, perf, savedEvents, todayEvents, catPerf, srcPerf, vidPerf, signalStatuses, pending, todayForExecute, deployed, regime, kelly, validation, swingValidation] = await Promise.all([
         getAllTrades(50),
         getPerformance(),
         getAutoTradeEvents(100),
@@ -118,6 +121,7 @@ export function PaperTrading() {
         recalculatePerformanceByStrategyVideo(),
         getStrategySignalStatusSummaries(),
         getPendingStrategySignals(300),
+        getTodaySignalsForManualExecute(),
         getTotalDeployed(),
         getMarketRegime(config),
         calculateKellyMultiplier(config),
@@ -133,11 +137,17 @@ export function PaperTrading() {
       setVideoPerf(vidPerf);
       setStrategyStatuses(signalStatuses);
       setPendingSignals(pending);
+      setTodaySignalsForExecute(todayForExecute);
       setTotalDeployed(deployed);
       setMarketRegime(regime);
       setKellyMultiplier(kelly);
       setValidationReport(validation);
       setSwingValidationReport(swingValidation);
+      // Fetch scheduler status (last cycle summary) from auto-trader
+      fetch('http://localhost:3001/api/scheduler/status')
+        .then((r) => r.json())
+        .then((d) => setLastCycleSummary(d.lastCycleSummary ?? []))
+        .catch(() => setLastCycleSummary([]));
     } catch (err) {
       console.error('Failed to load paper trading data:', err);
     } finally {
@@ -431,7 +441,12 @@ export function PaperTrading() {
             />
           )}
           {tab === 'today' && (
-            <TodayActivityTab events={dedupedToday} trades={allTrades} />
+            <TodayActivityTab
+              events={dedupedToday}
+              trades={allTrades}
+              todaySignalsForExecute={todaySignalsForExecute}
+              onExecuteSignal={loadData}
+            />
           )}
           {tab === 'smart' && (
             <SmartTradingTab
@@ -441,6 +456,7 @@ export function PaperTrading() {
               totalDeployed={totalDeployed}
               events={persistedEvents}
               positions={ibPositions}
+              lastCycleSummary={lastCycleSummary}
             />
           )}
           {tab === 'strategies' && (
