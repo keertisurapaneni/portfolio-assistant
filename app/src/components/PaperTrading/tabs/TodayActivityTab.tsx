@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Zap, Play, Clock, PlayCircle } from 'lucide-react';
+import { Zap, Play, Clock, PlayCircle, AlertCircle } from 'lucide-react';
 import { cn } from '../../../lib/utils';
 import type { AutoTradeEventRecord, PaperTrade, PendingStrategySignal } from '../../../lib/paperTradesApi';
 import { executeSignal } from '../../../lib/paperTradesApi';
@@ -21,11 +21,19 @@ export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], 
     try {
       const out = await executeSignal(signal.id);
       if (out.ok) {
+        const executed = (out as { executed?: boolean; reason?: string }).executed;
+        const reason = (out as { reason?: string }).reason;
         onExecuteSignal?.();
+        if (!executed && reason) {
+          alert(`${signal.ticker} skipped: ${reason}`);
+        }
       } else {
         console.error('[Execute signal]', out.error);
         alert(out.error ?? 'Execution failed');
       }
+    } catch (err) {
+      console.error('[Execute signal]', err);
+      alert(err instanceof Error ? err.message : 'Execution failed — is auto-trader running on localhost:3001?');
     } finally {
       setExecutingId(null);
     }
@@ -34,21 +42,33 @@ export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], 
   const handleExecuteAll = async () => {
     if (todaySignalsForExecute.length === 0) return;
     setExecutingAll(true);
-    let ok = 0;
-    let failed = 0;
+    let executed = 0;
+    let skipped = 0;
+    const skipReasons: string[] = [];
     for (const s of todaySignalsForExecute) {
       const out = await executeSignal(s.id);
       if (out.ok) {
-        ok += 1;
-        onExecuteSignal?.();
+        const didExec = (out as { executed?: boolean }).executed;
+        const reason = (out as { reason?: string }).reason;
+        if (didExec) {
+          executed += 1;
+          onExecuteSignal?.();
+        } else {
+          skipped += 1;
+          skipReasons.push(`${s.ticker}: ${reason ?? 'unknown'}`);
+        }
       } else {
-        failed += 1;
+        skipped += 1;
+        skipReasons.push(`${s.ticker}: ${out.error ?? 'failed'}`);
         console.error(`[Execute signal] ${s.ticker}:`, out.error);
       }
     }
     setExecutingAll(false);
-    if (failed > 0) {
-      alert(`${ok} executed, ${failed} failed. Check console for details.`);
+    onExecuteSignal?.(); // refresh to update list
+    if (skipped > 0) {
+      alert(executed > 0
+        ? `${executed} executed, ${skipped} skipped:\n${skipReasons.slice(0, 5).join('\n')}${skipReasons.length > 5 ? '\n...' : ''}`
+        : `All skipped:\n${skipReasons.slice(0, 5).join('\n')}${skipReasons.length > 5 ? '\n...' : ''}`);
     }
   };
   const tradesByTicker = new Map<string, PaperTrade[]>();
@@ -75,7 +95,7 @@ export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], 
               <div>
                 <h3 className="text-sm font-semibold text-[hsl(var(--foreground))]">Execute Past Window</h3>
                 <p className="text-[10px] text-[hsl(var(--muted-foreground))] mt-0.5">
-                  Today&apos;s signals that missed the execution window — execute manually
+                  Signals that missed the window or were skipped (no trades today) — execute or retry manually
                 </p>
               </div>
               <button
@@ -115,6 +135,12 @@ export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], 
                       <span className="flex items-center gap-1 text-[10px] text-amber-600">
                         <Clock className="w-3 h-3" />
                         Expired
+                      </span>
+                    )}
+                    {s.status === 'SKIPPED' && (
+                      <span className="flex items-center gap-1 text-[10px] text-amber-600">
+                        <AlertCircle className="w-3 h-3" />
+                        Skipped
                       </span>
                     )}
                     <button
@@ -306,6 +332,12 @@ export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], 
                     <span className="flex items-center gap-1 text-[10px] text-amber-600">
                       <Clock className="w-3 h-3" />
                       Expired
+                    </span>
+                  )}
+                  {s.status === 'SKIPPED' && (
+                    <span className="flex items-center gap-1 text-[10px] text-amber-600">
+                      <AlertCircle className="w-3 h-3" />
+                      Skipped
                     </span>
                   )}
                   <button

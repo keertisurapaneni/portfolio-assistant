@@ -329,13 +329,20 @@ export async function getLongTermExposureByTag(): Promise<{
   return { totalGoldMineExposure, totalCompounderExposure, longTermTotal };
 }
 
-export async function hasActiveTrade(ticker: string): Promise<boolean> {
+export async function hasActiveTrade(
+  ticker: string,
+  opts?: { excludeMode?: 'LONG_TERM' }
+): Promise<boolean> {
   const sb = getSupabase();
-  const { count } = await sb
+  let query = sb
     .from('paper_trades')
     .select('id', { count: 'exact', head: true })
     .eq('ticker', ticker)
     .in('status', ['PENDING', 'SUBMITTED', 'FILLED', 'PARTIAL']);
+  if (opts?.excludeMode) {
+    query = query.neq('mode', opts.excludeMode);
+  }
+  const { count } = await query;
   return (count ?? 0) > 0;
 }
 
