@@ -280,24 +280,36 @@ export async function triggerManualRun(): Promise<string> {
 }
 
 /** Force-execute an external strategy signal by ID (bypasses execution window). */
-export async function forceExecuteSignal(signalId: string): Promise<{ ok: boolean; result?: string; error?: string }> {
+export async function forceExecuteSignal(signalId: string): Promise<{
+  ok: boolean;
+  result?: string;
+  error?: string;
+  executed?: boolean;
+  reason?: string;
+}> {
   if (_running) return { ok: false, error: 'Scheduler cycle in progress' };
   if (!isConnected()) return { ok: false, error: 'IB Gateway not connected' };
   const signal = await getExternalStrategySignalById(signalId);
   if (!signal) return { ok: false, error: 'Signal not found' };
-  if (signal.status !== 'PENDING' && signal.status !== 'EXPIRED') {
+  if (signal.status !== 'PENDING' && signal.status !== 'EXPIRED' && signal.status !== 'SKIPPED') {
     return { ok: false, error: `Signal status is ${signal.status} — cannot execute` };
   }
   const config = await loadConfig();
   if (!config.enabled) return { ok: false, error: 'Auto-trading disabled' };
   if (!config.accountId) return { ok: false, error: 'No IB account configured' };
   const positions = await getEnrichedPositions();
-  // Re-open if expired so executeExternalStrategySignal can proceed
-  if (signal.status === 'EXPIRED') {
+  // Re-open expired or skipped so executeExternalStrategySignal can retry
+  if (signal.status === 'EXPIRED' || signal.status === 'SKIPPED') {
     await updateExternalStrategySignal(signalId, { status: 'PENDING', failure_reason: null });
   }
   const result = await executeExternalStrategySignal(signal, config, positions);
-  return { ok: true, result };
+  const updated = result !== 'executed' ? await getExternalStrategySignalById(signalId) : null;
+  return {
+    ok: true,
+    result,
+    executed: result === 'executed',
+    reason: updated?.failure_reason ?? undefined,
+  };
 }
 
 // ── Helpers ──────────────────────────────────────────────
@@ -1780,7 +1792,7 @@ async function executeExternalStrategySignal(
     if (hasConflict) {
       return skipExternalSignal('Duplicate active trade for ticker', 'duplicate_active_trade_conflict');
     }
-  } else if (await hasActiveTrade(ticker)) {
+  } else if (await hasActiveTrade(ticker, signal.mode !== 'LONG_TERM' ? { excludeMode: 'LONG_TERM' } : undefined)) {
     return skipExternalSignal('Duplicate active trade for ticker', 'duplicate_active_trade');
   }
 
