@@ -302,13 +302,15 @@ export async function forceExecuteSignal(signalId: string): Promise<{
   if (signal.status === 'EXPIRED' || signal.status === 'SKIPPED') {
     await updateExternalStrategySignal(signalId, { status: 'PENDING', failure_reason: null });
   }
-  const result = await executeExternalStrategySignal(signal, config, positions);
+  const result = await executeExternalStrategySignal(signal, config, positions, {
+    skipConfirmationGates: true,
+  });
   const updated = result !== 'executed' ? await getExternalStrategySignalById(signalId) : null;
   return {
     ok: true,
     result,
     executed: result === 'executed',
-    reason: updated?.failure_reason ?? undefined,
+    reason: updated?.failure_reason ?? (result === 'waiting' ? 'Waiting for confirmation (price/quote issue)' : undefined),
   };
 }
 
@@ -1725,12 +1727,15 @@ async function executeExternalStrategySignal(
     allocationSplit?: number;
     allocationIndex?: number;
     allowDuplicateTicker?: boolean;
+    /** Skip volume and SPY alignment gates — for manual force-execute */
+    skipConfirmationGates?: boolean;
   },
 ): Promise<'executed' | 'skipped' | 'failed' | 'waiting'> {
   const ticker = signal.ticker.toUpperCase();
   const allocationSplit = Math.max(1, Math.floor(options?.allocationSplit ?? 1));
   const allocationIndex = Math.max(1, Math.floor(options?.allocationIndex ?? 1));
   const allowDuplicateTicker = options?.allowDuplicateTicker === true;
+  const skipConfirmationGates = options?.skipConfirmationGates === true;
   const skipExternalSignal = async (failureReason: string, skipReason: string): Promise<'skipped'> => {
     summaryLog(`${ticker}: skipped — ${failureReason}`);
     await updateExternalStrategySignal(signal.id, {
@@ -1859,10 +1864,10 @@ async function executeExternalStrategySignal(
   }
 
   // Confirmation gates for day trades — checks run in order, each can return 'waiting'
+  // Skipped when skipConfirmationGates=true (manual force-execute)
   let spyChangePct: number | null = null;
-  if (signal.mode === 'DAY_TRADE') {
+  if (signal.mode === 'DAY_TRADE' && !skipConfirmationGates) {
     // Gate 1: Volume — require above-average intraday pace (30%+ above avg)
-    // Low volume = thin conviction, wide spreads, fake breakouts
     const volRatio = await fetchIntradayVolumeRatio(ticker);
     if (volRatio !== null && volRatio < 1.3) {
       summaryLog(`${ticker}: waiting — volume ${volRatio.toFixed(2)}x (need ≥1.3x)`);
@@ -1874,8 +1879,6 @@ async function executeExternalStrategySignal(
     }
 
     // Gate 2: SPY/market alignment — don't fight the tape
-    // BUY into a falling market or SHORT into a rising market = low-probability setup
-    // Threshold: SPY down >0.4% (for BUY) or up >0.4% (for SELL) blocks the trade
     spyChangePct = await fetchSpyChangePct();
     if (spyChangePct !== null) {
       const MARKET_MISALIGN_PCT = 0.4;
@@ -1891,6 +1894,9 @@ async function executeExternalStrategySignal(
       }
       log(`${ticker}: SPY ${spyChangePct >= 0 ? '+' : ''}${spyChangePct}% — market aligned`);
     }
+  } else if (signal.mode === 'DAY_TRADE' && skipConfirmationGates) {
+    spyChangePct = await fetchSpyChangePct().catch(() => null);
+    log(`${ticker}: manual execute — skipping volume/SPY gates (SPY: ${spyChangePct != null ? `${spyChangePct >= 0 ? '+' : ''}${spyChangePct}%` : 'n/a'})`);
   }
 
   const referencePrice = quote ?? effectiveEntryPrice ?? null;
