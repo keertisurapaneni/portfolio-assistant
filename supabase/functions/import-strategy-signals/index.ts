@@ -38,17 +38,31 @@ interface ExecutionWindow {
 
 /** Convert "HH:MM" ET string on a given YYYY-MM-DD into a UTC ISO timestamp */
 function toUtcTimestamp(date: string, timeEt: string): string {
-  // ET is UTC-5 (EST) or UTC-4 (EDT). Use -5 as conservative (market hours are EST/EDT).
-  // Proper approach: treat as America/New_York. Approximate with -5 offset.
+  // Use Intl to correctly determine the UTC offset for America/New_York on the given date.
+  // This handles DST transitions precisely (e.g. DST starts second Sunday of March).
   const [hh, mm] = timeEt.split(':').map(Number);
-  // ET offset: -4 during daylight saving (Mar-Nov), -5 otherwise
-  // Rough DST detection: month between March and November
-  const month = parseInt(date.split('-')[1], 10);
-  const etOffsetHours = month >= 3 && month <= 11 ? 4 : 5;
-  const utcH = (hh ?? 0) + etOffsetHours;
-  const paddedH = String(utcH).padStart(2, '0');
-  const paddedM = String(mm ?? 0).padStart(2, '0');
-  return `${date}T${paddedH}:${paddedM}:00Z`;
+  const localIso = `${date}T${String(hh ?? 0).padStart(2, '0')}:${String(mm ?? 0).padStart(2, '0')}:00`;
+  // Get the UTC offset for America/New_York on this date by parsing a formatted string
+  const probe = new Date(`${date}T12:00:00`);
+  const etFormatter = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    hour: 'numeric',
+    minute: 'numeric',
+    hour12: false,
+  });
+  const utcFormatter = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'UTC',
+    hour: 'numeric',
+    minute: 'numeric',
+    hour12: false,
+  });
+  const etH = parseInt(etFormatter.formatToParts(probe).find(p => p.type === 'hour')?.value ?? '12');
+  const utcH = parseInt(utcFormatter.formatToParts(probe).find(p => p.type === 'hour')?.value ?? '12');
+  const offsetHours = utcH - etH; // e.g. 5 (EST) or 4 (EDT)
+  // Apply offset to the requested time
+  const resultDate = new Date(`${localIso}Z`);
+  resultDate.setUTCHours(resultDate.getUTCHours() + offsetHours);
+  return resultDate.toISOString().replace('.000Z', 'Z');
 }
 
 Deno.serve(async (req) => {
