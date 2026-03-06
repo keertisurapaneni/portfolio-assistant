@@ -46,6 +46,7 @@ Rules:
 - generic_strategy: general rules, patterns, SMC concepts (no specific levels). extracted_signals = [].
 - source_name: from intro ("Hey it's Somesh from Kay Capitals"), outro, or channel branding. Humanize (e.g. "Kay Capitals" → "Somesh | Day Trader | Investor" if known).
 - source_handle: Instagram handle if mentioned. Infer from source_name (e.g. "Casper Clipping" → "casperclipping").
+- ticker: MUST be the exact official US exchange ticker symbol. Double-check common names before writing: Meta Platforms = META (not MERA), Alphabet = GOOGL/GOOG, Amazon = AMZN, Microsoft = MSFT, Apple = AAPL, Nvidia = NVDA, Tesla = TSLA, Palantir = PLTR, Coinbase = COIN, MicroStrategy = MSTR. If uncertain, omit the signal rather than guess.
 - trade_date: only for daily_signal when date is explicit (e.g. "for Thursday", "today's levels").
 - execution_window_et: only if time window is specified (e.g. "9:30-9:35 levels", "first candle rule").
 - setup_type: how the influencer intends execution:
