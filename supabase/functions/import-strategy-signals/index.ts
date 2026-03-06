@@ -211,11 +211,35 @@ Deno.serve(async (req) => {
     }
   }
 
+  const finnhubApiKey = Deno.env.get('FINNHUB_API_KEY');
+
+  /** Returns true if the ticker exists on Finnhub (has a non-empty company name). */
+  async function isValidTicker(ticker: string): Promise<boolean> {
+    if (!finnhubApiKey) return true; // can't validate without key — let it through
+    try {
+      const res = await fetch(
+        `https://finnhub.io/api/v1/stock/profile2?symbol=${encodeURIComponent(ticker)}&token=${finnhubApiKey}`,
+        { signal: AbortSignal.timeout(5_000) }
+      );
+      if (!res.ok) return true; // don't block on Finnhub errors
+      const data = await res.json() as Record<string, unknown>;
+      return !!data?.name; // empty object {} = ticker not found
+    } catch {
+      return true; // don't block on network errors
+    }
+  }
+
   const toInsert: Record<string, unknown>[] = [];
 
   for (const sig of signals) {
     const ticker = (sig.ticker ?? '').trim().toUpperCase();
     if (!ticker) continue;
+
+    const valid = await isValidTicker(ticker);
+    if (!valid) {
+      console.warn(`[import-strategy-signals] Skipping invalid ticker "${ticker}" — not found in Finnhub`);
+      continue;
+    }
 
     const stopLoss = sig.stopLoss ?? null;
     const noteText = sig.notes ?? null;

@@ -5,6 +5,27 @@ import type { AutoTradeEventRecord, PaperTrade, PendingStrategySignal } from '..
 import { executeSignal } from '../../../lib/paperTradesApi';
 import { fmtUsd } from '../utils';
 
+/** Convert raw failure_reason codes into human-readable labels. */
+function formatSkipReason(reason: string | null | undefined): string | null {
+  if (!reason) return null;
+  const r = reason.toLowerCase();
+  if (r.includes('strategy marked x') || r.includes('consecutive losses')) return `Strategy paused — ${reason.match(/\d+/)?.[0] ?? '3'}+ consecutive losing days`;
+  if (r.includes('duplicate active trade')) return 'Already have an active trade for this ticker';
+  if (r.includes('volume') || r.includes('vol')) return 'Volume too low — not enough intraday activity';
+  if (r.includes('spy') && (r.includes('market') || r.includes('align'))) return 'SPY market direction against this trade';
+  if (r.includes('direction mismatch') || r.includes('fa_direction')) return 'Full analysis recommends opposite direction';
+  if (r.includes('hold') || r.includes('fa_hold')) return 'Full analysis says HOLD — no clear edge';
+  if (r.includes('confidence') || r.includes('fa_conf')) return `FA confidence too low (${reason.match(/[\d.]+/g)?.slice(-2).join(' vs ') ?? ''})`;
+  if (r.includes('risk/reward') || r.includes('risk_reward') || r.includes('rr_')) return `Risk/reward too low — below 1:1.8 minimum`;
+  if (r.includes('pre-trade') || r.includes('pre_trade')) return 'Risk check blocked: drawdown / allocation / sector / earnings';
+  if (r.includes('drawdown')) return 'Portfolio drawdown limit reached';
+  if (r.includes('allocation') || r.includes('cap')) return 'Allocation cap reached';
+  if (r.includes('price') && r.includes('far')) return 'Price moved too far from entry level';
+  if (r.includes('sector')) return 'Sector concentration limit reached';
+  if (r.includes('earnings')) return 'Earnings blackout period';
+  return reason;
+}
+
 export interface TodayActivityTabProps {
   events: AutoTradeEventRecord[];
   trades: PaperTrade[];
@@ -128,6 +149,11 @@ export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], 
                     <span className="ml-1.5 text-[10px] text-[hsl(var(--muted-foreground))]">{s.mode.replace('_', ' ')}</span>
                     {s.source_name && (
                       <p className="text-[10px] text-[hsl(var(--muted-foreground))] truncate mt-0.5">{s.source_name}</p>
+                    )}
+                    {s.failure_reason && (
+                      <p className="text-[10px] text-red-500 mt-0.5 max-w-xs truncate" title={s.failure_reason}>
+                        {formatSkipReason(s.failure_reason)}
+                      </p>
                     )}
                   </div>
                   <div className="flex items-center gap-2 flex-shrink-0">

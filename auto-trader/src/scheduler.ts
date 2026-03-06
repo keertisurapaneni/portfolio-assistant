@@ -161,6 +161,7 @@ let _runCount = 0;
 let _lastSuggestedFindsDate = '';
 let _lastSnapshotDate = '';
 let _lastRehydrationDate = '';
+let _lastAutoTuneDate = '';
 let _pendingDeployedDollar = 0;
 let _dailyDeployedDollar = 0;
 let _dailyDeployedDate = '';
@@ -287,7 +288,7 @@ export async function forceExecuteSignal(signalId: string): Promise<{
   executed?: boolean;
   reason?: string;
 }> {
-  if (_running) return { ok: false, error: 'Scheduler cycle in progress' };
+  // Manual force-execute: don't block on scheduler cycle — just run directly
   if (!isConnected()) return { ok: false, error: 'IB Gateway not connected' };
   const signal = await getExternalStrategySignalById(signalId);
   if (!signal) return { ok: false, error: 'Signal not found' };
@@ -607,6 +608,77 @@ async function autoQueueDailySignalsFromTrackedVideos(): Promise<void> {
   }
 }
 
+// ── EV-based strategy scoring ─────────────────────────────
+// Score each generic strategy video by expected value from the last 30 closed trades.
+// EV = win_rate × avg_return_pct (only positive if win_rate > 0).
+// Videos with < MIN_EV_SAMPLE trades get a neutral score and are still applied
+// (we need data to learn from), but are ranked below proven performers.
+
+const EV_SCORE_CACHE_MS = 30 * 60 * 1000; // refresh every 30 min
+const MIN_EV_SAMPLE = 5;                    // min trades before EV score is trusted
+const MAX_GENERIC_STRATEGIES_PER_TICKER = 3; // only apply top-N strategies per ticker
+const EV_ANALYSIS_DAYS = 30;
+
+let _evScoreCache: {
+  scores: Map<string, { ev: number; trades: number; winRate: number; avgReturnPct: number }>;
+  computedAt: number;
+} | null = null;
+
+async function getGenericStrategyEVScores(): Promise<
+  Map<string, { ev: number; trades: number; winRate: number; avgReturnPct: number }>
+> {
+  const now = Date.now();
+  if (_evScoreCache && now - _evScoreCache.computedAt < EV_SCORE_CACHE_MS) {
+    return _evScoreCache.scores;
+  }
+
+  try {
+    const sb = getSupabase();
+    const since = new Date();
+    since.setDate(since.getDate() - EV_ANALYSIS_DAYS);
+
+    const { data, error } = await sb
+      .from('paper_trades')
+      .select('strategy_video_id, pnl, pnl_percent, fill_price')
+      .in('status', ['STOPPED', 'TARGET_HIT', 'CLOSED'])
+      .not('strategy_video_id', 'is', null)
+      .not('fill_price', 'is', null)
+      .not('pnl', 'is', null)
+      .gte('closed_at', since.toISOString())
+      .order('closed_at', { ascending: false })
+      .limit(500);
+
+    if (error || !data) {
+      _evScoreCache = { scores: new Map(), computedAt: now };
+      return _evScoreCache.scores;
+    }
+
+    // Group by strategy_video_id
+    const byVideo = new Map<string, Array<{ pnl: number; pnl_percent: number }>>();
+    for (const row of data as Array<{ strategy_video_id: string; pnl: number | null; pnl_percent: number | null; fill_price: number | null }>) {
+      const vid = row.strategy_video_id;
+      if (!vid || row.pnl == null) continue;
+      if (!byVideo.has(vid)) byVideo.set(vid, []);
+      byVideo.get(vid)!.push({ pnl: row.pnl, pnl_percent: row.pnl_percent ?? 0 });
+    }
+
+    const scores = new Map<string, { ev: number; trades: number; winRate: number; avgReturnPct: number }>();
+    for (const [videoId, trades] of byVideo.entries()) {
+      const wins = trades.filter(t => t.pnl > 0).length;
+      const winRate = trades.length > 0 ? wins / trades.length : 0;
+      const avgReturnPct = trades.reduce((s, t) => s + t.pnl_percent, 0) / trades.length;
+      // EV: expected return per trade. Positive means strategy is adding value.
+      const ev = trades.length >= MIN_EV_SAMPLE ? winRate * avgReturnPct : 0;
+      scores.set(videoId, { ev, trades: trades.length, winRate, avgReturnPct });
+    }
+
+    _evScoreCache = { scores, computedAt: now };
+    return scores;
+  } catch {
+    return _evScoreCache?.scores ?? new Map();
+  }
+}
+
 async function autoQueueGenericSignalsFromTrackedVideos(
   ideas: TradeIdea[],
   config: AutoTraderConfig,
@@ -619,15 +691,10 @@ async function autoQueueGenericSignalsFromTrackedVideos(
   const genericVideos = videos.filter(v => v.strategyType === 'generic_strategy');
   if (genericVideos.length === 0) return queuedTickers;
 
-  type GenericStrategyBucket = {
-    videoId: string;
-    sourceName: string;
-    sourceUrl: string | null;
-    heading: string;
-    timeframe: 'DAY_TRADE' | 'SWING_TRADE';
-  };
+  // Load EV scores for all generic strategy videos
+  const evScores = await getGenericStrategyEVScores();
 
-  const bucketsByTimeframe = new Map<'DAY_TRADE' | 'SWING_TRADE', GenericStrategyBucket[]>();
+  const bucketsByTimeframe = new Map<'DAY_TRADE' | 'SWING_TRADE', GenericBucket[]>();
   for (const video of genericVideos) {
     const sourceName = (video.sourceName ?? '').trim();
     if (!sourceName) continue;
@@ -642,6 +709,11 @@ async function autoQueueGenericSignalsFromTrackedVideos(
     ) as Array<'DAY_TRADE' | 'SWING_TRADE'>;
     if (timeframes.length === 0) continue;
 
+    const scoreData = evScores.get(video.videoId);
+    const ev = scoreData?.ev ?? 0;
+    const evTrades = scoreData?.trades ?? 0;
+    const evWinRate = scoreData?.winRate ?? 0;
+
     for (const timeframe of timeframes) {
       const list = bucketsByTimeframe.get(timeframe) ?? [];
       list.push({
@@ -650,6 +722,10 @@ async function autoQueueGenericSignalsFromTrackedVideos(
         sourceUrl,
         heading,
         timeframe,
+        setupType: (video as { setupType?: string | null }).setupType ?? null,
+        ev,
+        evTrades,
+        evWinRate,
       });
       bucketsByTimeframe.set(timeframe, list);
     }
@@ -675,6 +751,22 @@ async function autoQueueGenericSignalsFromTrackedVideos(
       .sort((a, b) => b.confidence - a.confidence);
     if (candidates.length === 0) continue;
 
+    // Rank strategies by EV. Strategies with enough sample and positive EV rank first.
+    // New/unproven strategies (< MIN_EV_SAMPLE trades) get neutral rank but still fire
+    // so they can accumulate data.
+    const rankedBuckets: GenericBucket[] = [...buckets].sort((a, b) => {
+      // Proven positive EV > unproven > proven negative EV
+      const aProven = a.evTrades >= MIN_EV_SAMPLE;
+      const bProven = b.evTrades >= MIN_EV_SAMPLE;
+      if (aProven && !bProven) return -1;
+      if (!aProven && bProven) return 1;
+      return b.ev - a.ev;
+    });
+
+    // Take top-N strategies, but always include at least one unproven strategy
+    // to keep learning (prevent the system from getting stuck on old strategies)
+    const topBuckets = selectTopStrategies(rankedBuckets);
+
     const seenTickers = new Set<string>();
     for (const candidate of candidates) {
       const ticker = candidate.ticker.trim().toUpperCase();
@@ -685,7 +777,7 @@ async function autoQueueGenericSignalsFromTrackedVideos(
 
       let createdForTicker = false;
       let existingForTicker = false;
-      for (const bucket of buckets) {
+      for (const bucket of topBuckets) {
         const exists = await findExternalStrategySignal({
           sourceName: bucket.sourceName,
           ticker,
@@ -700,6 +792,10 @@ async function autoQueueGenericSignalsFromTrackedVideos(
           continue;
         }
 
+        const evNote = bucket.evTrades >= MIN_EV_SAMPLE
+          ? `ev=${bucket.ev.toFixed(2)} wr=${(bucket.evWinRate * 100).toFixed(0)}% n=${bucket.evTrades}`
+          : `ev=unproven n=${bucket.evTrades}`;
+
         await createExternalStrategySignal({
           source_name: bucket.sourceName,
           source_url: bucket.sourceUrl,
@@ -713,7 +809,7 @@ async function autoQueueGenericSignalsFromTrackedVideos(
           stop_loss: null,
           target_price: null,
           execute_on_date: todayET,
-          notes: `Generic strategy auto from video ${bucket.videoId} | ${bucket.heading} | scanner candidate: ${candidate.reason} | allocation group: ${buckets.length}`,
+          notes: `Generic strategy auto from video ${bucket.videoId} | ${bucket.heading} | scanner candidate: ${candidate.reason} | allocation group: ${topBuckets.length} | ${evNote}`,
         });
 
         created += 1;
@@ -733,6 +829,40 @@ async function autoQueueGenericSignalsFromTrackedVideos(
   }
 
   return queuedTickers;
+}
+
+type GenericBucket = {
+  videoId: string;
+  sourceName: string;
+  sourceUrl: string | null;
+  heading: string;
+  timeframe: 'DAY_TRADE' | 'SWING_TRADE';
+  setupType: string | null;
+  ev: number;
+  evTrades: number;
+  evWinRate: number;
+};
+
+/**
+ * Select top strategies from a ranked list:
+ * - Take up to MAX_GENERIC_STRATEGIES_PER_TICKER proven strategies
+ * - Always include at least 1 unproven strategy (to keep learning)
+ * - Exclude strategies with proven negative EV (< -0.3) — they've earned the cut
+ */
+function selectTopStrategies(rankedBuckets: GenericBucket[]): GenericBucket[] {
+  if (rankedBuckets.length <= MAX_GENERIC_STRATEGIES_PER_TICKER) return rankedBuckets;
+
+  const proven = rankedBuckets.filter(b => b.evTrades >= MIN_EV_SAMPLE);
+  const unproven = rankedBuckets.filter(b => b.evTrades < MIN_EV_SAMPLE);
+
+  // Hard-cut strategies that have proven themselves to be money losers
+  const viableProven = proven.filter(b => b.ev > -0.3);
+  const topProven = viableProven.slice(0, MAX_GENERIC_STRATEGIES_PER_TICKER - 1);
+
+  // Include one unproven strategy (round-robin by index to explore over time)
+  const unprovenSlot = unproven.length > 0 ? [unproven[0]!] : [];
+
+  return [...topProven, ...unprovenSlot];
 }
 
 function isGenericStrategySignal(
@@ -1755,7 +1885,7 @@ async function executeExternalStrategySignal(
     return 'skipped';
   };
 
-  const markX = await shouldMarkStrategyX(signal);
+  const markX = !skipConfirmationGates ? await shouldMarkStrategyX(signal) : { blocked: false as const, scope: null as null, consecutiveLosses: 0 };
   if (markX.blocked) {
     const reason = `Strategy marked X after ${markX.consecutiveLosses} consecutive losses (${markX.scope})`;
     await updateExternalStrategySignal(signal.id, {
@@ -1784,21 +1914,23 @@ async function executeExternalStrategySignal(
   // execution window opens), losing their allocationSplit group context. Always use the lenient
   // conflict check for them so they aren't blocked by a same-direction strategy trade.
   const isGenericAutoSignal = (signal.notes ?? '').toLowerCase().includes('generic strategy auto');
-  if (allowDuplicateTicker || isGenericAutoSignal) {
-    const activeTrades = await getActiveTrades();
-    const sameTickerTrades = activeTrades.filter(
-      trade => trade.ticker.toUpperCase() === ticker
-    );
-    const hasConflict = sameTickerTrades.some(trade => (
-      trade.mode !== signal.mode ||
-      trade.signal !== signal.signal ||
-      !trade.strategy_video_id
-    ));
-    if (hasConflict) {
-      return skipExternalSignal('Duplicate active trade for ticker', 'duplicate_active_trade_conflict');
+  if (!skipConfirmationGates) {
+    if (allowDuplicateTicker || isGenericAutoSignal) {
+      const activeTrades = await getActiveTrades();
+      const sameTickerTrades = activeTrades.filter(
+        trade => trade.ticker.toUpperCase() === ticker
+      );
+      const hasConflict = sameTickerTrades.some(trade => (
+        trade.mode !== signal.mode ||
+        trade.signal !== signal.signal ||
+        !trade.strategy_video_id
+      ));
+      if (hasConflict) {
+        return skipExternalSignal('Duplicate active trade for ticker', 'duplicate_active_trade_conflict');
+      }
+    } else if (await hasActiveTrade(ticker, signal.mode !== 'LONG_TERM' ? { excludeMode: 'LONG_TERM' } : undefined)) {
+      return skipExternalSignal('Duplicate active trade for ticker', 'duplicate_active_trade');
     }
-  } else if (await hasActiveTrade(ticker, signal.mode !== 'LONG_TERM' ? { excludeMode: 'LONG_TERM' } : undefined)) {
-    return skipExternalSignal('Duplicate active trade for ticker', 'duplicate_active_trade');
   }
 
   const hasProvidedLevels = (
@@ -1847,12 +1979,12 @@ async function executeExternalStrategySignal(
   const effectiveTargetPrice = signal.target_price ?? validatedFA?.targetPrice ?? null;
 
   const quote = await getQuotePrice(ticker);
-  if (effectiveEntryPrice != null && quote == null) {
+  if (effectiveEntryPrice != null && quote == null && !skipConfirmationGates) {
     summaryLog(`${ticker}: waiting — no quote`);
     return 'waiting';
   }
 
-  if (effectiveEntryPrice != null && quote != null) {
+  if (effectiveEntryPrice != null && quote != null && !skipConfirmationGates) {
     if (signal.signal === 'BUY' && quote < effectiveEntryPrice) {
       summaryLog(`${ticker}: waiting — price $${quote.toFixed(2)} < entry $${effectiveEntryPrice.toFixed(2)}`);
       return 'waiting';
@@ -1956,7 +2088,7 @@ async function executeExternalStrategySignal(
     return 'failed';
   }
 
-  if (!(await runPreTradeChecks(config, ticker, sizing.dollarSize, positions, (signal.mode ?? 'DAY_TRADE') as 'DAY_TRADE' | 'SWING_TRADE'))) {
+  if (!skipConfirmationGates && !(await runPreTradeChecks(config, ticker, sizing.dollarSize, positions, (signal.mode ?? 'DAY_TRADE') as 'DAY_TRADE' | 'SWING_TRADE'))) {
     await updateExternalStrategySignal(signal.id, {
       status: 'SKIPPED',
       failure_reason: 'Pre-trade risk checks blocked execution',
@@ -1987,8 +2119,9 @@ async function executeExternalStrategySignal(
     effectiveTargetPrice != null
   );
 
-  // SWING only: skip bracket limit if price too far from entry
+  // SWING only: skip bracket limit if price too far from entry (bypassed for manual execute)
   if (
+    !skipConfirmationGates &&
     signal.mode === 'SWING_TRADE' &&
     hasBracketLevels &&
     effectiveEntryPrice! > 0 &&
@@ -2723,6 +2856,60 @@ async function runDailyRehydration(config: AutoTraderConfig): Promise<void> {
     log('Daily rehydration complete');
   } catch (err) {
     log(`Rehydration failed: ${err instanceof Error ? err.message : 'unknown'}`);
+  }
+
+  // Run auto-tune once per day after rehydration completes
+  await runAutoTuneStrategyConfig();
+}
+
+/**
+ * Calls the auto-tune-strategy-config edge function after market close.
+ * Runs once per trading day. Analyzes 30d performance and adjusts config params.
+ * Results are logged to strategy_tune_log for full auditability.
+ */
+async function runAutoTuneStrategyConfig(): Promise<void> {
+  const today = getETDateString();
+  if (_lastAutoTuneDate === today) return;
+
+  try {
+    const supabaseUrl = getSupabaseUrl();
+    const serviceRoleKey = getSupabaseServiceRoleKey();
+    if (!supabaseUrl || !serviceRoleKey) return;
+
+    const res = await fetch(`${supabaseUrl}/functions/v1/auto-tune-strategy-config`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${serviceRoleKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ trigger: 'scheduled' }),
+    });
+
+    if (!res.ok) {
+      log(`Auto-tune failed: HTTP ${res.status}`);
+      return;
+    }
+
+    const result = await res.json() as {
+      ok: boolean;
+      decisionsCount: number;
+      decisions: Array<{ param: string; oldValue: unknown; newValue: unknown; reason: string }>;
+    };
+
+    _lastAutoTuneDate = today;
+
+    if (result.decisionsCount > 0) {
+      log(`Auto-tune applied ${result.decisionsCount} config adjustment(s):`);
+      for (const d of result.decisions) {
+        log(`  [${d.param}] ${d.oldValue} → ${d.newValue} | ${d.reason}`);
+      }
+      // Invalidate EV score cache so next cycle picks up new config
+      _evScoreCache = null;
+    } else {
+      log('Auto-tune: no config changes needed');
+    }
+  } catch (err) {
+    log(`Auto-tune error: ${err instanceof Error ? err.message : 'unknown'}`);
   }
 }
 

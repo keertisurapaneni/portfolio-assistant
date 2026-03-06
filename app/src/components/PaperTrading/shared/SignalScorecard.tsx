@@ -6,18 +6,20 @@ export interface SignalScorecardProps {
   title: string;
   subtitle: string;
   data: CategoryPerformance | undefined;
-  color: 'indigo' | 'blue' | 'violet';
+  color: 'indigo' | 'blue' | 'emerald' | 'violet';
 }
 
 const colorClasses = {
   indigo: 'border-indigo-200 bg-indigo-50',
   blue: 'border-blue-200 bg-blue-50',
+  emerald: 'border-emerald-200 bg-emerald-50',
   violet: 'border-violet-200 bg-violet-50',
 };
 
 const textColors = {
   indigo: 'text-indigo-700',
   blue: 'text-blue-700',
+  emerald: 'text-emerald-700',
   violet: 'text-violet-700',
 };
 

@@ -714,7 +714,7 @@ export async function recalculatePerformance(): Promise<TradePerformance | null>
 // ── Category Performance (Signal Quality) ────────────────
 
 export interface CategoryPerformance {
-  category: 'suggested_finds' | 'day_trade' | 'swing_trade' | 'dip_buy' | 'profit_take';
+  category: 'suggested_finds' | 'day_trade' | 'scanner_day_trade' | 'influencer_day_trade' | 'swing_trade' | 'dip_buy' | 'profit_take';
   totalTrades: number;
   activeTrades: number;
   wins: number;
@@ -797,6 +797,7 @@ export interface PendingStrategySignal {
   entry_price: number | null;
   execute_on_date: string;
   status: string;
+  failure_reason: string | null;
   created_at: string;
 }
 
@@ -827,8 +828,17 @@ export async function recalculatePerformanceByCategory(): Promise<CategoryPerfor
         !(t.notes ?? '').startsWith('Dip buy'),
     },
     {
+      // Legacy combined bucket — kept for backward-compat but replaced by the two below
       key: 'day_trade',
       filter: (t) => t.mode === 'DAY_TRADE',
+    },
+    {
+      key: 'scanner_day_trade',
+      filter: (t) => t.mode === 'DAY_TRADE' && !t.strategy_video_id,
+    },
+    {
+      key: 'influencer_day_trade',
+      filter: (t) => t.mode === 'DAY_TRADE' && !!t.strategy_video_id,
     },
     {
       key: 'swing_trade',
@@ -1344,7 +1354,7 @@ export async function getTodaySignalsForManualExecute(): Promise<PendingStrategy
   const todayET = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' }); // YYYY-MM-DD
   const { data, error } = await supabase
     .from('external_strategy_signals')
-    .select('id,ticker,signal,mode,source_name,source_url,strategy_video_id,strategy_video_heading,entry_price,execute_on_date,status,created_at')
+    .select('id,ticker,signal,mode,source_name,source_url,strategy_video_id,strategy_video_heading,entry_price,execute_on_date,status,failure_reason,created_at')
     .eq('execute_on_date', todayET)
     .in('status', ['PENDING', 'EXPIRED', 'SKIPPED'])
     .order('created_at', { ascending: false })
