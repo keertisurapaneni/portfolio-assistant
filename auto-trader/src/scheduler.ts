@@ -1981,16 +1981,24 @@ async function executeExternalStrategySignal(
   const quote = await getQuotePrice(ticker);
   if (effectiveEntryPrice != null && quote == null && !skipConfirmationGates) {
     summaryLog(`${ticker}: waiting — no quote`);
+    // Record last-known wait reason so Execute Past Window shows context if signal expires
+    await updateExternalStrategySignal(signal.id, {
+      failure_reason: 'Waiting: could not fetch live price',
+    });
     return 'waiting';
   }
 
   if (effectiveEntryPrice != null && quote != null && !skipConfirmationGates) {
     if (signal.signal === 'BUY' && quote < effectiveEntryPrice) {
-      summaryLog(`${ticker}: waiting — price $${quote.toFixed(2)} < entry $${effectiveEntryPrice.toFixed(2)}`);
+      const reason = `Entry trigger not reached: price $${quote.toFixed(2)} below ${isInfluencerSignal ? 'influencer' : ''} entry $${effectiveEntryPrice.toFixed(2)}`;
+      summaryLog(`${ticker}: waiting — ${reason}`);
+      await updateExternalStrategySignal(signal.id, { failure_reason: reason });
       return 'waiting';
     }
     if (signal.signal === 'SELL' && quote > effectiveEntryPrice) {
-      summaryLog(`${ticker}: waiting — price $${quote.toFixed(2)} > entry $${effectiveEntryPrice.toFixed(2)}`);
+      const reason = `Entry trigger not reached: price $${quote.toFixed(2)} above ${isInfluencerSignal ? 'influencer' : ''} entry $${effectiveEntryPrice.toFixed(2)}`;
+      summaryLog(`${ticker}: waiting — ${reason}`);
+      await updateExternalStrategySignal(signal.id, { failure_reason: reason });
       return 'waiting';
     }
   }
@@ -2336,9 +2344,14 @@ async function processExternalStrategySignals(
 
     const expiresAtMs = signal.expires_at ? new Date(signal.expires_at).getTime() : null;
     if (expiresAtMs && nowMs > expiresAtMs) {
+      // Preserve last-known wait reason (e.g. "Entry trigger not reached: price $X below entry $Y")
+      // so Execute Past Window shows why it expired rather than a generic message.
+      const expiredReason = signal.failure_reason
+        ? `Expired — ${signal.failure_reason}`
+        : 'Execution window closed before entry conditions were met';
       await updateExternalStrategySignal(signal.id, {
         status: 'EXPIRED',
-        failure_reason: 'Signal expired before execution window',
+        failure_reason: expiredReason,
       });
       expired += 1;
       continue;

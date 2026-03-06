@@ -9,6 +9,9 @@ import { fmtUsd } from '../utils';
 function formatSkipReason(reason: string | null | undefined): string | null {
   if (!reason) return null;
   const r = reason.toLowerCase();
+  // Entry trigger reasons (most common for influencer signals)
+  if (r.includes('entry trigger not reached') || r.includes('expired — entry trigger')) return reason.replace(/^expired — /i, '');
+  if (r.includes('execution window closed')) return 'Window closed — entry price was never reached';
   if (r.includes('strategy marked x') || r.includes('consecutive losses')) return `Strategy paused — ${reason.match(/\d+/)?.[0] ?? '3'}+ consecutive losing days`;
   if (r.includes('duplicate active trade')) return 'Already have an active trade for this ticker';
   if (r.includes('volume') || r.includes('vol')) return 'Volume too low — not enough intraday activity';
