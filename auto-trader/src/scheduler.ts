@@ -1996,9 +1996,11 @@ async function executeExternalStrategySignal(
   }
 
   // Confirmation gates for day trades — checks run in order, each can return 'waiting'
-  // Skipped when skipConfirmationGates=true (manual force-execute)
+  // Skipped when skipConfirmationGates=true (manual force-execute) OR for influencer
+  // signals (strategy_video_id set) — influencers provide their own entry criteria so
+  // volume/SPY gates should not second-guess them and cause signals to expire unused.
   let spyChangePct: number | null = null;
-  if (signal.mode === 'DAY_TRADE' && !skipConfirmationGates) {
+  if (signal.mode === 'DAY_TRADE' && !skipConfirmationGates && !isInfluencerSignal) {
     // Gate 1: Volume — require above-average intraday pace (30%+ above avg)
     const volRatio = await fetchIntradayVolumeRatio(ticker);
     if (volRatio !== null && volRatio < 1.3) {
@@ -2026,9 +2028,10 @@ async function executeExternalStrategySignal(
       }
       log(`${ticker}: SPY ${spyChangePct >= 0 ? '+' : ''}${spyChangePct}% — market aligned`);
     }
-  } else if (signal.mode === 'DAY_TRADE' && skipConfirmationGates) {
+  } else if (signal.mode === 'DAY_TRADE') {
     spyChangePct = await fetchSpyChangePct().catch(() => null);
-    log(`${ticker}: manual execute — skipping volume/SPY gates (SPY: ${spyChangePct != null ? `${spyChangePct >= 0 ? '+' : ''}${spyChangePct}%` : 'n/a'})`);
+    const reason = skipConfirmationGates ? 'manual execute' : 'influencer signal';
+    log(`${ticker}: ${reason} — skipping volume/SPY gates (SPY: ${spyChangePct != null ? `${spyChangePct >= 0 ? '+' : ''}${spyChangePct}%` : 'n/a'})`);
   }
 
   const referencePrice = quote ?? effectiveEntryPrice ?? null;
