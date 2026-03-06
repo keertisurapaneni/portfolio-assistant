@@ -1,5 +1,5 @@
 import { Fragment, useState, useEffect, useMemo, useRef, useCallback } from 'react';
-import { BarChart3, Link2, Plus, ChevronDown, ChevronUp, Clock, TrendingUp } from 'lucide-react';
+import { BarChart3, Link2, Plus, ChevronDown, ChevronUp, Clock, TrendingUp, ShieldOff, ShieldCheck, AlertTriangle } from 'lucide-react';
 import { cn } from '../../../lib/utils';
 import type {
   StrategySourcePerformance,
@@ -15,6 +15,7 @@ import {
   addUrlsToQueue, processQueue, getQueue, type StrategyVideoQueueItem,
   deleteStrategyVideo,
 } from '../../../lib/strategyVideoQueueApi';
+import { setSourceExemptFromAutoDeactivation } from '../../../lib/strategyVideosApi';
 import { fmtUsd, toEtIsoDate } from '../utils';
 import { StatusBadge } from '../shared';
 
@@ -85,6 +86,7 @@ export function StrategyPerformanceTab({ sources, videos, statuses, onRefresh }:
   const [addingUrls, setAddingUrls] = useState(false);
   const [addError, setAddError] = useState<string | null>(null);
   const [recentQueue, setRecentQueue] = useState<StrategyVideoQueueItem[]>([]);
+  const [unblockingSource, setUnblockingSource] = useState<string | null>(null);
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const pollQueue = useCallback(async () => {
@@ -468,8 +470,60 @@ export function StrategyPerformanceTab({ sources, videos, statuses, onRefresh }:
     return `https://www.instagram.com/reel/${videoId}/`;
   };
 
+  const handleUnblock = async (sourceName: string) => {
+    setUnblockingSource(sourceName);
+    try {
+      await setSourceExemptFromAutoDeactivation(sourceName, true);
+      onRefresh?.();
+    } finally {
+      setUnblockingSource(null);
+    }
+  };
+
+  // Sources that are currently blocked (marked X and not already exempt)
+  const blockedSources = sources.filter(s => s.isMarkedX && !s.exemptFromAutoDeactivation);
+
   return (
     <div className="space-y-3">
+      {/* Blocked sources alert — shown whenever any source has been auto-paused */}
+      {blockedSources.length > 0 && (
+        <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 flex items-start gap-3">
+          <AlertTriangle className="w-4 h-4 text-red-500 flex-shrink-0 mt-0.5" />
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-semibold text-red-800">
+              {blockedSources.length === 1 ? '1 source paused' : `${blockedSources.length} sources paused`} — signals won&apos;t fire
+            </p>
+            <p className="text-xs text-red-600 mt-0.5">
+              Strategy-X auto-paused {blockedSources.length === 1 ? 'this source' : 'these sources'} after 3+ consecutive losing days.
+              If losses were due to execution issues (not strategy failure), unblock below.
+            </p>
+            <div className="flex flex-wrap gap-2 mt-2">
+              {blockedSources.map(s => (
+                <div key={s.source} className="flex items-center gap-1.5 px-2 py-1 bg-white border border-red-200 rounded-lg">
+                  <ShieldOff className="w-3 h-3 text-red-500" />
+                  <span className="text-xs font-medium text-red-700 max-w-[200px] truncate">{s.source}</span>
+                  <span className="text-[10px] text-red-400">({s.consecutiveLosses} loss days)</span>
+                  <button
+                    onClick={() => handleUnblock(s.source)}
+                    disabled={unblockingSource === s.source}
+                    className="ml-1 flex items-center gap-1 px-2 py-0.5 text-[10px] font-semibold bg-emerald-600 text-white rounded hover:bg-emerald-700 disabled:opacity-50 transition-colors"
+                  >
+                    {unblockingSource === s.source ? (
+                      <span className="animate-pulse">Unblocking…</span>
+                    ) : (
+                      <>
+                        <ShieldCheck className="w-3 h-3" />
+                        Unblock
+                      </>
+                    )}
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Add Videos Panel */}
       <div className="rounded-xl border-2 border-blue-200 bg-blue-50 overflow-hidden">
         <button
@@ -782,8 +836,22 @@ export function StrategyPerformanceTab({ sources, videos, statuses, onRefresh }:
                         <div className="min-w-0">
                           <p className="font-semibold truncate flex items-center gap-2">
                             <span>{sourceName}</span>
-                            {sourceIsMarkedX && (
-                              <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-red-100 text-red-700">X --</span>
+                            {perf?.exemptFromAutoDeactivation && (
+                              <span className="flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-emerald-100 text-emerald-700">
+                                <ShieldCheck className="w-2.5 h-2.5" />
+                                Exempt
+                              </span>
+                            )}
+                            {sourceIsMarkedX && !perf?.exemptFromAutoDeactivation && (
+                              <button
+                                onClick={() => handleUnblock(sourceName)}
+                                disabled={unblockingSource === sourceName}
+                                className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-red-100 text-red-700 hover:bg-emerald-100 hover:text-emerald-700 transition-colors disabled:opacity-50"
+                                title="Strategy-X paused — click to unblock"
+                              >
+                                <ShieldOff className="w-2.5 h-2.5" />
+                                {unblockingSource === sourceName ? 'Unblocking…' : 'Paused — Unblock'}
+                              </button>
                             )}
                           </p>
                           {sourceUrl && (

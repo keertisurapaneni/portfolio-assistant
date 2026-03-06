@@ -740,6 +740,7 @@ export interface StrategySourcePerformance {
   avgPnl: number;
   consecutiveLosses: number;
   isMarkedX: boolean;
+  exemptFromAutoDeactivation: boolean;
 }
 
 export interface StrategyVideoPerformance {
@@ -997,7 +998,8 @@ export async function recalculatePerformanceByStrategySource(): Promise<Strategy
           }
         } else break;
       }
-      const shouldDeactivate = lossesOnSeparateDays >= 3 && !exemptSources.has(source);
+      const isExempt = exemptSources.has(source);
+      const shouldDeactivate = lossesOnSeparateDays >= 3 && !isExempt;
       return {
         source,
         sourceUrl: s.sourceUrl,
@@ -1010,6 +1012,7 @@ export async function recalculatePerformanceByStrategySource(): Promise<Strategy
         avgPnl: s.closedCount > 0 ? s.closedPnl / s.closedCount : 0,
         consecutiveLosses,
         isMarkedX: shouldDeactivate,
+        exemptFromAutoDeactivation: isExempt,
       };
     })
     .sort((a, b) => b.totalPnl - a.totalPnl);

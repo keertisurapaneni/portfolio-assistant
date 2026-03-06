@@ -103,3 +103,18 @@ export async function getExemptFromAutoDeactivationSources(): Promise<Set<string
   }
   return exempt;
 }
+
+/**
+ * Unblock (or re-block) a source from Strategy-X auto-pausing.
+ * Sets exempt_from_auto_deactivation on all tracked videos for this source.
+ */
+export async function setSourceExemptFromAutoDeactivation(
+  sourceName: string,
+  exempt: boolean,
+): Promise<void> {
+  await supabase
+    .from('strategy_videos')
+    .update({ exempt_from_auto_deactivation: exempt })
+    .eq('source_name', sourceName)
+    .eq('status', 'tracked');
+}
