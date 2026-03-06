@@ -39,7 +39,8 @@ export function PerformanceTab({
   const [selectedTrade, setSelectedTrade] = useState<RecentClosedTrade | null>(null);
 
   const sf = categories.find(c => c.category === 'suggested_finds');
-  const dt = categories.find(c => c.category === 'day_trade');
+  const scannerDt = categories.find(c => c.category === 'scanner_day_trade');
+  const influencerDt = categories.find(c => c.category === 'influencer_day_trade');
   const sw = categories.find(c => c.category === 'swing_trade');
   const dipBuy = categories.find(c => c.category === 'dip_buy');
   const profitTake = categories.find(c => c.category === 'profit_take');
@@ -97,9 +98,10 @@ export function PerformanceTab({
           </p>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
           <SignalScorecard title="Suggested Finds" subtitle="Long-term picks" data={sf} color="indigo" />
-          <SignalScorecard title="Day Trades" subtitle="Scanner signals" data={dt} color="blue" />
+          <SignalScorecard title="Scanner Day Trades" subtitle="Trade signals only" data={scannerDt} color="blue" />
+          <SignalScorecard title="Influencer Day Trades" subtitle="Strategy video signals" data={influencerDt} color="emerald" />
           <SignalScorecard title="Swing Trades" subtitle="Scanner signals" data={sw} color="violet" />
         </div>
 

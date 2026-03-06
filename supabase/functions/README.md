@@ -126,6 +126,24 @@ SnapTrade broker integration (OAuth, positions sync).
 #### `paper-trading-performance`
 Computes performance metrics from `paper_trades` table.
 
+#### `auto-tune-strategy-config`
+Self-learning engine that runs after market close (called by auto-trader daily rehydration).
+Analyzes 30-day rolling performance per category and automatically adjusts `auto_trader_config` with bounded changes.
+
+**Trigger:** `POST` (from auto-trader `runAutoTuneStrategyConfig`) or manual `POST` for testing.
+
+**Rules applied:**
+- Influencer day trades winning → increase `external_signal_position_size` up to 20%
+- Influencer day trades losing → decrease `external_signal_position_size` up to 20%
+- Scanner/swing losing → raise `min_scanner_confidence` by 0.5
+- Swing allocation bleeding → reduce `base_allocation_pct` by 0.5%
+- Long-term bucket underperforming → shrink `long_term_bucket_pct` by 5%
+- 25+ closed trades accumulated → enable `kelly_adaptive_enabled`
+- Overall portfolio strong → increase `max_positions` by 1
+
+**Bounds:** All adjustments are capped (e.g. `external_signal_position_size` $1k–$15k, `min_scanner_confidence` 6–9).
+**Audit trail:** Every run is logged to `strategy_tune_log` with full reasoning per decision.
+
 #### `ai-proxy` / `gemini-proxy` / `huggingface-proxy`
 Secure AI API proxies — serve API keys server-side.
 
