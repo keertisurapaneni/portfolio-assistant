@@ -1299,6 +1299,8 @@ Deno.serve(async (req) => {
   try {
     let portfolioTickers: string[] = [];
     let forceRefresh = false;
+    let debugMode = false;
+    let diagnosticsMode = false;
     try {
       const body = await req.json();
       if (Array.isArray(body?.portfolioTickers)) {
@@ -1307,7 +1309,33 @@ Deno.serve(async (req) => {
           .filter((t: string) => t.length > 0 && t.length <= 10);
       }
       if (body?.forceRefresh === true) forceRefresh = true;
+      if (body?._debug === true) debugMode = true;
+      if (body?._diagnostics === true) diagnosticsMode = true;
     } catch { /* no body */ }
+
+    // ── Diagnostics mode: test Yahoo Finance + Gemini connectivity ──
+    if (diagnosticsMode) {
+      const diagKeys: string[] = [];
+      const diagPrimary = Deno.env.get('GEMINI_API_KEY');
+      if (diagPrimary) diagKeys.push(diagPrimary);
+      for (let i = 2; ; i++) { const k = Deno.env.get(`GEMINI_API_KEY_${i}`); if (!k) break; diagKeys.push(k); }
+
+      const [moverRes, chartRes, ...geminiResults] = await Promise.all([
+        fetch('https://query1.finance.yahoo.com/v1/finance/screener/predefined/saved?formatted=false&scrIds=day_gainers&start=0&count=3&lang=en-US&region=US', { headers: YAHOO_HEADERS, signal: AbortSignal.timeout(8_000) }).then(async r => ({ status: r.status, ok: r.ok, quoteCount: r.ok ? ((await r.json())?.finance?.result?.[0]?.quotes?.length ?? 0) : 0 })).catch(e => ({ status: -1, error: String(e) })),
+        fetch('https://query1.finance.yahoo.com/v8/finance/chart/AAPL?range=5d&interval=1d&includePrePost=false', { headers: YAHOO_HEADERS, signal: AbortSignal.timeout(8_000) }).then(r => ({ status: r.status, ok: r.ok })).catch(e => ({ status: -1, error: String(e) })),
+        ...GEMINI_MODELS.map(model =>
+          fetch(`${GEMINI_BASE}/${model}:generateContent?key=${diagKeys[0] ?? ''}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: 'Say OK' }] }], generationConfig: { maxOutputTokens: 5, thinkingConfig: { thinkingBudget: 0 } } }),
+            signal: AbortSignal.timeout(10_000),
+          }).then(async r => ({ model, status: r.status, ok: r.ok, body: r.ok ? '' : (await r.text()).slice(0, 200) })).catch(e => ({ model, status: -1, error: String(e) }))
+        ),
+      ]);
+      return new Response(JSON.stringify({ screener: moverRes, chart: chartRes, gemini: geminiResults, keyCount: diagKeys.length }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
 
     // Collect Gemini keys
     const GEMINI_KEYS: string[] = [];
@@ -1390,6 +1418,7 @@ Deno.serve(async (req) => {
         fetchMovers('day_losers'),
         fetchMovers('most_actives'),
       ]);
+      if (debugMode) console.log(`[Debug] movers: gainers=${gainers.length} losers=${losers.length} actives=${actives.length}`);
 
       // most_actives uses a looser filter (volume surge enough — don't need 1% move)
       const activeFiltered = actives.filter(q => {
@@ -1424,8 +1453,7 @@ Deno.serve(async (req) => {
       }
 
       let candidates = [...deduped.values()];
-
-      // Only enrich tickers that don't already have chart data (i.e. movers, not DAY_CORE).
+      if (debugMode) console.log(`[Debug] candidates after dedup+core: ${candidates.length} (${candidates.slice(0, 5).map(q => q.symbol).join(',')})`);
       // DAY_CORE tickers are fetched via fetchChartQuote and already have _pass1Indicators.
       // Re-fetching 1y of daily data for all 40+ candidates is the primary compute bottleneck.
       const needEnrichment = candidates.filter(q => !q._pass1Indicators).map(q => q.symbol);
@@ -1469,6 +1497,7 @@ Deno.serve(async (req) => {
           .slice(0, 15);
       }
 
+      let dayAISucceeded = false;
       if (candidates.length > 0) {
         const stockData = candidates.map((q, i) => formatQuoteForAI(q, i)).join('\n');
         const prompt = DAY_SCAN_USER.replace('{{STOCK_DATA}}', stockData);
@@ -1476,6 +1505,7 @@ Deno.serve(async (req) => {
         try {
           // ── Pass 1: Quick scan with lightweight indicators ──
           const raw = await callGemini(GEMINI_KEYS, DAY_TRADE_SYSTEM, prompt, 0.15, 2000);
+          dayAISucceeded = true;
           const evals: AIEval[] = parseAIJsonArray(raw);
           const quoteMap = new Map(candidates.map(q => [q.symbol, q]));
 
@@ -1504,11 +1534,18 @@ Deno.serve(async (req) => {
         } catch (err) {
           console.error('[Trade Scanner] Day AI eval failed:', err);
         }
+      } else {
+        dayAISucceeded = true; // No candidates = genuinely nothing to scan, safe to cache
       }
 
-      // Keep day ideas for the full trading day (not just 30 min)
-      // They expire at end of day (use longer TTL, scanner refresh logic handles staleness)
-      await writeToDB(sb, 'day_trades', dayIdeas, 390);
+      // Only persist to DB when AI ran successfully — if Gemini was rate-limited/quota-exhausted,
+      // keep the previous scan in the DB so we don't serve empty results for the rest of the day.
+      if (dayAISucceeded) {
+        await writeToDB(sb, 'day_trades', dayIdeas, 390);
+      } else {
+        console.warn('[Trade Scanner] Day AI failed — skipping DB write to preserve previous results');
+        dayIdeas = dayRow?.data ?? []; // Fall back to whatever was in DB
+      }
     }
 
     // ── Refresh swing trades ──
@@ -1539,6 +1576,7 @@ Deno.serve(async (req) => {
         }
       }
 
+      let swingAISucceeded = false;
       if (candidates.length > 0) {
         try {
           // ── Pass 1: Quick scan with lightweight indicators ──
@@ -1553,6 +1591,7 @@ Deno.serve(async (req) => {
             const batchEvals = parseAIJsonArray(raw);
             evals.push(...batchEvals);
           }
+          swingAISucceeded = true;
           const quoteMap = new Map(candidates.map(q => [q.symbol, q]));
 
           // Log ALL Pass 1 results for diagnostics
@@ -1587,9 +1626,16 @@ Deno.serve(async (req) => {
         } catch (err) {
           console.error('[Trade Scanner] Swing AI eval failed:', err);
         }
+      } else {
+        swingAISucceeded = true; // No candidates = safe to cache
       }
 
-      await writeToDB(sb, 'swing_trades', swingIdeas, 360);
+      if (swingAISucceeded) {
+        await writeToDB(sb, 'swing_trades', swingIdeas, 360);
+      } else {
+        console.warn('[Trade Scanner] Swing AI failed — skipping DB write to preserve previous results');
+        swingIdeas = swingRow?.data ?? [];
+      }
     }
 
     // When only one scan ran (e.g. day refresh ran but swing was skipped), always use the DB
@@ -1601,6 +1647,7 @@ Deno.serve(async (req) => {
       timestamp: Date.now(),
       ...(swingUniverseInfo ? { swingUniverse: swingUniverseInfo } : {}),
     }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Unknown error';
     console.error('[Trade Scanner] Error:', message);
