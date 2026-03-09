@@ -596,7 +596,7 @@ function formatQuoteForAI(q: YahooQuote, idx: number): string {
 // ── Gemini AI ───────────────────────────────────────────
 
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
-const GEMINI_MODELS = ['gemini-2.0-flash-lite', 'gemini-2.0-flash', 'gemini-2.5-flash'];
+const GEMINI_MODELS = ['gemini-2.0-flash-lite', 'gemini-2.0-flash'];
 
 let _geminiKeyIdx = 0;
 let _geminiModelIdx = 0;
@@ -1077,11 +1077,14 @@ async function runPass2(
     const candleResults = await Promise.all(
       tickers.map(async (ticker) => {
         try {
-          // Fetch all three intraday timeframes in parallel (lite sizes: 60 bars each)
+          // Fetch all three intraday timeframes in parallel (short ranges — we only use 40 bars each)
+          // 1min: today only (~390 bars max, we take 60) — no need for 7 days of 1m data
+          // 15min: 5 days (~130 bars, we take 40) — much less data than 60d default
+          // 1h: 5 days (~32 bars) — sufficient for intraday context
           const [c1m, c15m, c1h] = await Promise.all([
-            fetchCandles(ticker, '1min', 60),
-            fetchCandles(ticker, '15min', 60),
-            fetchCandles(ticker, '1h', 60),
+            fetchCandles(ticker, '1min', 60, '1d'),
+            fetchCandles(ticker, '15min', 60, '5d'),
+            fetchCandles(ticker, '1h', 60, '5d'),
           ]);
           if (!c15m?.values?.length) return { ticker, data: null };
 
@@ -1477,7 +1480,7 @@ Deno.serve(async (req) => {
           const quoteMap = new Map(candidates.map(q => [q.symbol, q]));
 
           const pass1 = evals
-            .filter(e => e.signal !== 'SKIP' && e.signal !== 'HOLD' && e.confidence >= 6)
+            .filter(e => e.signal !== 'SKIP' && e.signal !== 'HOLD' && e.confidence >= 5)
             .sort((a, b) => b.confidence - a.confidence)
             .slice(0, 5); // Cap at 5 to limit parallel Gemini + news fetches in Pass 2
 
@@ -1589,9 +1592,12 @@ Deno.serve(async (req) => {
       await writeToDB(sb, 'swing_trades', swingIdeas, 360);
     }
 
+    // When only one scan ran (e.g. day refresh ran but swing was skipped), always use the DB
+    // data for the non-refreshed type — swingIdeas/dayIdeas start empty when prevDay is true
+    // and would wrongly wipe the UI if we didn't fall back to the DB rows here.
     return new Response(JSON.stringify({
       dayTrades: dayIdeas,
-      swingTrades: swingIdeas,
+      swingTrades: needSwingRefresh ? swingIdeas : (swingRow?.data ?? []),
       timestamp: Date.now(),
       ...(swingUniverseInfo ? { swingUniverse: swingUniverseInfo } : {}),
     }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
