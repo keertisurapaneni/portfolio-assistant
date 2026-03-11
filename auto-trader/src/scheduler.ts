@@ -1920,11 +1920,16 @@ async function executeExternalStrategySignal(
       const sameTickerTrades = activeTrades.filter(
         trade => trade.ticker.toUpperCase() === ticker
       );
-      const hasConflict = sameTickerTrades.some(trade => (
-        trade.mode !== signal.mode ||
-        trade.signal !== signal.signal ||
-        !trade.strategy_video_id
-      ));
+      // True duplicate: same strategy video already has an active trade in the same
+      // mode + direction for this ticker (e.g. allocation split already executed).
+      // Different direction (BUY vs SELL) or non-influencer (scanner) trades are NOT
+      // conflicts — a day trader can hold both a long and a short simultaneously.
+      const hasConflict = sameTickerTrades.some(trade =>
+        trade.mode === signal.mode &&
+        trade.signal === signal.signal &&
+        trade.strategy_video_id != null &&
+        trade.strategy_video_id === signal.strategy_video_id
+      );
       if (hasConflict) {
         return skipExternalSignal('Duplicate active trade for ticker', 'duplicate_active_trade_conflict');
       }
