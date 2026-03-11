@@ -331,7 +331,7 @@ export async function getLongTermExposureByTag(): Promise<{
 
 export async function hasActiveTrade(
   ticker: string,
-  opts?: { excludeMode?: 'LONG_TERM' }
+  opts?: { excludeMode?: 'LONG_TERM'; signal?: 'BUY' | 'SELL' }
 ): Promise<boolean> {
   const sb = getSupabase();
   let query = sb
@@ -341,6 +341,9 @@ export async function hasActiveTrade(
     .in('status', ['PENDING', 'SUBMITTED', 'FILLED', 'PARTIAL']);
   if (opts?.excludeMode) {
     query = query.neq('mode', opts.excludeMode);
+  }
+  if (opts?.signal) {
+    query = query.eq('signal', opts.signal);
   }
   const { count } = await query;
   return (count ?? 0) > 0;

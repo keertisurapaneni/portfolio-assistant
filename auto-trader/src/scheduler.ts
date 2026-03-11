@@ -1928,7 +1928,10 @@ async function executeExternalStrategySignal(
       if (hasConflict) {
         return skipExternalSignal('Duplicate active trade for ticker', 'duplicate_active_trade_conflict');
       }
-    } else if (await hasActiveTrade(ticker, signal.mode !== 'LONG_TERM' ? { excludeMode: 'LONG_TERM' } : undefined)) {
+    } else if (await hasActiveTrade(ticker, {
+      ...(signal.mode !== 'LONG_TERM' ? { excludeMode: 'LONG_TERM' as const } : {}),
+      signal: signal.signal,
+    })) {
       return skipExternalSignal('Duplicate active trade for ticker', 'duplicate_active_trade');
     }
   }
