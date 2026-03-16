@@ -2332,6 +2332,37 @@ async function processExternalStrategySignals(
         });
       });
     }
+
+    // Daily signal influencer trades: group multi-target signals (same video + ticker + mode +
+    // direction) and mark allowDuplicateTicker so T2 isn't blocked after T1 executes.
+    const dailySignalGroups = new Map<string, ExternalStrategySignal[]>();
+    for (const signal of pending) {
+      if (!signal.strategy_video_id) continue;
+      const key = [
+        signal.strategy_video_id,
+        signal.ticker.toUpperCase(),
+        signal.mode,
+        signal.signal,
+      ].join('::');
+      const list = dailySignalGroups.get(key) ?? [];
+      list.push(signal);
+      dailySignalGroups.set(key, list);
+    }
+    for (const group of dailySignalGroups.values()) {
+      if (group.length <= 1) continue;
+      group.sort((a, b) => a.created_at.localeCompare(b.created_at));
+      group.forEach((signal, idx) => {
+        if (!executionOptionsBySignalId.has(signal.id)) {
+          executionOptionsBySignalId.set(signal.id, {
+            allocationSplit: 1,
+            allocationIndex: 1,
+            allowDuplicateTicker: true,
+          });
+        } else {
+          executionOptionsBySignalId.get(signal.id)!.allowDuplicateTicker = true;
+        }
+      });
+    }
   } catch (err) {
     log(`Generic allocation grouping fallback: ${err instanceof Error ? err.message : 'unknown'}`);
   }
