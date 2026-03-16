@@ -2070,9 +2070,16 @@ async function executeExternalStrategySignal(
       ? config.externalSignalPositionSize
       : null;
 
+  // Influencer signals (from strategy videos) are pre-vetted and have a known track record.
+  // Don't let Kelly/drawdown from unrelated scanner trades shrink their position size —
+  // use the flat dollar amount directly, no multiplier applied.
+  const isInfluencerSignalForSizing = signal.strategy_video_id != null;
+
   const baseSizing = flatDollarSize
     ? (() => {
-      const adjusted = flatDollarSize * sizingMultiplier;
+      const adjusted = isInfluencerSignalForSizing
+        ? flatDollarSize
+        : flatDollarSize * sizingMultiplier;
       const quantity = Math.max(1, Math.floor(adjusted / referencePrice));
       return { quantity, dollarSize: quantity * referencePrice };
     })()
