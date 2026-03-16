@@ -213,8 +213,12 @@ Deno.serve(async (req) => {
 
   const finnhubApiKey = Deno.env.get('FINNHUB_API_KEY');
 
+  // Well-known ETFs that Finnhub stock/profile2 returns empty for — always valid
+  const KNOWN_ETFS = new Set(['SPY', 'QQQ', 'IWM', 'DIA', 'VXX', 'TQQQ', 'SQQQ', 'SPXU', 'SPXL', 'UVXY', 'GLD', 'SLV', 'TLT', 'HYG', 'XLF', 'XLE', 'XLK', 'XLV', 'ARKK']);
+
   /** Returns true if the ticker exists on Finnhub (has a non-empty company name). */
   async function isValidTicker(ticker: string): Promise<boolean> {
+    if (KNOWN_ETFS.has(ticker)) return true; // ETFs don't have a profile2 — skip Finnhub check
     if (!finnhubApiKey) return true; // can't validate without key — let it through
     try {
       const res = await fetch(
@@ -244,51 +248,57 @@ Deno.serve(async (req) => {
     const stopLoss = sig.stopLoss ?? null;
     const noteText = sig.notes ?? null;
 
-    // Long (BUY) signal
+    // Long (BUY) signals — one per target level
     if (sig.longTriggerAbove != null) {
       const entryPrice = sig.longTriggerAbove;
-      const targetPrice = sig.longTargets?.[0] ?? null;
-      toInsert.push({
-        source_name: video.source_name,
-        source_url: sourceUrl,
-        ticker,
-        signal: 'BUY',
-        mode: primaryMode,
-        confidence: 7,
-        entry_price: entryPrice,
-        stop_loss: stopLoss,
-        target_price: targetPrice,
-        execute_on_date: tradeDate,
-        execute_at: executeAt,
-        expires_at: expiresAt,
-        notes: noteText ?? `Long above ${entryPrice}${stopLoss ? `, stop ${stopLoss}` : ''}${targetPrice ? `, target ${targetPrice}` : ''}`,
-        status: 'PENDING',
-        strategy_video_id: videoId,
-        strategy_video_heading: video.video_heading ?? null,
+      const targets = (sig.longTargets ?? []).length > 0 ? sig.longTargets! : [null];
+      targets.forEach((targetPrice, i) => {
+        const label = targets.length > 1 ? ` T${i + 1}` : '';
+        toInsert.push({
+          source_name: video.source_name,
+          source_url: sourceUrl,
+          ticker,
+          signal: 'BUY',
+          mode: primaryMode,
+          confidence: 7,
+          entry_price: entryPrice,
+          stop_loss: stopLoss ?? (sig.shortTriggerBelow ?? null),
+          target_price: targetPrice,
+          execute_on_date: tradeDate,
+          execute_at: executeAt,
+          expires_at: expiresAt,
+          notes: noteText ?? `Long above ${entryPrice}${label}${targetPrice ? `, target ${targetPrice}` : ''}`,
+          status: 'PENDING',
+          strategy_video_id: videoId,
+          strategy_video_heading: video.video_heading ?? null,
+        });
       });
     }
 
-    // Short (SELL) signal
+    // Short (SELL) signals — one per target level
     if (sig.shortTriggerBelow != null) {
       const entryPrice = sig.shortTriggerBelow;
-      const targetPrice = sig.shortTargets?.[0] ?? null;
-      toInsert.push({
-        source_name: video.source_name,
-        source_url: sourceUrl,
-        ticker,
-        signal: 'SELL',
-        mode: primaryMode,
-        confidence: 7,
-        entry_price: entryPrice,
-        stop_loss: stopLoss,
-        target_price: targetPrice,
-        execute_on_date: tradeDate,
-        execute_at: executeAt,
-        expires_at: expiresAt,
-        notes: noteText ?? `Short below ${entryPrice}${stopLoss ? `, stop ${stopLoss}` : ''}${targetPrice ? `, target ${targetPrice}` : ''}`,
-        status: 'PENDING',
-        strategy_video_id: videoId,
-        strategy_video_heading: video.video_heading ?? null,
+      const targets = (sig.shortTargets ?? []).length > 0 ? sig.shortTargets! : [null];
+      targets.forEach((targetPrice, i) => {
+        const label = targets.length > 1 ? ` T${i + 1}` : '';
+        toInsert.push({
+          source_name: video.source_name,
+          source_url: sourceUrl,
+          ticker,
+          signal: 'SELL',
+          mode: primaryMode,
+          confidence: 7,
+          entry_price: entryPrice,
+          stop_loss: stopLoss ?? (sig.longTriggerAbove ?? null),
+          target_price: targetPrice,
+          execute_on_date: tradeDate,
+          execute_at: executeAt,
+          expires_at: expiresAt,
+          notes: noteText ?? `Short below ${entryPrice}${label}${targetPrice ? `, target ${targetPrice}` : ''}`,
+          status: 'PENDING',
+          strategy_video_id: videoId,
+          strategy_video_heading: video.video_heading ?? null,
+        });
       });
     }
   }

@@ -46,7 +46,7 @@ Rules:
 - generic_strategy: general rules, patterns, SMC concepts (no specific levels). extracted_signals = [].
 - source_name: from intro ("Hey it's Somesh from Kay Capitals"), outro, or channel branding. Humanize (e.g. "Kay Capitals" → "Somesh | Day Trader | Investor" if known).
 - source_handle: Instagram handle if mentioned. Infer from source_name (e.g. "Casper Clipping" → "casperclipping").
-- ticker: MUST be the exact official US exchange ticker symbol. Double-check common names before writing: Meta Platforms = META (not MERA), Alphabet = GOOGL/GOOG, Amazon = AMZN, Microsoft = MSFT, Apple = AAPL, Nvidia = NVDA, Tesla = TSLA, Palantir = PLTR, Coinbase = COIN, MicroStrategy = MSTR. If uncertain, omit the signal rather than guess.
+- ticker: MUST be the exact official US exchange ticker symbol. Double-check common names before writing: Meta Platforms = META (not MERA), Alphabet = GOOGL/GOOG, Amazon = AMZN, Microsoft = MSFT, Apple = AAPL, Nvidia = NVDA, Tesla = TSLA, Palantir = PLTR, Coinbase = COIN, MicroStrategy = MSTR, QQQ = QQQ (Nasdaq ETF, NOT "KQQ", "KKI", "QQ", or any variant — always exactly "QQQ"), SPY = SPY (S&P 500 ETF), IWM = IWM (Russell 2000 ETF). If uncertain, omit the signal rather than guess.
 - trade_date: only for daily_signal when date is explicit (e.g. "for Thursday", "today's levels").
 - execution_window_et: only if time window is specified (e.g. "9:30-9:35 levels", "first candle rule").
 - setup_type: how the influencer intends execution:
@@ -268,7 +268,17 @@ Deno.serve(async (req) => {
   const execution_window_et = extracted.execution_window_et && typeof extracted.execution_window_et === 'object'
     ? (extracted.execution_window_et as { start?: string; end?: string })
     : null;
-  const extracted_signals = Array.isArray(extracted.extracted_signals) ? extracted.extracted_signals : [];
+  // Correct known transcription/OCR misreads for well-known tickers
+  const TICKER_CORRECTIONS: Record<string, string> = {
+    KKI: 'QQQ', KQQ: 'QQQ', QQ: 'QQQ', KQQQ: 'QQQ',
+    MERA: 'META', NVDIA: 'NVDA', NFDA: 'NVDA',
+    TSLA: 'TSLA', // identity — keep common ones to prevent further drift
+  };
+  const rawSignals = Array.isArray(extracted.extracted_signals) ? extracted.extracted_signals : [];
+  const extracted_signals = rawSignals.map((s: Record<string, unknown>) => {
+    const ticker = String(s.ticker ?? '').trim().toUpperCase();
+    return { ...s, ticker: TICKER_CORRECTIONS[ticker] ?? ticker };
+  });
   const summary = extracted.summary ? String(extracted.summary).trim() : null;
   const VALID_SETUP_TYPES = ['breakout', 'momentum', 'pullback_vwap', 'range'] as const;
   const setup_type = VALID_SETUP_TYPES.includes(extracted.setup_type as typeof VALID_SETUP_TYPES[number])
