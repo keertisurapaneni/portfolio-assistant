@@ -602,6 +602,44 @@ let _geminiKeyIdx = 0;
 let _geminiModelIdx = 0;
 const _rateLimitedUntil: Map<string, number> = new Map();
 
+// ── Groq fallback ────────────────────────────────────────
+// Used when all Gemini keys are rate-limited (429). Free tier, fast.
+const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions';
+const GROQ_MODEL = 'llama-3.3-70b-versatile';
+
+async function callGroq(
+  apiKey: string,
+  systemPrompt: string,
+  userPrompt: string,
+  temperature = 0.15,
+  maxOutputTokens = 2000,
+): Promise<string> {
+  const body = JSON.stringify({
+    model: GROQ_MODEL,
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: userPrompt },
+    ],
+    temperature,
+    max_tokens: maxOutputTokens,
+  });
+
+  const res = await fetch(GROQ_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+    body,
+    signal: AbortSignal.timeout(45_000),
+  });
+
+  if (!res.ok) {
+    const errText = await res.text().catch(() => '');
+    throw new Error(`Groq failed: ${res.status} ${errText.slice(0, 200)}`);
+  }
+
+  const data = await res.json();
+  return data?.choices?.[0]?.message?.content ?? '';
+}
+
 async function callGemini(
   apiKeys: string[],
   systemPrompt: string,
@@ -659,6 +697,13 @@ async function callGemini(
 
   const cn = Date.now();
   for (const [k, v] of _rateLimitedUntil) { if (cn > v) _rateLimitedUntil.delete(k); }
+
+  // All Gemini keys exhausted — fall back to Groq
+  const groqKey = Deno.env.get('GROQ_API_KEY');
+  if (groqKey) {
+    console.log('[Trade Scanner] Gemini exhausted, falling back to Groq');
+    return callGroq(groqKey, systemPrompt, userPrompt, temperature, maxOutputTokens);
+  }
 
   const errText = lastResponse ? await lastResponse.text().catch(() => '') : '';
   throw new Error(`Gemini failed (exhausted): ${lastResponse?.status ?? '?'} ${errText.slice(0, 200)}`);
@@ -1508,6 +1553,8 @@ Deno.serve(async (req) => {
           dayAISucceeded = true;
           const evals: AIEval[] = parseAIJsonArray(raw);
           const quoteMap = new Map(candidates.map(q => [q.symbol, q]));
+
+          console.log(`[Trade Scanner] Day Pass 1 raw: ${evals.map(e => `${e.ticker}:${e.signal}/${e.confidence}`).join(', ')}`);
 
           const pass1 = evals
             .filter(e => e.signal !== 'SKIP' && e.signal !== 'HOLD' && e.confidence >= 5)
