@@ -138,6 +138,14 @@ const DAY_CORE = [
   'GLD', 'TLT', 'SMH',
   // Other high-volume single names
   'NFLX', 'CRM', 'UBER', 'COIN', 'MSTR',
+  // Defense & geopolitical plays — spike on war/conflict news
+  'LMT', 'RTX', 'NOC', 'GD',
+  // Energy — oil/gas spike on war/supply disruptions
+  'CVX', 'XOM', 'COP',
+  // Volatility & safe-haven
+  'VXX', 'GDX',
+  // High-beta momentum names always active in volatile markets
+  'PLTR', 'SNOW', 'RKLB',
 ];
 
 // ── Swing universe: Core (always scanned) + Dynamic (refreshed daily) ──
@@ -879,6 +887,276 @@ function isStale(row: DBRow | null): boolean {
   return new Date(row.expires_at).getTime() < Date.now();
 }
 
+// ── Key Level Scanner ────────────────────────────────────
+//
+// No AI. Pure price structure.
+// For each stock: identify the nearest resistance above and support below
+// using prev-day high/low, 5-day range, SMAs, 52w extremes, and round numbers.
+// Output: both a long trigger (break above) and short trigger (break below),
+// with stops and targets. Let price pick a side — no directional bias.
+
+export interface KeyLevelSetup {
+  ticker: string;
+  name: string;
+  price: number;
+  atr: number;
+  longTrigger: number;
+  longStop: number;
+  longT1: number;
+  longT2: number | null;
+  shortTrigger: number;
+  shortStop: number;
+  shortT1: number;
+  shortT2: number | null;
+  levelContext: string;     // human-readable label for the levels
+  setupScore: number;       // 0-10 quality score
+  dollarVolume: number;
+}
+
+interface RawKeyLevel {
+  price: number;
+  strength: number; // 1-5
+  label: string;
+}
+
+interface ClusteredLevel {
+  price: number;
+  strength: number;
+  labels: string[];
+}
+
+function findNearbyRoundNumbers(price: number, atr: number): number[] {
+  const radius = Math.max(atr * 1.5, price * 0.015);
+  const results = new Set<number>();
+
+  let granularities: number[];
+  if (price < 20) granularities = [1, 5];
+  else if (price < 50) granularities = [5, 10];
+  else if (price < 100) granularities = [5, 10, 25];
+  else if (price < 200) granularities = [10, 25, 50];
+  else if (price < 500) granularities = [25, 50, 100];
+  else if (price < 1000) granularities = [50, 100, 250];
+  else granularities = [100, 250, 500];
+
+  for (const g of granularities) {
+    const start = Math.ceil((price - radius) / g) * g;
+    const end = Math.floor((price + radius) / g) * g;
+    for (let n = start; n <= end; n += g) {
+      if (n > 0 && Math.abs(n - price) > 0.01) results.add(round(n, 2));
+    }
+  }
+  return [...results];
+}
+
+function clusterKeyLevels(levels: RawKeyLevel[], clusterRadius: number): ClusteredLevel[] {
+  if (levels.length === 0) return [];
+  const sorted = [...levels].sort((a, b) => a.price - b.price);
+  const clusters: ClusteredLevel[] = [];
+  let cur: ClusteredLevel = { price: sorted[0].price, strength: sorted[0].strength, labels: [sorted[0].label] };
+
+  for (let i = 1; i < sorted.length; i++) {
+    const l = sorted[i];
+    if (Math.abs(l.price - cur.price) <= clusterRadius) {
+      const total = cur.strength + l.strength;
+      cur.price = round((cur.price * cur.strength + l.price * l.strength) / total, 2);
+      cur.strength = Math.min(cur.strength + l.strength, 8);
+      if (!cur.labels.includes(l.label)) cur.labels.push(l.label);
+    } else {
+      clusters.push(cur);
+      cur = { price: l.price, strength: l.strength, labels: [l.label] };
+    }
+  }
+  clusters.push(cur);
+  return clusters;
+}
+
+function buildKeyLevelSetup(quote: YahooQuote): KeyLevelSetup | null {
+  const price = rawVal(quote.regularMarketPrice);
+  const ohlcv = quote._ohlcvBars ?? [];
+  if (!price || price < 5 || ohlcv.length < 5) return null;
+
+  // ATR from last 14 complete daily bars
+  const recentBars = ohlcv.slice(-15);
+  const atr = computeATR_pass1(
+    recentBars.map(b => b.h),
+    recentBars.map(b => b.l),
+    recentBars.map(b => b.c),
+  ) ?? (price * 0.02);
+
+  const rawLevels: RawKeyLevel[] = [];
+
+  // ── Previous day high/low (most reliable level) ──
+  // Use second-to-last bar: last bar may be today's partial data
+  const prevBars = ohlcv.slice(-6, -1); // last 5 complete bars
+  if (prevBars.length > 0) {
+    const yest = prevBars[prevBars.length - 1];
+    if (yest.h > 0) rawLevels.push({ price: yest.h, strength: 4, label: 'Prev High' });
+    if (yest.l > 0) rawLevels.push({ price: yest.l, strength: 4, label: 'Prev Low' });
+  }
+
+  // ── 5-day range ──
+  if (prevBars.length >= 4) {
+    const w5High = Math.max(...prevBars.map(b => b.h));
+    const w5Low  = Math.min(...prevBars.map(b => b.l));
+    const prevHigh = prevBars[prevBars.length - 1]?.h ?? 0;
+    const prevLow  = prevBars[prevBars.length - 1]?.l ?? 0;
+    // Only add if different from yesterday's level (to avoid duplicates pre-clustering)
+    if (w5High > 0 && Math.abs(w5High - prevHigh) > atr * 0.1)
+      rawLevels.push({ price: w5High, strength: 3, label: '5D High' });
+    if (w5Low > 0 && Math.abs(w5Low - prevLow) > atr * 0.1)
+      rawLevels.push({ price: w5Low, strength: 3, label: '5D Low' });
+  }
+
+  // ── SMAs (only if price is close — they ARE the level) ──
+  const sma50  = rawVal(quote.fiftyDayAverage);
+  const sma200 = rawVal(quote.twoHundredDayAverage);
+  if (sma50  > 0 && Math.abs(sma50  - price) < atr * 2)
+    rawLevels.push({ price: round(sma50, 2),  strength: 3, label: 'SMA50' });
+  if (sma200 > 0 && Math.abs(sma200 - price) < atr * 3)
+    rawLevels.push({ price: round(sma200, 2), strength: 4, label: 'SMA200' });
+
+  // ── 52-week extremes (major institutional levels) ──
+  const h52 = rawVal(quote.fiftyTwoWeekHigh);
+  const l52 = rawVal(quote.fiftyTwoWeekLow);
+  if (h52 > 0 && Math.abs(h52 - price) < atr * 2.5)
+    rawLevels.push({ price: round(h52, 2), strength: 5, label: '52W High' });
+  if (l52 > 0 && Math.abs(l52 - price) < atr * 2.5)
+    rawLevels.push({ price: round(l52, 2), strength: 5, label: '52W Low' });
+
+  // ── Round numbers (psychological — where options/stops cluster) ──
+  const roundNums = findNearbyRoundNumbers(price, atr);
+  for (const rn of roundNums) {
+    rawLevels.push({ price: rn, strength: 2, label: `$${rn}` });
+  }
+
+  // ── Cluster nearby levels (0.35 ATR = same zone) ──
+  const clustered = clusterKeyLevels(rawLevels, atr * 0.35);
+
+  // Minimum gap from current price before a level is "valid"
+  const minDist = Math.max(price * 0.001, atr * 0.15);
+
+  const resistances = clustered.filter(c => c.price > price + minDist).sort((a, b) => a.price - b.price);
+  const supports    = clustered.filter(c => c.price < price - minDist).sort((a, b) => b.price - a.price);
+
+  if (resistances.length === 0 || supports.length === 0) return null;
+
+  const nearestR = resistances[0];
+  const nearestS = supports[0];
+
+  // Range between triggers must be meaningful but not absurd
+  const triggerGap = nearestR.price - nearestS.price;
+  if (triggerGap < atr * 0.4 || triggerGap > atr * 6) return null;
+
+  // Entry triggers: tiny buffer past the level to confirm breakout
+  const longTrigger  = round(nearestR.price * 1.001, 2);
+  const shortTrigger = round(nearestS.price * 0.999, 2);
+
+  // Stops: 0.7 ATR inside the trigger (tight but not noise-prone)
+  const longStop  = round(longTrigger  - atr * 0.7, 2);
+  const shortStop = round(shortTrigger + atr * 0.7, 2);
+
+  // Targets: next significant level, or ATR-based fallback
+  const longT1  = resistances[1] ? round(resistances[1].price, 2) : round(longTrigger  + atr * 1.5, 2);
+  const longT2  = resistances[2] ? round(resistances[2].price, 2) : null;
+  const shortT1 = supports[1]    ? round(supports[1].price, 2)    : round(shortTrigger - atr * 1.5, 2);
+  const shortT2 = supports[2]    ? round(supports[2].price, 2)    : null;
+
+  // Require at least 1.3:1 R:R on at least one side
+  const longRR  = (longT1  - longTrigger)  / (longTrigger  - longStop);
+  const shortRR = (shortTrigger - shortT1) / (shortStop    - shortTrigger);
+  if (longRR < 1.3 && shortRR < 1.3) return null;
+
+  // Level context — concise label for UI
+  const rLabel = nearestR.labels.join('+');
+  const sLabel = nearestS.labels.join('+');
+  const levelContext = `${rLabel} $${nearestR.price} | ${sLabel} $${nearestS.price}`;
+
+  // Score: level strength (max 8 each) + bonus for T2 targets, normalized 0-10
+  const rawScore = (nearestR.strength + nearestS.strength) / 2 + (longT2 ? 0.5 : 0) + (shortT2 ? 0.5 : 0);
+  const setupScore = round(Math.min(10, rawScore * 1.2), 1);
+
+  const avgVol    = rawVal(quote.averageDailyVolume10Day);
+  const todayVol  = rawVal(quote.regularMarketVolume);
+  const dollarVolume = price * Math.max(avgVol, todayVol);
+
+  return {
+    ticker: quote.symbol ?? '',
+    name: quote.longName ?? quote.shortName ?? quote.symbol ?? '',
+    price,
+    atr: round(atr, 2),
+    longTrigger,
+    longStop,
+    longT1,
+    longT2,
+    shortTrigger,
+    shortStop,
+    shortT1,
+    shortT2,
+    levelContext,
+    setupScore,
+    dollarVolume,
+  };
+}
+
+async function runKeyLevelScan(
+  sb: ReturnType<typeof createClient>,
+  forceRefresh: boolean,
+): Promise<KeyLevelSetup[]> {
+  // Serve from cache if fresh (key levels valid all trading day)
+  const existing = await readFromDB(sb, 'key_levels');
+  if (!forceRefresh && existing && !isStale(existing)) {
+    return existing.data as unknown as KeyLevelSetup[];
+  }
+
+  // Universe: always-liquid core + yesterday's high-volume movers
+  const universe: string[] = [...DAY_CORE];
+  try {
+    const [gainers, losers, actives] = await Promise.all([
+      fetchMovers('day_gainers'),
+      fetchMovers('day_losers'),
+      fetchMovers('most_actives'),
+    ]);
+    const liquidMovers = [...gainers, ...losers, ...actives]
+      .filter(q => {
+        const p   = rawVal(q.regularMarketPrice);
+        const vol = rawVal(q.averageDailyVolume10Day);
+        return p >= 10 && p * vol >= 100_000_000; // min $100M daily dollar volume
+      })
+      .map(q => q.symbol!)
+      .filter(Boolean);
+    for (const s of liquidMovers) {
+      if (!universe.includes(s)) universe.push(s);
+      if (universe.length >= 45) break;
+    }
+  } catch { /* movers optional */ }
+
+  // Fetch quotes with full OHLCV bars
+  const quotes = await fetchSwingQuotes([...new Set(universe)]);
+
+  const setups: KeyLevelSetup[] = [];
+  for (const q of quotes) {
+    if (!q.symbol) continue;
+    const p      = rawVal(q.regularMarketPrice);
+    const avgVol = rawVal(q.averageDailyVolume10Day);
+    // Skip illiquid (< $50M daily dollar vol)
+    if (p < 5 || p * avgVol < 50_000_000) continue;
+    const setup = buildKeyLevelSetup(q);
+    if (setup) setups.push(setup);
+  }
+
+  // Sort: liquid first (SPY/QQQ/TSLA at top), then by setup quality
+  const sorted = setups
+    .sort((a, b) => b.dollarVolume - a.dollarVolume || b.setupScore - a.setupScore)
+    .slice(0, 15);
+
+  console.log(`[Key Level Scanner] ${sorted.length} setups from ${quotes.length} stocks`);
+
+  // Cache for 8 hours — levels don't change intraday
+  await writeToDB(sb, 'key_levels', sorted as unknown as TradeIdea[], 480);
+
+  return sorted;
+}
+
 // ── Pre-filter candidates before AI ─────────────────────
 
 const largeCapMode = true; // TSLA/NVDA style; set false for small-cap
@@ -1313,7 +1591,7 @@ async function runPass2(
     })
     .filter((x): x is TradeIdea => x !== null)
     .sort((a, b) => b.confidence - a.confidence)
-    .slice(0, 6);
+    .slice(0, 8);
 
   // Swing diagnostics: log signals + confident (logging only)
   if (mode === 'SWING_TRADE' && (withDirection.length > 0 || strictCandidates.length > 0)) {
@@ -1400,6 +1678,9 @@ Deno.serve(async (req) => {
       readFromDB(sb, 'swing_trades'),
     ]);
 
+    // ── Key Level scan (always run — no market hours restriction) ──
+    const keyLevelSetups = await runKeyLevelScan(sb, forceRefresh);
+
     const dayStale = isStale(dayRow);
     const swingStale = isStale(swingRow);
     const marketOpen = isMarketOpen();
@@ -1438,6 +1719,7 @@ Deno.serve(async (req) => {
       return new Response(JSON.stringify({
         dayTrades: dayRow?.data ?? [],
         swingTrades: swingRow?.data ?? [],
+        keyLevelSetups,
         timestamp: Date.now(),
         cached: true,
       }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
@@ -1448,6 +1730,7 @@ Deno.serve(async (req) => {
       return new Response(JSON.stringify({
         dayTrades: dayRow?.data ?? [],
         swingTrades: swingRow?.data ?? [],
+        keyLevelSetups,
         timestamp: Date.now(),
         cached: true,
       }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
@@ -1532,7 +1815,7 @@ Deno.serve(async (req) => {
           .filter(q => (q._inPlayScore ?? -999) > -999)
           .sort((a, b) => (b._inPlayScore ?? -999) - (a._inPlayScore ?? -999))
           .slice(0, 40);
-        candidates = candidates.slice(0, 20);
+        candidates = candidates.slice(0, 30);
         if (candidates.length > 0) {
           console.log(`[Trade Scanner] Day InPlayScore top 5: ${candidates.slice(0, 5).map(q => `${q.symbol}:${q._inPlayScore?.toFixed(2)}(${q._extensionPenalty ?? 0})`).join(', ')}`);
         }
@@ -1559,7 +1842,7 @@ Deno.serve(async (req) => {
           const pass1 = evals
             .filter(e => e.signal !== 'SKIP' && e.signal !== 'HOLD' && e.confidence >= 5)
             .sort((a, b) => b.confidence - a.confidence)
-            .slice(0, 5); // Cap at 5 to limit parallel Gemini + news fetches in Pass 2
+            .slice(0, 8); // Groq fallback removes quota constraint — allow up to 8 into Pass 2
 
           console.log(`[Trade Scanner] Day Pass 1: ${candidates.length} → ${pass1.length} shortlisted (${pass1.map(e => `${e.ticker}:${e.signal}/${e.confidence}`).join(', ')})`);
 
@@ -1650,7 +1933,7 @@ Deno.serve(async (req) => {
 
           const pass1 = nonSkip
             .filter(e => e.confidence >= 5)
-            .slice(0, 8);
+            .slice(0, 10);
 
           console.log(`[Trade Scanner] Swing Pass 1 → Pass 2 (${pass1.length}): ${pass1.map(e => `${e.ticker}:${e.signal}/${e.confidence}`).join(', ') || 'none'}`);
 
@@ -1691,6 +1974,7 @@ Deno.serve(async (req) => {
     return new Response(JSON.stringify({
       dayTrades: dayIdeas,
       swingTrades: needSwingRefresh ? swingIdeas : (swingRow?.data ?? []),
+      keyLevelSetups,
       timestamp: Date.now(),
       ...(swingUniverseInfo ? { swingUniverse: swingUniverseInfo } : {}),
     }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });

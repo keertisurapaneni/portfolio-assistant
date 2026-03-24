@@ -22,9 +22,28 @@ export interface TradeIdea {
   market_condition?: 'trend' | 'chop';
 }
 
+export interface KeyLevelSetup {
+  ticker: string;
+  name: string;
+  price: number;
+  atr: number;
+  longTrigger: number;
+  longStop: number;
+  longT1: number;
+  longT2: number | null;
+  shortTrigger: number;
+  shortStop: number;
+  shortT1: number;
+  shortT2: number | null;
+  levelContext: string;
+  setupScore: number;
+  dollarVolume: number;
+}
+
 export interface ScanResult {
   dayTrades: TradeIdea[];
   swingTrades: TradeIdea[];
+  keyLevelSetups: KeyLevelSetup[];
   timestamp: number;
   cached?: boolean;
 }

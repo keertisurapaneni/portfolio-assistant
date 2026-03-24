@@ -245,6 +245,23 @@ Deno.serve(async (req) => {
       continue;
     }
 
+    // Sanity-check price levels against known approximate ranges for well-known tickers.
+    // Catches LLM errors like extracting "6.10" instead of "610" for META.
+    const PRICE_FLOOR: Record<string, number> = {
+      META: 200, AAPL: 100, MSFT: 200, NVDA: 50, GOOGL: 100, GOOG: 100,
+      AMZN: 100, TSLA: 100, PLTR: 20, NFLX: 200, AMD: 50, CRM: 100,
+      SPY: 300, QQQ: 200, IWM: 100, DIA: 200,
+    };
+    const priceFloor = PRICE_FLOOR[ticker];
+    const allPriceLevels = [
+      sig.longTriggerAbove, sig.shortTriggerBelow,
+      ...(sig.longTargets ?? []), ...(sig.shortTargets ?? []),
+    ].filter((p): p is number => p != null);
+    if (priceFloor && allPriceLevels.some(p => p < priceFloor)) {
+      console.warn(`[import-strategy-signals] Skipping ${ticker} — price levels ${JSON.stringify(allPriceLevels)} below minimum $${priceFloor} (likely extraction error)`);
+      continue;
+    }
+
     const stopLoss = sig.stopLoss ?? null;
     const noteText = sig.notes ?? null;
 
