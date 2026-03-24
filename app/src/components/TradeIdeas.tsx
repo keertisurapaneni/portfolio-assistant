@@ -11,9 +11,12 @@ import {
   AlertTriangle,
   Bot,
   CheckCircle,
+  Target,
+  ArrowUpRight,
+  ArrowDownRight,
 } from 'lucide-react';
 import { cn } from '../lib/utils';
-import { fetchTradeIdeas, type TradeIdea, type ScanResult } from '../lib/tradeScannerApi';
+import { fetchTradeIdeas, type TradeIdea, type ScanResult, type KeyLevelSetup } from '../lib/tradeScannerApi';
 import {
   getAutoTraderConfig,
   processTradeIdeas,
@@ -34,7 +37,7 @@ interface TradeIdeasProps {
   onSelectTicker: (ticker: string, mode: 'DAY_TRADE' | 'SWING_TRADE') => void;
 }
 
-type Tab = 'day' | 'swing';
+type Tab = 'day' | 'swing' | 'gameplan';
 
 function formatScanAge(ts: number): string {
   const diffMs = Date.now() - ts;
@@ -117,8 +120,9 @@ export function TradeIdeas({ onSelectTicker }: TradeIdeasProps) {
 
   const dayIdeas = data?.dayTrades ?? [];
   const swingIdeas = data?.swingTrades ?? [];
-  const ideas = tab === 'day' ? dayIdeas : swingIdeas;
-  const totalCount = dayIdeas.length + swingIdeas.length;
+  const gameplanSetups = data?.keyLevelSetups ?? [];
+  const ideas = tab === 'day' ? dayIdeas : tab === 'swing' ? swingIdeas : [];
+  const totalCount = dayIdeas.length + swingIdeas.length + gameplanSetups.length;
 
   return (
     <div className="rounded-xl border border-[hsl(var(--border))] bg-white shadow-sm overflow-hidden">
@@ -278,16 +282,48 @@ export function TradeIdeas({ onSelectTicker }: TradeIdeasProps) {
                 </span>
               )}
             </button>
+            <button
+              type="button"
+              onClick={() => setTab('gameplan')}
+              className={cn(
+                'flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg transition-all',
+                tab === 'gameplan'
+                  ? 'bg-violet-50 text-violet-700 border border-violet-200 shadow-sm'
+                  : 'text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--secondary))]'
+              )}
+            >
+              <Target className="w-3.5 h-3.5" />
+              Key Levels
+              {gameplanSetups.length > 0 && (
+                <span className={cn(
+                  'ml-0.5 text-[10px] px-1.5 rounded-full font-semibold',
+                  tab === 'gameplan' ? 'bg-violet-200/70 text-violet-700' : 'bg-[hsl(var(--secondary))] text-[hsl(var(--muted-foreground))]'
+                )}>
+                  {gameplanSetups.length}
+                </span>
+              )}
+            </button>
           </div>
 
-          {/* Caution banner */}
-          <div className="mx-4 mt-2.5 flex items-start gap-2 rounded-lg bg-amber-50 border border-amber-200/70 px-3 py-2">
-            <AlertTriangle className="w-3.5 h-3.5 text-amber-500 mt-0.5 flex-shrink-0" />
-            <p className="text-[11px] leading-snug text-amber-700">
-              AI-screened ideas with candle validation. Run a <span className="font-semibold">full analysis</span> for
-              entry/exit levels, risk sizing, and multi-timeframe confirmation before trading.
-            </p>
-          </div>
+          {/* Banner */}
+          {tab !== 'gameplan' && (
+            <div className="mx-4 mt-2.5 flex items-start gap-2 rounded-lg bg-amber-50 border border-amber-200/70 px-3 py-2">
+              <AlertTriangle className="w-3.5 h-3.5 text-amber-500 mt-0.5 flex-shrink-0" />
+              <p className="text-[11px] leading-snug text-amber-700">
+                AI-screened ideas with candle validation. Run a <span className="font-semibold">full analysis</span> for
+                entry/exit levels, risk sizing, and multi-timeframe confirmation before trading.
+              </p>
+            </div>
+          )}
+          {tab === 'gameplan' && (
+            <div className="mx-4 mt-2.5 flex items-start gap-2 rounded-lg bg-violet-50 border border-violet-200/70 px-3 py-2">
+              <Target className="w-3.5 h-3.5 text-violet-500 mt-0.5 flex-shrink-0" />
+              <p className="text-[11px] leading-snug text-violet-700">
+                Pure price structure — no AI bias. Both sides pre-planned from prev-day high/low, SMAs, and round numbers.
+                <span className="font-semibold"> Let price pick a side.</span>
+              </p>
+            </div>
+          )}
 
           {/* Content */}
           <div className="p-4 pt-3">
@@ -302,31 +338,63 @@ export function TradeIdeas({ onSelectTicker }: TradeIdeasProps) {
               <p className="text-sm text-red-600 py-4 text-center">{error}</p>
             )}
 
-            {ideas.length === 0 && !loading && !error && data && (
-              <div className="flex flex-col items-center py-6 gap-2 text-center">
-                <BarChart3 className="w-8 h-8 text-[hsl(var(--muted-foreground))] opacity-40" />
-                <p className="text-sm text-[hsl(var(--muted-foreground))]">
-                  {tab === 'day'
-                    ? 'No high-confidence day trade setups right now.'
-                    : 'No confirmed swing setups found.'}
-                </p>
-                <p className="text-xs text-[hsl(var(--muted-foreground))] opacity-70">
-                  Market may be closed or the AI didn't find setups worth recommending.
-                </p>
-              </div>
+            {/* Day / Swing tab content */}
+            {tab !== 'gameplan' && (
+              <>
+                {ideas.length === 0 && !loading && !error && data && (
+                  <div className="flex flex-col items-center py-6 gap-2 text-center">
+                    <BarChart3 className="w-8 h-8 text-[hsl(var(--muted-foreground))] opacity-40" />
+                    <p className="text-sm text-[hsl(var(--muted-foreground))]">
+                      {tab === 'day'
+                        ? 'No high-confidence day trade setups right now.'
+                        : 'No confirmed swing setups found.'}
+                    </p>
+                    <p className="text-xs text-[hsl(var(--muted-foreground))] opacity-70">
+                      Market may be closed or the AI didn't find setups worth recommending.
+                    </p>
+                  </div>
+                )}
+                {ideas.length > 0 && (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-2.5">
+                    {ideas.map((idea) => (
+                      <IdeaCard
+                        key={idea.ticker}
+                        idea={idea}
+                        traded={tradedTickers.has(idea.ticker.toUpperCase())}
+                        onSelect={onSelectTicker}
+                      />
+                    ))}
+                  </div>
+                )}
+              </>
             )}
 
-            {ideas.length > 0 && (
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-2.5">
-                {ideas.map((idea) => (
-                  <IdeaCard
-                    key={idea.ticker}
-                    idea={idea}
-                    traded={tradedTickers.has(idea.ticker.toUpperCase())}
-                    onSelect={onSelectTicker}
-                  />
-                ))}
-              </div>
+            {/* Gameplan / Key Levels tab content */}
+            {tab === 'gameplan' && (
+              <>
+                {gameplanSetups.length === 0 && !loading && (
+                  <div className="flex flex-col items-center py-6 gap-2 text-center">
+                    <Target className="w-8 h-8 text-[hsl(var(--muted-foreground))] opacity-40" />
+                    <p className="text-sm text-[hsl(var(--muted-foreground))]">
+                      No key level setups available yet.
+                    </p>
+                    <p className="text-xs text-[hsl(var(--muted-foreground))] opacity-70">
+                      Try refreshing — levels are computed from yesterday's price structure.
+                    </p>
+                  </div>
+                )}
+                {gameplanSetups.length > 0 && (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-2.5">
+                    {gameplanSetups.map((setup) => (
+                      <KeyLevelCard
+                        key={setup.ticker}
+                        setup={setup}
+                        onSelect={() => onSelectTicker(setup.ticker, 'DAY_TRADE')}
+                      />
+                    ))}
+                  </div>
+                )}
+              </>
             )}
           </div>
         </div>
@@ -394,6 +462,93 @@ function SignalPill({ signal }: { signal: 'BUY' | 'SELL' }) {
     )}>
       {signal}
     </span>
+  );
+}
+
+// ── Key Level Card ──────────────────────────────────────
+
+function KeyLevelCard({ setup, onSelect }: { setup: KeyLevelSetup; onSelect: () => void }) {
+  const fmt = (n: number) => n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+  return (
+    <button
+      type="button"
+      onClick={onSelect}
+      className="group flex flex-col rounded-lg border border-[hsl(var(--border))] bg-white p-3 text-left transition-all duration-200 hover:shadow-md hover:border-violet-300 hover:-translate-y-0.5"
+    >
+      {/* Header */}
+      <div className="flex items-center justify-between w-full">
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-bold text-[hsl(var(--foreground))]">{setup.ticker}</span>
+          <span className="text-[10px] text-[hsl(var(--muted-foreground))] truncate max-w-[120px]">{setup.name}</span>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <span className="text-[11px] font-semibold tabular-nums text-[hsl(var(--foreground))]">${fmt(setup.price)}</span>
+          <span className="text-[9px] text-[hsl(var(--muted-foreground))]">ATR ${setup.atr}</span>
+        </div>
+      </div>
+
+      {/* Two-sided levels */}
+      <div className="mt-2 grid grid-cols-2 gap-1.5">
+        {/* Long side */}
+        <div className="rounded-md bg-emerald-50 border border-emerald-200/70 px-2 py-1.5">
+          <div className="flex items-center gap-1 mb-1">
+            <ArrowUpRight className="w-3 h-3 text-emerald-600 flex-shrink-0" />
+            <span className="text-[10px] font-bold text-emerald-700">LONG above ${fmt(setup.longTrigger)}</span>
+          </div>
+          <div className="space-y-0.5">
+            <div className="flex justify-between text-[10px]">
+              <span className="text-emerald-600">T1</span>
+              <span className="font-medium tabular-nums text-emerald-800">${fmt(setup.longT1)}</span>
+            </div>
+            {setup.longT2 && (
+              <div className="flex justify-between text-[10px]">
+                <span className="text-emerald-600">T2</span>
+                <span className="font-medium tabular-nums text-emerald-800">${fmt(setup.longT2)}</span>
+              </div>
+            )}
+            <div className="flex justify-between text-[10px] pt-0.5 border-t border-emerald-200/50 mt-0.5">
+              <span className="text-red-500">Stop</span>
+              <span className="font-medium tabular-nums text-red-600">${fmt(setup.longStop)}</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Short side */}
+        <div className="rounded-md bg-red-50 border border-red-200/70 px-2 py-1.5">
+          <div className="flex items-center gap-1 mb-1">
+            <ArrowDownRight className="w-3 h-3 text-red-600 flex-shrink-0" />
+            <span className="text-[10px] font-bold text-red-700">SHORT below ${fmt(setup.shortTrigger)}</span>
+          </div>
+          <div className="space-y-0.5">
+            <div className="flex justify-between text-[10px]">
+              <span className="text-red-600">T1</span>
+              <span className="font-medium tabular-nums text-red-800">${fmt(setup.shortT1)}</span>
+            </div>
+            {setup.shortT2 && (
+              <div className="flex justify-between text-[10px]">
+                <span className="text-red-600">T2</span>
+                <span className="font-medium tabular-nums text-red-800">${fmt(setup.shortT2)}</span>
+              </div>
+            )}
+            <div className="flex justify-between text-[10px] pt-0.5 border-t border-red-200/50 mt-0.5">
+              <span className="text-[hsl(var(--muted-foreground))]">Stop</span>
+              <span className="font-medium tabular-nums text-[hsl(var(--muted-foreground))]">${fmt(setup.shortStop)}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Level context */}
+      <p className="mt-2 text-[10px] text-[hsl(var(--muted-foreground))] leading-snug line-clamp-1">
+        📍 {setup.levelContext}
+      </p>
+
+      {/* Analyze CTA */}
+      <div className="flex items-center gap-1 mt-1.5 text-[10px] font-semibold text-[hsl(var(--muted-foreground))] group-hover:text-violet-600 transition-colors">
+        Run full analysis <ChevronRight className="w-3 h-3 transition-transform group-hover:translate-x-0.5" />
+      </div>
+    </button>
   );
 }
 

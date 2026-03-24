@@ -1640,6 +1640,16 @@ async function executeScannerTrade(
       entryPrice = r2(livePrice);
       stopLoss = r2(idea.stopLoss + delta);
       targetPrice = r2(idea.targetPrice + delta);
+      // Enforce minimum stop distance: at least 0.8% of price.
+      // Tiny stops (< 0.5%) almost always get hit on normal open volatility —
+      // they produce huge share counts via risk-sizing and then gap through on fast markets.
+      const minStopDist = livePrice * 0.008;
+      const actualStopDist = Math.abs(entryPrice - stopLoss);
+      if (actualStopDist < minStopDist) {
+        stopLoss = signal === 'BUY' ? r2(entryPrice - minStopDist) : r2(entryPrice + minStopDist);
+        targetPrice = signal === 'BUY' ? r2(entryPrice + minStopDist * 2) : r2(entryPrice - minStopDist * 2);
+        log(`${ticker}: stop too tight (${actualStopDist.toFixed(2)}) — widened to min 0.8% (${minStopDist.toFixed(2)})`);
+      }
       log(`${ticker}: live price ${livePrice} (shifted ${delta > 0 ? '+' : ''}${delta.toFixed(2)} from scan entry ${scannerEntry})`);
     } else if (livePrice && idea.atr && idea.atr > 0) {
       // Price moved > 3% — levels are too stale. Recompute from ATR around live price.
@@ -1693,10 +1703,19 @@ async function executeScannerTrade(
 
   const dd = assessDrawdownMultiplier(positions);
   const kellyMult = await calculateKellyMultiplier(config);
-  const sizing = calculatePositionSize(config, {
+  const sizingRaw = calculatePositionSize(config, {
     price: entryPrice, mode, entryPrice, stopLoss,
     drawdownMultiplier: dd.multiplier * kellyMult,
   });
+  // Scanner trades (AI-generated, not expert-vetted) must be capped at positionSize.
+  // Dynamic sizing can produce 200-400 share positions when the stop is very tight —
+  // a gap-through on a volatile open turns a $300 expected loss into a $1,500+ wipeout.
+  const scannerPositionCap = config.positionSize > 0 ? config.positionSize : 5000;
+  const cappedDollarSize = Math.min(sizingRaw.dollarSize, scannerPositionCap);
+  const sizing = {
+    dollarSize: cappedDollarSize,
+    quantity: Math.max(1, Math.floor(cappedDollarSize / entryPrice)),
+  };
   if (sizing.quantity < 1) return 'skipped:size_too_small';
 
   if (!(await runPreTradeChecks(config, ticker, sizing.dollarSize, positions, mode))) {
