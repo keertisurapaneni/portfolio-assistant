@@ -290,7 +290,23 @@ export function StrategyPerformanceTab({ sources, videos, statuses, onRefresh }:
         continue;
       }
 
-      bySource.set(source, [...rows].sort((a, b) => b.totalPnl - a.totalPnl));
+      // Sort: active signals first, then by most recent applicableDate, then by totalPnl
+      const stateOrder = (row: StrategyRow): number => {
+        if (row.isMarkedX || row.videoHeading.toLowerCase().startsWith('legacy strategy')) return 3;
+        const isExpired = row.strategyType === 'daily_signal' && !!row.applicableDate && (
+          row.applicableDate < todayET || (row.applicableDate === todayET && isPastMarketCloseET)
+        );
+        return isExpired ? 2 : 0;
+      };
+      bySource.set(source, [...rows].sort((a, b) => {
+        const stateDiff = stateOrder(a) - stateOrder(b);
+        if (stateDiff !== 0) return stateDiff;
+        // Within same state: latest date first
+        const dateA = a.applicableDate ?? a.lastTradeAt ?? '';
+        const dateB = b.applicableDate ?? b.lastTradeAt ?? '';
+        if (dateB !== dateA) return dateB.localeCompare(dateA);
+        return b.totalPnl - a.totalPnl;
+      }));
     }
 
     return bySource;
