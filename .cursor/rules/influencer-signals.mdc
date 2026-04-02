@@ -1,0 +1,33 @@
+---
+description: Rules for influencer/strategy video signals in the auto-trader
+globs: auto-trader/src/scheduler.ts
+alwaysApply: false
+---
+
+# Influencer Signal Rules
+
+Signals from tracked strategy videos (Somesh / Kay Capitals, etc.) are identified by `signal.strategy_video_id != null` and stored in `isInfluencerSignal`.
+
+## These checks are ALREADY SKIPPED for influencer signals — never re-add them:
+
+- ✅ FA validation (`requiresFaValidation = false` when `isInfluencerSignal`)
+- ✅ Volume gate (≥1.3x intraday volume)
+- ✅ SPY alignment gate
+- ✅ Pre-trade risk checks: drawdown protection, allocation cap, sector exposure, earnings blackout (`!isInfluencerSignal` guard on `runPreTradeChecks`)
+- ✅ Kelly/drawdown multipliers on position sizing (flat dollar amount used directly)
+
+## These checks still apply — do NOT remove them:
+
+- ❌ Entry trigger not reached (price must hit Somesh's level before executing)
+- ❌ Duplicate active trade (same ticker/direction/video already open)
+- ❌ Strategy marked X (consecutive losses threshold)
+
+## The reason
+
+Drawdown/allocation/sector checks exist to protect against our own AI-generated (scanner) trades going bad. Influencer signals come from a human expert with their own risk management — our system should not second-guess them. When the portfolio is in critical drawdown, blocking Somesh's signals just means we miss his recovery plays.
+
+## If you ever see `runPreTradeChecks` being called for influencer signals, that is a bug — the guard must be:
+
+```typescript
+if (!skipConfirmationGates && !isInfluencerSignal && !(await runPreTradeChecks(...))) {
+```
