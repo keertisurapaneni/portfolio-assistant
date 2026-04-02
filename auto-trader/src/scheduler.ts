@@ -2133,7 +2133,10 @@ async function executeExternalStrategySignal(
     return 'failed';
   }
 
-  if (!skipConfirmationGates && !(await runPreTradeChecks(config, ticker, sizing.dollarSize, positions, (signal.mode ?? 'DAY_TRADE') as 'DAY_TRADE' | 'SWING_TRADE'))) {
+  // Influencer signals are pre-vetted — skip drawdown/allocation/sector checks that exist
+  // to protect us from our own bad AI trades. Somesh has his own risk management; blocking
+  // his signals when our portfolio is red just means we miss his recovery plays.
+  if (!skipConfirmationGates && !isInfluencerSignal && !(await runPreTradeChecks(config, ticker, sizing.dollarSize, positions, (signal.mode ?? 'DAY_TRADE') as 'DAY_TRADE' | 'SWING_TRADE'))) {
     await updateExternalStrategySignal(signal.id, {
       status: 'SKIPPED',
       failure_reason: 'Pre-trade risk checks blocked execution',
