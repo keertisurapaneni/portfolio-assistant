@@ -38,6 +38,7 @@ Operational how-tos and deployment references.
 
 | Doc | Description |
 |-----|-------------|
+| [Daily Trading Routine](./guides/daily-trading-routine.md) | Morning checklist, schedule, signal pipeline, troubleshooting |
 | [Deploy Market Movers](./guides/deploy-market-movers.md) | Market movers scraper deployment |
 | [Deploy Yahoo News](./guides/deploy-yahoo-news.md) | Yahoo Finance news integration setup |
 | [Trade Performance Logging](./guides/trade-performance-logging.md) | P&L and metrics tracking schema |
