@@ -1050,21 +1050,22 @@ function buildKeyLevelSetup(quote: YahooQuote): KeyLevelSetup | null {
   const ohlcv = quote._ohlcvBars ?? [];
   if (!price || price < 5 || ohlcv.length < 5) return null;
 
-  // ATR from last 14 complete daily bars
-  const recentBars = ohlcv.slice(-15);
+  // ATR from last 14 complete daily bars (ohlcv is newest-first: index 0 = today)
+  const recentBars = ohlcv.slice(0, 15);
+  const recentBarsOldestFirst = recentBars.slice().reverse();
   const atr = computeATR_pass1(
-    recentBars.map(b => b.h),
-    recentBars.map(b => b.l),
-    recentBars.map(b => b.c),
+    recentBarsOldestFirst.map(b => b.h),
+    recentBarsOldestFirst.map(b => b.l),
+    recentBarsOldestFirst.map(b => b.c),
   ) ?? (price * 0.02);
 
   const rawLevels: RawKeyLevel[] = [];
 
   // ── Previous day high/low (most reliable level) ──
-  // Use second-to-last bar: last bar may be today's partial data
-  const prevBars = ohlcv.slice(-6, -1); // last 5 complete bars
+  // Skip index 0 (today's potentially partial bar); take next 5 complete bars
+  const prevBars = ohlcv.slice(1, 6); // last 5 complete bars (newest-first)
   if (prevBars.length > 0) {
-    const yest = prevBars[prevBars.length - 1];
+    const yest = prevBars[0]; // index 0 = most recent complete bar = yesterday
     if (yest.h > 0) rawLevels.push({ price: yest.h, strength: 4, label: 'Prev High' });
     if (yest.l > 0) rawLevels.push({ price: yest.l, strength: 4, label: 'Prev Low' });
   }
@@ -1073,8 +1074,8 @@ function buildKeyLevelSetup(quote: YahooQuote): KeyLevelSetup | null {
   if (prevBars.length >= 4) {
     const w5High = Math.max(...prevBars.map(b => b.h));
     const w5Low  = Math.min(...prevBars.map(b => b.l));
-    const prevHigh = prevBars[prevBars.length - 1]?.h ?? 0;
-    const prevLow  = prevBars[prevBars.length - 1]?.l ?? 0;
+    const prevHigh = prevBars[0]?.h ?? 0; // prevBars[0] = yesterday (newest-first)
+    const prevLow  = prevBars[0]?.l ?? 0;
     // Only add if different from yesterday's level (to avoid duplicates pre-clustering)
     if (w5High > 0 && Math.abs(w5High - prevHigh) > atr * 0.1)
       rawLevels.push({ price: w5High, strength: 3, label: '5D High' });
@@ -1926,8 +1927,7 @@ Deno.serve(async (req) => {
         candidates = candidates
           .filter(q => (q._inPlayScore ?? -999) > -999)
           .sort((a, b) => (b._inPlayScore ?? -999) - (a._inPlayScore ?? -999))
-          .slice(0, 40);
-        candidates = candidates.slice(0, 30);
+          .slice(0, 30);
         if (candidates.length > 0) {
           console.log(`[Trade Scanner] Day InPlayScore top 5: ${candidates.slice(0, 5).map(q => `${q.symbol}:${q._inPlayScore?.toFixed(2)}(${q._extensionPenalty ?? 0})`).join(', ')}`);
         }
