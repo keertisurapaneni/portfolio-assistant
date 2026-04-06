@@ -720,8 +720,9 @@ async function getGenericStrategyEVScores(): Promise<
       const wins = trades.filter(t => t.pnl > 0).length;
       const winRate = trades.length > 0 ? wins / trades.length : 0;
       const avgReturnPct = trades.reduce((s, t) => s + t.pnl_percent, 0) / trades.length;
-      // EV: expected return per trade. Positive means strategy is adding value.
-      const ev = trades.length >= MIN_EV_SAMPLE ? winRate * avgReturnPct : 0;
+      // EV: expected return per trade = simple average of all outcomes (wins + losses).
+      // avgReturnPct already encapsulates both sides — multiplying by winRate again was wrong.
+      const ev = trades.length >= MIN_EV_SAMPLE ? avgReturnPct : 0;
       scores.set(videoId, { ev, trades: trades.length, winRate, avgReturnPct });
     }
 
@@ -1499,7 +1500,7 @@ async function calculateKellyMultiplier(config: AutoTraderConfig): Promise<numbe
     const { data, error } = await sb
       .from('paper_trades')
       .select('pnl_percent, fill_price, mode')
-      .eq('status', 'CLOSED')
+      .in('status', ['CLOSED', 'STOPPED', 'TARGET_HIT'])
       .in('mode', ['DAY_TRADE', 'SWING_TRADE'])
       .not('pnl_percent', 'is', null)
       .not('fill_price', 'is', null)
@@ -3131,11 +3132,20 @@ async function preGenerateSuggestedFinds(
       const activeCount = await countActivePositions();
       const slots = config.maxPositions - activeCount;
 
+      let anyOrderFailed = false;
       for (const stock of qualified.slice(0, Math.max(0, slots))) {
         const result = await executeSuggestedFindTrade(stock, config, positions);
         log(`  ${stock.ticker}: ${result}`);
+        if (result === 'failed:order' || result === 'failed:no_price' || result === 'failed:no_contract') {
+          anyOrderFailed = true;
+        }
         await new Promise(r => setTimeout(r, 2000)); // rate limit
       }
+
+      // Only lock out today if orders went through (or were legitimately skipped).
+      // If all orders failed (IB down, no price), allow retry on the next cycle.
+      if (!anyOrderFailed) _lastSuggestedFindsDate = today;
+      return;
     }
 
     _lastSuggestedFindsDate = today;
@@ -3285,12 +3295,14 @@ async function runSchedulerCycle(): Promise<void> {
     // Get current IB positions (used throughout the cycle)
     const positions = await getEnrichedPositions();
 
-    // 1. Pre-generate Suggested Finds (daily at ~9 AM ET)
-    await preGenerateSuggestedFinds(config, positions);
-
-    // 2. Sync positions — detect fills, closes, update P&L
+    // 1. Sync positions — detect fills, closes, update P&L
+    // Reset pending dollar BEFORE any new orders so IB is source of truth for the full cycle.
     await syncPositions(config, positions);
     _pendingDeployedDollar = 0; // reset after sync — IB is source of truth
+
+    // 2. Pre-generate Suggested Finds (daily at ~9 AM ET)
+    // Runs AFTER sync+reset so SF trades are tracked in _pendingDeployedDollar for this cycle.
+    await preGenerateSuggestedFinds(config, positions);
 
     // 3. Save daily portfolio snapshot
     await savePortfolioSnapshotQuiet(config, positions);

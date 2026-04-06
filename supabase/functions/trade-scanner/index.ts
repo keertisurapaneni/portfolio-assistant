@@ -431,8 +431,19 @@ function isSwingRefreshWindow(): boolean {
   const { hour, minute, dayOfWeek } = getETNow();
   if (dayOfWeek === 0 || dayOfWeek === 6) return false;
   const mins = hour * 60 + minute;
-  return (mins >= 9 * 60 + 45 && mins <= 10 * 60 + 15) ||
-         (mins >= 15 * 60 + 30 && mins <= 16 * 60);
+  // 4x/day: near open, midday, afternoon, near close
+  return (mins >= 9 * 60 + 45 && mins <= 10 * 60 + 15) ||   // ~10:00 AM
+         (mins >= 12 * 60 && mins <= 12 * 60 + 30) ||          // ~12:00 PM
+         (mins >= 14 * 60 && mins <= 14 * 60 + 30) ||          // ~2:00 PM
+         (mins >= 15 * 60 + 30 && mins <= 16 * 60);            // ~3:45 PM
+}
+
+function isPreMarketWindow(): boolean {
+  const { hour, minute, dayOfWeek } = getETNow();
+  if (dayOfWeek === 0 || dayOfWeek === 6) return false;
+  const mins = hour * 60 + minute;
+  // 7:00 AM – 9:25 AM ET — pre-market is active, gap thesis is forming
+  return mins >= 7 * 60 && mins <= 9 * 60 + 25;
 }
 
 // ── Yahoo Finance data fetchers (Pass 1 discovery) ──────
@@ -539,6 +550,70 @@ async function fetchSwingQuotes(symbols: string[]): Promise<YahooQuote[]> {
     for (const q of res) { if (q) results.push(q); }
   }
   return results;
+}
+
+// ── Pre-market gap scanner ───────────────────────────────
+//
+// Runs 7:00–9:25 AM ET. Fetches pre-market price for DAY_CORE tickers via
+// Yahoo chart with includePrePost=true, caches gappers (>1.5% move vs prev close).
+// At market open, these are injected as priority candidates in the day trade scan.
+
+interface PreMarketGapper {
+  ticker: string;
+  gapPct: number;        // vs prev close
+  preMarketPrice: number;
+  prevClose: number;
+  scannedAt: string;
+}
+
+async function fetchPreMarketGap(symbol: string): Promise<{ gapPct: number; preMarketPrice: number; prevClose: number } | null> {
+  try {
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=1d&interval=1m&includePrePost=true`;
+    const res = await fetch(url, { headers: YAHOO_HEADERS, signal: AbortSignal.timeout(8_000) });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const meta = data?.chart?.result?.[0]?.meta ?? {};
+    const prevClose: number = meta.chartPreviousClose ?? meta.regularMarketPreviousClose ?? 0;
+    const preMarketPrice: number = meta.preMarketPrice ?? 0;
+    if (!preMarketPrice || !prevClose || prevClose === 0) return null;
+    const gapPct = ((preMarketPrice - prevClose) / prevClose) * 100;
+    return { gapPct, preMarketPrice, prevClose };
+  } catch {
+    return null;
+  }
+}
+
+async function runPreMarketGapScan(
+  sb: ReturnType<typeof createClient>,
+  forceRefresh: boolean,
+  portfolioTickers: string[],
+): Promise<PreMarketGapper[]> {
+  const existing = await readFromDB(sb, 'pre_market_gaps');
+  if (!forceRefresh && existing && !isStale(existing)) {
+    return existing.data as unknown as PreMarketGapper[];
+  }
+
+  // Watch DAY_CORE + current portfolio holdings
+  const universe = [...new Set([...DAY_CORE, ...portfolioTickers])];
+  const BATCH = 5;
+  const gappers: PreMarketGapper[] = [];
+
+  for (let i = 0; i < universe.length; i += BATCH) {
+    const batch = universe.slice(i, i + BATCH);
+    const results = await Promise.all(batch.map(async (sym) => {
+      const gap = await fetchPreMarketGap(sym);
+      if (!gap || Math.abs(gap.gapPct) < 1.5) return null;
+      return { ticker: sym, ...gap, scannedAt: new Date().toISOString() } as PreMarketGapper;
+    }));
+    for (const r of results) { if (r) gappers.push(r); }
+  }
+
+  const sorted = gappers.sort((a, b) => Math.abs(b.gapPct) - Math.abs(a.gapPct));
+  console.log(`[Pre-Market Scanner] ${sorted.length} gappers: ${sorted.map(g => `${g.ticker}(${g.gapPct >= 0 ? '+' : ''}${g.gapPct.toFixed(1)}%)`).join(', ')}`);
+
+  // Cache for 30 minutes
+  await writeToDB(sb, 'pre_market_gaps', sorted as unknown as TradeIdea[], 30);
+  return sorted;
 }
 
 // ── Format stock data for AI prompt (Pass 1 only) ───────
@@ -1228,7 +1303,9 @@ function computeInPlayScore(q: YahooQuote, candidates: YahooQuote[]): number {
   const trendScore = computeTrendScore(q);
   (q as YahooQuote & { _trendScore: number })._trendScore = trendScore;
 
-  const extensionPenalty = Math.max(0, Math.abs(changePct) - 3) * 0.7;
+  // Only penalize genuinely overextended moves (>20%). Stocks up 5-15% are prime
+  // day trade candidates and should NOT be suppressed by this penalty.
+  const extensionPenalty = Math.max(0, Math.abs(changePct) - 20) * 0.3;
   (q as YahooQuote & { _extensionPenalty: number })._extensionPenalty = round(extensionPenalty, 2);
 
   const n = candidates.length;
@@ -1684,7 +1761,16 @@ Deno.serve(async (req) => {
     const dayStale = isStale(dayRow);
     const swingStale = isStale(swingRow);
     const marketOpen = isMarketOpen();
+    const preMarket = isPreMarketWindow();
     const swingWindow = isSwingRefreshWindow();
+
+    // ── Pre-market gap scan (7–9:25 AM ET) ──
+    // Run silently in the background — populates cache for market open injection.
+    if (preMarket || forceRefresh) {
+      runPreMarketGapScan(sb, forceRefresh, portfolioTickers).catch(e =>
+        console.warn('[Pre-Market Scanner] Failed:', e)
+      );
+    }
 
     // Check if scan data is from a PREVIOUS trading day (needs fresh start)
     const todayET = formatDateToEtIso(new Date());
@@ -1716,10 +1802,12 @@ Deno.serve(async (req) => {
     console.log(`[Trade Scanner] day=${dayStale ? 'STALE' : 'FRESH'} dayPrevDay=${dayFromPreviousDay} swing=${swingStale ? 'STALE' : 'FRESH'} swingPrevDay=${swingFromPreviousDay} market=${marketOpen ? 'OPEN' : 'CLOSED'} swingWindow=${swingWindow} refreshDay=${needDayRefresh} refreshSwing=${needSwingRefresh}`);
 
     if (!needDayRefresh && !needSwingRefresh) {
+      const cachedGapRow = await readFromDB(sb, 'pre_market_gaps');
       return new Response(JSON.stringify({
         dayTrades: dayRow?.data ?? [],
         swingTrades: swingRow?.data ?? [],
         keyLevelSetups,
+        preMarketGappers: (cachedGapRow?.data ?? []) as unknown as PreMarketGapper[],
         timestamp: Date.now(),
         cached: true,
       }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
@@ -1727,10 +1815,12 @@ Deno.serve(async (req) => {
 
     if (GEMINI_KEYS.length === 0) {
       console.warn('[Trade Scanner] No Gemini keys — returning cached data');
+      const cachedGapRow = await readFromDB(sb, 'pre_market_gaps');
       return new Response(JSON.stringify({
         dayTrades: dayRow?.data ?? [],
         swingTrades: swingRow?.data ?? [],
         keyLevelSetups,
+        preMarketGappers: (cachedGapRow?.data ?? []) as unknown as PreMarketGapper[],
         timestamp: Date.now(),
         cached: true,
       }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
@@ -1778,6 +1868,26 @@ Deno.serve(async (req) => {
           }
         }
         console.log(`[Trade Scanner] DAY_CORE injected: ${coreQuotes.map(q => q.symbol).filter(Boolean).join(', ')}`);
+      }
+
+      // Inject pre-market gappers — non-DAY_CORE stocks that were gapping pre-market
+      // These are the best gap-and-go setups: known movers at 9:30 open.
+      const preMarketRow = await readFromDB(sb, 'pre_market_gaps');
+      if (preMarketRow && !isStale(preMarketRow) && preMarketRow.data.length > 0) {
+        const gappers = preMarketRow.data as unknown as PreMarketGapper[];
+        const gapTickers = gappers.map(g => g.ticker).filter(t => !deduped.has(t));
+        if (gapTickers.length > 0) {
+          const gapQuotes = await fetchSwingQuotes(gapTickers);
+          for (const q of gapQuotes) {
+            if (!q.symbol) continue;
+            const price = rawVal(q.regularMarketPrice);
+            const volume = rawVal(q.regularMarketVolume);
+            if (price >= 10 && volume >= 500_000) {
+              deduped.set(q.symbol, q);
+            }
+          }
+          console.log(`[Trade Scanner] Pre-market gappers injected: ${gapTickers.join(', ')}`);
+        }
       }
 
       let candidates = [...deduped.values()];
@@ -1971,10 +2081,14 @@ Deno.serve(async (req) => {
     // When only one scan ran (e.g. day refresh ran but swing was skipped), always use the DB
     // data for the non-refreshed type — swingIdeas/dayIdeas start empty when prevDay is true
     // and would wrongly wipe the UI if we didn't fall back to the DB rows here.
+    const preMarketGapRow = await readFromDB(sb, 'pre_market_gaps');
+    const preMarketGappers = (preMarketGapRow?.data ?? []) as unknown as PreMarketGapper[];
+
     return new Response(JSON.stringify({
       dayTrades: dayIdeas,
       swingTrades: needSwingRefresh ? swingIdeas : (swingRow?.data ?? []),
       keyLevelSetups,
+      preMarketGappers,
       timestamp: Date.now(),
       ...(swingUniverseInfo ? { swingUniverse: swingUniverseInfo } : {}),
     }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
