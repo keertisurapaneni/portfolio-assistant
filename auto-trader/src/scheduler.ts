@@ -224,7 +224,18 @@ export function startScheduler(): void {
     log('Transcript ingest skipped: scripts/ingest_video.py not found');
   }
 
-  console.log('[Scheduler] Started — every 15 min + 9:36 ET first-candle pass (weekdays)');
+  // EOD day-trade auto-close: 3:55 PM ET on weekdays.
+  // Mirrors browser scheduleDayTradeAutoClose — ensures positions close even when browser is shut.
+  cron.schedule('55 15 * * 1-5', async () => {
+    const config = await loadConfig();
+    if (config.dayTradeAutoClose) {
+      await closeAllDayTrades(config);
+    } else {
+      log('EOD day-trade sweep skipped (day_trade_auto_close disabled)');
+    }
+  }, { timezone: 'America/New_York' });
+
+  console.log('[Scheduler] Started — every 15 min + 9:36 ET first-candle pass + 15:55 EOD close (weekdays)');
 
   // Realtime: execute trades immediately when scanner refreshes (e.g. from TradeIdeas UI)
   subscribeToTradeScans();
@@ -249,6 +260,48 @@ export function stopScheduler(): void {
   }
   if (!_cronJob && !_firstCandleCronJob) {
     console.log('[Scheduler] Stopped');
+  }
+}
+
+/**
+ * Close all open DAY_TRADE positions with status FILLED.
+ * Called by the 3:55 PM ET EOD sweep cron job.
+ */
+async function closeAllDayTrades(config: AutoTraderConfig): Promise<void> {
+  log('EOD day-trade sweep: closing all open day trade positions…');
+  const activeTrades = await getActiveTrades();
+  const dayTrades = activeTrades.filter(t => t.mode === 'DAY_TRADE' && t.status === 'FILLED');
+
+  if (dayTrades.length === 0) {
+    log('EOD sweep: no open day trades');
+    return;
+  }
+
+  log(`EOD sweep: ${dayTrades.length} open day trade(s) to close`);
+  for (const trade of dayTrades) {
+    try {
+      const contract = await searchContract(trade.ticker);
+      if (!contract) {
+        log(`EOD sweep: ${trade.ticker} — no IB contract found, skipping`);
+        continue;
+      }
+      const closeSide = trade.signal === 'BUY' ? 'SELL' : 'BUY';
+      const qty = trade.quantity ?? 0;
+      if (qty <= 0) {
+        log(`EOD sweep: ${trade.ticker} — quantity is 0, skipping`);
+        continue;
+      }
+
+      await placeMarketOrder({ symbol: trade.ticker, side: closeSide, quantity: qty });
+      await updatePaperTrade(trade.id, {
+        status: 'CLOSED',
+        close_reason: 'eod_close',
+        closed_at: new Date().toISOString(),
+      });
+      log(`${trade.ticker}: EOD closed (${qty} shares ${closeSide})`);
+    } catch (err) {
+      log(`EOD sweep: ${trade.ticker} — close failed: ${err instanceof Error ? err.message : 'unknown'}`);
+    }
   }
 }
 
