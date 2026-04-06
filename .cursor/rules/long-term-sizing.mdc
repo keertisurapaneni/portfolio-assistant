@@ -1,0 +1,51 @@
+---
+description: Rules for LONG_TERM position sizing (Suggested Finds — Gold Mines and Steady Compounders)
+globs: auto-trader/src/scheduler.ts,app/src/lib/autoTrader.ts
+alwaysApply: false
+---
+
+# Long-Term (Suggested Finds) Sizing Rules
+
+Gold Mine and Steady Compounder positions are long-term holds (months). They have
+different rules from day/swing trades. When editing sizing logic, check ALL of these.
+
+## What MUST be bypassed for LONG_TERM:
+
+- ✅ `drawdownMultiplier` — always pass `1.0`. Critical drawdown sets multiplier=0
+  which zeros out the position → 1 share bought. Long-term positions deploy idle
+  cash into a months-long thesis; short-term drawdown must not shrink them.
+- ✅ `runPreTradeChecks` critical drawdown block — `mode !== 'LONG_TERM'` guard required.
+- ✅ Kelly multiplier — not applied (Kelly is derived from day/swing history, wrong profile).
+
+## What DOES apply for LONG_TERM:
+
+- ❌ `sma200Multiplier` — SPY below SMA200 → buy at 0.5x (not blocked, just smaller)
+- ❌ Allocation cap (overall + long-term bucket cap at 50% of maxTotalAllocation)
+- ❌ Gold Mine 40% sleeve cap
+- ❌ Earnings blackout
+- ❌ Duplicate active trade check
+- ❌ Conviction verification (Steady Compounders: FA drop ≥5pts skips; Gold Mines: only SELL blocks)
+
+## Sizing formula for LONG_TERM:
+
+```
+base = maxTotalAllocation * baseAllocationPct%        // e.g. $500K * 2% = $10K
+dollarSize = base * convictionMultiplier(conviction, tag)
+           * (0.75 if Gold Mine)                      // Gold Mine tag multiplier
+           * sma200Multiplier                          // 0.5 if SPY < SMA200, else 1.0
+           * regime.multiplier                         // market regime (NOT drawdown)
+           * 1.0                                       // drawdown always 1.0
+```
+
+## Configuration (auto_trader_config DB):
+
+- `long_term_bucket_pct`: 50 → $250K cap for all long-term positions combined
+- `base_allocation_pct`: 2 → base $10K per position before multipliers
+- `max_total_allocation`: 500000
+
+## When you change ANY of these — also check the other file:
+
+- `auto-trader/src/scheduler.ts` → `executeSuggestedFindTrade()`
+- `app/src/lib/autoTrader.ts` → `processSuggestedFindStock()`
+
+They are separate implementations of the same logic. A fix in one must be applied to both.

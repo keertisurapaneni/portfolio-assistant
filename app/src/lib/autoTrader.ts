@@ -1648,11 +1648,14 @@ async function runPreTradeChecks(
   config: AutoTraderConfig,
   ticker: string,
   positionSize: number,
+  mode: 'LONG_TERM' | 'DAY_TRADE' | 'SWING_TRADE' = 'DAY_TRADE',
 ): Promise<boolean> {
-  // 0. Drawdown protection — block new entries when portfolio is in critical drawdown
+  // 0. Drawdown protection — block new day/swing entries during critical drawdown.
+  // LONG_TERM is exempt: long-term positions deploy idle cash into a months-long thesis
+  // and should not be blocked by short-term day/swing drawdown.
   const health = await assessPortfolioHealth(config);
-  if (health.drawdownLevel === 'critical') {
-    const msg = `DRAWDOWN PROTECTION: Portfolio at ${health.totalUnrealizedPnlPct.toFixed(1)}% — blocking all new entries`;
+  if (health.drawdownLevel === 'critical' && mode !== 'LONG_TERM') {
+    const msg = `DRAWDOWN PROTECTION: Portfolio at ${health.totalUnrealizedPnlPct.toFixed(1)}% — blocking new ${mode} entries`;
     logEvent(ticker, 'warning', msg);
     persistEvent(ticker, 'warning', msg, {
       action: 'skipped', source: 'system',
@@ -2101,7 +2104,6 @@ async function processSuggestedFind(
 
   // Dynamic position sizing for long-term holds
   const regime = await getMarketRegime(config);
-  const kellyMult = await calculateKellyMultiplier(config);
   await assessPortfolioHealth(config); // keep side-effects (logging, cache update)
   const sma200Multiplier = goldMineBelowSma200 ? 0.5 : 1.0;
   const sizing = calculatePositionSize(config, {
@@ -2110,11 +2112,11 @@ async function processSuggestedFind(
     conviction,
     suggestedFindTag: stock.tag,
     regimeMultiplier: regime.multiplier * sma200Multiplier,
-    kellyMultiplier: kellyMult,
-    // Long-term Suggested Finds: don't apply drawdown multiplier.
-    // Critical drawdown (multiplier=0) would zero out the size → 1 share bought.
-    // These positions deploy idle cash into a months-long thesis; short-term
-    // day/swing drawdown should not shrink them to meaningless quantities.
+    // Kelly NOT applied: Kelly is derived from day/swing win/loss history — wrong
+    // risk profile for a long-term thesis. Conviction-based sizing already scales.
+    kellyMultiplier: 1.0,
+    // Drawdown multiplier NOT applied: critical drawdown (=0) zeros out the size.
+    // Long-term buys deploy idle cash; short-term drawdown must not shrink them.
     drawdownMultiplier: 1.0,
   });
   const quantity = sizing.quantity;
@@ -2136,7 +2138,8 @@ async function processSuggestedFind(
   }
 
   // Pre-trade checks (allocation cap, sector limits, earnings blackout)
-  const preCheckOk = await runPreTradeChecks(config, ticker, sizing.dollarSize);
+  // Pass 'LONG_TERM' so critical drawdown does not block long-term buys.
+  const preCheckOk = await runPreTradeChecks(config, ticker, sizing.dollarSize, 'LONG_TERM');
   if (!preCheckOk) {
     return { ticker, action: 'skipped', reason: 'Pre-trade check failed (allocation/sector/earnings)' };
   }
