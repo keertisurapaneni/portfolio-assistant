@@ -2003,22 +2003,25 @@ async function processSuggestedFind(
     return { ticker, action: 'skipped', reason: 'Duplicate position' };
   }
 
-  // ── 1b. Macro regime: block Gold Mine when SPY < SMA200 ──
+  // ── 1b. Macro regime: reduce Gold Mine size when SPY < SMA200 ──
+  // Don't block entirely — geopolitical selloffs (war, tariffs) are exactly when certain
+  // Gold Mine stocks (defense, energy, gold) outperform. Buy at 50% size instead.
+  let goldMineBelowSma200 = false;
   if (stock.tag === 'Gold Mine') {
     try {
       const data = await fetchRegimeSpy();
       if (data?.belowSma200 === true) {
-        const msg = `SPY below SMA200 — blocking new Gold Mine entries (macro regime)`;
+        goldMineBelowSma200 = true;
+        const msg = `SPY below SMA200 — buying Gold Mine at 50% size (macro regime caution)`;
         logEvent(ticker, 'info', msg);
         persistEvent(ticker, 'info', msg, {
-          action: 'skipped', source: 'suggested_finds', mode: 'LONG_TERM',
+          action: undefined, source: 'suggested_finds', mode: 'LONG_TERM',
           scanner_signal: 'BUY', scanner_confidence: conviction,
-          skip_reason: 'SPY below SMA200', metadata: sfMeta,
+          metadata: { ...sfMeta, regime_note: 'SPY below SMA200 — half size' },
         });
-        return { ticker, action: 'skipped', reason: 'SPY below SMA200 — Gold Mine blocked' };
       }
     } catch {
-      // Fail open: if we can't fetch regime, allow the trade
+      // Fail open: if we can't fetch regime, allow the trade at full size
     }
   }
 
@@ -2044,7 +2047,7 @@ async function processSuggestedFind(
       return { ticker, action: 'skipped', reason: `Fresh FA says SELL (conf ${freshConf})` };
     }
 
-    if (convDrop >= 3) {
+    if (convDrop >= 5) {
       const msg = `Conviction dropped ${convDrop} points (cached: ${conviction} → fresh: ${freshConf}) — skipping ${source}`;
       logEvent(ticker, 'warning', msg);
       persistEvent(ticker, 'warning', msg, {
@@ -2081,12 +2084,13 @@ async function processSuggestedFind(
   const regime = await getMarketRegime(config);
   const kellyMult = await calculateKellyMultiplier(config);
   const health = await assessPortfolioHealth(config);
+  const sma200Multiplier = goldMineBelowSma200 ? 0.5 : 1.0;
   const sizing = calculatePositionSize(config, {
     price: currentPrice,
     mode: 'LONG_TERM',
     conviction,
     suggestedFindTag: stock.tag,
-    regimeMultiplier: regime.multiplier,
+    regimeMultiplier: regime.multiplier * sma200Multiplier,
     kellyMultiplier: kellyMult,
     drawdownMultiplier: health.drawdownMultiplier,
   });
