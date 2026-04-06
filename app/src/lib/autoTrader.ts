@@ -2026,10 +2026,15 @@ async function processSuggestedFind(
   }
 
   // ── 2. Fresh conviction verification ──
-  // Run a quick swing analysis to verify the AI still recommends this stock.
-  // Prevents buying a stock where cached conviction is 9 but real-time says 6.
+  // Steady Compounders: re-run FA swing check — their conviction is fundamentals-based
+  //   so a real-time FA score drop (≥5 pts) is a valid signal to skip.
+  // Gold Mines: conviction was already set by a news/theme analysis at discovery time
+  //   (headline count, theme support penalties, etc.). A generic FA swing check has no
+  //   knowledge of macro themes and would unfairly compress scores on volatile days.
+  //   For Gold Mines: only block on an explicit SELL recommendation.
+  const isGoldMine = stock.tag === 'Gold Mine';
   try {
-    logEvent(ticker, 'info', `${source} — verifying conviction (cached: ${conviction}/10)...`);
+    logEvent(ticker, 'info', `${source} — verifying conviction (cached: ${conviction}/10)${isGoldMine ? ' [news-driven: checking direction only]' : ''}...`);
     const freshFA = await fetchTradingSignal(ticker, 'SWING_TRADE');
     const freshConf = freshFA.trade?.confidence ?? 0;
     const freshRec = freshFA.trade?.recommendation ?? 'HOLD';
@@ -2047,7 +2052,9 @@ async function processSuggestedFind(
       return { ticker, action: 'skipped', reason: `Fresh FA says SELL (conf ${freshConf})` };
     }
 
-    if (convDrop >= 5) {
+    // Conviction drop check only applies to Steady Compounders (fundamentals-driven).
+    // Gold Mine conviction is set by the news/theme pipeline — FA can't second-guess it.
+    if (!isGoldMine && convDrop >= 5) {
       const msg = `Conviction dropped ${convDrop} points (cached: ${conviction} → fresh: ${freshConf}) — skipping ${source}`;
       logEvent(ticker, 'warning', msg);
       persistEvent(ticker, 'warning', msg, {
@@ -2056,8 +2063,8 @@ async function processSuggestedFind(
         fa_recommendation: freshRec, fa_confidence: freshConf,
         skip_reason: `Conviction dropped ${convDrop}pts`, metadata: { ...sfMeta, fresh_confidence: freshConf, conviction_drop: convDrop },
       });
-      // Write the fresh conviction back to the daily cache so the UI reflects the updated
-      // score and this stock doesn't keep showing up at its old (inflated) rating.
+      // Write the fresh score back to the daily cache so the UI reflects it
+      // and this stock doesn't keep surfacing at its old (inflated) rating.
       const dailySuggestionsUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/daily-suggestions`;
       fetch(dailySuggestionsUrl, {
         method: 'PATCH',
