@@ -1718,8 +1718,8 @@ async function processSingleIdea(
 
   // ── 2. Run Full Analysis for richer candlestick data ──
   // FA uses Twelve Data (more bars, more timeframes) + sentiment + fundamentals.
-  // Scanner already vetted direction through 2 passes — trust it.
-  // FA provides better entry/stop/target levels from deeper data.
+  // Scanner finds the opportunity; FA provides direction + entry/stop/target levels.
+  // If FA fails, fall back to scanner Pass 2 levels when available.
   logEvent(ticker, 'info', `Running full analysis (${mode})...`);
   let fa: TradingSignalsResponse;
   try {
@@ -1866,7 +1866,7 @@ async function processSingleIdea(
   }
 
   // ── 8. Place Bracket Order ──
-  logEvent(ticker, 'info', `Placing bracket order: ${signal} ${quantity} @ $${entryPrice} (SL: $${stopLoss}, TP: $${targetPrice})`);
+  logEvent(ticker, 'info', `Placing bracket order: ${tradeDirection} ${quantity} @ $${entryPrice} (SL: $${stopLoss}, TP: $${targetPrice})`);
 
   try {
     const orderReplies = await placeBracketOrder({
