@@ -2224,6 +2224,13 @@ async function executeExternalStrategySignal(
       ibOrderId = String(result.orderId);
     }
 
+    // Derive market_condition from SPY change for the Trade Validation tab.
+    // spyChangePct is already fetched above for both gate-checked and influencer signals.
+    const marketCondition: 'trend' | 'chop' | undefined =
+      spyChangePct == null ? undefined
+      : Math.abs(spyChangePct) >= 0.5 ? 'trend'
+      : 'chop';
+
     const trade = await createPaperTrade({
       ticker,
       mode: signal.mode,
@@ -2245,6 +2252,7 @@ async function executeExternalStrategySignal(
       status: 'SUBMITTED',
       scanner_reason: `External strategy signal from ${signal.source_name}`,
       notes: signal.notes ? `External signal${splitLabel} | ${signal.notes}` : `External signal${splitLabel}`,
+      market_condition: marketCondition,
     });
 
     recordPendingOrder(sizing.dollarSize);
