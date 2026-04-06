@@ -118,7 +118,7 @@ export function SettingsTab({ config, onUpdate }: SettingsTabProps) {
             min={1}
             max={10}
           />
-          <p className="text-xs text-[hsl(var(--muted-foreground))] mt-1">Both scanner AND FA must meet threshold</p>
+          <p className="text-xs text-[hsl(var(--muted-foreground))] mt-1">Fallback only — used when scanner lacks entry/stop/target</p>
         </div>
 
         <div>

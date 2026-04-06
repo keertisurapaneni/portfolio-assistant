@@ -1716,37 +1716,21 @@ async function processSingleIdea(
     return { ticker, action: 'skipped', reason: 'Duplicate position' };
   }
 
-  // ── 2. Use scanner Pass 2 levels when available; fall back to full analysis ──
-  // Scanner Pass 2 already runs the identical FA-grade prompt with scenarios,
-  // entry/stop/target, and rationale. Re-running FA is redundant, wastes API quota,
-  // and introduces stochastic disagreement (two independent AI calls must both agree).
-  const hasPass2Levels = idea.entryPrice && idea.stopLoss && idea.targetPrice;
-
-  let faConf: number;
-  let faRec: string;
-  let entryPrice: number;
-  let stopLoss: number;
-  let targetPrice: number;
-  let targetPrice2: number | null = null;
-  let riskReward: string | null = idea.riskReward ?? null;
-  let faRationale: { technical?: string; sentiment?: string; risk?: string } | null = null;
-
-  if (hasPass2Levels) {
-    // Trust scanner Pass 2 — same prompt, same indicators, already vetted
-    logEvent(ticker, 'info', `Using scanner Pass 2 levels (skip redundant FA call)`);
-    faConf = scannerConf;
-    faRec = signal;
-    entryPrice = idea.entryPrice!;
-    stopLoss = idea.stopLoss!;
-    targetPrice = idea.targetPrice!;
-  } else {
-    // No Pass 2 levels — fall back to full analysis (manual signals, etc.)
-    logEvent(ticker, 'info', `Running full analysis (${mode})...`);
-    let fa: TradingSignalsResponse;
-    try {
-      const faMode: SignalsMode = mode === 'DAY_TRADE' ? 'DAY_TRADE' : 'SWING_TRADE';
-      fa = await fetchTradingSignal(ticker, faMode);
-    } catch (err) {
+  // ── 2. Run Full Analysis for richer candlestick data ──
+  // FA uses Twelve Data (more bars, more timeframes) + sentiment + fundamentals.
+  // Scanner already vetted direction through 2 passes — trust it.
+  // FA provides better entry/stop/target levels from deeper data.
+  logEvent(ticker, 'info', `Running full analysis (${mode})...`);
+  let fa: TradingSignalsResponse;
+  try {
+    const faMode: SignalsMode = mode === 'DAY_TRADE' ? 'DAY_TRADE' : 'SWING_TRADE';
+    fa = await fetchTradingSignal(ticker, faMode);
+  } catch (err) {
+    // FA failed — fall back to scanner Pass 2 levels if available
+    const hasPass2Levels = idea.entryPrice && idea.stopLoss && idea.targetPrice;
+    if (hasPass2Levels) {
+      logEvent(ticker, 'warning', `FA failed, using scanner Pass 2 levels as fallback`);
+    } else {
       const msg = `FA failed: ${err instanceof Error ? err.message : 'Unknown'}`;
       logEvent(ticker, 'error', msg);
       persistEvent(ticker, 'error', msg, {
@@ -1755,50 +1739,51 @@ async function processSingleIdea(
       });
       return { ticker, action: 'failed', reason: 'Full analysis failed' };
     }
-
-    faConf = fa.trade.confidence;
-    faRec = fa.trade.recommendation;
-    entryPrice = fa.trade.entryPrice!;
-    stopLoss = fa.trade.stopLoss!;
-    targetPrice = fa.trade.targetPrice!;
-    targetPrice2 = fa.trade.targetPrice2 ?? null;
-    riskReward = fa.trade.riskReward ?? null;
-    faRationale = fa.trade.rationale;
-
-    // Confidence gate (only for FA fallback — scanner already filtered)
-    if (faConf < config.minFAConfidence) {
-      const msg = `FA confidence too low: ${faConf}/10 (need ${config.minFAConfidence}+)`;
-      logEvent(ticker, 'info', msg);
-      persistEvent(ticker, 'info', msg, {
-        action: 'skipped', source: 'scanner', mode, scanner_signal: signal,
-        scanner_confidence: scannerConf, fa_recommendation: faRec, fa_confidence: faConf,
-        skip_reason: `FA confidence ${faConf} < ${config.minFAConfidence}`,
-      });
-      return { ticker, action: 'skipped', reason: `FA confidence ${faConf} < ${config.minFAConfidence}` };
-    }
-
-    if (faRec === 'HOLD') {
-      logEvent(ticker, 'info', 'FA says HOLD — skipping');
-      persistEvent(ticker, 'info', 'FA says HOLD — skipping', {
-        action: 'skipped', source: 'scanner', mode, scanner_signal: signal,
-        scanner_confidence: scannerConf, fa_recommendation: faRec, fa_confidence: faConf,
-        skip_reason: 'FA recommendation is HOLD',
-      });
-      return { ticker, action: 'skipped', reason: 'FA recommendation is HOLD' };
-    }
-
-    // Direction consistency (only for FA fallback)
-    if (faRec !== signal) {
-      const msg = `Scanner says ${signal} but FA says ${faRec} — skipping`;
-      logEvent(ticker, 'warning', msg);
-      persistEvent(ticker, 'warning', msg, {
-        action: 'skipped', source: 'scanner', mode, scanner_signal: signal,
-        scanner_confidence: scannerConf, fa_recommendation: faRec, fa_confidence: faConf,
-        skip_reason: `Direction mismatch: scanner ${signal} vs FA ${faRec}`,
-      });
-      return { ticker, action: 'skipped', reason: `Direction mismatch: scanner ${signal} vs FA ${faRec}` };
-    }
+    // Construct a minimal FA-like object from scanner Pass 2 levels
+    fa = { trade: { recommendation: signal, confidence: scannerConf, entryPrice: idea.entryPrice!, stopLoss: idea.stopLoss!, targetPrice: idea.targetPrice!, targetPrice2: null, riskReward: idea.riskReward ?? null, rationale: null } } as unknown as TradingSignalsResponse;
   }
+
+  const faConf = fa.trade.confidence;
+  const faRec = fa.trade.recommendation;
+
+  // ── 3. Confidence Gate ──
+  if (faConf < config.minFAConfidence) {
+    const msg = `FA confidence too low: ${faConf}/10 (need ${config.minFAConfidence}+)`;
+    logEvent(ticker, 'info', msg);
+    persistEvent(ticker, 'info', msg, {
+      action: 'skipped', source: 'scanner', mode, scanner_signal: signal,
+      scanner_confidence: scannerConf, fa_recommendation: faRec, fa_confidence: faConf,
+      skip_reason: `FA confidence ${faConf} < ${config.minFAConfidence}`,
+    });
+    return { ticker, action: 'skipped', reason: `FA confidence ${faConf} < ${config.minFAConfidence}` };
+  }
+
+  // ── 4. Direction check ──
+  // Scanner already vetted direction through 2 AI passes. If FA disagrees,
+  // log it but DON'T skip — FA sees different timeframe data and stochastic
+  // disagreement between two independent AI calls was the #1 signal killer.
+  // Only skip if FA explicitly says HOLD (genuinely no edge).
+  if (faRec === 'HOLD') {
+    logEvent(ticker, 'info', 'FA says HOLD — skipping');
+    persistEvent(ticker, 'info', 'FA says HOLD — skipping', {
+      action: 'skipped', source: 'scanner', mode, scanner_signal: signal,
+      scanner_confidence: scannerConf, fa_recommendation: faRec, fa_confidence: faConf,
+      skip_reason: 'FA recommendation is HOLD',
+    });
+    return { ticker, action: 'skipped', reason: 'FA recommendation is HOLD' };
+  }
+
+  if (faRec !== signal) {
+    logEvent(ticker, 'warning', `Direction mismatch: scanner ${signal} vs FA ${faRec} — trusting scanner (2-pass vetted), using FA levels`);
+  }
+
+  // Use FA's levels (richer data) but scanner's direction
+  const entryPrice = fa.trade.entryPrice!;
+  const stopLoss = fa.trade.stopLoss!;
+  const targetPrice = fa.trade.targetPrice!;
+  const targetPrice2 = fa.trade.targetPrice2 ?? null;
+  const riskReward = fa.trade.riskReward ?? null;
+  const faRationale = fa.trade.rationale ?? null;
 
   // ── 5. Entry/Stop/Target validation ──
   if (!entryPrice || !stopLoss || !targetPrice) {
