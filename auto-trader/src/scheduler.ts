@@ -1797,11 +1797,9 @@ async function executeSuggestedFindTrade(
 
   if (await hasActiveTrade(ticker)) return 'skipped:duplicate';
 
-  // Macro regime: block Gold Mine when SPY < SMA200 (Steady Compounders allowed)
-  if (stock.tag === 'Gold Mine') {
-    const below = await isSpyBelowSma200();
-    if (below) return 'skipped:spy_below_sma200';
-  }
+  // Macro regime: reduce Gold Mine size when SPY < SMA200 — don't block entirely.
+  // Geopolitical selloffs are when defense/energy Gold Mines outperform.
+  const goldMineBelowSma200 = stock.tag === 'Gold Mine' && await isSpyBelowSma200();
 
   // No FA check here — Suggested Finds already runs a full AI pipeline daily
   // (Finnhub fundamentals + macro news + conviction scoring). The trading-signals
@@ -1813,9 +1811,13 @@ async function executeSuggestedFindTrade(
   const dd = assessDrawdownMultiplier(positions);
   // Kelly NOT applied to long-term: conviction-based sizing already scales with signal quality,
   // and the Kelly multiplier is derived from day/swing history — different risk profile.
+  // SPY < SMA200 → buy Gold Mines at 50% size rather than blocking entirely.
+  const sma200Multiplier = goldMineBelowSma200 ? 0.5 : 1.0;
+  if (goldMineBelowSma200) log(`${ticker}: Gold Mine — SPY below SMA200, buying at 50% size`);
   const sizing = calculatePositionSize(config, {
     price: currentPrice, mode: 'LONG_TERM', conviction,
     suggestedFindTag: (stock.tag === 'Gold Mine' || stock.tag === 'Steady Compounder') ? stock.tag : undefined,
+    regimeMultiplier: sma200Multiplier,
     drawdownMultiplier: dd.multiplier,
   });
 
