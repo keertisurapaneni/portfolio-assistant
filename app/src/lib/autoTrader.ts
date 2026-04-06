@@ -2102,7 +2102,7 @@ async function processSuggestedFind(
   // Dynamic position sizing for long-term holds
   const regime = await getMarketRegime(config);
   const kellyMult = await calculateKellyMultiplier(config);
-  const health = await assessPortfolioHealth(config);
+  await assessPortfolioHealth(config); // keep side-effects (logging, cache update)
   const sma200Multiplier = goldMineBelowSma200 ? 0.5 : 1.0;
   const sizing = calculatePositionSize(config, {
     price: currentPrice,
@@ -2111,7 +2111,11 @@ async function processSuggestedFind(
     suggestedFindTag: stock.tag,
     regimeMultiplier: regime.multiplier * sma200Multiplier,
     kellyMultiplier: kellyMult,
-    drawdownMultiplier: health.drawdownMultiplier,
+    // Long-term Suggested Finds: don't apply drawdown multiplier.
+    // Critical drawdown (multiplier=0) would zero out the size → 1 share bought.
+    // These positions deploy idle cash into a months-long thesis; short-term
+    // day/swing drawdown should not shrink them to meaningless quantities.
+    drawdownMultiplier: 1.0,
   });
   const quantity = sizing.quantity;
 

@@ -1814,6 +1814,9 @@ async function executeSuggestedFindTrade(
   const dd = assessDrawdownMultiplier(positions);
   // Kelly NOT applied to long-term: conviction-based sizing already scales with signal quality,
   // and the Kelly multiplier is derived from day/swing history — different risk profile.
+  // Drawdown multiplier NOT applied to long-term: critical drawdown (multiplier=0) would zero
+  // out the position and result in buying just 1 share. Long-term buys deploy idle cash into
+  // a thesis held for months — short-term day/swing drawdown shouldn't shrink them.
   // SPY < SMA200 → buy Gold Mines at 50% size rather than blocking entirely.
   const sma200Multiplier = goldMineBelowSma200 ? 0.5 : 1.0;
   if (goldMineBelowSma200) log(`${ticker}: Gold Mine — SPY below SMA200, buying at 50% size`);
@@ -1821,7 +1824,7 @@ async function executeSuggestedFindTrade(
     price: currentPrice, mode: 'LONG_TERM', conviction,
     suggestedFindTag: (stock.tag === 'Gold Mine' || stock.tag === 'Steady Compounder') ? stock.tag : undefined,
     regimeMultiplier: sma200Multiplier,
-    drawdownMultiplier: dd.multiplier,
+    drawdownMultiplier: 1.0,
   });
 
   // Tag-level cap: Gold Mine cannot exceed 40% of LONG_TERM sleeve
