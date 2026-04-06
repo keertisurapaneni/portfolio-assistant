@@ -220,7 +220,7 @@ const DEFAULT_CONFIG: AutoTraderConfig = {
   earningsAvoidEnabled: true,
   earningsBlackoutDays: 3,
   kellyAdaptiveEnabled: false,
-  longTermBucketPct: 40,
+  longTermBucketPct: 50, // matches DB default: 50% of maxTotalAllocation for long-term sleeve
 };
 
 /**
@@ -754,6 +754,7 @@ async function checkAllocationCap(
   config: AutoTraderConfig,
   positionSize: number,
   ticker: string,
+  mode: 'LONG_TERM' | 'DAY_TRADE' | 'SWING_TRADE' = 'DAY_TRADE',
 ): Promise<boolean> {
   const deployed = await getTotalDeployed();
   const cap = config.maxTotalAllocation;
@@ -780,6 +781,23 @@ async function checkAllocationCap(
       metadata: { deployed, positionSize, cap },
     });
     return false;
+  }
+
+  // LONG-TERM BUCKET CAP — long-term positions get longTermBucketPct% of the total cap.
+  // Without this, the browser can over-deploy into Suggested Finds beyond the sleeve limit.
+  if (mode === 'LONG_TERM') {
+    const { longTermTotal } = await getLongTermExposureByTag();
+    const ltCap = cap * (config.longTermBucketPct / 100);
+    if (longTermTotal + positionSize > ltCap) {
+      const msg = `Long-term bucket cap: $${longTermTotal.toFixed(0)} + $${positionSize.toFixed(0)} > $${ltCap.toFixed(0)} (${config.longTermBucketPct}% of $${cap.toFixed(0)})`;
+      logEvent(ticker, 'warning', msg);
+      persistEvent(ticker, 'warning', msg, {
+        action: 'skipped', source: 'system',
+        skip_reason: `Long-term bucket cap: ${config.longTermBucketPct}% of allocation`,
+        metadata: { longTermTotal, positionSize, ltCap },
+      });
+      return false;
+    }
   }
 
   // DAILY DEPLOYMENT LIMIT — prevents blowing through the budget in one day
@@ -1665,8 +1683,8 @@ async function runPreTradeChecks(
     return false;
   }
 
-  // 1. Allocation cap
-  const capOk = await checkAllocationCap(config, positionSize, ticker);
+  // 1. Allocation cap (pass mode so LONG_TERM enforces the bucket cap)
+  const capOk = await checkAllocationCap(config, positionSize, ticker, mode);
   if (!capOk) return false;
 
   // 2. Sector limits
@@ -1962,20 +1980,16 @@ export async function processSuggestedFinds(
     return [];
   }
 
-  // Filter: conviction >= minSuggestedFindsConviction (default 8)
-  // AND valuation must be Undervalued or Deep Value.
-  // Top picks always qualify regardless of valuation.
-  // Optional: if Gold Mine count > Compounder count by 2x, raise min conviction for Gold Mines by +1.
+  // Filter: conviction >= minSuggestedFindsConviction
+  // AND valuation must be Undervalued or Deep Value (except top picks).
+  // Removed goldMineMinConv +1 escalation — it silently blocked conviction-9 Gold Mines
+  // when there were many candidates. The 40% Gold Mine cap already prevents over-allocation.
   const minConv = cfg.minSuggestedFindsConviction;
-  const goldMineCount = stocks.filter(s => s.tag === 'Gold Mine').length;
-  const compounderCount = stocks.filter(s => s.tag === 'Steady Compounder').length;
-  const goldMineMinConv = goldMineCount > compounderCount * 2 ? minConv + 1 : minConv;
   const tops = topPickTickers ?? new Set<string>();
   const qualified = stocks.filter(s => {
     const conv = s.conviction ?? 0;
-    const effectiveMin = s.tag === 'Gold Mine' ? goldMineMinConv : minConv;
-    if (conv < effectiveMin) return false;
-    if (tops.has(s.ticker)) return true; // top pick — always buy
+    if (conv < minConv) return false;
+    if (tops.has(s.ticker)) return true; // top pick — always buy if conviction meets threshold
     const tag = (s.valuationTag ?? '').toLowerCase();
     return tag === 'deep value' || tag === 'undervalued';
   });
@@ -1984,10 +1998,7 @@ export async function processSuggestedFinds(
     return [];
   }
 
-  const convMsg = goldMineMinConv > minConv
-    ? `conviction ${minConv}+ (Compounders) / ${goldMineMinConv}+ (Gold Mines — raised: ${goldMineCount} GM > ${compounderCount}×2 Comp)`
-    : `conviction ${minConv}+`;
-  logEvent('*', 'info', `Processing ${qualified.length} Suggested Finds (${convMsg} and undervalued/deep value)...`);
+  logEvent('*', 'info', `Processing ${qualified.length} Suggested Finds (conviction ${minConv}+ and undervalued/deep value)...`);
 
   const toProcess = qualified.slice(0, slotsAvailable);
 

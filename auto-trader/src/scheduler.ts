@@ -1857,9 +1857,27 @@ async function executeSuggestedFindTrade(
   // Geopolitical selloffs are when defense/energy Gold Mines outperform.
   const goldMineBelowSma200 = stock.tag === 'Gold Mine' && await isSpyBelowSma200();
 
-  // No FA check here — Suggested Finds already runs a full AI pipeline daily
-  // (Finnhub fundamentals + macro news + conviction scoring). The trading-signals
-  // FA is a short-term swing/day trade tool and should not gate long-term picks.
+  // Lightweight direction check: if FA explicitly says SELL, skip this stock even
+  // for long-term buys. The daily pipeline scores conviction at generation time;
+  // a SELL from FA means something has materially changed (earnings miss, sector
+  // blow-up, etc.) since the suggestion was cached. We don't apply conviction drop
+  // checks here (that's browser-side only) — just the hard directional veto.
+  try {
+    const fa = await fetchTradingSignal(ticker, 'SWING_TRADE');
+    if (fa.trade?.recommendation === 'SELL') {
+      log(`${ticker}: FA says SELL — skipping Suggested Find`);
+      persistEvent(ticker, 'warning', `FA direction veto: SELL — skipping ${stock.tag}`, {
+        action: 'skipped', source: 'suggested_finds', mode: 'LONG_TERM',
+        scanner_signal: 'BUY', scanner_confidence: conviction,
+        fa_recommendation: 'SELL', fa_confidence: fa.trade?.confidence,
+        skip_reason: 'FA says SELL',
+      });
+      return 'skipped:fa_sell';
+    }
+  } catch {
+    // FA check failure is non-blocking — proceed with cached conviction
+    log(`${ticker}: FA check failed (non-blocking) — using cached conviction ${conviction}`);
+  }
 
   const currentPrice = await getQuotePrice(ticker);
   if (!currentPrice) return 'failed:no_price';
@@ -3091,19 +3109,20 @@ async function preGenerateSuggestedFinds(
     if (config.enabled && config.accountId) {
       // Filter by conviction + valuation
       const minConv = config.minSuggestedFindsConviction;
-      const goldMineCount = stocks.filter(s => s.tag === 'Gold Mine').length;
-      const compounderCount = stocks.filter(s => s.tag === 'Steady Compounder').length;
-      const goldMineMinConv = goldMineCount > compounderCount * 2 ? minConv + 1 : minConv;
       const topTickers = new Set<string>();
       const compounders = stocks.filter(s => s.tag === 'Steady Compounder');
       const goldMines = stocks.filter(s => s.tag === 'Gold Mine');
-      if (compounders[0] && (compounders[0].conviction ?? 0) >= 8) topTickers.add(compounders[0].ticker);
-      if (goldMines[0] && (goldMines[0].conviction ?? 0) >= 8) topTickers.add(goldMines[0].ticker);
+      // Top-pick threshold matches minSuggestedFindsConviction — no point auto-buying the
+      // #1 pick if its conviction is below the configured minimum for this account.
+      if (compounders[0] && (compounders[0].conviction ?? 0) >= minConv) topTickers.add(compounders[0].ticker);
+      if (goldMines[0] && (goldMines[0].conviction ?? 0) >= minConv) topTickers.add(goldMines[0].ticker);
 
+      // Note: removed the goldMineMinConv +1 escalation (was: if gmCount > compCount*2, raise min by 1).
+      // That logic was silently blocking conviction-9 Gold Mines when the list had many candidates.
+      // The 40% Gold Mine cap in executeSuggestedFindTrade already prevents over-allocation.
       const qualified = stocks.filter(s => {
         const conv = s.conviction ?? 0;
-        const effectiveMin = s.tag === 'Gold Mine' ? goldMineMinConv : minConv;
-        if (conv < effectiveMin) return false;
+        if (conv < minConv) return false;
         if (topTickers.has(s.ticker)) return true;
         const tag = (s.valuationTag ?? '').toLowerCase();
         return tag === 'deep value' || tag === 'undervalued';
