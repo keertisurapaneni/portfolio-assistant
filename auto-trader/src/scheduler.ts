@@ -1588,8 +1588,11 @@ async function runPreTradeChecks(
   mode: 'LONG_TERM' | 'DAY_TRADE' | 'SWING_TRADE' = 'DAY_TRADE',
 ): Promise<boolean> {
   const dd = assessDrawdownMultiplier(positions);
-  if (dd.level === 'critical') {
-    log(`DRAWDOWN PROTECTION: portfolio at ${dd.pnlPct.toFixed(1)}% — blocking new entries`);
+  // Critical drawdown blocks day/swing trades — but NOT long-term Suggested Finds.
+  // Long-term buys are meant to be held for months; a short-term drawdown on active
+  // day trades should not prevent deploying idle cash into a long-term thesis.
+  if (dd.level === 'critical' && mode !== 'LONG_TERM') {
+    log(`DRAWDOWN PROTECTION: portfolio at ${dd.pnlPct.toFixed(1)}% — blocking new ${mode} entries`);
     return false;
   }
   if (!(await checkAllocationCap(config, positionSize, ticker, positions, mode))) return false;
