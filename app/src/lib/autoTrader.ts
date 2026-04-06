@@ -1729,7 +1729,7 @@ async function processSingleIdea(
   let targetPrice: number;
   let targetPrice2: number | null = null;
   let riskReward: string | null = idea.riskReward ?? null;
-  let faRationale: unknown = idea.reason;
+  let faRationale: { technical?: string; sentiment?: string; risk?: string } | null = null;
 
   if (hasPass2Levels) {
     // Trust scanner Pass 2 — same prompt, same indicators, already vetted
