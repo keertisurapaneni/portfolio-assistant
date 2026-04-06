@@ -1635,10 +1635,12 @@ async function runPass2(
       for (const e of results) {
         let c = e.confidence;
         if (!spyAbove50 && !spyAbove200) {
-          if (e.signal === 'BUY') c -= 1.5;
-          else if (e.signal === 'SELL') c += 1;
+          // Bear market: mild penalty on BUYs (was -1.5, too aggressive — killed all swing BUYs)
+          // Quality pullbacks to support in bear markets are some of the best swing entries
+          if (e.signal === 'BUY') c -= 0.5;
+          else if (e.signal === 'SELL') c += 0.5;
         } else if (spyAbove50 && spyAbove200) {
-          if (e.signal === 'SELL') c -= 1;
+          if (e.signal === 'SELL') c -= 0.5;
         }
         e.confidence = Math.max(0, Math.min(10, c));
       }

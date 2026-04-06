@@ -17,6 +17,12 @@ export interface TradeIdea {
   reason: string;        // AI-generated 1-sentence rationale
   tags: string[];        // e.g. ["momentum", "volume-surge"]
   mode: 'DAY_TRADE' | 'SWING_TRADE';
+  // Pass 2 FA-grade levels — carried through so auto-trader can skip redundant FA call
+  entryPrice?: number | null;
+  stopLoss?: number | null;
+  targetPrice?: number | null;
+  riskReward?: string | null;
+  atr?: number | null;
   in_play_score?: number;
   pass1_confidence?: number;
   market_condition?: 'trend' | 'chop';

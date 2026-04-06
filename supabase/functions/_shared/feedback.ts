@@ -59,7 +59,9 @@ export async function buildFeedbackContext(): Promise<string> {
     }
 
     lines.push('');
-    lines.push('Use this history to calibrate confidence. If similar setups have been losing, reduce confidence or SKIP.');
+    lines.push('This history is context only — give honest confidence based on the CURRENT setup indicators.');
+    lines.push('Past losses do NOT mean you should lower confidence on a good current setup.');
+    lines.push('Focus on what the indicators say NOW, not what happened before.');
     lines.push('---');
 
     return lines.join('\n');
