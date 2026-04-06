@@ -126,6 +126,68 @@ Deno.serve(async (req) => {
       );
     }
 
+    // ── PATCH: Update a single stock's conviction in today's cached data ──
+    // Called after fresh FA verification detects a significant conviction drop.
+    if (req.method === 'PATCH') {
+      const body = await req.json();
+      const category = body.category || 'auto';
+      const { ticker, newConviction } = body;
+
+      if (!ticker || typeof newConviction !== 'number') {
+        return new Response(
+          JSON.stringify({ error: 'Missing ticker or newConviction' }),
+          { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      }
+
+      const { data: existing, error: fetchErr } = await supabase
+        .from('daily_suggestions')
+        .select('id, data')
+        .eq('suggestion_date', today)
+        .eq('category', category)
+        .single();
+
+      if (fetchErr || !existing) {
+        return new Response(
+          JSON.stringify({ updated: false, reason: 'no_cache_for_today' }),
+          { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      }
+
+      // Update conviction for the matching ticker in all arrays within the data blob
+      const blob = existing.data as Record<string, unknown>;
+      const updateArray = (arr: unknown[]): unknown[] =>
+        arr.map((s: unknown) => {
+          const stock = s as Record<string, unknown>;
+          return stock.ticker === ticker ? { ...stock, conviction: newConviction } : stock;
+        });
+
+      const updated: Record<string, unknown> = {};
+      for (const key of Object.keys(blob)) {
+        const val = blob[key];
+        updated[key] = Array.isArray(val) ? updateArray(val) : val;
+      }
+
+      const { error: updateErr } = await supabase
+        .from('daily_suggestions')
+        .update({ data: updated })
+        .eq('id', existing.id);
+
+      if (updateErr) {
+        console.error('[Daily Suggestions] PATCH update error:', updateErr);
+        return new Response(
+          JSON.stringify({ updated: false, error: updateErr.message }),
+          { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      }
+
+      console.log(`[Daily Suggestions] Updated ${ticker} conviction → ${newConviction} for ${today} category=${category}`);
+      return new Response(
+        JSON.stringify({ updated: true, ticker, newConviction, date: today, category }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
     // ── DELETE: Clear today's cache (for regeneration after bug fixes) ──
     if (req.method === 'DELETE') {
       const category = url.searchParams.get('category');

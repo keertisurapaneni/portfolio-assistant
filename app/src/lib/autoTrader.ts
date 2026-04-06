@@ -2056,6 +2056,18 @@ async function processSuggestedFind(
         fa_recommendation: freshRec, fa_confidence: freshConf,
         skip_reason: `Conviction dropped ${convDrop}pts`, metadata: { ...sfMeta, fresh_confidence: freshConf, conviction_drop: convDrop },
       });
+      // Write the fresh conviction back to the daily cache so the UI reflects the updated
+      // score and this stock doesn't keep showing up at its old (inflated) rating.
+      const dailySuggestionsUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/daily-suggestions`;
+      fetch(dailySuggestionsUrl, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY,
+          'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
+        },
+        body: JSON.stringify({ ticker, newConviction: freshConf, category: 'auto' }),
+      }).catch(() => {}); // fire-and-forget
       return { ticker, action: 'skipped', reason: `Conviction dropped ${convDrop}pts (${conviction}→${freshConf})` };
     }
 
