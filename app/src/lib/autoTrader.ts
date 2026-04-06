@@ -1763,6 +1763,26 @@ async function processSingleIdea(
     return { ticker, action: 'skipped', reason: 'Missing price levels from FA' };
   }
 
+  // ── 5b. SWING only: skip if current price too far from FA entry level ──
+  // Entry precision matters for swing setups. If the stock has run 4%+ past the
+  // FA-suggested entry since the signal was generated, the risk:reward is broken.
+  if (mode === 'SWING_TRADE' && entryPrice > 0) {
+    const livePrice = await getQuotePrice(ticker);
+    if (livePrice != null) {
+      const distPct = Math.abs(livePrice - entryPrice) / entryPrice;
+      if (distPct > 0.04) {
+        const msg = `Entry skipped — price ${(distPct * 100).toFixed(1)}% away from entry level`;
+        logEvent(ticker, 'warning', msg);
+        persistEvent(ticker, 'warning', msg, {
+          action: 'skipped', source: 'scanner', mode, scanner_signal: signal,
+          scanner_confidence: scannerConf, fa_recommendation: faRec, fa_confidence: faConf,
+          skip_reason: `Price ${(distPct * 100).toFixed(1)}% from entry — precision required`,
+        });
+        return { ticker, action: 'skipped', reason: `Price too far from entry (${(distPct * 100).toFixed(1)}%)` };
+      }
+    }
+  }
+
   // ── 6. Dynamic Position Sizing ──
   const regime = await getMarketRegime(config);
   const kellyMult = await calculateKellyMultiplier(config);
