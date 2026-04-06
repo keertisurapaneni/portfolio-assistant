@@ -100,7 +100,7 @@ const DEFAULT_CONFIG: AutoTraderConfig = {
   marketRegimeEnabled: true, maxSectorPct: 30,
   earningsAvoidEnabled: true, earningsBlackoutDays: 3,
   kellyAdaptiveEnabled: false,
-  longTermBucketPct: 40,
+  longTermBucketPct: 50, // matches DB default: 50% of maxTotalAllocation for long-term sleeve
   externalSignalPositionSize: 5000,
 };
 

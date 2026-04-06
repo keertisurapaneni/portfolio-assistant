@@ -11,7 +11,10 @@ const corsHeaders = {
 };
 
 function getTodayDate(): string {
-  return new Date().toISOString().split('T')[0]; // YYYY-MM-DD in UTC
+  // Use US/Eastern time so the cache key matches the US trading day.
+  // UTC flips to the next day at ~7-8 PM ET which would invalidate the cache
+  // mid-evening and cause duplicate generation runs.
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(new Date());
 }
 
 Deno.serve(async (req) => {

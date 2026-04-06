@@ -151,12 +151,15 @@ async function preGenerateSuggestedFinds() {
     if (config.enabled && config.accountId) {
       const allStocks = [...result.compounders, ...result.goldMines];
 
-      // Identify top picks (first in each list with conviction 8+)
+      // Identify top picks (first in each list that meets minSuggestedFindsConviction).
+      // Using the same threshold as general execution — a top pick below the configured
+      // minimum should not bypass the valuation filter just because it's first.
       const topPickTickers = new Set<string>();
       const firstCompounder = result.compounders[0];
       const firstGoldMine = result.goldMines[0];
-      if (firstCompounder && (firstCompounder.conviction ?? 0) >= 8) topPickTickers.add(firstCompounder.ticker);
-      if (firstGoldMine && (firstGoldMine.conviction ?? 0) >= 8) topPickTickers.add(firstGoldMine.ticker);
+      const minConviction = config.minSuggestedFindsConviction;
+      if (firstCompounder && (firstCompounder.conviction ?? 0) >= minConviction) topPickTickers.add(firstCompounder.ticker);
+      if (firstGoldMine && (firstGoldMine.conviction ?? 0) >= minConviction) topPickTickers.add(firstGoldMine.ticker);
 
       const results = await processSuggestedFinds(allStocks, config, topPickTickers);
       const executed = results.filter(r => r.action === 'executed');
