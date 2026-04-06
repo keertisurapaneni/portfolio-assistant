@@ -1759,10 +1759,8 @@ async function processSingleIdea(
   }
 
   // ── 4. Direction check ──
-  // Scanner already vetted direction through 2 AI passes. If FA disagrees,
-  // log it but DON'T skip — FA sees different timeframe data and stochastic
-  // disagreement between two independent AI calls was the #1 signal killer.
-  // Only skip if FA explicitly says HOLD (genuinely no edge).
+  // FA has richer data (Twelve Data, 3 timeframes, sentiment) — trust its direction.
+  // Scanner found the opportunity; FA confirms or corrects the direction.
   if (faRec === 'HOLD') {
     logEvent(ticker, 'info', 'FA says HOLD — skipping');
     persistEvent(ticker, 'info', 'FA says HOLD — skipping', {
@@ -1773,11 +1771,13 @@ async function processSingleIdea(
     return { ticker, action: 'skipped', reason: 'FA recommendation is HOLD' };
   }
 
+  // Use FA's direction — it has deeper candlestick data to make the call
+  const tradeDirection = faRec as 'BUY' | 'SELL';
   if (faRec !== signal) {
-    logEvent(ticker, 'warning', `Direction mismatch: scanner ${signal} vs FA ${faRec} — trusting scanner (2-pass vetted), using FA levels`);
+    logEvent(ticker, 'info', `Direction corrected: scanner ${signal} → FA ${faRec} (trusting FA's deeper data)`);
   }
 
-  // Use FA's levels (richer data) but scanner's direction
+  // Use FA's levels and direction (richer data)
   const entryPrice = fa.trade.entryPrice!;
   const stopLoss = fa.trade.stopLoss!;
   const targetPrice = fa.trade.targetPrice!;
@@ -1873,7 +1873,7 @@ async function processSingleIdea(
       accountId: config.accountId!,
       conid: contract.conid,
       symbol: ticker,
-      side: signal,
+      side: tradeDirection,
       quantity,
       entryPrice,
       stopLoss,
@@ -1890,7 +1890,7 @@ async function processSingleIdea(
     const trade = await createPaperTrade({
       ticker,
       mode,
-      signal,
+      signal: tradeDirection,
       scanner_confidence: scannerConf,
       fa_confidence: faConf,
       fa_recommendation: faRec,
@@ -1914,7 +1914,7 @@ async function processSingleIdea(
     // Track pending order for allocation cap enforcement
     recordPendingOrder(ticker, quantity * entryPrice);
 
-    const msg = `Order placed! ${signal} ${quantity} shares @ $${entryPrice}`;
+    const msg = `Order placed! ${tradeDirection} ${quantity} shares @ $${entryPrice}`;
     logEvent(ticker, 'success', msg);
     persistEvent(ticker, 'success', msg, {
       action: 'executed', source: 'scanner', mode, scanner_signal: signal,
@@ -1936,7 +1936,7 @@ async function processSingleIdea(
     await createPaperTrade({
       ticker,
       mode,
-      signal,
+      signal: tradeDirection,
       scanner_confidence: scannerConf,
       fa_confidence: faConf,
       fa_recommendation: faRec,
