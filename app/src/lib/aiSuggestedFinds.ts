@@ -22,7 +22,16 @@ const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
 // Cache config
 const PROMPT_VERSION = 12; // v12: Gold Mine theme headline support penalty (<3 headlines → -2 conviction; 1 headline → max 7)
 const CACHE_KEY = `gemini-discovery-v${PROMPT_VERSION}`;
-const CACHE_DURATION = 1000 * 60 * 60 * 24; // 24 hours
+
+/** US/Eastern calendar date YYYY-MM-DD — matches `daily-suggestions` edge function cache key */
+export function getSuggestionDateEt(): string {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(new Date());
+}
+
+function formatInstantToEtYmd(isoOrMs: string | number): string {
+  const d = typeof isoOrMs === 'number' ? new Date(isoOrMs) : new Date(isoOrMs);
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(d);
+}
 
 export interface ThemeData {
   name: string;
@@ -49,6 +58,8 @@ export type DiscoveryStep =
 interface CachedDiscovery {
   data: DiscoveryResult;
   timestamp: string;
+  /** When set, must match today's ET date for cache hit (legacy entries derive day from timestamp) */
+  suggestionDateEt?: string;
 }
 
 // ──────────────────────────────────────────────────────────
@@ -763,7 +774,9 @@ function parseCandidateTickers(raw: string): string[] {
 
 // Server-side cache: shared across ALL users for the day
 // category param: 'auto' for main discovery, or a slugified category name
-async function getServerCachedDiscovery(category = 'auto'): Promise<DiscoveryResult | null> {
+async function getServerCachedDiscovery(
+  category = 'auto'
+): Promise<{ data: DiscoveryResult; suggestionDateEt: string } | null> {
   try {
     const url = `${DAILY_SUGGESTIONS_URL}?category=${encodeURIComponent(category)}`;
     const response = await fetch(url, {
@@ -777,8 +790,10 @@ async function getServerCachedDiscovery(category = 'auto'): Promise<DiscoveryRes
 
     const result = await response.json();
     if (result.cached && result.data) {
-      console.log(`[Discovery] Server cache HIT for ${result.date} category=${category}`);
-      return result.data as DiscoveryResult;
+      const suggestionDateEt =
+        typeof result.date === 'string' ? result.date : getSuggestionDateEt();
+      console.log(`[Discovery] Server cache HIT for ${suggestionDateEt} category=${category}`);
+      return { data: result.data as DiscoveryResult, suggestionDateEt };
     }
   } catch (err) {
     console.warn('[Discovery] Server cache check failed:', err);
@@ -804,7 +819,9 @@ async function storeServerCache(data: DiscoveryResult | EnhancedSuggestedStock[]
 }
 
 // Server cache for category-specific compounder results
-async function getServerCachedCategory(categorySlug: string): Promise<EnhancedSuggestedStock[] | null> {
+async function getServerCachedCategory(
+  categorySlug: string
+): Promise<{ data: EnhancedSuggestedStock[]; suggestionDateEt: string } | null> {
   try {
     const url = `${DAILY_SUGGESTIONS_URL}?category=${encodeURIComponent(categorySlug)}`;
     const response = await fetch(url, {
@@ -818,8 +835,10 @@ async function getServerCachedCategory(categorySlug: string): Promise<EnhancedSu
 
     const result = await response.json();
     if (result.cached && result.data) {
+      const suggestionDateEt =
+        typeof result.date === 'string' ? result.date : getSuggestionDateEt();
       console.log(`[Discovery] Server cache HIT for category=${categorySlug}`);
-      return result.data as EnhancedSuggestedStock[];
+      return { data: result.data as EnhancedSuggestedStock[], suggestionDateEt };
     }
   } catch (err) {
     console.warn('[Discovery] Category server cache check failed:', err);
@@ -827,21 +846,30 @@ async function getServerCachedCategory(categorySlug: string): Promise<EnhancedSu
   return null;
 }
 
-// Local cache: fast fallback for same user within the day
+// Local cache: same US/Eastern calendar day as server `daily_suggestions.suggestion_date`
 function getLocalCachedDiscovery(): CachedDiscovery | null {
+  const todayEt = getSuggestionDateEt();
   try {
     const raw = localStorage.getItem(CACHE_KEY);
     if (!raw) return null;
     const cached: CachedDiscovery = JSON.parse(raw);
-    const age = Date.now() - new Date(cached.timestamp).getTime();
-    if (age < CACHE_DURATION) return cached;
+    const cachedDay = cached.suggestionDateEt ?? formatInstantToEtYmd(cached.timestamp);
+    if (cachedDay !== todayEt) return null;
+    return cached;
   } catch { /* invalid cache */ }
   return null;
 }
 
-function cacheLocalDiscovery(data: DiscoveryResult): void {
+function cacheLocalDiscovery(data: DiscoveryResult, suggestionDateEt?: string): void {
   try {
-    localStorage.setItem(CACHE_KEY, JSON.stringify({ data, timestamp: new Date().toISOString() }));
+    localStorage.setItem(
+      CACHE_KEY,
+      JSON.stringify({
+        data,
+        timestamp: new Date().toISOString(),
+        suggestionDateEt: suggestionDateEt ?? getSuggestionDateEt(),
+      })
+    );
   } catch { /* storage full */ }
 }
 
@@ -851,24 +879,32 @@ function getCategoryLocalCacheKey(slug: string): string {
 }
 
 function getLocalCachedCategory(slug: string): EnhancedSuggestedStock[] | null {
+  const todayEt = getSuggestionDateEt();
   try {
     const raw = localStorage.getItem(getCategoryLocalCacheKey(slug));
     if (!raw) return null;
     const cached = JSON.parse(raw);
-    const age = Date.now() - new Date(cached.timestamp).getTime();
-    if (age < CACHE_DURATION) {
-      const data = cached.data as EnhancedSuggestedStock[];
-      return data.length > 0 ? data : null; // Treat cached empty results as a miss
-    }
+    const cachedDay = cached.suggestionDateEt ?? formatInstantToEtYmd(cached.timestamp);
+    if (cachedDay !== todayEt) return null;
+    const data = cached.data as EnhancedSuggestedStock[];
+    return data.length > 0 ? data : null; // Treat cached empty results as a miss
   } catch { /* invalid cache */ }
   return null;
 }
 
-function cacheLocalCategory(slug: string, data: EnhancedSuggestedStock[]): void {
+function cacheLocalCategory(
+  slug: string,
+  data: EnhancedSuggestedStock[],
+  suggestionDateEt?: string
+): void {
   try {
     localStorage.setItem(
       getCategoryLocalCacheKey(slug),
-      JSON.stringify({ data, timestamp: new Date().toISOString() })
+      JSON.stringify({
+        data,
+        timestamp: new Date().toISOString(),
+        suggestionDateEt: suggestionDateEt ?? getSuggestionDateEt(),
+      })
     );
   } catch { /* storage full */ }
 }
@@ -905,12 +941,12 @@ export async function discoverStocks(
     }
 
     // 2. Server cache (shared across all users for the day)
-    const serverCached = await getServerCachedDiscovery();
-    if (serverCached) {
+    const serverHit = await getServerCachedDiscovery();
+    if (serverHit) {
       console.log('[Discovery] Using server-cached results (shared daily)');
-      cacheLocalDiscovery(serverCached); // Store locally for fast access
+      cacheLocalDiscovery(serverHit.data, serverHit.suggestionDateEt);
       onStep?.('done');
-      return serverCached;
+      return serverHit.data;
     }
   }
 
@@ -1046,12 +1082,12 @@ export async function discoverCategoryStocks(
     return localCached;
   }
 
-  const serverCached = await getServerCachedCategory(slug);
-  if (serverCached) {
+  const serverHit = await getServerCachedCategory(slug);
+  if (serverHit) {
     console.log(`[Discovery] Category server cache HIT for ${slug}`);
-    cacheLocalCategory(slug, serverCached);
+    cacheLocalCategory(slug, serverHit.data, serverHit.suggestionDateEt);
     onStep?.('done');
-    return serverCached;
+    return serverHit.data;
   }
 
   // No cache — run compounder pipeline for this category
@@ -1119,12 +1155,12 @@ export async function discoverGoldMineCategoryStocks(
     return localCached;
   }
 
-  const serverCached = await getServerCachedCategory(slug);
-  if (serverCached) {
+  const serverHit = await getServerCachedCategory(slug);
+  if (serverHit) {
     console.log(`[Discovery] Gold Mine category server cache HIT for ${slug}`);
-    cacheLocalCategory(slug, serverCached);
+    cacheLocalCategory(slug, serverHit.data, serverHit.suggestionDateEt);
     onStep?.('done');
-    return serverCached;
+    return serverHit.data;
   }
 
   // No cache — run Gold Mine pipeline for this category

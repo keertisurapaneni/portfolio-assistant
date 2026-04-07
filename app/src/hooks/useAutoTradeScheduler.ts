@@ -35,7 +35,7 @@ import {
   expireStaleSignals,
 } from '../lib/paperTradesApi';
 import { analyzeUnreviewedTrades, updatePerformancePatterns } from '../lib/aiFeedback';
-import { discoverStocks } from '../lib/aiSuggestedFinds';
+import { discoverStocks, getSuggestionDateEt } from '../lib/aiSuggestedFinds';
 import { useAuth } from '../lib/auth';
 
 const SCHEDULER_CHECK_BACKOFF_MS = 5 * 60 * 1000; // 5 min after failure
@@ -127,8 +127,8 @@ function isPastMarketCloseET(): boolean {
 /** Pre-generate Suggested Finds + auto-trade qualifying picks — once daily at ~9 AM ET */
 let _lastSuggestedFindsDate = '';
 async function preGenerateSuggestedFinds() {
-  const today = new Date().toISOString().slice(0, 10);
-  if (_lastSuggestedFindsDate === today) return;
+  const todayEt = getSuggestionDateEt();
+  if (_lastSuggestedFindsDate === todayEt) return;
 
   // Only run around 9 AM ET (between 8:55 and 9:30 AM ET, or later if first check of the day)
   const now = new Date();
@@ -168,7 +168,7 @@ async function preGenerateSuggestedFinds() {
       }
     }
 
-    _lastSuggestedFindsDate = today;
+    _lastSuggestedFindsDate = todayEt;
   } catch (err) {
     console.warn('[AutoTradeScheduler] Suggested Finds pre-generation failed:', err);
   }
