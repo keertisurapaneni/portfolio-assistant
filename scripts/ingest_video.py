@@ -141,22 +141,32 @@ def transcribe(audio_path: str) -> str:
     return text or ""
 
 
-def _transcribe_groq(audio_path: str, api_key: str) -> str:
-    """Transcribe via Groq Whisper API (lighter for serverless)."""
+def _transcribe_groq(audio_path: str, api_key: str, max_retries: int = 3) -> str:
+    """Transcribe via Groq Whisper API with retry on rate-limit (429)."""
+    import time
     import requests
     ext = os.path.splitext(audio_path)[1].lower()
     mime = {"m4a": "audio/mp4", "mp3": "audio/mpeg", "wav": "audio/wav", "webm": "audio/webm"}.get(ext, "audio/mp4")
-    with open(audio_path, "rb") as f:
-        files = {"file": (os.path.basename(audio_path), f, mime)}
-        resp = requests.post(
-            "https://api.groq.com/openai/v1/audio/transcriptions",
-            headers={"Authorization": f"Bearer {api_key}"},
-            files=files,
-            data={"model": "whisper-large-v3-turbo", "response_format": "text"},
-            timeout=60,
-        )
-    resp.raise_for_status()
-    return (resp.text or "").strip()
+    last_err: Exception | None = None
+    for attempt in range(max_retries):
+        with open(audio_path, "rb") as f:
+            files = {"file": (os.path.basename(audio_path), f, mime)}
+            resp = requests.post(
+                "https://api.groq.com/openai/v1/audio/transcriptions",
+                headers={"Authorization": f"Bearer {api_key}"},
+                files=files,
+                data={"model": "whisper-large-v3-turbo", "response_format": "text"},
+                timeout=60,
+            )
+        if resp.status_code == 429:
+            retry_after = int(resp.headers.get("retry-after", 2 ** (attempt + 1)))
+            print(f"[ingest] Groq 429 rate-limited, retrying in {retry_after}s (attempt {attempt + 1}/{max_retries})")
+            time.sleep(retry_after)
+            last_err = requests.HTTPError(response=resp)
+            continue
+        resp.raise_for_status()
+        return (resp.text or "").strip()
+    raise last_err or RuntimeError("Groq transcription failed after retries")
 
 
 def set_ingest_status(
@@ -270,12 +280,15 @@ def main():
             sys.exit(1)
 
         if args.from_strategy_videos:
+            # Limit batch size to avoid exhausting Groq Whisper quota in one run
             resp = requests.get(
                 f"{supabase_url}/rest/v1/strategy_videos",
                 params={
                     "video_heading": "is.null",
                     "status": "eq.tracked",
                     "select": "video_id,platform,reel_url,canonical_url",
+                    "limit": "3",
+                    "order": "created_at.asc",
                 },
                 headers={"apikey": supabase_key, "Authorization": f"Bearer {supabase_key}"},
                 timeout=10,
