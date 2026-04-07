@@ -63,6 +63,7 @@ import {
 } from './lib/feedback.js';
 import { logLongTermPerformance } from './lib/performanceLog.js';
 import { logClosedTradePerformance } from './lib/tradePerformanceLog.js';
+import { generateSuggestedFinds } from './lib/discovery.js';
 
 // ── Types ────────────────────────────────────────────────
 
@@ -3097,9 +3098,29 @@ async function preGenerateSuggestedFinds(
 
   try {
     log('Fetching today\'s Suggested Finds...');
-    const stocks = await fetchDailySuggestions();
+    let stocks = await fetchDailySuggestions();
 
+    // If no cached results, generate server-side (no browser needed)
     if (!stocks || stocks.length === 0) {
+      log('No cached Suggested Finds — generating server-side...');
+      try {
+        const result = await generateSuggestedFinds();
+        stocks = [...result.compounders, ...result.goldMines].map(s => ({
+          ticker: s.ticker,
+          conviction: s.conviction ?? 0,
+          valuationTag: s.valuationTag ?? '',
+          tag: s.tag,
+          reason: s.reason,
+        }));
+        log(`Generated ${stocks.length} Suggested Finds (${result.compounders.length} compounders, ${result.goldMines.length} gold mines)`);
+      } catch (genErr) {
+        log(`Server-side discovery failed: ${genErr instanceof Error ? genErr.message : 'unknown'}`);
+        _lastSuggestedFindsDate = today; // Don't retry immediately
+        return;
+      }
+    }
+
+    if (stocks.length === 0) {
       log('No Suggested Finds available today');
       _lastSuggestedFindsDate = today;
       return;

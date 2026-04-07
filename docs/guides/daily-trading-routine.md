@@ -11,6 +11,7 @@
 ### Before Market Open
 - **Log into IB Gateway by 9:15-9:20 AM** — the auto-trader checks `authenticated && connected` before placing any orders
 - Verify the auto-trader service is running (Node.js auto-trader server)
+- **Suggested Finds generate automatically** at 9:00 AM ET server-side — no browser visit needed
 
 ### Market Open (9:30 AM)
 - **First day trade scan** fires — Yahoo movers + DAY_CORE + pre-market gappers
