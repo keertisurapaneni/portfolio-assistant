@@ -558,6 +558,11 @@ export function TradingSignals() {
         reason: result.trade.rationale?.technical ?? '',
         tags: [],
         mode: tradeMode as 'DAY_TRADE' | 'SWING_TRADE',
+        // Pass FA-grade levels so auto-trader can skip redundant FA call
+        entryPrice: result.trade.entryPrice,
+        stopLoss: result.trade.stopLoss,
+        targetPrice: result.trade.targetPrice,
+        riskReward: result.trade.riskReward != null ? String(result.trade.riskReward) : null,
       };
 
       const results = await processTradeIdeas([idea]);

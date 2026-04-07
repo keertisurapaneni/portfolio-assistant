@@ -1720,17 +1720,19 @@ async function processSingleIdea(
   // FA uses Twelve Data (more bars, more timeframes) + sentiment + fundamentals.
   // Scanner finds the opportunity; FA provides direction + entry/stop/target levels.
   // If FA fails, fall back to scanner Pass 2 levels when available.
-  logEvent(ticker, 'info', `Running full analysis (${mode})...`);
+  const hasPass2Levels = idea.entryPrice && idea.stopLoss && idea.targetPrice;
   let fa: TradingSignalsResponse;
-  try {
-    const faMode: SignalsMode = mode === 'DAY_TRADE' ? 'DAY_TRADE' : 'SWING_TRADE';
-    fa = await fetchTradingSignal(ticker, faMode);
-  } catch (err) {
-    // FA failed — fall back to scanner Pass 2 levels if available
-    const hasPass2Levels = idea.entryPrice && idea.stopLoss && idea.targetPrice;
-    if (hasPass2Levels) {
-      logEvent(ticker, 'warning', `FA failed, using scanner Pass 2 levels as fallback`);
-    } else {
+
+  if (hasPass2Levels) {
+    // Already have FA-grade levels (e.g. from UI "Execute Trade" or scanner Pass 2) — skip redundant API call
+    logEvent(ticker, 'info', `Using pre-computed levels — skipping FA API call`);
+    fa = { trade: { recommendation: signal, confidence: scannerConf, entryPrice: idea.entryPrice!, stopLoss: idea.stopLoss!, targetPrice: idea.targetPrice!, targetPrice2: null, riskReward: idea.riskReward ?? null, rationale: null } } as unknown as TradingSignalsResponse;
+  } else {
+    logEvent(ticker, 'info', `Running full analysis (${mode})...`);
+    try {
+      const faMode: SignalsMode = mode === 'DAY_TRADE' ? 'DAY_TRADE' : 'SWING_TRADE';
+      fa = await fetchTradingSignal(ticker, faMode);
+    } catch (err) {
       const msg = `FA failed: ${err instanceof Error ? err.message : 'Unknown'}`;
       logEvent(ticker, 'error', msg);
       persistEvent(ticker, 'error', msg, {
@@ -1739,8 +1741,6 @@ async function processSingleIdea(
       });
       return { ticker, action: 'failed', reason: 'Full analysis failed' };
     }
-    // Construct a minimal FA-like object from scanner Pass 2 levels
-    fa = { trade: { recommendation: signal, confidence: scannerConf, entryPrice: idea.entryPrice!, stopLoss: idea.stopLoss!, targetPrice: idea.targetPrice!, targetPrice2: null, riskReward: idea.riskReward ?? null, rationale: null } } as unknown as TradingSignalsResponse;
   }
 
   const faConf = fa.trade.confidence;
