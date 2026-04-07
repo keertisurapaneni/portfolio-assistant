@@ -3115,7 +3115,7 @@ async function preGenerateSuggestedFinds(
         log(`Generated ${stocks.length} Suggested Finds (${result.compounders.length} compounders, ${result.goldMines.length} gold mines)`);
       } catch (genErr) {
         log(`Server-side discovery failed: ${genErr instanceof Error ? genErr.message : 'unknown'}`);
-        // Don't set _lastSuggestedFindsDate — allow retry on next cycle (e.g. once AI keys recover)
+        _lastSuggestedFindsDate = today; // Don't retry — avoid exhausting AI keys
         return;
       }
     }
