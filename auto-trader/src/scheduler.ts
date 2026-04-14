@@ -397,6 +397,10 @@ async function runTranscriptIngest(scriptPath: string): Promise<void> {
         SUPABASE_URL: supabaseUrl,
         SUPABASE_ANON_KEY: supabaseKey,
         ...(serviceKey && { SUPABASE_SERVICE_ROLE_KEY: serviceKey }),
+        // Tell yt-dlp to pull Instagram cookies from Chrome (logged-in session).
+        // Override by setting INSTAGRAM_COOKIES_BROWSER=safari (or firefox) in .env.
+        // Set to 'none' to disable. Default: chrome on macOS.
+        INSTAGRAM_COOKIES_BROWSER: process.env.INSTAGRAM_COOKIES_BROWSER ?? 'chrome',
       },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
