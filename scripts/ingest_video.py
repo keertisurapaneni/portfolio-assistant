@@ -56,7 +56,16 @@ def parse_url(url: str) -> dict | None:
     return None
 
 
-def get_uploader_info(url: str, cookies_file: str | None = None) -> dict:
+def _add_cookie_args(cmd: list, cookies_file: str | None, cookies_from_browser: str | None) -> list:
+    """Append cookie flags to a yt-dlp command list."""
+    if cookies_from_browser:
+        cmd.extend(["--cookies-from-browser", cookies_from_browser])
+    elif cookies_file and os.path.isfile(cookies_file):
+        cmd.extend(["--cookies", cookies_file])
+    return cmd
+
+
+def get_uploader_info(url: str, cookies_file: str | None = None, cookies_from_browser: str | None = None) -> dict:
     """Fetch uploader name, handle, and description from yt-dlp metadata (no audio download).
     Returns {name, handle, description}."""
     cmd = [
@@ -66,8 +75,7 @@ def get_uploader_info(url: str, cookies_file: str | None = None) -> dict:
         "--no-playlist",
         url,
     ]
-    if cookies_file and os.path.isfile(cookies_file):
-        cmd.extend(["--cookies", cookies_file])
+    _add_cookie_args(cmd, cookies_file, cookies_from_browser)
     try:
         result = subprocess.run(cmd, capture_output=True, timeout=30, text=True)
         if result.returncode == 0:
@@ -88,7 +96,7 @@ def get_uploader_info(url: str, cookies_file: str | None = None) -> dict:
     return {}
 
 
-def download_audio(url: str, out_path: str, cookies_file: str | None = None) -> str | None:
+def download_audio(url: str, out_path: str, cookies_file: str | None = None, cookies_from_browser: str | None = None) -> str | None:
     """Download audio from URL using yt-dlp. Returns path to downloaded file or None on failure."""
     # Use python -m yt_dlp so it works when run from venv (yt-dlp may not be in PATH)
     # Use m4a to avoid ffmpeg dependency (Instagram DASH is often m4a; faster-whisper accepts it)
@@ -106,8 +114,7 @@ def download_audio(url: str, out_path: str, cookies_file: str | None = None) -> 
         "--no-playlist",
         url,
     ]
-    if cookies_file and os.path.isfile(cookies_file):
-        cmd.extend(["--cookies", cookies_file])
+    _add_cookie_args(cmd, cookies_file, cookies_from_browser)
     try:
         result = subprocess.run(cmd, capture_output=True, timeout=120, text=True)
         if result.returncode != 0:
@@ -250,7 +257,10 @@ def main():
     parser.add_argument("url", nargs="?", help="Video URL (Instagram, YouTube, Twitter)")
     parser.add_argument("--from-queue", action="store_true", help="Process strategy_video_queue done items")
     parser.add_argument("--from-strategy-videos", action="store_true", help="Process strategy_videos with null video_heading")
-    parser.add_argument("--cookies", default="", help="Path to cookies file for Instagram")
+    parser.add_argument("--cookies", default="", help="Path to Netscape cookies file for Instagram auth")
+    parser.add_argument("--cookies-from-browser", default="", dest="cookies_from_browser",
+                        help="Extract cookies from browser for Instagram (e.g. chrome, safari, firefox). "
+                             "Overrides --cookies. Also read from INSTAGRAM_COOKIES_BROWSER env var.")
     parser.add_argument("--dry-run", action="store_true", help="Skip download/transcribe, only show what would run")
     args = parser.parse_args()
 
@@ -325,6 +335,13 @@ def main():
         sys.exit(1)
 
     cookies = args.cookies.strip() or None
+    # --cookies-from-browser wins over --cookies; also check env var for headless use.
+    # Set INSTAGRAM_COOKIES_BROWSER=none (or leave unset) to disable.
+    _browser_raw = (
+        args.cookies_from_browser.strip()
+        or os.environ.get("INSTAGRAM_COOKIES_BROWSER", "")
+    ).lower()
+    cookies_from_browser = _browser_raw if _browser_raw and _browser_raw != "none" else None
 
     for item in urls_to_process:
         url = item["url"]
@@ -341,13 +358,13 @@ def main():
         except Exception as e:
             print(f"  Warning: could not set transcribing status: {e}")
 
-        uploader = get_uploader_info(url, cookies)
+        uploader = get_uploader_info(url, cookies, cookies_from_browser)
         if uploader.get("name"):
             print(f"  Uploader: {uploader['name']}" + (f" (@{uploader['handle']})" if uploader.get('handle') else ""))
 
         with tempfile.TemporaryDirectory() as tmp:
             audio_path = os.path.join(tmp, "audio")
-            downloaded = download_audio(url, audio_path, cookies)
+            downloaded = download_audio(url, audio_path, cookies, cookies_from_browser)
             if not downloaded:
                 print("  Skip: download failed")
                 try:
