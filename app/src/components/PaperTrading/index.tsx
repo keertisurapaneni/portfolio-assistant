@@ -390,39 +390,43 @@ export function PaperTrading() {
         />
       </div>
 
-      <div className="flex gap-1 bg-white/60 p-1 rounded-xl border border-[hsl(var(--border))]">
-        {[
-          { id: 'portfolio' as Tab, label: 'IB Portfolio', icon: Briefcase, count: ibPositions.length },
-          { id: 'today' as Tab, label: "Today's Activity", icon: Zap, count: dedupedToday.length },
-          { id: 'history' as Tab, label: 'Trade History', icon: Clock, count: allTrades.length },
-          { id: 'performance' as Tab, label: 'Performance', icon: BarChart2 },
-          { id: 'strategies' as Tab, label: 'Influencers', icon: BarChart3, count: sourcePerf.length },
-          { id: 'validation' as Tab, label: 'Trade Validation', icon: ClipboardCheck },
-          { id: 'smart' as Tab, label: 'Smart Trading', icon: Brain },
-          { id: 'settings' as Tab, label: 'Settings', icon: Settings },
-        ].map(t => (
-          <button
-            key={t.id}
-            onClick={() => setTab(t.id)}
-            className={cn(
-              'flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all',
-              tab === t.id
-                ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-md'
-                : 'text-slate-500 hover:text-slate-700 hover:bg-white/80'
-            )}
-          >
-            <t.icon className="w-4 h-4" />
-            {t.label}
-            {t.count !== undefined && t.count > 0 && (
-              <span className={cn(
-                'ml-0.5 px-1.5 py-0.5 text-xs rounded-full font-semibold',
-                tab === t.id ? 'bg-white/25' : 'bg-slate-100'
-              )}>
-                {t.count}
-              </span>
-            )}
-          </button>
-        ))}
+      {/* Tab bar — horizontally scrollable on mobile */}
+      <div className="overflow-x-auto -mx-4 px-4 sm:mx-0 sm:px-0" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
+        <div className="flex gap-1 bg-white/60 p-1 rounded-xl border border-[hsl(var(--border))] w-max sm:w-auto min-w-full">
+          {[
+            { id: 'portfolio' as Tab,   label: 'IB Portfolio',    short: 'Portfolio',   icon: Briefcase,     count: ibPositions.length },
+            { id: 'today' as Tab,       label: "Today's Activity", short: 'Today',       icon: Zap,           count: dedupedToday.length },
+            { id: 'history' as Tab,     label: 'Trade History',    short: 'History',     icon: Clock,         count: allTrades.length },
+            { id: 'performance' as Tab, label: 'Performance',      short: 'Perf',        icon: BarChart2 },
+            { id: 'strategies' as Tab,  label: 'Influencers',      short: 'Influencers', icon: BarChart3,     count: sourcePerf.length },
+            { id: 'validation' as Tab,  label: 'Trade Validation', short: 'Validate',    icon: ClipboardCheck },
+            { id: 'smart' as Tab,       label: 'Smart Trading',    short: 'Smart',       icon: Brain },
+            { id: 'settings' as Tab,    label: 'Settings',         short: 'Settings',    icon: Settings },
+          ].map(t => (
+            <button
+              key={t.id}
+              onClick={() => setTab(t.id)}
+              className={cn(
+                'flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium transition-all whitespace-nowrap flex-shrink-0',
+                tab === t.id
+                  ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-md'
+                  : 'text-slate-500 hover:text-slate-700 hover:bg-white/80'
+              )}
+            >
+              <t.icon className="w-4 h-4 flex-shrink-0" />
+              <span className="hidden sm:inline">{t.label}</span>
+              <span className="sm:hidden">{t.short}</span>
+              {t.count !== undefined && t.count > 0 && (
+                <span className={cn(
+                  'px-1.5 py-0.5 text-xs rounded-full font-semibold',
+                  tab === t.id ? 'bg-white/25' : 'bg-slate-100'
+                )}>
+                  {t.count}
+                </span>
+              )}
+            </button>
+          ))}
+        </div>
       </div>
 
       {loading ? (
