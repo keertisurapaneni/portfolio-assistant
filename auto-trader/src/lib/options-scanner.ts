@@ -24,13 +24,24 @@ import { isConnected, placeOptionsOrder, getDefaultAccount } from '../ib-connect
 
 const FINNHUB_KEY = process.env.FINNHUB_API_KEY ?? '';
 const MIN_STOCK_PRICE = 20;
-const MIN_PREMIUM_YIELD_PCT = 0.8;   // at least 0.8% of strike per 30 days
-const MIN_IV_RANK = 50;              // only sell when premium is elevated
-const RSI_OVERSOLD = 38;             // RSI threshold for oversold
-const MAX_POSITIONS_NORMAL = 5;      // max concurrent open options puts
-const MAX_POSITIONS_HIGH_VIX = 3;    // VIX > 25
+const MIN_PREMIUM_YIELD_PCT = 0.8;        // at least 0.8% of strike per 30 days
+const MIN_IV_RANK = 50;                    // only sell when premium is elevated
+const RSI_OVERSOLD = 38;                   // RSI threshold for oversold
+const MAX_POSITIONS_NORMAL = 5;            // max concurrent open options puts
+const MAX_POSITIONS_HIGH_VIX = 3;          // VIX > 25
 const EARNINGS_BLACKOUT_DAYS = 14;
-const IV_SPIKE_THRESHOLD = 20;       // points
+const IV_SPIKE_THRESHOLD = 20;             // points — sudden IV jump = news event
+const MAX_SPREAD_PCT = 0.30;               // bid-ask spread must be < 30% of mid
+const MIN_SENTIMENT_SCORE = -0.3;          // block if Finnhub bearish score < this
+const NEWS_LOOKBACK_DAYS = 7;              // check news from last N days
+const MAX_SECTOR_POSITIONS = 2;            // max concurrent positions in same sector
+
+const RED_FLAG_KEYWORDS = [
+  'fraud', 'sec investigation', 'doj', 'department of justice', 'class action',
+  'bankruptcy', 'chapter 11', 'chapter 7', 'delisting', 'going concern',
+  'fda rejection', 'recall', 'restatement', 'accounting irregularit',
+  'ceo resign', 'cfo resign', 'whistleblower', 'ponzi', 'subpoena',
+];
 
 // ── Types ────────────────────────────────────────────────
 
@@ -134,6 +145,86 @@ async function getSpySma200(): Promise<{ price: number; sma200: number } | null>
   return { price: closes[closes.length - 1], sma200 };
 }
 
+// ── News & Sentiment ─────────────────────────────────────
+
+interface NewsSentimentResult {
+  bullishPct: number;
+  bearishPct: number;
+  score: number;           // bullishPct - bearishPct, range -1 to 1
+  articlesCount: number;
+  redFlagFound: boolean;
+  redFlagReason: string | null;
+}
+
+async function getNewsSentiment(ticker: string): Promise<NewsSentimentResult> {
+  const to = new Date().toISOString().slice(0, 10);
+  const from = new Date(Date.now() - NEWS_LOOKBACK_DAYS * 86400_000).toISOString().slice(0, 10);
+
+  const [sentiment, news] = await Promise.all([
+    fetchJson<{
+      sentiment?: { bullishPercent?: number; bearishPercent?: number };
+      buzz?: { articlesInLastWeek?: number };
+    }>(`https://finnhub.io/api/v1/news-sentiment?symbol=${ticker}&token=${FINNHUB_KEY}`),
+    fetchJson<Array<{ headline?: string; summary?: string }>>(
+      `https://finnhub.io/api/v1/company-news?symbol=${ticker}&from=${from}&to=${to}&token=${FINNHUB_KEY}`
+    ),
+  ]);
+
+  const bullishPct = sentiment?.sentiment?.bullishPercent ?? 0.5;
+  const bearishPct = sentiment?.sentiment?.bearishPercent ?? 0.5;
+  const score = bullishPct - bearishPct;
+  const articlesCount = sentiment?.buzz?.articlesInLastWeek ?? (news?.length ?? 0);
+
+  // Scan headlines for red-flag keywords
+  let redFlagFound = false;
+  let redFlagReason: string | null = null;
+  for (const article of news ?? []) {
+    const text = `${article.headline ?? ''} ${article.summary ?? ''}`.toLowerCase();
+    const hit = RED_FLAG_KEYWORDS.find(kw => text.includes(kw));
+    if (hit) {
+      redFlagFound = true;
+      redFlagReason = hit;
+      break;
+    }
+  }
+
+  return { bullishPct, bearishPct, score, articlesCount, redFlagFound, redFlagReason };
+}
+
+// ── Sector Profile ────────────────────────────────────────
+
+const sectorCache = new Map<string, string>();
+
+async function getStockSector(ticker: string): Promise<string> {
+  if (sectorCache.has(ticker)) return sectorCache.get(ticker)!;
+  const data = await fetchJson<{ finnhubIndustry?: string }>(
+    `https://finnhub.io/api/v1/stock/profile2?symbol=${ticker}&token=${FINNHUB_KEY}`
+  );
+  const sector = data?.finnhubIndustry ?? 'Unknown';
+  sectorCache.set(ticker, sector);
+  return sector;
+}
+
+// ── IV Spike Detection ────────────────────────────────────
+
+async function checkIvSpike(ticker: string, currentIv: number): Promise<{ spiked: boolean; delta: number }> {
+  const sb = getSupabase();
+  const yesterday = new Date(Date.now() - 86400_000).toISOString().slice(0, 10);
+
+  const { data } = await sb
+    .from('options_iv_history')
+    .select('iv')
+    .eq('ticker', ticker)
+    .lte('date', yesterday)
+    .order('date', { ascending: false })
+    .limit(1);
+
+  if (!data?.length) return { spiked: false, delta: 0 };
+  const prevIv = data[0].iv as number;
+  const delta = currentIv - prevIv;
+  return { spiked: delta >= IV_SPIKE_THRESHOLD, delta };
+}
+
 function formatExpiry(yyyymmdd: string): string {
   const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
   const m = parseInt(yyyymmdd.slice(4, 6), 10) - 1;
@@ -193,7 +284,7 @@ async function buildScanContext(freeCapital: number): Promise<ScanContext> {
     getSpySma200(),
     getVix(),
     sb.from('paper_trades')
-      .select('ticker, mode, position_size, notes')
+      .select('ticker, mode, position_size')
       .in('mode', ['OPTIONS_PUT', 'OPTIONS_CALL'])
       .in('status', ['PENDING', 'SUBMITTED', 'FILLED', 'PARTIAL']),
   ]);
@@ -202,12 +293,20 @@ async function buildScanContext(freeCapital: number): Promise<ScanContext> {
   const openCountBySector = new Map<string, number>();
   const deployedByTicker = new Map<string, number>();
 
+  // Populate sector map for open positions
+  const openTickers = [...new Set((openPositions.data ?? []).map(p => p.ticker))];
+  await Promise.all(openTickers.map(async t => {
+    const sector = await getStockSector(t);
+    sectorByTicker.set(t, sector);
+    openCountBySector.set(sector, (openCountBySector.get(sector) ?? 0) + 1);
+  }));
+
   for (const pos of openPositions.data ?? []) {
     deployedByTicker.set(pos.ticker, (deployedByTicker.get(pos.ticker) ?? 0) + (pos.position_size ?? 0));
   }
 
   return {
-    spyAboveSma200: spyData ? spyData.price > spyData.sma200 : true, // default to allow
+    spyAboveSma200: spyData ? spyData.price > spyData.sma200 : true,
     vix,
     openPutCount: (openPositions.data ?? []).filter(p => p.mode === 'OPTIONS_PUT').length,
     deployedCapitalByTicker: deployedByTicker,
@@ -251,6 +350,26 @@ async function checkStock(
   checks.earningsBlackout = daysToEarnings > EARNINGS_BLACKOUT_DAYS;
   if (daysToEarnings <= EARNINGS_BLACKOUT_DAYS) return { ticker, skipped: true, reason: `earnings_in_${daysToEarnings}d` };
 
+  // Check 4.5: News sentiment — block on red-flag headlines or strongly negative sentiment
+  const newsSentiment = await getNewsSentiment(ticker);
+  checks.newsSentiment = newsSentiment.redFlagFound
+    ? `red_flag:${newsSentiment.redFlagReason}`
+    : `score:${newsSentiment.score.toFixed(2)}`;
+  if (newsSentiment.redFlagFound) {
+    return { ticker, skipped: true, reason: `news_red_flag:${newsSentiment.redFlagReason}` };
+  }
+  if (newsSentiment.score < MIN_SENTIMENT_SCORE) {
+    return { ticker, skipped: true, reason: `negative_sentiment:${newsSentiment.score.toFixed(2)}` };
+  }
+
+  // Check 4.6: Sector concentration — max 2 positions per sector
+  const sector = await getStockSector(ticker);
+  const sectorCount = ctx.openCountBySector.get(sector) ?? 0;
+  checks.sectorConcentration = `${sector}(${sectorCount}/${MAX_SECTOR_POSITIONS})`;
+  if (sectorCount >= MAX_SECTOR_POSITIONS) {
+    return { ticker, skipped: true, reason: `sector_limit:${sector}` };
+  }
+
   // Check 5: RSI oversold + recovering
   const rsiData = await getRSI(ticker);
   const rsiOk = rsiData ? (rsiData.rsi < RSI_OVERSOLD && rsiData.rsi > rsiData.prevRsi) : false;
@@ -265,9 +384,21 @@ async function checkStock(
   if (!chain?.bestPut) return { ticker, skipped: true, reason: 'no_options_chain' };
   const put = chain.bestPut;
 
-  // Check 7: Premium yield threshold
+  // Check 6.5: Liquidity — bid-ask spread must be < 30% of mid
+  const spread = put.ask - put.bid;
+  const spreadPct = put.mid > 0 ? spread / put.mid : 1;
+  checks.liquidity = `spread:${(spreadPct * 100).toFixed(0)}%_bid:${put.bid.toFixed(2)}_ask:${put.ask.toFixed(2)}`;
+  if (spreadPct > MAX_SPREAD_PCT) {
+    return { ticker, skipped: true, reason: `wide_spread:${(spreadPct * 100).toFixed(0)}pct` };
+  }
+  if (put.bid <= 0) {
+    return { ticker, skipped: true, reason: 'no_bid_no_market' };
+  }
+
+  // Check 7: Premium yield threshold (use bid price for conservative estimate)
   const dte = daysToExpiryFromStr(put.expiry);
-  const dailyYield = put.mid / put.strike;
+  const conservativePremium = put.bid; // worst-case fill at bid
+  const dailyYield = conservativePremium / put.strike;
   const monthlyYield = dailyYield * 30;
   checks.premiumYield = monthlyYield >= MIN_PREMIUM_YIELD_PCT / 100;
   if (monthlyYield < MIN_PREMIUM_YIELD_PCT / 100) return { ticker, skipped: true, reason: `low_premium_${(monthlyYield * 100).toFixed(2)}pct` };
@@ -277,25 +408,33 @@ async function checkStock(
   checks.capitalSufficient = ctx.freeCapital >= capitalRequired;
   if (ctx.freeCapital < capitalRequired) return { ticker, skipped: true, reason: 'insufficient_capital' };
 
-  // Check 9: IV check (use IV from chain; rank from DB history)
-  const ivRank = await getIvRank(ticker, chain.currentIV * 100);
+  // Check 9: IV rank
+  const currentIvPct = chain.currentIV * 100;
+  const ivRank = await getIvRank(ticker, currentIvPct);
   checks.ivRank = ivRank !== null ? `${ivRank}` : 'building_history';
-  const ivOk = ivRank === null || ivRank >= MIN_IV_RANK; // allow if no history yet
+  const ivOk = ivRank === null || ivRank >= MIN_IV_RANK;
 
-  // IV spike check (if IV rank jumped suddenly — skip for manual review)
-  // We check this by comparing stored yesterday's IV to today's
-  checks.noIvSpike = true; // simplified for v1; full spike detection in v2
+  // Check 9.5: IV spike — sudden >20pt jump = news event, skip
+  const ivSpike = await checkIvSpike(ticker, currentIvPct);
+  checks.noIvSpike = ivSpike.spiked ? `SPIKE+${ivSpike.delta.toFixed(0)}pts` : `ok(${ivSpike.delta > 0 ? '+' : ''}${ivSpike.delta.toFixed(0)}pts)`;
+  if (ivSpike.spiked) {
+    return { ticker, skipped: true, reason: `iv_spike:+${ivSpike.delta.toFixed(0)}pts` };
+  }
 
   const checksPassedCount = [
     ctx.spyAboveSma200,
     ctx.openPutCount < maxPositions,
     price >= effectiveMinPrice,
     daysToEarnings > EARNINGS_BLACKOUT_DAYS,
+    !newsSentiment.redFlagFound && newsSentiment.score >= MIN_SENTIMENT_SCORE,
+    sectorCount < MAX_SECTOR_POSITIONS,
     rsiBonus,
     !!chain.bestPut,
+    spreadPct <= MAX_SPREAD_PCT && put.bid > 0,
     monthlyYield >= MIN_PREMIUM_YIELD_PCT / 100,
     ctx.freeCapital >= capitalRequired,
     ivOk,
+    !ivSpike.spiked,
   ].filter(Boolean).length;
 
   return {
