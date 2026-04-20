@@ -680,6 +680,36 @@ export async function getPastLossCutEvents(
   return (data ?? []) as { metadata: Record<string, unknown> }[];
 }
 
+export async function getRecentSuggestedFindAlerts(
+  ticker: string
+): Promise<{ created_at: string }[]> {
+  const sb = getSupabase();
+  const { data } = await sb
+    .from('auto_trade_events')
+    .select('created_at')
+    .eq('ticker', ticker)
+    .eq('source', 'suggested_finds_review')
+    .eq('action', 'flagged')
+    .order('created_at', { ascending: false })
+    .limit(1);
+  return data ?? [];
+}
+
+export async function getAtRiskPositionEvents(): Promise<
+  { ticker: string; message: string; created_at: string; metadata: Record<string, unknown> }[]
+> {
+  const sb = getSupabase();
+  const cutoff = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
+  const { data } = await sb
+    .from('auto_trade_events')
+    .select('ticker, message, created_at, metadata')
+    .eq('source', 'suggested_finds_review')
+    .eq('action', 'flagged')
+    .gte('created_at', cutoff)
+    .order('created_at', { ascending: false });
+  return (data ?? []) as { ticker: string; message: string; created_at: string; metadata: Record<string, unknown> }[];
+}
+
 // ── Portfolio Snapshot ───────────────────────────────────
 
 export async function savePortfolioSnapshot(

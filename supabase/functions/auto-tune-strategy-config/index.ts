@@ -229,6 +229,36 @@ Deno.serve(async (req) => {
 
     const totalTrades = cleanTrades.length;
 
+    // ── 4b. Granular scanner data — confidence buckets + market conditions ────
+    // Pull scanner_confidence and market_condition from notes/metadata on day trades
+    const scannerDayIds = scannerDay.map(t => t.id);
+    let confBuckets: Array<{ conf: number; pnl: number }> = [];
+    let condPnls: Map<string, number[]> = new Map();
+
+    if (scannerDayIds.length >= MIN_SAMPLE) {
+      const { data: detailData } = await supabase
+        .from('paper_trades')
+        .select('id, scanner_confidence, pnl, notes')
+        .in('id', scannerDayIds.slice(0, 200));
+
+      if (detailData) {
+        for (const row of detailData as Array<{ id: string; scanner_confidence: number | null; pnl: number | null; notes: string | null }>) {
+          if (row.scanner_confidence != null && row.pnl != null) {
+            confBuckets.push({ conf: row.scanner_confidence, pnl: row.pnl });
+          }
+          // market_condition stored in notes as "market_condition:trend" etc.
+          if (row.notes && row.pnl != null) {
+            const m = row.notes.match(/market_condition:(\w+)/);
+            if (m) {
+              const cond = m[1];
+              if (!condPnls.has(cond)) condPnls.set(cond, []);
+              condPnls.get(cond)!.push(row.pnl);
+            }
+          }
+        }
+      }
+    }
+
     // ── 5. Apply tuning rules ────────────────────────────
     const decisions: TuneDecision[] = [];
     const updates: Record<string, number | boolean> = {};
@@ -369,6 +399,37 @@ Deno.serve(async (req) => {
             category: 'LONG_TERM',
           });
           updates.long_term_bucket_pct = newVal;
+        }
+      }
+    }
+
+    // ── Rule D2: Confidence bucket analysis — granular confidence threshold ──
+    // If high-confidence (≥8) has meaningfully better outcomes than mid (6-7),
+    // raise the bar so we only take the best setups.
+    if (confBuckets.length >= MIN_SAMPLE) {
+      const high = confBuckets.filter(b => b.conf >= 8);
+      const mid  = confBuckets.filter(b => b.conf >= 6 && b.conf < 8);
+
+      if (high.length >= 5 && mid.length >= 5) {
+        const avgHigh = high.reduce((s, b) => s + b.pnl, 0) / high.length;
+        const avgMid  = mid.reduce((s, b) => s + b.pnl, 0) / mid.length;
+        const highWR  = high.filter(b => b.pnl > 0).length / high.length;
+        const midWR   = mid.filter(b => b.pnl > 0).length / mid.length;
+        const old = current.min_scanner_confidence;
+
+        if (avgMid < 0 && midWR < 0.40 && highWR > 0.50 && old < 8.0) {
+          // Mid-confidence is net negative, high is profitable — raise bar
+          const newVal = r1(clamp(old + 0.5, BOUNDS.min_scanner_confidence.min, 8.5));
+          if (newVal !== old) {
+            decisions.push({
+              param: 'min_scanner_confidence',
+              oldValue: old,
+              newValue: newVal,
+              reason: `Confidence bucket analysis: conf 6-7 avg P&L $${avgMid.toFixed(0)} (${Math.round(midWR * 100)}% WR), conf 8+ avg $${avgHigh.toFixed(0)} (${Math.round(highWR * 100)}% WR) — raising threshold`,
+              category: 'scanner_day',
+            });
+            updates.min_scanner_confidence = newVal;
+          }
         }
       }
     }
