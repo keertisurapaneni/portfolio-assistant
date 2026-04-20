@@ -57,15 +57,18 @@ export interface ScanResult {
 export async function fetchTradeIdeas(
   portfolioTickers?: string[],
   forceRefresh = false,
+  scanType?: 'day' | 'swing',
 ): Promise<ScanResult> {
   const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+  const body: Record<string, unknown> = { portfolioTickers: portfolioTickers ?? [], forceRefresh };
+  if (scanType) body.scanType = scanType;
   const res = await fetch(TRADE_SCANNER_URL, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${supabaseKey}`,
     },
-    body: JSON.stringify({ portfolioTickers: portfolioTickers ?? [], forceRefresh }),
+    body: JSON.stringify(body),
   });
 
   const data = await res.json().catch(() => ({}));

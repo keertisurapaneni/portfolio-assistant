@@ -88,11 +88,11 @@ export function TradeIdeas({ onSelectTicker }: TradeIdeasProps) {
       _cacheTime = Date.now();
       setData(result);
 
-      // Second call on force refresh: day is now fresh so this pass runs swing trades.
+      // Second call on force refresh: explicitly request a swing scan.
       // Day + swing can't run in the same edge-function call (compute limits), so we
-      // chain a second request to pick up swing.
+      // chain a second request. scanType='swing' bypasses the "day must be fresh" gate.
       if (force) {
-        const result2 = await fetchTradeIdeas(undefined, false);
+        const result2 = await fetchTradeIdeas(undefined, false, 'swing');
         const merged: typeof result2 = {
           ...result2,
           dayTrades: result2.dayTrades.length > 0 ? result2.dayTrades : result.dayTrades,
