@@ -1864,6 +1864,7 @@ Deno.serve(async (req) => {
     let forceRefresh = false;
     let debugMode = false;
     let diagnosticsMode = false;
+    let scanType: 'auto' | 'day' | 'swing' = 'auto'; // 'swing' bypasses day-freshness check
     try {
       const body = await req.json();
       if (Array.isArray(body?.portfolioTickers)) {
@@ -1874,6 +1875,7 @@ Deno.serve(async (req) => {
       if (body?.forceRefresh === true) forceRefresh = true;
       if (body?._debug === true) debugMode = true;
       if (body?._diagnostics === true) diagnosticsMode = true;
+      if (body?.scanType === 'day' || body?.scanType === 'swing') scanType = body.scanType;
     } catch { /* no body */ }
 
     // ── Diagnostics mode: test Yahoo Finance + Gemini connectivity ──
@@ -1947,20 +1949,22 @@ Deno.serve(async (req) => {
     const swingFromPreviousDay = swingScannedDate !== todayET;
 
     // Day trades: ONLY refresh during market hours — pre-market Yahoo movers are stale
-    const needDayRefresh = forceRefresh || (marketOpen && (dayStale || dayFromPreviousDay));
+    const needDayRefresh = scanType === 'swing' ? false
+      : forceRefresh || (marketOpen && (dayStale || dayFromPreviousDay));
     // Swing trades: refresh in windows, or any market-hour cycle when today's list is empty.
     const swingNeverScanned = !swingRow || swingFromPreviousDay;
     const swingEmpty = (swingRow?.data?.length ?? 0) === 0;
 
     // Never run both heavy scans in the same call — each scan (day + swing) does 10+ API calls
     // and 2 Gemini passes, which together exceed Supabase Edge Function compute limits.
-    // Priority: day trades during market hours, swing trades during swing windows / off-hours.
-    const needSwingRefresh = !needDayRefresh && (
-      forceRefresh ||
-      swingNeverScanned ||
-      (swingStale && swingWindow) ||
-      (marketOpen && swingEmpty)
-    );
+    // scanType='swing' forces swing regardless of day freshness (used by the 2nd frontend call).
+    const needSwingRefresh = scanType === 'swing' ? true
+      : !needDayRefresh && (
+        forceRefresh ||
+        swingNeverScanned ||
+        (swingStale && swingWindow) ||
+        (marketOpen && swingEmpty)
+      );
 
     console.log(`[Trade Scanner] day=${dayStale ? 'STALE' : 'FRESH'} dayPrevDay=${dayFromPreviousDay} swing=${swingStale ? 'STALE' : 'FRESH'} swingPrevDay=${swingFromPreviousDay} market=${marketOpen ? 'OPEN' : 'CLOSED'} swingWindow=${swingWindow} refreshDay=${needDayRefresh} refreshSwing=${needSwingRefresh}`);
 
