@@ -917,7 +917,9 @@ function buildIdea(
   mode: 'DAY_TRADE' | 'SWING_TRADE',
   opts?: { pass1Confidence?: number; marketCondition?: 'trend' | 'chop' },
 ): TradeIdea | null {
-  if (eval_.signal === 'SKIP' || eval_.confidence < 6) return null;
+  // Minimum confidence: 6 for day trades, 5 for swing (bear market penalty can push 6→5.5)
+  const minConf = mode === 'SWING_TRADE' ? 5 : 6;
+  if (eval_.signal === 'SKIP' || eval_.confidence < minConf) return null;
   const price = rawVal(quote.regularMarketPrice);
   const change = rawVal(quote.regularMarketChange);
   const changePct = rawVal(quote.regularMarketChangePercent);
@@ -1808,10 +1810,11 @@ async function runPass2(
 
   const withDirection = results.filter(e => e.signal === 'BUY' || e.signal === 'SELL');
   // Day trades: use 6 as base (scanner already did 2 passes of vetting; 7 was too strict)
-  // Swing trades: try 7 first, fall back to 6 if nothing qualifies
+  // Swing trades: try 7 first, fall back to 5 if nothing qualifies
+  // Bear market penalty (-0.5 on BUYs) can push a 6.0 AI score to 5.5 — fallback must reach 5
   const strictMinConfidence = 7;
   const baseMinConfidence = mode === 'DAY_TRADE' ? 6 : strictMinConfidence;
-  const fallbackMinConfidence = 6;
+  const fallbackMinConfidence = mode === 'DAY_TRADE' ? 6 : 5;
   const strictCandidates = withDirection.filter(e => e.confidence >= baseMinConfidence);
   const selectedCandidates = strictCandidates.length > 0
     ? strictCandidates
@@ -2239,7 +2242,7 @@ Deno.serve(async (req) => {
           console.log(`[Trade Scanner] Swing Pass 1 non-SKIP (${nonSkip.length}): ${nonSkip.map(e => `${e.ticker}:${e.signal}/${e.confidence}`).join(', ') || 'none'}`);
 
           const pass1 = nonSkip
-            .filter(e => e.confidence >= 5)
+            .filter(e => e.confidence >= 4) // lowered from 5 — bear/choppy markets get conservative AI scores
             .slice(0, 10);
 
           console.log(`[Trade Scanner] Swing Pass 1 → Pass 2 (${pass1.length}): ${pass1.map(e => `${e.ticker}:${e.signal}/${e.confidence}`).join(', ') || 'none'}`);
