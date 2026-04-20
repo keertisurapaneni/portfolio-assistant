@@ -82,11 +82,25 @@ export function TradeIdeas({ onSelectTicker }: TradeIdeasProps) {
     setLoading(true);
     setError(null);
     try {
-      // When user explicitly clicks refresh (force=true), bypass server-side DB cache too
+      // First call: runs day trades (or returns cached if fresh)
       const result = await fetchTradeIdeas(undefined, force);
       _cache = result;
       _cacheTime = Date.now();
       setData(result);
+
+      // Second call on force refresh: day is now fresh so this pass runs swing trades.
+      // Day + swing can't run in the same edge-function call (compute limits), so we
+      // chain a second request to pick up swing.
+      if (force) {
+        const result2 = await fetchTradeIdeas(undefined, false);
+        const merged: typeof result2 = {
+          ...result2,
+          dayTrades: result2.dayTrades.length > 0 ? result2.dayTrades : result.dayTrades,
+        };
+        _cache = merged;
+        _cacheTime = Date.now();
+        setData(merged);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to scan');
     } finally {
@@ -123,7 +137,7 @@ export function TradeIdeas({ onSelectTicker }: TradeIdeasProps) {
   const swingIdeas = data?.swingTrades ?? [];
   const gameplanSetups = data?.keyLevelSetups ?? [];
   const ideas = tab === 'day' ? dayIdeas : tab === 'swing' ? swingIdeas : [];
-  const totalCount = dayIdeas.length + swingIdeas.length + gameplanSetups.length;
+  const totalCount = dayIdeas.length + swingIdeas.length; // key level setups excluded from badge count
 
   return (
     <div className="rounded-xl border border-[hsl(var(--border))] bg-white shadow-sm overflow-hidden">
