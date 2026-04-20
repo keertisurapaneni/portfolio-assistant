@@ -1078,26 +1078,33 @@ export function StrategyPerformanceTab({ sources, videos, statuses, onRefresh }:
                                               </div>
                                               {/* Step 2: Transcript */}
                                               <div className="flex items-start gap-1.5 text-[10px]">
-                                                <span className={cn(
-                                                  'w-4 h-4 rounded-full flex items-center justify-center text-white font-bold text-[9px] shrink-0 mt-0.5',
-                                                  video.ingestStatus === 'done' ? 'bg-emerald-500'
+                                                {(() => {
+                                                  // Instagram failures are auto-retried every 10 min by the scheduler
+                                                  // (picks up any video with video_heading = null). Show amber "Will retry"
+                                                  // instead of red "Failed" so it doesn't look permanently broken.
+                                                  const isInstagramFailed = video.ingestStatus === 'failed' && video.platform === 'instagram';
+                                                  const dotColor = video.ingestStatus === 'done' ? 'bg-emerald-500'
                                                     : video.ingestStatus === 'transcribing' ? 'bg-blue-500'
-                                                    : video.ingestStatus === 'failed' ? 'bg-red-500'
-                                                    : 'bg-amber-400'
-                                                )}>2</span>
-                                                <div className="flex-1 min-w-0">
-                                                  <div className="flex items-center gap-1.5 flex-wrap">
-                                                    <span className="text-[hsl(var(--muted-foreground))]">Transcript:</span>
-                                                    <span className={cn(
-                                                      'font-medium',
-                                                      video.ingestStatus === 'done' ? 'text-emerald-600'
-                                                        : video.ingestStatus === 'transcribing' ? 'text-blue-600'
-                                                        : video.ingestStatus === 'failed' ? 'text-red-600'
-                                                        : 'text-amber-600'
-                                                    )}>
-                                                      {video.ingestStatus === 'done' ? 'Transcribed' : video.ingestStatus === 'transcribing' ? 'Transcribing…' : video.ingestStatus === 'failed' ? 'Failed' : 'Pending'}
-                                                    </span>
-                                                    {video.ingestStatus !== 'done' && video.ingestStatus !== 'transcribing' && (
+                                                    : (video.ingestStatus === 'failed' && !isInstagramFailed) ? 'bg-red-500'
+                                                    : 'bg-amber-400';
+                                                  const labelColor = video.ingestStatus === 'done' ? 'text-emerald-600'
+                                                    : video.ingestStatus === 'transcribing' ? 'text-blue-600'
+                                                    : (video.ingestStatus === 'failed' && !isInstagramFailed) ? 'text-red-600'
+                                                    : 'text-amber-600';
+                                                  const label = video.ingestStatus === 'done' ? 'Transcribed'
+                                                    : video.ingestStatus === 'transcribing' ? 'Transcribing…'
+                                                    : isInstagramFailed ? 'Will retry'
+                                                    : video.ingestStatus === 'failed' ? 'Failed'
+                                                    : 'Pending';
+                                                  return (
+                                                    <>
+                                                      <span className={cn('w-4 h-4 rounded-full flex items-center justify-center text-white font-bold text-[9px] shrink-0 mt-0.5', dotColor)}>2</span>
+                                                      <div className="flex-1 min-w-0">
+                                                        <div className="flex items-center gap-1.5 flex-wrap">
+                                                          <span className="text-[hsl(var(--muted-foreground))]">Transcript:</span>
+                                                          <span className={cn('font-medium', labelColor)}>{label}</span>
+                                                          {isInstagramFailed && <span className="text-amber-500 text-[9px]">(auto-retries every 10 min)</span>}
+                                                          {video.ingestStatus !== 'done' && video.ingestStatus !== 'transcribing' && (
                                                       video.platform === 'youtube' ? (
                                                         <button
                                                           onClick={() => handleFetchCaptions(video.videoId!)}
@@ -1169,6 +1176,9 @@ export function StrategyPerformanceTab({ sources, videos, statuses, onRefresh }:
                                                     <div className="mt-1 text-[10px] text-emerald-600 font-medium">✓ Transcript submitted — extracting metadata…</div>
                                                   )}
                                                 </div>
+                                                    </>
+                                                  );
+                                                })()}
                                               </div>
                                               {/* Step 3: Metadata extraction */}
                                               <div className="flex items-center gap-1.5 text-[10px]">
