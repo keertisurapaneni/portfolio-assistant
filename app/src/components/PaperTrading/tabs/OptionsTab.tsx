@@ -410,14 +410,14 @@ export function OptionsTab() {
           {/* Watchlist items */}
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
             {watchlist.filter(w => w.active).map(w => (
-              <div key={w.id} className="flex items-center justify-between rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] px-3 py-2">
-                <div>
+              <div key={w.id} className="flex items-start justify-between rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] px-3 py-2 gap-2">
+                <div className="min-w-0">
                   <p className="text-sm font-bold text-[hsl(var(--foreground))]">{w.ticker}</p>
-                  {w.notes && <p className="text-[9px] text-[hsl(var(--muted-foreground))] truncate max-w-[120px]">{w.notes}</p>}
+                  {w.notes && <p className="text-[10px] text-[hsl(var(--muted-foreground))] leading-snug">{w.notes}</p>}
                 </div>
                 <button
                   onClick={() => handleRemoveTicker(w.ticker)}
-                  className="p-1 rounded hover:bg-[hsl(var(--muted))] transition-colors"
+                  className="p-1 mt-0.5 shrink-0 rounded hover:bg-[hsl(var(--muted))] transition-colors"
                 >
                   <X className="w-3 h-3 text-[hsl(var(--muted-foreground))]" />
                 </button>
