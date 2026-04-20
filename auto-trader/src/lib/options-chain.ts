@@ -58,7 +58,18 @@ function pickBestExpiry(expirations: string[]): string | null {
   const candidates = expirations
     .map(e => ({ e, dte: daysToExpiry(e) }))
     .filter(x => x.dte >= 25 && x.dte <= 50)
-    .sort((a, b) => Math.abs(a.dte - 38) - Math.abs(b.dte - 38)); // closest to 38 DTE
+    .sort((a, b) => Math.abs(a.dte - 38) - Math.abs(b.dte - 38));
+  return candidates[0]?.e ?? null;
+}
+
+/** Pick expiry closest to a specific DTE target (e.g. 21 for bear mode). */
+function pickBestExpiryForDte(expirations: string[], targetDte: number): string | null {
+  const minDte = Math.max(7, targetDte - 10);
+  const maxDte = targetDte + 14;
+  const candidates = expirations
+    .map(e => ({ e, dte: daysToExpiry(e) }))
+    .filter(x => x.dte >= minDte && x.dte <= maxDte)
+    .sort((a, b) => Math.abs(a.dte - targetDte) - Math.abs(b.dte - targetDte));
   return candidates[0]?.e ?? null;
 }
 
@@ -218,37 +229,39 @@ function getOptionGreeksForContract(
   });
 }
 
-// ── Find Best Put Strike (20–25 Delta) ────────────────────
+// ── Find Best Put Strike ──────────────────────────────────
 
+/**
+ * @param deltaTarget  Desired absolute delta (e.g. 0.20 = 20-delta, 0.15 = 15-delta bear mode)
+ */
 async function findBestPutStrike(
   symbol: string,
   strikes: number[],
   expiry: string,
   underlyingPrice: number,
+  deltaTarget = 0.22,
 ): Promise<OptionGreeks | null> {
-  // Start from ATM and go down; check 4 strikes around the 20-25 delta zone
-  // A 20-25 delta put is typically 5–15% below current price
-  const targetPct = 0.10; // 10% below as starting point
+  // Target delta band: ±0.07 around the target
+  const deltaLow = Math.max(0.10, deltaTarget - 0.07);
+  const deltaHigh = deltaTarget + 0.07;
+
+  // Estimate target strike: delta maps roughly to OTM distance
+  const targetPct = deltaTarget < 0.18 ? 0.12 : 0.10;
   const targetStrike = underlyingPrice * (1 - targetPct);
 
-  // Get the 5 strikes closest to our target
   const candidates = strikes
-    .filter(s => s < underlyingPrice * 0.98) // must be OTM for a put
+    .filter(s => s < underlyingPrice * 0.98)
     .sort((a, b) => Math.abs(a - targetStrike) - Math.abs(b - targetStrike))
-    .slice(0, 5);
+    .slice(0, 6);
 
   for (const strike of candidates) {
     const greeks = await getOptionGreeksForContract(symbol, strike, expiry, 'P', underlyingPrice);
     if (!greeks) continue;
-
     const absDelta = Math.abs(greeks.delta);
-    // Accept if delta is in 0.15–0.30 range (15–30 delta)
-    if (absDelta >= 0.15 && absDelta <= 0.30) {
-      return greeks;
-    }
+    if (absDelta >= deltaLow && absDelta <= deltaHigh) return greeks;
   }
 
-  // Fallback: return the first candidate that returned greeks
+  // Fallback: return first candidate that returned greeks
   for (const strike of candidates) {
     const greeks = await getOptionGreeksForContract(symbol, strike, expiry, 'P', underlyingPrice);
     if (greeks) return greeks;
@@ -267,6 +280,8 @@ export async function getOptionsChain(
   symbol: string,
   underlyingPrice: number,
   storedIvRank: number | null = null,
+  deltaTarget?: number,   // override delta target (bear mode uses 0.15)
+  dteDays?: number,       // override DTE window center (bear mode uses 21)
 ): Promise<OptionsChainSummary | null> {
   if (!isConnected()) return null;
 
@@ -278,12 +293,14 @@ export async function getOptionsChain(
   const params = await getOptionChainParams(contractInfo.conId, symbol);
   if (!params || params.expirations.length === 0) return null;
 
-  // Step 3: Pick the best expiry (30-45 DTE)
-  const expiry = pickBestExpiry(params.expirations);
+  // Step 3: Pick the best expiry — bear mode targets 21 DTE, normal 30-45 DTE
+  const expiry = dteDays
+    ? pickBestExpiryForDte(params.expirations, dteDays)
+    : pickBestExpiry(params.expirations);
   if (!expiry) return null;
 
-  // Step 4: Find best put strike (20-25 delta zone)
-  const bestPut = await findBestPutStrike(symbol, params.strikes, expiry, underlyingPrice);
+  // Step 4: Find best put strike — use caller-specified delta target if provided
+  const bestPut = await findBestPutStrike(symbol, params.strikes, expiry, underlyingPrice, deltaTarget);
 
   // Step 5: Optionally find best covered call (just above current price)
   const callStrike = params.strikes.find(s => s > underlyingPrice * 1.05) ?? null;

@@ -61,6 +61,9 @@ function OpportunityCard({ opp, onPaperTrade }: { opp: OptionsScanOpportunity; o
           <div className="flex items-center gap-2">
             <span className="text-sm font-bold text-[hsl(var(--foreground))]">{opp.ticker}</span>
             <span className="text-[10px] px-1.5 py-0.5 rounded bg-violet-100 text-violet-700 font-semibold">SELL PUT</span>
+            {opp.bear_mode && (
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-red-100 text-red-700 font-semibold">🐻 BEAR MODE</span>
+            )}
             {opp.iv_rank && opp.iv_rank >= 60 && (
               <span className="text-[10px] px-1.5 py-0.5 rounded bg-orange-100 text-orange-700 font-semibold">IV {opp.iv_rank}%</span>
             )}

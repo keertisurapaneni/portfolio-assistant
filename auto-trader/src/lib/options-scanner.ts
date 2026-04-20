@@ -35,6 +35,18 @@ const MAX_SPREAD_PCT = 0.30;               // bid-ask spread must be < 30% of mi
 const MIN_SENTIMENT_SCORE = -0.3;          // block if Finnhub bearish score < this
 const NEWS_LOOKBACK_DAYS = 7;              // check news from last N days
 const MAX_SECTOR_POSITIONS = 2;            // max concurrent positions in same sector
+const MAX_BETA = 1.5;                      // skip high-beta stocks for put selling
+const STOCK_TREND_SMA_DAYS = 50;           // stock must be above its own 50-day SMA
+const MAX_STOCK_DECLINE_3M_PCT = 20;       // skip if stock down >20% in 3 months
+const MARKET_OPEN_BUFFER_MS = 30 * 60_000; // don't trade in first 30 min after open
+
+// Bear market mode — more conservative params applied when SPY < SMA200
+const BEAR_DELTA_TARGET = 0.15;            // 15-delta puts (vs normal 20-25)
+const BEAR_DTE_TARGET = 21;                // shorter expiry
+const BEAR_POSITION_SIZE_FACTOR = 0.5;     // half size
+const BEAR_DEFENSIVE_SECTORS = [           // only these sectors in bear mode
+  'Consumer Staples', 'Utilities', 'Health Care', 'Financials',
+];
 
 const RED_FLAG_KEYWORDS = [
   'fraud', 'sec investigation', 'doj', 'department of justice', 'class action',
@@ -53,7 +65,7 @@ export interface OptionsTradeTicket {
   expiry: string;           // YYYYMMDD
   expiryFormatted: string;  // e.g. "Jan 31"
   daysToExpiry: number;
-  premium: number;          // per share (mid price - slippage)
+  premium: number;          // per share (bid price — conservative fill estimate)
   premiumTotal: number;     // premium × 100 (per contract)
   netPrice: number;         // strike - premium (effective cost if assigned)
   capitalRequired: number;  // strike × 100
@@ -63,6 +75,7 @@ export interface OptionsTradeTicket {
   annualYield: number;
   checksPassedCount: number;
   checksDetail: Record<string, boolean | string>;
+  bearMode: boolean;        // true = bear market conservative params applied
 }
 
 interface WatchlistEntry {
@@ -72,8 +85,10 @@ interface WatchlistEntry {
 
 interface ScanContext {
   spyAboveSma200: boolean;
+  bearMode: boolean;           // true when SPY < SMA200 — applies conservative params
   vix: number;
   openPutCount: number;
+  openTickerSet: Set<string>;  // tickers with existing open puts (prevent duplicates)
   deployedCapitalByTicker: Map<string, number>;
   sectorByTicker: Map<string, string>;
   openCountBySector: Map<string, number>;
@@ -143,6 +158,57 @@ async function getSpySma200(): Promise<{ price: number; sma200: number } | null>
   const closes = data.c;
   const sma200 = closes.slice(-200).reduce((a, b) => a + b, 0) / 200;
   return { price: closes[closes.length - 1], sma200 };
+}
+
+// ── Market Hours ─────────────────────────────────────────
+
+/** Returns true if we're past the first 30-min volatility window (after 10:00 AM ET). */
+function isPastOpeningWindow(): boolean {
+  const now = new Date();
+  // ET offset: UTC-5 (EST) or UTC-4 (EDT)
+  const etOffset = isDST(now) ? -4 : -5;
+  const etHour = (now.getUTCHours() + etOffset + 24) % 24;
+  const etMin = now.getUTCMinutes();
+  return etHour > 10 || (etHour === 10 && etMin >= 0);
+}
+
+function isDST(date: Date): boolean {
+  const jan = new Date(date.getFullYear(), 0, 1).getTimezoneOffset();
+  const jul = new Date(date.getFullYear(), 6, 1).getTimezoneOffset();
+  return date.getTimezoneOffset() < Math.max(jan, jul);
+}
+
+// ── Stock Trend ───────────────────────────────────────────
+
+interface StockTrendResult {
+  aboveSma50: boolean;
+  sma50: number;
+  price: number;
+  change3m: number;  // % change over last 3 months
+}
+
+async function getStockTrend(ticker: string): Promise<StockTrendResult | null> {
+  const to = Math.floor(Date.now() / 1000);
+  const from = to - 86400 * 70; // ~70 trading days covers 50-day SMA + 3m change
+  const data = await fetchJson<{ c?: number[] }>(
+    `https://finnhub.io/api/v1/stock/candle?symbol=${ticker}&resolution=D&from=${from}&to=${to}&token=${FINNHUB_KEY}`
+  );
+  if (!data?.c || data.c.length < 50) return null;
+  const closes = data.c;
+  const price = closes[closes.length - 1];
+  const sma50 = closes.slice(-50).reduce((a, b) => a + b, 0) / 50;
+  const price3mAgo = closes[Math.max(0, closes.length - 63)]; // ~63 trading days = 3 months
+  const change3m = price3mAgo > 0 ? ((price - price3mAgo) / price3mAgo) * 100 : 0;
+  return { aboveSma50: price > sma50, sma50, price, change3m };
+}
+
+// ── Beta ──────────────────────────────────────────────────
+
+async function getStockBeta(ticker: string): Promise<number | null> {
+  const data = await fetchJson<{ metric?: { beta?: number } }>(
+    `https://finnhub.io/api/v1/stock/metric?symbol=${ticker}&metric=all&token=${FINNHUB_KEY}`
+  );
+  return data?.metric?.beta ?? null;
 }
 
 // ── News & Sentiment ─────────────────────────────────────
@@ -305,10 +371,15 @@ async function buildScanContext(freeCapital: number): Promise<ScanContext> {
     deployedByTicker.set(pos.ticker, (deployedByTicker.get(pos.ticker) ?? 0) + (pos.position_size ?? 0));
   }
 
+  const spyAboveSma200 = spyData ? spyData.price > spyData.sma200 : true;
+  const openTrades = (openPositions.data ?? []).filter(p => p.mode === 'OPTIONS_PUT');
+
   return {
-    spyAboveSma200: spyData ? spyData.price > spyData.sma200 : true,
+    spyAboveSma200,
+    bearMode: !spyAboveSma200,
     vix,
-    openPutCount: (openPositions.data ?? []).filter(p => p.mode === 'OPTIONS_PUT').length,
+    openPutCount: openTrades.length,
+    openTickerSet: new Set(openTrades.map(p => p.ticker)),
     deployedCapitalByTicker: deployedByTicker,
     sectorByTicker,
     openCountBySector,
@@ -325,9 +396,19 @@ async function checkStock(
 ): Promise<OptionsTradeTicket | { ticker: string; skipped: true; reason: string }> {
   const checks: Record<string, boolean | string> = {};
 
-  // Check 1: Bear market gate
-  checks.bearMarketGate = ctx.spyAboveSma200;
-  if (!ctx.spyAboveSma200) return { ticker, skipped: true, reason: 'bear_market' };
+  // Check 0: Time-of-day gate — skip first 30 min after open (wide spreads, erratic pricing)
+  if (!isPastOpeningWindow()) {
+    return { ticker, skipped: true, reason: 'too_early_opening_30min' };
+  }
+
+  // Check 1: Bear market gate — in bear mode, only allow defensive sectors
+  checks.bearMarketGate = ctx.spyAboveSma200 ? 'bull' : 'bear_mode_active';
+  // Don't hard-block bear market — instead apply bear mode restrictions below
+
+  // Check 1.5: Duplicate ticker guard — don't stack puts on same ticker
+  if (ctx.openTickerSet.has(ticker)) {
+    return { ticker, skipped: true, reason: 'duplicate_open_position' };
+  }
 
   // Check 2: Position limit
   const maxPositions = ctx.vix > 25 ? MAX_POSITIONS_HIGH_VIX : MAX_POSITIONS_NORMAL;
@@ -343,6 +424,25 @@ async function checkStock(
   const effectiveMinPrice = minPrice ?? MIN_STOCK_PRICE;
   checks.minPrice = price >= effectiveMinPrice;
   if (price < effectiveMinPrice) return { ticker, skipped: true, reason: `price_too_low_${price.toFixed(0)}` };
+
+  // Check 3.5: Stock trend — must be above its own 50-day SMA and not down >20% in 3 months
+  const trend = await getStockTrend(ticker);
+  if (trend) {
+    checks.stockTrend = `sma50:${trend.sma50.toFixed(0)}_3m:${trend.change3m.toFixed(1)}%_${trend.aboveSma50 ? 'above' : 'below'}`;
+    if (!trend.aboveSma50) {
+      return { ticker, skipped: true, reason: `below_sma50:${trend.sma50.toFixed(0)}` };
+    }
+    if (trend.change3m < -MAX_STOCK_DECLINE_3M_PCT) {
+      return { ticker, skipped: true, reason: `down_${Math.abs(trend.change3m).toFixed(0)}pct_3m` };
+    }
+  }
+
+  // Check 3.6: Beta filter — skip high-beta stocks (too volatile for wheel strategy)
+  const beta = await getStockBeta(ticker);
+  checks.beta = beta !== null ? beta.toFixed(2) : 'unknown';
+  if (beta !== null && beta > MAX_BETA) {
+    return { ticker, skipped: true, reason: `high_beta:${beta.toFixed(2)}` };
+  }
 
   // Check 4: Earnings blackout
   const earningsDate = await getEarningsDate(ticker);
@@ -370,6 +470,15 @@ async function checkStock(
     return { ticker, skipped: true, reason: `sector_limit:${sector}` };
   }
 
+  // Check 4.7: Bear mode sector filter — in bear market, only defensive sectors
+  if (ctx.bearMode) {
+    const isDefensive = BEAR_DEFENSIVE_SECTORS.some(s => sector.toLowerCase().includes(s.toLowerCase()));
+    checks.bearModeSector = `${isDefensive ? 'defensive' : 'non_defensive'}:${sector}`;
+    if (!isDefensive) {
+      return { ticker, skipped: true, reason: `bear_mode_non_defensive:${sector}` };
+    }
+  }
+
   // Check 5: RSI oversold + recovering
   const rsiData = await getRSI(ticker);
   const rsiOk = rsiData ? (rsiData.rsi < RSI_OVERSOLD && rsiData.rsi > rsiData.prevRsi) : false;
@@ -380,7 +489,14 @@ async function checkStock(
   // Check 6: IB options chain (requires IB connection)
   if (!isConnected()) return { ticker, skipped: true, reason: 'ib_not_connected' };
 
-  const chain = await getOptionsChain(ticker, price, null);
+  // In bear mode: target 15-delta + 21 DTE; normal: 20-25 delta + 30-45 DTE
+  const chain = await getOptionsChain(
+    ticker,
+    price,
+    null,
+    ctx.bearMode ? BEAR_DELTA_TARGET : undefined,
+    ctx.bearMode ? BEAR_DTE_TARGET : undefined,
+  );
   if (!chain?.bestPut) return { ticker, skipped: true, reason: 'no_options_chain' };
   const put = chain.bestPut;
 
@@ -403,10 +519,13 @@ async function checkStock(
   checks.premiumYield = monthlyYield >= MIN_PREMIUM_YIELD_PCT / 100;
   if (monthlyYield < MIN_PREMIUM_YIELD_PCT / 100) return { ticker, skipped: true, reason: `low_premium_${(monthlyYield * 100).toFixed(2)}pct` };
 
-  // Check 8: Capital sufficiency
+  // Check 8: Capital sufficiency (bear mode uses 50% position size)
   const capitalRequired = put.strike * 100;
-  checks.capitalSufficient = ctx.freeCapital >= capitalRequired;
-  if (ctx.freeCapital < capitalRequired) return { ticker, skipped: true, reason: 'insufficient_capital' };
+  const effectiveCapitalRequired = ctx.bearMode
+    ? capitalRequired * BEAR_POSITION_SIZE_FACTOR
+    : capitalRequired;
+  checks.capitalSufficient = ctx.freeCapital >= effectiveCapitalRequired;
+  if (ctx.freeCapital < effectiveCapitalRequired) return { ticker, skipped: true, reason: 'insufficient_capital' };
 
   // Check 9: IV rank
   const currentIvPct = chain.currentIV * 100;
@@ -445,16 +564,17 @@ async function checkStock(
     expiry: put.expiry,
     expiryFormatted: formatExpiry(put.expiry),
     daysToExpiry: dte,
-    premium: put.mid,
-    premiumTotal: Math.round(put.mid * 100),
-    netPrice: put.strike - put.mid,
-    capitalRequired,
+    premium: conservativePremium,  // bid price — realistic fill
+    premiumTotal: Math.round(conservativePremium * 100),
+    netPrice: put.strike - conservativePremium,
+    capitalRequired: effectiveCapitalRequired,
     delta: put.delta,
     ivRank,
     probProfit: put.probProfit,
     annualYield: put.annualYield,
     checksPassedCount,
     checksDetail: checks,
+    bearMode: ctx.bearMode,
   };
 }
 
@@ -538,6 +658,7 @@ export async function runOptionsScan(freeCapital = 100_000): Promise<OptionsScan
       capital_req: opp.capitalRequired,
       annual_yield: opp.annualYield,
       checks_passed: opp.checksDetail,
+      bear_mode: opp.bearMode,
     }, { onConflict: 'ticker,scan_date,signal' });
   }
 

@@ -37,6 +37,7 @@ export interface OptionsScanOpportunity {
   annual_yield: number;
   checks_passed: Record<string, boolean | string>;
   skip_reason: string | null;
+  bear_mode?: boolean;
 }
 
 export interface OpenOptionsPosition {
