@@ -2167,7 +2167,9 @@ async function executeExternalStrategySignal(
   const kellyMult = await calculateKellyMultiplier(config);
   const sizingMultiplier = dd.multiplier * kellyMult;
 
-  // Determine flat dollar size: per-signal override > config flat size > dynamic sizing
+  // Determine flat dollar size: per-signal override > config flat size > dynamic sizing.
+  // When externalSignalPositionSize == 0, sizing falls through to calculatePositionSize()
+  // which dynamically scales with base_allocation_pct × maxTotalAllocation.
   const flatDollarSize = signal.position_size_override && signal.position_size_override > 0
     ? signal.position_size_override
     : config.externalSignalPositionSize > 0
@@ -2175,8 +2177,7 @@ async function executeExternalStrategySignal(
       : null;
 
   // Influencer signals (from strategy videos) are pre-vetted and have a known track record.
-  // Don't let Kelly/drawdown from unrelated scanner trades shrink their position size —
-  // use the flat dollar amount directly, no multiplier applied.
+  // Don't let Kelly/drawdown from unrelated scanner trades shrink their position size.
   const isInfluencerSignalForSizing = signal.strategy_video_id != null;
 
   const baseSizing = flatDollarSize
@@ -2193,7 +2194,9 @@ async function executeExternalStrategySignal(
       conviction: signal.confidence,
       entryPrice: effectiveEntryPrice ?? undefined,
       stopLoss: effectiveStopLoss ?? undefined,
-      drawdownMultiplier: sizingMultiplier,
+      // Influencer signals skip Kelly/drawdown dampening even in the dynamic path —
+      // consistent with the flat-dollar path above.
+      drawdownMultiplier: isInfluencerSignalForSizing ? 1.0 : sizingMultiplier,
     });
 
   const splitDollarSize = baseSizing.dollarSize / allocationSplit;
