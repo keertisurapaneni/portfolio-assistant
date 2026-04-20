@@ -396,7 +396,7 @@ export function PaperTrading() {
           { id: 'today' as Tab, label: "Today's Activity", icon: Zap, count: dedupedToday.length },
           { id: 'history' as Tab, label: 'Trade History', icon: Clock, count: allTrades.length },
           { id: 'performance' as Tab, label: 'Performance', icon: BarChart2 },
-          { id: 'strategies' as Tab, label: 'Strategy Perf', icon: BarChart3, count: sourcePerf.length },
+          { id: 'strategies' as Tab, label: 'Influencers', icon: BarChart3, count: sourcePerf.length },
           { id: 'validation' as Tab, label: 'Trade Validation', icon: ClipboardCheck },
           { id: 'smart' as Tab, label: 'Smart Trading', icon: Brain },
           { id: 'settings' as Tab, label: 'Settings', icon: Settings },
