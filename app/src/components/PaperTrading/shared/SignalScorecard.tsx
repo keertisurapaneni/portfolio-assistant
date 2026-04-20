@@ -34,20 +34,42 @@ export function SignalScorecard({ title, subtitle, data, color }: SignalScorecar
     );
   }
 
+  const hasUnrealized = data.unrealizedPnl !== 0 && data.activeTrades > 0;
+  const hasRealized = data.realizedPnl !== 0;
+
   return (
     <div className={cn('rounded-xl border p-4', colorClasses[color])}>
-      <div className="flex items-center justify-between mb-1">
+      <div className="flex items-start justify-between mb-1">
         <div>
           <p className={cn('text-sm font-semibold', textColors[color])}>{title}</p>
           <p className="text-[10px] text-[hsl(var(--muted-foreground))]">{subtitle}</p>
         </div>
         <div className="text-right">
-          <p className={cn(
-            'text-lg font-bold tabular-nums',
-            data.totalPnl > 0 ? 'text-emerald-600' : data.totalPnl < 0 ? 'text-red-600' : textColors[color]
-          )}>
-            {fmtUsd(data.totalPnl, 0, true)}
-          </p>
+          {hasUnrealized && hasRealized ? (
+            <>
+              <p className={cn(
+                'text-base font-bold tabular-nums leading-tight',
+                data.realizedPnl >= 0 ? 'text-emerald-600' : 'text-red-600'
+              )}>
+                {fmtUsd(data.realizedPnl, 0, true)}
+                <span className="text-[9px] font-normal text-[hsl(var(--muted-foreground))] ml-1">realized</span>
+              </p>
+              <p className={cn(
+                'text-xs font-semibold tabular-nums',
+                data.unrealizedPnl >= 0 ? 'text-emerald-500' : 'text-red-400'
+              )}>
+                {fmtUsd(data.unrealizedPnl, 0, true)}
+                <span className="text-[9px] font-normal text-[hsl(var(--muted-foreground))] ml-1">open</span>
+              </p>
+            </>
+          ) : (
+            <p className={cn(
+              'text-lg font-bold tabular-nums',
+              data.totalPnl > 0 ? 'text-emerald-600' : data.totalPnl < 0 ? 'text-red-600' : textColors[color]
+            )}>
+              {fmtUsd(data.totalPnl, 0, true)}
+            </p>
+          )}
         </div>
       </div>
 
@@ -88,6 +110,9 @@ export function SignalScorecard({ title, subtitle, data, color }: SignalScorecar
               <p className="text-[10px] text-[hsl(var(--muted-foreground))]">Best</p>
               <p className="text-xs font-bold text-emerald-600 tabular-nums truncate">
                 {data.bestTrade.ticker} {fmtUsd(data.bestTrade.pnl, 0, true)}
+                {data.bestTrade.isOpen && (
+                  <span className="text-[9px] font-normal text-[hsl(var(--muted-foreground))] ml-0.5">(open)</span>
+                )}
               </p>
             </div>
           )}
@@ -96,6 +121,9 @@ export function SignalScorecard({ title, subtitle, data, color }: SignalScorecar
               <p className="text-[10px] text-[hsl(var(--muted-foreground))]">Worst</p>
               <p className="text-xs font-bold text-red-600 tabular-nums truncate">
                 {data.worstTrade.ticker} {fmtUsd(data.worstTrade.pnl, 0)}
+                {data.worstTrade.isOpen && (
+                  <span className="text-[9px] font-normal text-[hsl(var(--muted-foreground))] ml-0.5">(open)</span>
+                )}
               </p>
             </div>
           )}
