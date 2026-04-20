@@ -82,7 +82,8 @@ export function TradeIdeas({ onSelectTicker }: TradeIdeasProps) {
     setLoading(true);
     setError(null);
     try {
-      const result = await fetchTradeIdeas();
+      // When user explicitly clicks refresh (force=true), bypass server-side DB cache too
+      const result = await fetchTradeIdeas(undefined, force);
       _cache = result;
       _cacheTime = Date.now();
       setData(result);

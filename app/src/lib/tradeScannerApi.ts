@@ -55,7 +55,8 @@ export interface ScanResult {
 }
 
 export async function fetchTradeIdeas(
-  portfolioTickers?: string[]
+  portfolioTickers?: string[],
+  forceRefresh = false,
 ): Promise<ScanResult> {
   const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
   const res = await fetch(TRADE_SCANNER_URL, {
@@ -64,7 +65,7 @@ export async function fetchTradeIdeas(
       'Content-Type': 'application/json',
       Authorization: `Bearer ${supabaseKey}`,
     },
-    body: JSON.stringify({ portfolioTickers: portfolioTickers ?? [] }),
+    body: JSON.stringify({ portfolioTickers: portfolioTickers ?? [], forceRefresh }),
   });
 
   const data = await res.json().catch(() => ({}));
