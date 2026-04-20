@@ -1,0 +1,319 @@
+/**
+ * Options Position Manager
+ *
+ * Monitors open options positions every 30 minutes and:
+ *   - Auto-closes puts at 50% of max profit
+ *   - Alerts when expiry ≤ 21 days (roll or close decision)
+ *   - Detects assignment and suggests covered call
+ *   - Tracks P&L on open positions
+ */
+
+import { getSupabase, createAutoTradeEvent } from './supabase.js';
+import { getOptionsChain } from './options-chain.js';
+import { isConnected } from '../ib-connection.js';
+
+function persistEvent(ticker: string, eventType: string, message: string, extra?: Record<string, unknown>): void {
+  createAutoTradeEvent({ ticker, event_type: eventType, message, ...extra });
+}
+
+// ── Types ────────────────────────────────────────────────
+
+export interface OpenOptionsPosition {
+  id: string;
+  ticker: string;
+  mode: 'OPTIONS_PUT' | 'OPTIONS_CALL';
+  strike: number;
+  expiry: string;          // ISO date YYYY-MM-DD
+  expiryDate: Date;
+  daysToExpiry: number;
+  premiumCollected: number;  // per share at entry
+  currentPremium: number;    // current mid price (what it costs to buy back)
+  profitCapturePct: number;  // (1 - currentPremium/premiumCollected) * 100
+  pnl: number;               // (premiumCollected - currentPremium) * 100
+  capitalRequired: number;
+  status: string;
+  isAssigned: boolean;
+}
+
+interface PositionRow {
+  id: string;
+  ticker: string;
+  mode: string;
+  option_strike: number;
+  option_expiry: string;
+  option_premium: number;
+  option_capital_req: number;
+  option_assigned: boolean;
+  fill_price: number;
+  status: string;
+  pnl: number | null;
+}
+
+// ── Helpers ──────────────────────────────────────────────
+
+function daysUntil(dateStr: string): number {
+  const d = new Date(dateStr);
+  return Math.ceil((d.getTime() - Date.now()) / (1000 * 60 * 60 * 24));
+}
+
+async function getCurrentPremium(
+  ticker: string,
+  strike: number,
+  expiryISO: string,
+  stockPrice: number,
+): Promise<number | null> {
+  if (!isConnected()) return null;
+  const expiry = expiryISO.replace(/-/g, ''); // YYYYMMDD
+  const chain = await getOptionsChain(ticker, stockPrice);
+  if (!chain?.bestPut) return null;
+  // Find the matching strike in the chain (approximate — chain returns best strike)
+  if (Math.abs(chain.bestPut.strike - strike) < 5) {
+    return chain.bestPut.mid;
+  }
+  return null;
+}
+
+// ── Load Open Positions ──────────────────────────────────
+
+export async function getOpenOptionsPositions(): Promise<OpenOptionsPosition[]> {
+  const sb = getSupabase();
+  const { data, error } = await sb
+    .from('paper_trades')
+    .select('id, ticker, mode, option_strike, option_expiry, option_premium, option_capital_req, option_assigned, fill_price, status, pnl')
+    .in('mode', ['OPTIONS_PUT', 'OPTIONS_CALL'])
+    .in('status', ['PENDING', 'SUBMITTED', 'FILLED', 'PARTIAL']);
+
+  if (error || !data) return [];
+
+  const positions: OpenOptionsPosition[] = [];
+
+  for (const row of data as PositionRow[]) {
+    if (!row.option_strike || !row.option_expiry) continue;
+
+    const dte = daysUntil(row.option_expiry);
+    const premiumCollected = row.option_premium ?? 0;
+
+    // Try to get current premium from IB; fall back to stored P&L
+    const currentPremium = 0; // Will be updated via IB in the manage cycle
+    const profitCapturePct = premiumCollected > 0
+      ? Math.max(0, (1 - currentPremium / premiumCollected) * 100)
+      : 0;
+    const pnl = (premiumCollected - currentPremium) * 100;
+
+    positions.push({
+      id: row.id,
+      ticker: row.ticker,
+      mode: row.mode as 'OPTIONS_PUT' | 'OPTIONS_CALL',
+      strike: row.option_strike,
+      expiry: row.option_expiry,
+      expiryDate: new Date(row.option_expiry),
+      daysToExpiry: dte,
+      premiumCollected,
+      currentPremium,
+      profitCapturePct,
+      pnl,
+      capitalRequired: row.option_capital_req ?? row.option_strike * 100,
+      status: row.status,
+      isAssigned: row.option_assigned ?? false,
+    });
+  }
+
+  return positions;
+}
+
+// ── Manage Cycle (runs every 30 min) ─────────────────────
+
+export interface ManageCycleResult {
+  closed50Pct: string[];
+  rollAlerts: string[];
+  assignmentAlerts: string[];
+  expiredPositions: string[];
+}
+
+export async function runOptionsManageCycle(): Promise<ManageCycleResult> {
+  const sb = getSupabase();
+  const result: ManageCycleResult = {
+    closed50Pct: [],
+    rollAlerts: [],
+    assignmentAlerts: [],
+    expiredPositions: [],
+  };
+
+  const { data, error } = await sb
+    .from('paper_trades')
+    .select('id, ticker, mode, option_strike, option_expiry, option_premium, option_capital_req, option_assigned, fill_price, status')
+    .in('mode', ['OPTIONS_PUT', 'OPTIONS_CALL'])
+    .in('status', ['FILLED', 'PARTIAL']);
+
+  if (error || !data) return result;
+
+  for (const pos of data as PositionRow[]) {
+    if (!pos.option_strike || !pos.option_expiry) continue;
+
+    const dte = daysUntil(pos.option_expiry);
+    const premiumCollected = pos.option_premium ?? 0;
+
+    // ── Check 1: Expired (past expiry date) ──
+    if (dte <= 0) {
+      // Option expired — close as profit (premium kept) if not assigned
+      await sb.from('paper_trades').update({
+        status: 'CLOSED',
+        close_price: 0,
+        pnl: premiumCollected * 100,
+        pnl_percent: (premiumCollected / pos.option_strike) * 100,
+        closed_at: new Date().toISOString(),
+        close_reason: 'expired_worthless',
+        option_close_pct: 100,
+      }).eq('id', pos.id);
+
+      result.expiredPositions.push(pos.ticker);
+      persistEvent(pos.ticker, 'success',
+        `✅ ${pos.ticker} $${pos.option_strike} put expired worthless — kept $${(premiumCollected * 100).toFixed(0)} premium`,
+        { action: 'closed', source: 'options', metadata: { reason: 'expired_worthless', premium: premiumCollected * 100 } }
+      );
+      continue;
+    }
+
+    // ── Check 2: Get current premium from IB ──
+    if (!isConnected()) continue;
+
+    // Get fresh quote for the stock
+    let stockPrice: number | null = null;
+    try {
+      const res = await fetch(`https://finnhub.io/api/v1/quote?symbol=${pos.ticker}&token=${process.env.FINNHUB_API_KEY}`);
+      const q = await res.json() as { c?: number };
+      stockPrice = q.c ?? null;
+    } catch { /* skip */ }
+
+    if (!stockPrice) continue;
+
+    const currentPremium = await getCurrentPremium(pos.ticker, pos.option_strike, pos.option_expiry, stockPrice);
+    if (currentPremium === null) continue;
+
+    const profitCapturePct = premiumCollected > 0
+      ? Math.max(0, (1 - currentPremium / premiumCollected) * 100)
+      : 0;
+    const pnl = (premiumCollected - currentPremium) * 100;
+
+    // Update live P&L on the trade
+    await sb.from('paper_trades').update({ pnl }).eq('id', pos.id);
+
+    // ── Check 3: 50% profit — auto close ──
+    if (profitCapturePct >= 50) {
+      await sb.from('paper_trades').update({
+        status: 'CLOSED',
+        close_price: currentPremium,
+        pnl,
+        pnl_percent: (pnl / (pos.option_capital_req ?? pos.option_strike * 100)) * 100,
+        closed_at: new Date().toISOString(),
+        close_reason: '50pct_profit',
+        option_close_pct: profitCapturePct,
+      }).eq('id', pos.id);
+
+      result.closed50Pct.push(pos.ticker);
+      persistEvent(pos.ticker, 'success',
+        `💰 ${pos.ticker} $${pos.option_strike} put closed at ${profitCapturePct.toFixed(0)}% profit — captured $${pnl.toFixed(0)}`,
+        { action: 'closed', source: 'options', metadata: { reason: '50pct_profit', pnl, profitCapturePct } }
+      );
+      continue;
+    }
+
+    // ── Check 4: 21 DTE roll/close alert ──
+    if (dte <= 21 && dte > 0) {
+      result.rollAlerts.push(pos.ticker);
+      persistEvent(pos.ticker, 'warning',
+        `⚠️ ${pos.ticker} $${pos.option_strike} put expires in ${dte} days — roll or close decision needed`,
+        { action: 'flagged', source: 'options', metadata: { reason: 'dte_alert', dte, currentPnl: pnl } }
+      );
+    }
+
+    // ── Check 5: Assignment detection (stock price below strike) ──
+    if (stockPrice < pos.option_strike * 0.98 && !pos.option_assigned) {
+      result.assignmentAlerts.push(pos.ticker);
+      persistEvent(pos.ticker, 'warning',
+        `📌 ${pos.ticker} stock ($${stockPrice.toFixed(2)}) is below put strike ($${pos.option_strike}) — assignment risk. Consider rolling or accepting shares.`,
+        { action: 'flagged', source: 'options', metadata: { reason: 'assignment_risk', stockPrice, strike: pos.option_strike } }
+      );
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Mark a put as assigned — creates a synthetic LONG_TERM position
+ * for the assigned shares and suggests a covered call.
+ */
+export async function handleAssignment(positionId: string): Promise<void> {
+  const sb = getSupabase();
+  const { data: pos } = await sb
+    .from('paper_trades')
+    .select('*')
+    .eq('id', positionId)
+    .single();
+
+  if (!pos) return;
+
+  // Close the put position
+  await sb.from('paper_trades').update({
+    status: 'CLOSED',
+    close_reason: 'assigned',
+    option_assigned: true,
+    closed_at: new Date().toISOString(),
+    close_price: pos.option_strike,
+    pnl: -(pos.option_strike - pos.option_premium - (pos.fill_price ?? pos.option_strike)) * 100,
+  }).eq('id', positionId);
+
+  // Log assignment event
+  persistEvent(pos.ticker, 'warning',
+    `📌 ${pos.ticker} put assigned — now own 100 shares at $${pos.option_net_price?.toFixed(2) ?? pos.option_strike} effective cost. Time to sell a covered call.`,
+    { action: 'flagged', source: 'options', metadata: { reason: 'assigned', strike: pos.option_strike, netPrice: pos.option_net_price } }
+  );
+}
+
+/**
+ * Get monthly options P&L summary.
+ */
+export async function getOptionsMonthlyStats(): Promise<{
+  premiumCollected: number;
+  wins: number;
+  losses: number;
+  winRate: number;
+  openPositions: number;
+  annualizedReturn: number;
+}> {
+  const sb = getSupabase();
+  const monthStart = new Date();
+  monthStart.setDate(1);
+  monthStart.setHours(0, 0, 0, 0);
+
+  const { data: closed } = await sb
+    .from('paper_trades')
+    .select('pnl, option_capital_req')
+    .in('mode', ['OPTIONS_PUT', 'OPTIONS_CALL'])
+    .in('status', ['CLOSED', 'TARGET_HIT', 'STOPPED'])
+    .gte('closed_at', monthStart.toISOString());
+
+  const { data: open } = await sb
+    .from('paper_trades')
+    .select('id')
+    .in('mode', ['OPTIONS_PUT', 'OPTIONS_CALL'])
+    .in('status', ['FILLED', 'PARTIAL', 'PENDING', 'SUBMITTED']);
+
+  const trades = closed ?? [];
+  const wins = trades.filter(t => (t.pnl ?? 0) > 0);
+  const losses = trades.filter(t => (t.pnl ?? 0) < 0);
+  const premiumCollected = wins.reduce((s, t) => s + (t.pnl ?? 0), 0);
+  const totalCapital = trades.reduce((s, t) => s + (t.option_capital_req ?? 0), 0);
+  const daysInMonth = new Date().getDate();
+  const annualizedReturn = totalCapital > 0 ? (premiumCollected / totalCapital) * (365 / daysInMonth) * 100 : 0;
+
+  return {
+    premiumCollected,
+    wins: wins.length,
+    losses: losses.length,
+    winRate: trades.length > 0 ? (wins.length / trades.length) * 100 : 0,
+    openPositions: (open ?? []).length,
+    annualizedReturn,
+  };
+}

@@ -64,6 +64,8 @@ import {
 import { logLongTermPerformance } from './lib/performanceLog.js';
 import { logClosedTradePerformance } from './lib/tradePerformanceLog.js';
 import { generateSuggestedFinds } from './lib/discovery.js';
+import { runOptionsScan, paperTradeOption } from './lib/options-scanner.js';
+import { runOptionsManageCycle } from './lib/options-manager.js';
 
 // ── Types ────────────────────────────────────────────────
 
@@ -3457,7 +3459,39 @@ async function runSchedulerCycle(): Promise<void> {
       summaryLog(msg);
     }
 
-    // 11. Daily rehydration (after 4:15 PM ET)
+    // 11. Options wheel — manage open positions (every cycle, 30-min intervals)
+    try {
+      const optsMgr = await runOptionsManageCycle();
+      if (optsMgr.closed50Pct.length > 0) log(`Options: closed at 50% profit — ${optsMgr.closed50Pct.join(', ')}`);
+      if (optsMgr.rollAlerts.length > 0) log(`Options: roll/close alerts — ${optsMgr.rollAlerts.join(', ')}`);
+      if (optsMgr.assignmentAlerts.length > 0) log(`Options: assignment risk — ${optsMgr.assignmentAlerts.join(', ')}`);
+    } catch (err) {
+      log(`Options manager error: ${err instanceof Error ? err.message : 'unknown'}`);
+    }
+
+    // 12. Options wheel — morning scan (9:00–10:30 AM ET only)
+    const nowET = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }));
+    const issMorningScanWindow = nowET.getHours() === 9 || (nowET.getHours() === 10 && nowET.getMinutes() < 30);
+    if (issMorningScanWindow) {
+      try {
+        const freeCapital = config.portfolioValue * (1 - (config.maxTotalAllocation ?? 0.8));
+        const scanResult = await runOptionsScan(Math.max(freeCapital, 50_000));
+        if (scanResult.opportunities.length > 0) {
+          log(`Options scan: ${scanResult.opportunities.length} opportunities found`);
+          // Auto paper-trade top 3 opportunities
+          for (const opp of scanResult.opportunities.slice(0, 3)) {
+            const id = await paperTradeOption(opp);
+            if (id) log(`  → Paper traded ${opp.ticker} $${opp.strike}P @ $${opp.premium.toFixed(2)} (${opp.annualYield.toFixed(1)}% annual yield)`);
+          }
+        } else {
+          log(`Options scan: no opportunities today (${scanResult.skipped.length} stocks checked)`);
+        }
+      } catch (err) {
+        log(`Options scan error: ${err instanceof Error ? err.message : 'unknown'}`);
+      }
+    }
+
+    // 13. Daily rehydration (after 4:15 PM ET)
     await runDailyRehydration(config);
 
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);

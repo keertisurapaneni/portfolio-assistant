@@ -6,3 +6,4 @@ export { SettingsTab } from './SettingsTab';
 export { ValidationTab } from './ValidationTab';
 export { StrategyPerformanceTab } from './StrategyPerformanceTab';
 export { PerformanceTab } from './PerformanceTab';
+export { OptionsTab } from './OptionsTab';

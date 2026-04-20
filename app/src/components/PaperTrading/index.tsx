@@ -78,9 +78,10 @@ import {
   ValidationTab,
   StrategyPerformanceTab,
   PerformanceTab,
+  OptionsTab,
 } from './tabs';
 
-export type Tab = 'portfolio' | 'today' | 'smart' | 'strategies' | 'validation' | 'history' | 'performance' | 'settings';
+export type Tab = 'portfolio' | 'today' | 'smart' | 'strategies' | 'validation' | 'history' | 'performance' | 'settings' | 'options';
 
 export function PaperTrading() {
   const [config, setConfig] = useState<AutoTraderConfig>(getAutoTraderConfig);
@@ -401,6 +402,7 @@ export function PaperTrading() {
             { id: 'strategies' as Tab,  label: 'Influencers',      short: 'Influencers', icon: BarChart3,     count: sourcePerf.length },
             { id: 'validation' as Tab,  label: 'System Learning', short: 'Learning',    icon: ClipboardCheck },
             { id: 'smart' as Tab,       label: 'Smart Trading',    short: 'Smart',       icon: Brain },
+            { id: 'options' as Tab,     label: 'Options Wheel',    short: 'Options',     icon: TrendingUp },
             { id: 'settings' as Tab,    label: 'Settings',         short: 'Settings',    icon: Settings },
           ].map(t => (
             <button
@@ -482,6 +484,9 @@ export function PaperTrading() {
               totalDeployed={totalDeployed}
               maxAllocation={config.maxTotalAllocation}
             />
+          )}
+          {tab === 'options' && (
+            <OptionsTab />
           )}
           {tab === 'settings' && (
             <SettingsTab config={config} onUpdate={updateConfig} />
