@@ -126,6 +126,14 @@ interface AIEval {
   reason: string;
 }
 
+// ── Track 1 watchlist: always evaluated for key level setups, every day ──
+// These are the tickers Somesh (Kay Capitals) watches every morning — the
+// highest-liquidity vehicles with the cleanest intraday structure.
+// They bypass InPlayScore ranking so they always reach the AI even on flat days.
+const SOMESH_WATCHLIST = [
+  'SPY', 'QQQ', 'TSLA', 'NVDA', 'PLTR', 'AMD', 'AAPL', 'META', 'MSFT', 'IWM',
+];
+
 // ── Day trade core: always included regardless of Yahoo mover lists ──
 // These are the highest-volume, most-liquid day trade vehicles. They don't
 // need to be in the Yahoo gainers/losers to be worth scanning.
@@ -870,6 +878,37 @@ Respond with a JSON array ONLY (no markdown, no backticks):
 Stocks:
 {{STOCK_DATA}}`;
 
+// ── Track 1: Key Level Setups ─────────────────────────────
+// AI evaluates pre-computed key levels for the core watchlist.
+// Entry/stop/target are already set by pure price structure — AI only picks direction.
+
+const TRACK1_SYSTEM = `You are an experienced day trader. For each stock I'll give you pre-computed key levels (resistance above, support below), today's price action, and momentum indicators.
+
+Your job: decide which direction has the edge TODAY.
+
+BUY  = price is likely to break above the resistance trigger (gap up, buyers in control, RSI rising, holding VWAP)
+SELL = price is likely to break below the support trigger (bearish pressure, gap down, failing VWAP, RSI falling)
+SKIP = price is stuck in the middle of the range with no directional edge — wait
+
+Rules:
+- These are TRIGGER-BASED setups: the trade fires only WHEN price hits the trigger, not at current price
+- In a clear uptrend (stock above SMA50/SMA200), bias toward BUY setups
+- In a downtrend (stock below SMA50/SMA200), bias toward SELL setups
+- Strong pre-market gap in one direction strongly favors that direction continuing
+- Volume ratio > 1.5x confirms the directional move; < 0.8x = suspect, lower confidence
+- Confidence 7-9 = clear setup; 5-6 = marginal; SKIP = genuinely no edge
+- Output ONLY valid JSON, no other text`;
+
+const TRACK1_USER_PREFIX = `Evaluate these stocks for key level breakout/breakdown setups today.
+
+Pick BUY (favors long trigger), SELL (favors short trigger), or SKIP (no clear edge).
+
+Return ONLY a JSON array (no markdown, no backticks):
+[{"ticker":"X","signal":"BUY"|"SELL"|"SKIP","confidence":0-10,"reason":"1 sentence"}]
+
+Stocks:
+`;
+
 // ── Build TradeIdea from AI eval + Yahoo quote ──────────
 
 function buildIdea(
@@ -960,6 +999,124 @@ async function writeToDB(
 function isStale(row: DBRow | null): boolean {
   if (!row) return true;
   return new Date(row.expires_at).getTime() < Date.now();
+}
+
+// ── Track 1: Key Level AI Evaluation ─────────────────────
+//
+// Converts KeyLevelSetup structs into a text block for the TRACK1 prompt.
+// Includes today's price action and indicators so the AI can pick direction.
+
+function formatKeyLevelForAI(setup: KeyLevelSetup, quote: YahooQuote, idx: number): string {
+  const changePct = rawVal(quote.regularMarketChangePercent);
+  const volume    = rawVal(quote.regularMarketVolume);
+  const avgVol    = rawVal(quote.averageDailyVolume10Day);
+  const volRatio  = avgVol > 0 ? round(volume / avgVol, 1) : 0;
+  const ind       = quote._pass1Indicators;
+  const sma50     = rawVal(quote.fiftyDayAverage);
+  const sma200    = rawVal(quote.twoHundredDayAverage);
+
+  const longRR  = setup.longT1 > setup.longTrigger && setup.longTrigger > setup.longStop
+    ? round((setup.longT1 - setup.longTrigger) / (setup.longTrigger - setup.longStop), 1) : 0;
+  const shortRR = setup.shortTrigger > setup.shortT1 && setup.shortStop > setup.shortTrigger
+    ? round((setup.shortTrigger - setup.shortT1) / (setup.shortStop - setup.shortTrigger), 1) : 0;
+
+  const parts = [
+    `${idx + 1}. ${setup.ticker} ($${round(setup.price)}) | ATR $${setup.atr}`,
+    `Today: ${changePct >= 0 ? '+' : ''}${round(changePct, 1)}%, Vol ${(volume / 1e6).toFixed(1)}M (${volRatio}x avg)`,
+    `Key levels: ${setup.levelContext}`,
+    `LONG trigger: break above $${setup.longTrigger} → stop $${setup.longStop}, T1 $${setup.longT1}${setup.longT2 ? `, T2 $${setup.longT2}` : ''} (R:R ${longRR}:1)`,
+    `SHORT trigger: break below $${setup.shortTrigger} → stop $${setup.shortStop}, T1 $${setup.shortT1}${setup.shortT2 ? `, T2 $${setup.shortT2}` : ''} (R:R ${shortRR}:1)`,
+  ];
+
+  if (ind?.rsi14 != null) {
+    const rsiLabel = ind.rsi14 >= 70 ? ' (overbought)' : ind.rsi14 <= 30 ? ' (oversold)' : '';
+    parts.push(`RSI: ${ind.rsi14}${rsiLabel}`);
+  }
+  if (ind?.macdHistogram != null) parts.push(`MACD hist: ${ind.macdHistogram > 0 ? '+' : ''}${ind.macdHistogram}`);
+  if (sma50  > 0) parts.push(`SMA50: $${round(sma50)} (${setup.price > sma50 ? 'above' : 'below'})`);
+  if (sma200 > 0) parts.push(`SMA200: $${round(sma200)} (${setup.price > sma200 ? 'above' : 'below'})`);
+
+  return parts.join(' | ');
+}
+
+// Fetch quotes for Track 1 evaluation — fetches SOMESH_WATCHLIST and any
+// near-level setups that weren't already in the day scan candidate pool.
+async function runTrack1KeyLevelIdeas(
+  keyLevelSetups: KeyLevelSetup[],
+  geminiKeys: string[],
+): Promise<TradeIdea[]> {
+  if (keyLevelSetups.length === 0) return [];
+
+  // Always include SOMESH_WATCHLIST; add others if price is within 1.5× ATR of a trigger.
+  const relevant = keyLevelSetups.filter(s => {
+    if (SOMESH_WATCHLIST.includes(s.ticker)) return true;
+    const distLong  = Math.abs(s.price - s.longTrigger);
+    const distShort = Math.abs(s.price - s.shortTrigger);
+    return Math.min(distLong, distShort) < s.atr * 1.5;
+  });
+
+  if (relevant.length === 0) return [];
+
+  // Fetch live quote data for each relevant ticker (needed for RSI/MACD/vol context).
+  const quotes = await fetchSwingQuotes(relevant.map(s => s.ticker));
+  const quoteMap = new Map(quotes.map(q => [q.symbol, q]));
+
+  const stockData = relevant
+    .map((s, i) => {
+      const q = quoteMap.get(s.ticker);
+      return q ? formatKeyLevelForAI(s, q, i) : `${i + 1}. ${s.ticker} ($${s.price}) | ${s.levelContext}`;
+    })
+    .join('\n');
+
+  try {
+    const raw = await callGemini(geminiKeys, TRACK1_SYSTEM, TRACK1_USER_PREFIX + stockData, 0.15, 1500);
+    const evals = parseAIJsonArray(raw);
+
+    console.log(`[Track 1] AI raw (${relevant.length} setups): ${evals.map(e => `${e.ticker}:${e.signal}/${e.confidence}`).join(', ')}`);
+
+    const ideas: TradeIdea[] = [];
+    for (const ev of evals) {
+      if (ev.signal === 'SKIP' || ev.signal === 'HOLD' || ev.confidence < 6) continue;
+      const setup = relevant.find(s => s.ticker === ev.ticker);
+      if (!setup) continue;
+
+      const isLong = ev.signal === 'BUY';
+      const isSell = ev.signal === 'SELL';
+      if (!isLong && !isSell) continue;
+
+      const entry  = isLong ? setup.longTrigger  : setup.shortTrigger;
+      const stop   = isLong ? setup.longStop     : setup.shortStop;
+      const t1     = isLong ? setup.longT1       : setup.shortT1;
+      const t2     = isLong ? setup.longT2       : setup.shortT2;
+      const rrNum  = entry !== stop && t1 !== entry
+        ? round(Math.abs(t1 - entry) / Math.abs(entry - stop), 1) : 0;
+
+      const q = quoteMap.get(setup.ticker);
+      ideas.push({
+        ticker:        setup.ticker,
+        name:          setup.name,
+        price:         round(setup.price),
+        change:        q ? round(rawVal(q.regularMarketChange)) : 0,
+        changePercent: q ? round(rawVal(q.regularMarketChangePercent), 1) : 0,
+        signal:        isLong ? 'BUY' : 'SELL',
+        confidence:    Math.max(0, Math.min(10, Math.round(ev.confidence))),
+        reason:        ev.reason,
+        tags:          ['key-level', ...(SOMESH_WATCHLIST.includes(setup.ticker) ? ['watchlist'] : [])],
+        mode:          'DAY_TRADE',
+        entryPrice:    entry,
+        stopLoss:      stop,
+        targetPrice:   t1,
+        riskReward:    rrNum > 0 ? `1:${rrNum}` : null,
+        atr:           setup.atr,
+      });
+    }
+
+    console.log(`[Track 1] ${relevant.length} setups → ${ideas.length} ideas (${ideas.map(d => `${d.ticker}:${d.signal}/${d.confidence}`).join(', ') || 'none'})`);
+    return ideas;
+  } catch (err) {
+    console.error('[Track 1] AI eval failed:', err);
+    return [];
+  }
 }
 
 // ── Key Level Scanner ────────────────────────────────────
@@ -1919,17 +2076,28 @@ Deno.serve(async (req) => {
         });
       }
 
-      // Large-cap: rank by InPlayScore; take top 30, then top 15 for Gemini
+      // Large-cap: rank by InPlayScore; take top 30, then top 15 for Gemini.
+      // SOMESH_WATCHLIST tickers are always re-injected after the cut so they
+      // reach the AI even on flat days when their InPlayScore is low.
       if (largeCapMode && candidates.length > 0) {
         for (const q of candidates) {
           computeInPlayScore(q, candidates);
         }
+        const preCutCandidates = [...candidates]; // save before slice so we can re-inject
         candidates = candidates
           .filter(q => (q._inPlayScore ?? -999) > -999)
           .sort((a, b) => (b._inPlayScore ?? -999) - (a._inPlayScore ?? -999))
           .slice(0, 30);
         if (candidates.length > 0) {
           console.log(`[Trade Scanner] Day InPlayScore top 5: ${candidates.slice(0, 5).map(q => `${q.symbol}:${q._inPlayScore?.toFixed(2)}(${q._extensionPenalty ?? 0})`).join(', ')}`);
+        }
+        // Re-inject watchlist tickers that got cut — they're always worth evaluating
+        const inSlice = new Set(candidates.map(q => q.symbol));
+        for (const sym of SOMESH_WATCHLIST) {
+          if (!inSlice.has(sym)) {
+            const q = preCutCandidates.find(c => c.symbol === sym);
+            if (q) { candidates.push(q); inSlice.add(sym); }
+          }
         }
       } else if (!largeCapMode) {
         candidates = candidates
@@ -1980,10 +2148,38 @@ Deno.serve(async (req) => {
         dayAISucceeded = true; // No candidates = genuinely nothing to scan, safe to cache
       }
 
+      // ── Track 1: Key level setups for core watchlist ──────────────────
+      // Runs after the mover scan. Merges key-level ideas into dayIdeas,
+      // skipping any tickers already covered by the mover scan above.
+      try {
+        const track1Ideas = await runTrack1KeyLevelIdeas(keyLevelSetups, GEMINI_KEYS);
+        if (track1Ideas.length > 0) {
+          const existingTickers = new Set(dayIdeas.map(d => d.ticker));
+          for (const idea of track1Ideas) {
+            if (!existingTickers.has(idea.ticker)) {
+              dayIdeas.push(idea);
+              existingTickers.add(idea.ticker);
+            }
+          }
+          console.log(`[Track 1] Merged ${track1Ideas.filter(i => !new Set(dayIdeas.slice(0, dayIdeas.length - track1Ideas.length).map(d => d.ticker)).has(i.ticker)).length} new ideas into day trades`);
+        }
+      } catch (err) {
+        console.error('[Track 1] Failed — continuing without key level ideas:', err);
+      }
+
+      // Sort final dayIdeas by confidence descending
+      dayIdeas.sort((a, b) => b.confidence - a.confidence);
+
       // Only persist to DB when AI ran successfully — if Gemini was rate-limited/quota-exhausted,
       // keep the previous scan in the DB so we don't serve empty results for the rest of the day.
+      // Never overwrite a non-empty result with an empty array — preserve previous good scan.
       if (dayAISucceeded) {
-        await writeToDB(sb, 'day_trades', dayIdeas, 390);
+        if (dayIdeas.length > 0) {
+          await writeToDB(sb, 'day_trades', dayIdeas, 390);
+        } else {
+          console.log('[Trade Scanner] Day scan produced 0 ideas — preserving previous scan results');
+          dayIdeas = dayRow?.data ?? [];
+        }
       } else {
         console.warn('[Trade Scanner] Day AI failed — skipping DB write to preserve previous results');
         dayIdeas = dayRow?.data ?? []; // Fall back to whatever was in DB
@@ -2073,7 +2269,12 @@ Deno.serve(async (req) => {
       }
 
       if (swingAISucceeded) {
-        await writeToDB(sb, 'swing_trades', swingIdeas, 360);
+        if (swingIdeas.length > 0) {
+          await writeToDB(sb, 'swing_trades', swingIdeas, 360);
+        } else {
+          console.log('[Trade Scanner] Swing scan produced 0 ideas — preserving previous scan results');
+          swingIdeas = swingRow?.data ?? [];
+        }
       } else {
         console.warn('[Trade Scanner] Swing AI failed — skipping DB write to preserve previous results');
         swingIdeas = swingRow?.data ?? [];
