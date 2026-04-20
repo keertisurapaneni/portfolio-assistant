@@ -184,19 +184,29 @@ async function fetchGeneralMarketNews(): Promise<MarketNewsItem[]> {
 
 // ── Prompt builders (mirror browser's aiSuggestedFinds.ts) ──
 
+// Well-known stalwarts excluded so the AI discovers less-covered quality names
+const COMPOUNDER_STALWARTS = [
+  'ODFL', 'WM', 'RSG', 'ROL', 'FAST', 'POOL', 'WSO', 'TJX', 'CTAS', 'ECL',
+  'AWK', 'ATO', 'NI', 'SR', 'NWN', 'SJW', 'WTRG', 'MSEX',
+];
+
 function buildCandidatePrompt(): string {
-  return `You are a stock screener. Identify 12 US-listed tickers that could be "Steady Compounders" — AI-proof businesses in boring industries.
+  const exclude = `\nEXCLUDE these tickers — they are too well-known to be a discovery: ${COMPOUNDER_STALWARTS.join(', ')}`;
+
+  return `You are a stock screener. Your goal is to DISCOVER overlooked, under-followed US-listed tickers that could be "Steady Compounders" — AI-proof businesses in boring industries.
 
 Criteria for candidates:
-- Boring, unglamorous industries: logistics, waste, utilities, insurance, distribution, industrial services, food distribution, HVAC, pest control, water treatment, specialty chemicals
+- Boring, unglamorous industries: logistics, waste, utilities, insurance, distribution, industrial services, food distribution, HVAC, pest control, water treatment, specialty chemicals, auto parts distribution, facilities services, testing & inspection
 - Known for consistent profitability and stable operations
 - Must NOT be a business at risk of AI disruption (e.g., call centers, manual data entry, commoditized content). AI should be neutral-to-positive for the business.
 - NOT mega-caps: exclude AAPL, MSFT, GOOGL, AMZN, META, NVDA, TSLA, BRK
 - NOT banks, REITs, or ETFs
 - Must be liquid US-listed stocks
+- PRIORITIZE: smaller, less-covered quality compounders that analysts rarely spotlight — NOT the perennial favorites
+- DIVERSIFY across industries: return candidates from at least 6 different industries
+${exclude}
 
-Return ONLY a JSON array of 12 ticker symbols. No explanations, no other text.
-Example: ["ODFL", "POOL", "WSO", "TJX", "WM", "ROL", "FAST"]`;
+Return ONLY a JSON array of 12 ticker symbols. No explanations, no other text.`;
 }
 
 function formatMetricsBlock(metrics: FinnhubMetricData[]): string {
@@ -530,7 +540,7 @@ export async function generateSuggestedFinds(): Promise<DiscoveryResult> {
   // ── QUIET COMPOUNDERS PIPELINE ──
 
   console.log('[Discovery] Step 1: HuggingFace compounder candidates...');
-  const candidateRaw = await callHuggingFace(buildCandidatePrompt(), 'discover_compounders', 0.5, 1000);
+  const candidateRaw = await callHuggingFace(buildCandidatePrompt(), 'discover_compounders', 0.7, 1000);
   const candidateTickers = parseCandidateTickers(candidateRaw);
   console.log(`[Discovery] Candidates: ${candidateTickers.join(', ')}`);
 

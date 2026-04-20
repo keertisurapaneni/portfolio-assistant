@@ -1,0 +1,39 @@
+# Suggested Finds — Investment Intent
+
+This rule captures the fundamental purpose of each discovery archetype.
+**Never ask keerti to re-explain this. It is settled.**
+
+## Steady Compounders — Long-Term Accumulation (Years)
+
+- **Holding horizon:** Multi-year. Buy and hold through market cycles.
+- **Alpha source:** Business quality + reinvestment rate. NOT news or catalysts.
+- **Industries:** Boring, AI-proof — logistics, waste, utilities, insurance, distribution, HVAC, pest control, food distribution, specialty chemicals, water treatment.
+- **Quality bar:** ROE > 12%, positive FCF, low beta (<1.3), durable margins.
+- **Auto-trade rules:** Full conviction sizing (up to 1.5x), all 3 dip-buy tiers enabled, no sleeve cap.
+- **Sell when:** P/E >> growth rate (valuation stretched) OR fundamentals deteriorate (ROE drops, FCF goes negative, leverage spikes).
+
+## Gold Mines — Near-Term Catalyst Plays (6–12 Months)
+
+- **Holding horizon:** 6–12 months. NOT a 2–3 year plan. Theme plays out → exit.
+- **Alpha source:** Macro theme catalyst that is active RIGHT NOW in headlines.
+- **Sectors:** Growth/catalyst-oriented — AI & Semiconductors, Healthcare & Biotech, Defense & Aerospace, Clean Energy, Cybersecurity, Consumer Brands, Financials, Tech & Software.
+- **Quality bar:** Still must be fundamentally sound (profitable or near-profitable, growing revenue, real moat). Not speculative.
+- **Auto-trade rules:** Conviction capped at 1.25x, Gold Mine sleeve capped at 40% of long-term allocation, Tier 3 dip-buy disabled, blocked when SPY < SMA200.
+- **Sell when:** Macro catalyst fades or reverses, stock hits price target, or company stops benefiting from the theme.
+
+## Key Distinctions
+
+| | Steady Compounder | Gold Mine |
+|---|---|---|
+| Horizon | Years | 6–12 months |
+| Thesis | Business quality | Macro catalyst |
+| Dip tiers | All 3 | Tier 1 + 2 only |
+| SPY block | No | Yes (SPY < SMA200) |
+| Sleeve cap | None | 40% of LT allocation |
+| Exit trigger | Valuation/fundamentals | Theme inflection |
+
+## Source of Truth
+
+Full documentation: `docs/features/suggested-finds.md` (Investment Intent section)  
+Auto-trade sizing logic: `docs/features/auto-trader-execution-paths.md`  
+Sizing rule reference: `.cursor/rules/long-term-sizing.mdc`

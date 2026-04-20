@@ -1,7 +1,33 @@
-# Suggested Finds Prompts — Quiet Compounders & Gold Mines
+# Suggested Finds — Steady Compounders & Gold Mines
 
 Flow: **HuggingFace (candidates)** → **Finnhub (metrics)** → **HuggingFace (analysis)**.  
 Data source: Compounders = Finnhub only. Gold Mines = Finnhub news + metrics.
+
+---
+
+## Investment Intent — READ THIS FIRST
+
+These two archetypes have fundamentally different holding horizons and purposes. **Do not confuse them.**
+
+### Steady Compounders — Long-Term Accumulation (Years)
+
+- **Purpose:** Identify high-quality businesses in boring, AI-proof industries to accumulate and hold for years.
+- **Holding horizon:** Multi-year. These are set-and-forget positions that compound over time.
+- **Alpha source:** Business quality and reinvestment rate, not market timing or news catalysts.
+- **Auto-trade behavior:** Market buy, DCA on dips (all 3 tiers), full conviction sizing.
+- **Sell trigger:** Valuation becomes stretched (P/E >> growth rate) OR fundamentals deteriorate (ROE drops, margins compress, debt spikes).
+- **Examples of the archetype:** A uniform laundry service, a pest control company, a water utility — businesses that quietly compound at 12-18% ROE for decades without anyone talking about them.
+
+### Gold Mines — Near-Term Catalyst Plays (6–12 Months)
+
+- **Purpose:** Identify quality companies positioned to benefit from a dominant macro theme that is active *right now* in the market.
+- **Holding horizon:** Near-term. 6–12 months. These are NOT 2–3 year strategic holds.
+- **Alpha source:** Catalyst speed — the theme plays out, the stock moves, you trim/exit.
+- **Auto-trade behavior:** Market buy, conviction sizing capped at 1.25x, Gold Mine sleeve capped at 40% of long-term allocation, Tier 3 dip-buy disabled, blocked when SPY < SMA200.
+- **Sell trigger:** Theme inflects (macro catalyst fades or reverses), stock reaches price target, OR fundamentals disappoint against the catalyst thesis.
+- **Examples of the archetype:** A defense contractor during a defense spending ramp, a grid tech company during energy transition acceleration — quality companies riding a 6–12 month tailwind.
+
+> **Key rule:** Gold Mine ≠ speculative. They must still pass fundamental quality checks (profitable or near-profitable, growing revenue, real competitive moat). The difference from Compounders is the *time horizon and catalyst dependency*, not quality.
 
 ---
 

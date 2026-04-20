@@ -20,7 +20,7 @@ const DAILY_SUGGESTIONS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1
 const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
 // Cache config
-const PROMPT_VERSION = 12; // v12: Gold Mine theme headline support penalty (<3 headlines → -2 conviction; 1 headline → max 7)
+const PROMPT_VERSION = 13; // v13: Compounder candidate diversity — removed anchor examples, higher temperature, explicit diversity instruction
 const CACHE_KEY = `gemini-discovery-v${PROMPT_VERSION}`;
 
 /** US/Eastern calendar date YYYY-MM-DD — matches `daily-suggestions` edge function cache key */
@@ -157,24 +157,30 @@ export const GOLD_MINE_CATEGORIES = [
 
 export type GoldMineCategory = (typeof GOLD_MINE_CATEGORIES)[number];
 
-function buildCandidatePrompt(excludeTickers: string[]): string {
-  const exclude = excludeTickers.length > 0
-    ? `\nEXCLUDE these tickers (user already owns them): ${excludeTickers.join(', ')}`
-    : '';
+// Well-known stalwarts to avoid — these show up every run and aren't "discoveries"
+const COMPOUNDER_STALWARTS = [
+  'ODFL', 'WM', 'RSG', 'ROL', 'FAST', 'POOL', 'WSO', 'TJX', 'CTAS', 'ECL',
+  'AWK', 'ATO', 'NI', 'SR', 'NWN', 'SJW', 'WTRG', 'MSEX',
+];
 
-  return `You are a stock screener. Identify 12 US-listed tickers that could be "Steady Compounders" — AI-proof businesses in boring industries.
+function buildCandidatePrompt(excludeTickers: string[]): string {
+  const allExclude = [...new Set([...COMPOUNDER_STALWARTS, ...excludeTickers])];
+  const exclude = `\nEXCLUDE these tickers — they are either too well-known to be a discovery or already in the user's portfolio: ${allExclude.join(', ')}`;
+
+  return `You are a stock screener. Your goal is to DISCOVER overlooked, under-followed US-listed tickers that could be "Steady Compounders" — AI-proof businesses in boring industries.
 
 Criteria for candidates:
-- Boring, unglamorous industries: logistics, waste, utilities, insurance, distribution, industrial services, food distribution, HVAC, pest control, water treatment, specialty chemicals
+- Boring, unglamorous industries: logistics, waste, utilities, insurance, distribution, industrial services, food distribution, HVAC, pest control, water treatment, specialty chemicals, auto parts distribution, facilities services, testing & inspection
 - Known for consistent profitability and stable operations
 - Must NOT be a business at risk of AI disruption (e.g., call centers, manual data entry, commoditized content). AI should be neutral-to-positive for the business.
 - NOT mega-caps: exclude AAPL, MSFT, GOOGL, AMZN, META, NVDA, TSLA, BRK
 - NOT banks, REITs, or ETFs
 - Must be liquid US-listed stocks
+- PRIORITIZE: smaller, less-covered quality compounders that analysts rarely spotlight — NOT the perennial favorites
+- DIVERSIFY across industries: return candidates from at least 6 different industries
 ${exclude}
 
-Return ONLY a JSON array of 12 ticker symbols. No explanations, no other text.
-Example: ["ODFL", "POOL", "WSO", "TJX", "WM", "ROL", "FAST"]`;
+Return ONLY a JSON array of 12 ticker symbols. No explanations, no other text.`;
 }
 
 function buildCategoryCandidatePrompt(category: string, excludeTickers: string[]): string {
@@ -963,7 +969,7 @@ export async function discoverStocks(
   const candidateRaw = await callHuggingFace(
     buildCandidatePrompt([]), // No user-specific exclusions for shared cache
     'discover_compounders',
-    0.5,
+    0.7, // Higher temperature for variety — avoids returning the same stalwarts every day
     1000 // Enough room for a JSON array of 10 tickers
   );
   console.log('[Discovery] HuggingFace candidates raw length:', candidateRaw.length);
@@ -1098,7 +1104,7 @@ export async function discoverCategoryStocks(
   const candidateRaw = await callHuggingFace(
     buildCategoryCandidatePrompt(category, excludeTickers),
     'discover_compounders',
-    0.5,
+    0.7, // Higher temperature for variety within the category
     1000
   );
   const candidateTickers = parseCandidateTickers(candidateRaw);
@@ -1171,7 +1177,7 @@ export async function discoverGoldMineCategoryStocks(
   const candidateRaw = await callHuggingFace(
     buildGoldMineCategoryCandidatePrompt(category, excludeTickers),
     'discover_goldmines',
-    0.5,
+    0.7, // Higher temperature for sector variety
     1000
   );
   const candidateTickers = parseCandidateTickers(candidateRaw);
@@ -1186,7 +1192,7 @@ export async function discoverGoldMineCategoryStocks(
   console.log(`[Discovery] Got metrics for ${validMetrics.length}/${candidateTickers.length} (${slug})`);
 
   // Step 3: Analyze with real data
-  onStep?.('analyzing_compounders');
+  onStep?.('analyzing_themes');
   await new Promise((r) => setTimeout(r, 2000));
 
   const analysisRaw = await callHuggingFace(
