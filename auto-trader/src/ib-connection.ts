@@ -457,6 +457,63 @@ export function requestOpenOrders(): Promise<OpenOrderData[]> {
   });
 }
 
+// ── Place Options Order (sell put / sell call) ────────────
+
+export interface OptionsOrderParams {
+  symbol: string;
+  right: 'P' | 'C';   // Put or Call
+  strike: number;
+  expiry: string;      // YYYYMMDD
+  contracts: number;   // number of contracts (each = 100 shares)
+  limitPrice: number;  // premium per share (e.g. 2.50)
+  account?: string;
+}
+
+export interface OptionsOrderResult {
+  orderId: number;
+}
+
+export function placeOptionsOrder(params: OptionsOrderParams): Promise<OptionsOrderResult> {
+  return new Promise((resolve, reject) => {
+    if (!ib || !connected) {
+      return reject(new Error('Not connected to IB Gateway'));
+    }
+
+    const { symbol, right, strike, expiry, contracts, limitPrice, account } = params;
+
+    const contract: Contract = {
+      symbol: symbol.toUpperCase(),
+      secType: SecType.OPT,
+      exchange: 'SMART',
+      currency: 'USD',
+      strike,
+      right,
+      lastTradeDateOrContractMonth: expiry,
+      multiplier: 100,
+    };
+
+    const orderId = getNextOrderId();
+
+    const order: Order = {
+      action: OrderAction.SELL,
+      orderType: OrderType.LMT,
+      totalQuantity: contracts,
+      lmtPrice: limitPrice,
+      tif: TimeInForce.DAY,
+      transmit: true,
+      ...(account ? { account } : {}),
+    };
+
+    try {
+      ib.placeOrder(orderId, contract, order);
+      console.log(`[IB] Options order placed: SELL ${contracts}x ${symbol} $${strike}${right} ${expiry} @ $${limitPrice} (orderId=${orderId})`);
+      resolve({ orderId });
+    } catch (err) {
+      reject(err);
+    }
+  });
+}
+
 // ── Disconnect ───────────────────────────────────────────
 
 export function disconnect(): void {

@@ -189,6 +189,25 @@ export async function getOptionsMonthlyStats(): Promise<OptionsMonthlyStats> {
   };
 }
 
+// ── Auto-Trade Settings ───────────────────────────────────
+
+export async function getOptionsAutoTradeEnabled(): Promise<boolean> {
+  const { data } = await supabase
+    .from('auto_trader_config')
+    .select('options_auto_trade_enabled')
+    .eq('id', 'default')
+    .single();
+  return (data as { options_auto_trade_enabled?: boolean } | null)?.options_auto_trade_enabled ?? false;
+}
+
+export async function setOptionsAutoTradeEnabled(enabled: boolean): Promise<void> {
+  const { error } = await supabase
+    .from('auto_trader_config')
+    .update({ options_auto_trade_enabled: enabled, updated_at: new Date().toISOString() })
+    .eq('id', 'default');
+  if (error) throw error;
+}
+
 // ── Paper Trade Manually ──────────────────────────────────
 
 export async function paperTradeOptionManually(opp: OptionsScanOpportunity): Promise<void> {

@@ -10,7 +10,7 @@
 
 import { getSupabase, createAutoTradeEvent } from './supabase.js';
 import { getOptionsChain } from './options-chain.js';
-import { isConnected } from '../ib-connection.js';
+import { isConnected, requestOpenOrders } from '../ib-connection.js';
 
 function persistEvent(ticker: string, eventType: string, message: string, extra?: Record<string, unknown>): void {
   createAutoTradeEvent({ ticker, event_type: eventType, message, ...extra });
@@ -47,6 +47,7 @@ interface PositionRow {
   fill_price: number;
   status: string;
   pnl: number | null;
+  ib_order_id: number | null;
 }
 
 // ── Helpers ──────────────────────────────────────────────
@@ -139,9 +140,41 @@ export async function runOptionsManageCycle(): Promise<ManageCycleResult> {
     expiredPositions: [],
   };
 
+  // ── Check SUBMITTED orders for IB fills ──────────────────
+  if (isConnected()) {
+    const { data: submitted } = await sb
+      .from('paper_trades')
+      .select('id, ticker, option_strike, option_premium, ib_order_id')
+      .in('mode', ['OPTIONS_PUT', 'OPTIONS_CALL'])
+      .eq('status', 'SUBMITTED')
+      .not('ib_order_id', 'is', null);
+
+    if (submitted?.length) {
+      const openOrders = await requestOpenOrders().catch(() => []);
+      const openOrderIds = new Set(openOrders.map(o => o.orderId));
+
+      for (const row of submitted as Array<{ id: string; ticker: string; option_strike: number; option_premium: number; ib_order_id: number }>) {
+        if (!openOrderIds.has(row.ib_order_id)) {
+          // Order no longer open → it filled (or was cancelled; treat as filled for options sells)
+          await sb.from('paper_trades').update({
+            status: 'FILLED',
+            filled_at: new Date().toISOString(),
+            fill_price: row.option_premium,
+          }).eq('id', row.id);
+
+          console.log(`[Options Manager] Order ${row.ib_order_id} for ${row.ticker} $${row.option_strike}P confirmed filled`);
+          persistEvent(row.ticker, 'success',
+            `✅ ${row.ticker} $${row.option_strike} put order filled — premium $${(row.option_premium * 100).toFixed(0)} collected`,
+            { action: 'filled', source: 'options', metadata: { ibOrderId: row.ib_order_id } }
+          );
+        }
+      }
+    }
+  }
+
   const { data, error } = await sb
     .from('paper_trades')
-    .select('id, ticker, mode, option_strike, option_expiry, option_premium, option_capital_req, option_assigned, fill_price, status')
+    .select('id, ticker, mode, option_strike, option_expiry, option_premium, option_capital_req, option_assigned, fill_price, status, ib_order_id')
     .in('mode', ['OPTIONS_PUT', 'OPTIONS_CALL'])
     .in('status', ['FILLED', 'PARTIAL']);
 

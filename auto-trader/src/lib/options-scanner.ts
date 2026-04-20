@@ -18,7 +18,7 @@
 
 import { getSupabase } from './supabase.js';
 import { getOptionsChain, type OptionGreeks } from './options-chain.js';
-import { isConnected } from '../ib-connection.js';
+import { isConnected, placeOptionsOrder, getDefaultAccount } from '../ib-connection.js';
 
 // ── Constants ────────────────────────────────────────────
 
@@ -369,6 +369,20 @@ export async function runOptionsScan(freeCapital = 100_000): Promise<OptionsScan
   // Sort by annual yield descending
   opportunities.sort((a, b) => b.annualYield - a.annualYield);
 
+  // Auto-trade top opportunities if enabled
+  const { enabled: autoEnabled, maxContracts } = await getOptionsAutoTradeConfig();
+  if (autoEnabled && opportunities.length > 0) {
+    const toTrade = opportunities.slice(0, maxContracts);
+    for (const opp of toTrade) {
+      const result = await autoTradeOption(opp);
+      if (result.isLive) {
+        console.log(`[Options Scan] Auto-traded ${opp.ticker}: IB order ${result.ibOrderId}`);
+      } else {
+        console.log(`[Options Scan] Paper-traded ${opp.ticker} (auto-trade off or IB unavailable)`);
+      }
+    }
+  }
+
   // Persist scan results
   for (const opp of opportunities) {
     await sb.from('options_scan_results').upsert({
@@ -392,21 +406,27 @@ export async function runOptionsScan(freeCapital = 100_000): Promise<OptionsScan
 }
 
 /**
- * Paper-trade an options opportunity — creates a paper_trades record
- * in OPTIONS_PUT mode.
+ * Record an options trade in paper_trades.
+ * If ibOrderId is provided the trade was auto-executed via IB (status=SUBMITTED).
+ * Otherwise it's a pure paper record (status=FILLED).
  */
-export async function paperTradeOption(ticket: OptionsTradeTicket): Promise<string | null> {
+export async function paperTradeOption(
+  ticket: OptionsTradeTicket,
+  ibOrderId?: number,
+): Promise<string | null> {
   const sb = getSupabase();
+  const isLive = ibOrderId !== undefined;
+
   const { data, error } = await sb.from('paper_trades').insert({
     ticker: ticket.ticker,
     mode: 'OPTIONS_PUT',
     signal: 'SELL',
     entry_price: ticket.currentPrice,
-    fill_price: ticket.currentPrice,
-    quantity: 1,                              // 1 contract = 100 shares
+    fill_price: isLive ? null : ticket.currentPrice,  // filled later via IB event
+    quantity: 1,
     position_size: ticket.capitalRequired,
-    status: 'FILLED',
-    filled_at: new Date().toISOString(),
+    status: isLive ? 'SUBMITTED' : 'FILLED',
+    filled_at: isLive ? null : new Date().toISOString(),
     opened_at: new Date().toISOString(),
     option_strike: ticket.strike,
     option_expiry: `${ticket.expiry.slice(0, 4)}-${ticket.expiry.slice(4, 6)}-${ticket.expiry.slice(6, 8)}`,
@@ -418,13 +438,62 @@ export async function paperTradeOption(ticket: OptionsTradeTicket): Promise<stri
     option_net_price: ticket.netPrice,
     option_capital_req: ticket.capitalRequired,
     option_annual_yield: ticket.annualYield,
-    notes: `Sell put: $${ticket.strike} strike, ${ticket.expiryFormatted}, collect $${ticket.premiumTotal}`,
+    ib_order_id: ibOrderId ?? null,
+    notes: `${isLive ? '[AUTO]' : '[PAPER]'} Sell put: $${ticket.strike} strike, ${ticket.expiryFormatted}, collect $${ticket.premiumTotal}`,
     scanner_reason: `IV Rank: ${ticket.ivRank ?? 'n/a'}, Prob Profit: ${ticket.probProfit.toFixed(0)}%, Annual yield: ${ticket.annualYield.toFixed(1)}%`,
   }).select('id').single();
 
   if (error) {
-    console.error('[Options Scanner] Failed to create paper trade:', error.message);
+    console.error('[Options Scanner] Failed to create trade record:', error.message);
     return null;
   }
   return data?.id ?? null;
+}
+
+/**
+ * Auto-execute a trade ticket via IB Gateway, then record it.
+ * Falls back to paper-only if IB is unavailable or order fails.
+ */
+export async function autoTradeOption(ticket: OptionsTradeTicket): Promise<{ tradeId: string | null; ibOrderId: number | null; isLive: boolean }> {
+  if (!isConnected()) {
+    console.warn('[Options Auto-Trade] IB not connected — falling back to paper trade');
+    const tradeId = await paperTradeOption(ticket);
+    return { tradeId, ibOrderId: null, isLive: false };
+  }
+
+  try {
+    const { orderId } = await placeOptionsOrder({
+      symbol: ticket.ticker,
+      right: 'P',
+      strike: ticket.strike,
+      expiry: ticket.expiry,
+      contracts: 1,
+      limitPrice: ticket.premium,
+      account: getDefaultAccount() ?? undefined,
+    });
+
+    console.log(`[Options Auto-Trade] Placed IB order ${orderId} for ${ticket.ticker} $${ticket.strike}P`);
+    const tradeId = await paperTradeOption(ticket, orderId);
+    return { tradeId, ibOrderId: orderId, isLive: true };
+  } catch (err) {
+    console.error('[Options Auto-Trade] IB order failed, falling back to paper:', err);
+    const tradeId = await paperTradeOption(ticket);
+    return { tradeId, ibOrderId: null, isLive: false };
+  }
+}
+
+/**
+ * Read options auto-trade setting from DB.
+ */
+async function getOptionsAutoTradeConfig(): Promise<{ enabled: boolean; maxContracts: number }> {
+  const sb = getSupabase();
+  const { data } = await sb
+    .from('auto_trader_config')
+    .select('options_auto_trade_enabled, options_max_contracts_per_scan')
+    .eq('id', 'default')
+    .single();
+  return {
+    enabled: (data as { options_auto_trade_enabled?: boolean } | null)?.options_auto_trade_enabled ?? false,
+    maxContracts: (data as { options_max_contracts_per_scan?: number } | null)?.options_max_contracts_per_scan ?? 1,
+  };
 }
