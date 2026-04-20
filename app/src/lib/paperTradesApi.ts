@@ -1654,7 +1654,64 @@ export async function fetchInfluencerTradePatterns(): Promise<InfluencerTradePat
         winRate: spyAgainst.total >= 2 ? Math.round((spyAgainst.wins / spyAgainst.total) * 100) : null,
       },
     },
-    totalTrades: trades.length,
+      totalTrades: trades.length,
     closedTrades,
   };
+}
+
+// ── System Learning / Auto-Tune ───────────────────────────
+
+export interface TuneDecision {
+  param: string;
+  oldValue: number | boolean | null;
+  newValue: number | boolean;
+  reason: string;
+  category: string;
+}
+
+export interface TuneLogEntry {
+  id: string;
+  created_at: string;
+  trigger: 'scheduled' | 'manual';
+  applied: boolean;
+  notes: string;
+  decisions: TuneDecision[];
+  analysis: {
+    window_days: number;
+    total_trades_analyzed: number;
+    categories: Array<{
+      category: string;
+      trades: number;
+      wins: number;
+      winRate: number;
+      avgReturnPct: number;
+      totalPnl: number;
+      profitFactor: number;
+    }>;
+  };
+}
+
+export async function getStrategyTuneLogs(limit = 10): Promise<TuneLogEntry[]> {
+  const { data } = await supabase
+    .from('strategy_tune_log')
+    .select('id, created_at, trigger, applied, notes, decisions, analysis')
+    .order('created_at', { ascending: false })
+    .limit(limit);
+  return (data ?? []) as TuneLogEntry[];
+}
+
+export async function triggerAutoTune(): Promise<{ ok: boolean; decisionsCount: number; decisions: TuneDecision[]; error?: string }> {
+  const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+  const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+  const res = await fetch(`${supabaseUrl}/functions/v1/auto-tune-strategy-config`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${supabaseKey}`,
+    },
+    body: JSON.stringify({ trigger: 'manual' }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) return { ok: false, decisionsCount: 0, decisions: [], error: data?.error ?? `HTTP ${res.status}` };
+  return data as { ok: boolean; decisionsCount: number; decisions: TuneDecision[] };
 }

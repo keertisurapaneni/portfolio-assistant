@@ -399,7 +399,7 @@ export function PaperTrading() {
             { id: 'history' as Tab,     label: 'Trade History',    short: 'History',     icon: Clock,         count: allTrades.length },
             { id: 'performance' as Tab, label: 'Performance',      short: 'Perf',        icon: BarChart2 },
             { id: 'strategies' as Tab,  label: 'Influencers',      short: 'Influencers', icon: BarChart3,     count: sourcePerf.length },
-            { id: 'validation' as Tab,  label: 'Trade Validation', short: 'Validate',    icon: ClipboardCheck },
+            { id: 'validation' as Tab,  label: 'System Learning', short: 'Learning',    icon: ClipboardCheck },
             { id: 'smart' as Tab,       label: 'Smart Trading',    short: 'Smart',       icon: Brain },
             { id: 'settings' as Tab,    label: 'Settings',         short: 'Settings',    icon: Settings },
           ].map(t => (

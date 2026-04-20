@@ -1859,6 +1859,21 @@ async function executeSuggestedFindTrade(
 
   if (await hasActiveTrade(ticker)) return 'skipped:duplicate';
 
+  // Regime gate — Steady Compounders: SKIP entirely in a bear market (SPY < SMA200).
+  // Buying long-term holds into a downtrend catches falling knives and produces the
+  // worst outcomes. Only accumulate compounders when the macro trend is intact.
+  if (stock.tag === 'Steady Compounder') {
+    const bearMarket = await isSpyBelowSma200();
+    if (bearMarket) {
+      log(`${ticker}: Steady Compounder — SPY below SMA200 (bear market), skipping`);
+      persistEvent(ticker, 'warning', `Steady Compounder skipped — bear market (SPY < SMA200)`, {
+        action: 'skipped', source: 'suggested_finds', mode: 'LONG_TERM',
+        skip_reason: 'bear_market_gate',
+      });
+      return 'skipped:bear_market';
+    }
+  }
+
   // Macro regime: reduce Gold Mine size when SPY < SMA200 — don't block entirely.
   // Geopolitical selloffs are when defense/energy Gold Mines outperform.
   const goldMineBelowSma200 = stock.tag === 'Gold Mine' && await isSpyBelowSma200();
@@ -2978,6 +2993,68 @@ async function checkLossCutOpportunities(
     } catch (err) {
       log(`${trade.ticker}: Loss cut failed — ${err instanceof Error ? err.message : 'unknown'}`);
     }
+  }
+}
+
+// ── Suggested Finds At-Risk Alerts ──────────────────────
+// Runs every scheduler cycle. Flags any LONG_TERM position down >$500 in the
+// auto-trader event log (visible in Today's Activity). Fires at most once per 24h
+// per ticker to avoid spam.
+
+async function checkSuggestedFindsAlerts(
+  _config: AutoTraderConfig,
+  positions: EnrichedPosition[],
+): Promise<void> {
+  const ALERT_THRESHOLD_DOLLARS = 500;
+  const ALERT_COOLDOWN_HOURS = 24;
+
+  const activeTrades = await getActiveTrades();
+  const longTermFilled = activeTrades.filter(t =>
+    t.mode === 'LONG_TERM' &&
+    (t.status === 'FILLED' || t.status === 'PARTIAL')
+  );
+
+  for (const trade of longTermFilled) {
+    const ibPos = positions.find(p => p.symbol.toUpperCase() === trade.ticker.toUpperCase());
+    if (!ibPos || ibPos.mktPrice <= 0 || ibPos.avgCost <= 0) continue;
+
+    const unrealizedPnl = ibPos.unrealizedPnl;
+    if (unrealizedPnl >= -ALERT_THRESHOLD_DOLLARS) continue;
+
+    // Throttle: only alert once per ALERT_COOLDOWN_HOURS per ticker
+    const recentAlerts = await getRecentSuggestedFindAlerts(trade.ticker);
+    if (recentAlerts.length > 0) {
+      const hoursSince = (Date.now() - new Date(recentAlerts[0].created_at).getTime()) / 3_600_000;
+      if (hoursSince < ALERT_COOLDOWN_HOURS) continue;
+    }
+
+    const lossPct = ((ibPos.avgCost - ibPos.mktPrice) / ibPos.avgCost) * 100;
+    const dollarLoss = Math.abs(unrealizedPnl).toFixed(0);
+
+    const recommendation = lossPct >= 20
+      ? 'Cut recommended — thesis likely broken (>20% down)'
+      : lossPct >= 15
+        ? 'Review now — approaching loss cut Tier 2 (15%)'
+        : 'Monitor — down >$500, watch for further weakness';
+
+    log(`${trade.ticker}: ⚠️  At-risk review — down $${dollarLoss} (-${lossPct.toFixed(1)}%)`);
+    persistEvent(
+      trade.ticker,
+      'warning',
+      `⚠️ Position review: -$${dollarLoss} (-${lossPct.toFixed(1)}%) | ${recommendation}`,
+      {
+        action: 'flagged',
+        source: 'suggested_finds_review',
+        metadata: {
+          unrealizedPnl,
+          lossPct: parseFloat(lossPct.toFixed(2)),
+          recommendation,
+          costBasis: ibPos.avgCost,
+          currentPrice: ibPos.mktPrice,
+          shares: Math.abs(ibPos.position),
+        },
+      }
+    );
   }
 }
 
