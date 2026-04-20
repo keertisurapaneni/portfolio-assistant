@@ -26,7 +26,6 @@ export function OptionsWheelPage() {
         <div className="text-right hidden sm:block">
           <p className="text-[11px] text-[hsl(var(--muted-foreground))]">Target</p>
           <p className="text-sm font-bold text-violet-600">70–80% annual</p>
-          <p className="text-[10px] text-[hsl(var(--muted-foreground))]">beat husband's 60% ✌️</p>
         </div>
       </div>
 
