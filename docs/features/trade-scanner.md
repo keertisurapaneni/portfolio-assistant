@@ -1,38 +1,49 @@
-# Trade Ideas — AI Scanner (v3)
+# Trade Ideas — AI Scanner (v4)
 
 > Cursor agent plan — implemented and shipped
 
 ## Overview
 
-AI-powered trade idea suggestions that scan the market for high-confidence day and swing trade setups. Uses a two-pass architecture: fast Yahoo Finance screening → Gemini AI batch evaluation with candle validation. Results are cached in Supabase DB and shared across all users.
+AI-powered trade idea suggestions that find high-confidence day and swing trade setups. Uses a **dual-track architecture** for day trades: a proactive key-level track (always runs, even on flat days) plus a reactive mover track (catches momentum plays). Results are cached in Supabase DB and shared across all users.
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                    trade-scanner (v3)                     │
-│                                                          │
-│  PASS 1 — Quick filter (indicators only)                 │
-│  ┌──────────────┐    ┌──────────────┐    ┌───────────┐  │
-│  │ Yahoo Finance │───▶│ Enrich with  │───▶│ Gemini AI │  │
-│  │  Screener     │    │ RSI/MACD/SMA │    │ Batch eval│  │
-│  │ (gainers +    │    │ ATR (daily)  │    │ → top 8   │  │
-│  │  losers)      │    │              │    │           │  │
-│  └──────────────┘    └──────────────┘    └─────┬─────┘  │
-│                                                 │        │
-│  PASS 2 — Refine with candle data               │        │
-│  ┌──────────────┐    ┌──────────────────────────┴─────┐  │
-│  │ Yahoo v8     │───▶│ Gemini AI re-evaluate          │  │
-│  │ 5m + 15m     │    │ with SAME rules as full        │  │
-│  │ candles      │    │ analysis (shared prompts)      │  │
-│  │ (top 8 only) │    │ → final 5-6 picks              │  │
-│  └──────────────┘    └──────────────────────────┬─────┘  │
-│                                                 │        │
-│  ┌──────────────────────────────────────────────┴─────┐  │
-│  │ Supabase DB (trade_scans table)                    │  │
-│  │ Day: 30 min TTL | Swing: 6 hr TTL                 │  │
-│  └────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│                      trade-scanner (v4)                          │
+│                                                                  │
+│  TRACK 1 — Key Level Setups (proactive — runs every day)        │
+│  ┌─────────────────────┐    ┌──────────────────────────────┐    │
+│  │ Key Level Scanner   │───▶│ Gemini/Groq AI               │    │
+│  │ SOMESH_WATCHLIST    │    │ "Which direction has edge?"  │    │
+│  │ SPY QQQ TSLA NVDA   │    │ Uses pre-computed levels     │    │
+│  │ PLTR AMD AAPL etc   │    │ → entry/stop/target set      │    │
+│  │ (always evaluated)  │    │   by price structure, not AI │    │
+│  └─────────────────────┘    └──────────────────────────────┘    │
+│                                                                  │
+│  TRACK 2 — Mover Setups (reactive — current movers only)        │
+│  ┌──────────────┐    ┌──────────────┐    ┌───────────────────┐  │
+│  │ Yahoo Finance │───▶│ Enrich with  │───▶│ Gemini AI         │  │
+│  │  Screener     │    │ RSI/MACD/SMA │    │ Pass 1 batch eval │  │
+│  │ (gainers +    │    │ ATR (daily)  │    │ → top 8           │  │
+│  │  losers +     │    │              │    │                   │  │
+│  │  DAY_CORE)    │    │              │    │                   │  │
+│  └──────────────┘    └──────────────┘    └────────┬──────────┘  │
+│                                                    │             │
+│  PASS 2 — Refine with candle data                  │             │
+│  ┌──────────────┐    ┌───────────────────────────┴──────────┐   │
+│  │ Yahoo v8     │───▶│ Gemini AI re-evaluate                │   │
+│  │ 5m + 15m     │    │ with SAME rules as full analysis     │   │
+│  │ candles      │    │ → final picks                        │   │
+│  │ (top 8 only) │    │                                      │   │
+│  └──────────────┘    └──────────────────────────────────────┘   │
+│                                                                  │
+│  ┌──────────────────────────────────────────────────────────┐   │
+│  │ Supabase DB (trade_scans table)                          │   │
+│  │ Day: 30 min TTL | Swing: 6 hr TTL                       │   │
+│  │ Never overwrites non-empty results with empty array      │   │
+│  └──────────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
 ## Shared Prompts — Single Source of Truth
@@ -43,21 +54,41 @@ Both the scanner (`trade-scanner`) and full analysis (`trading-signals`) use the
 - `DAY_TRADE_RULES` — All day trade rules (RSI, MACD, volume, S/R, liquidity grabs, etc.)
 - `SWING_TRADE_SYSTEM` — Swing trade persona
 - `SWING_TRADE_RULES` — All swing trade rules (don't chase, SMA trend, gaps, earnings, etc.)
+- `TRACK1_SYSTEM` — Key level evaluation persona (Track 1 only, in `trade-scanner/index.ts`)
 
 **To update a rule:** Edit `_shared/prompts.ts` → deploy both functions → scanner and full analysis stay consistent.
+
+## SOMESH_WATCHLIST — Core Watchlist
+
+```typescript
+const SOMESH_WATCHLIST = ['SPY', 'QQQ', 'TSLA', 'NVDA', 'PLTR', 'AMD', 'AAPL', 'META', 'MSFT', 'IWM'];
+```
+
+These tickers are **always evaluated every day** regardless of whether they're moving. They mirror the core watchlist that Somesh (Kay Capitals) uses. They:
+1. **Bypass InPlayScore cutoff** — re-injected into candidates after the top-30 slice
+2. **Always included in Track 1** — key level setups computed and AI-evaluated every morning
+3. **No `|change| ≥ 1%` requirement** — evaluated even on flat market days
 
 ## Data Flow
 
 ### Day Trades (refreshed every 30 min during market hours)
 
+**Track 1 — Key Level Setups (runs after Track 2, every day):**
+1. Key Level Scanner identifies resistance/support levels for `SOMESH_WATCHLIST` + any ticker within 1.5×ATR of a trigger
+2. AI (Gemini/Groq fallback) evaluates each setup: *"Which direction has the edge today?"*
+3. Entry, stop, and target are **pre-computed from pure price structure** (no AI guessing levels)
+4. Ideas tagged `key-level` + `watchlist` and merged into the day's results
+5. Produces signals even on flat days — as long as a ticker is near a key level
+
+**Track 2 — Mover Setups (reactive):**
 1. **Discovery**: Yahoo screener (gainers + losers) → pre-filter → dedupe
 2. **Enrichment**: Yahoo v8 chart API (1y daily) → compute RSI, MACD, SMA20/50/200, ATR for **all** deduped candidates
-3. **Ranking** (large-cap mode, `largeCapMode=true`): InPlayScore (volRatio, dollarVol, atrPct, trendScore, extensionPenalty) → top 30 → top 15 for Pass 1. Small-cap: sort by abs(change%), take top 15.
-4. **Pass 1**: Gemini batch evaluation on indicators → top 5 candidates (confidence >= 6)
-5. **Pass 2**: Fetch 5m + 15m candles for top 5 → Gemini re-evaluates with candle data → final picks (confidence >= 7)
-6. **Cache**: Write to `trade_scans` table, 30 min TTL
+3. **Ranking** (large-cap mode): InPlayScore (volRatio, dollarVol, atrPct, trendScore, extensionPenalty) → top 30. SOMESH_WATCHLIST tickers re-injected if cut.
+4. **Pass 1**: Gemini batch evaluation on indicators → top 8 candidates (confidence ≥ 5)
+5. **Pass 2**: Fetch 5m + 15m candles for top 8 → Gemini re-evaluates with candle data → final picks (confidence ≥ 6)
+6. **Cache**: Write to `trade_scans` table, 30 min TTL. **Never overwrites non-empty results with an empty array — previous scan preserved on quiet days.**
 
-**Pre-filter thresholds:** Large-cap: price ≥ $20, |change| ≥ 1%, volume ≥ 1M. Small-cap: price ≥ $3, |change| ≥ 3%, volume ≥ 500K.
+**Pre-filter thresholds (Track 2):** Large-cap: price ≥ $20, |change| ≥ 1%, volume ≥ 1M. SOMESH_WATCHLIST: price ≥ $10, volume ≥ 1M (no change% gate).
 
 ---
 
@@ -65,13 +96,14 @@ Both the scanner (`trade-scanner`) and full analysis (`trading-signals`) use the
 
 | Aspect | Day Trade | Swing Trade |
 |--------|-----------|-------------|
-| **Discovery** | Yahoo screener (day_gainers + day_losers) — reactive to today's movers | Curated universe (core + sector momentum + movers + earnings + portfolio) — proactive, stable |
-| **Pre-filter** | Price, |change%|, volume (mode-dependent) | Price ≥ $5 only |
-| **Ranking before Pass 1** | InPlayScore (large-cap) or abs(change%) — narrows to top 15 | **None** — all ~35–55 candidates sent to Gemini in batches |
-| **Pass 1 input** | Top 15 candidates | All candidates (batches of 20) |
-| **Pass 1 threshold** | Confidence ≥ 6 → top 5 | Confidence ≥ 5 → top 8 |
-| **Pass 2 candles** | 15m from Twelve Data (intraday structure) | Daily Yahoo (1y, reused from enrichment) |
-| **Pass 2 confidence** | ≥ 7 (strict) | ≥ 7, fallback 6 if none |
+| **Discovery** | Track 1 (key levels, always) + Track 2 Yahoo screener (reactive movers) | Curated universe (core + sector momentum + movers + earnings + portfolio) — proactive, stable |
+| **Pre-filter** | Track 2: price, \|change%\|, volume. Track 1: SOMESH_WATCHLIST always; others within 1.5×ATR of level | Price ≥ $5 only |
+| **Core watchlist** | `SOMESH_WATCHLIST` always evaluated regardless of daily move | `SWING_CORE` — 20 blue chips always included |
+| **Ranking before Pass 1** | InPlayScore (large-cap); SOMESH_WATCHLIST re-injected after cut | SwingSetupScore → top 30 |
+| **Pass 1 threshold** | Confidence ≥ 5 → top 8 | Confidence ≥ 5 → top 10 |
+| **Pass 2 candles** | 15m candles (intraday structure) | Daily Yahoo OHLCV (reused from enrichment) |
+| **Pass 2 confidence** | ≥ 6 (day); Track 1 ≥ 6 | ≥ 7, fallback 6 if none |
+| **Empty result handling** | Previous scan preserved if new scan yields 0 ideas | Previous scan preserved if new scan yields 0 ideas |
 
 ### Swing Trades (refreshed 2x/day: ~10AM + ~3:45PM ET)
 
@@ -94,7 +126,7 @@ Both the scanner (`trade-scanner`) and full analysis (`trading-signals`) use the
 | File | Purpose |
 |---|---|
 | `supabase/functions/_shared/prompts.ts` | **Shared AI prompts** — single source of truth for rules |
-| `supabase/functions/trade-scanner/index.ts` | Edge function: two-pass scanner, Yahoo data, InPlayScore ranking, Gemini AI, DB cache |
+| `supabase/functions/trade-scanner/index.ts` | Edge function: Track 1 key-level scan + Track 2 two-pass mover scan, Yahoo data, InPlayScore, Gemini/Groq AI, DB cache |
 | `supabase/functions/trade-scanner/inPlayScore.test.ts` | Unit-test examples for InPlayScore (6-ticker mock) |
 | `supabase/functions/trading-signals/index.ts` | Edge function: full analysis (imports same shared prompts) |
 | `app/src/lib/tradeScannerApi.ts` | Frontend API client for trade-scanner |
@@ -126,8 +158,11 @@ Both the scanner (`trade-scanner`) and full analysis (`trading-signals`) use the
       "signal": "BUY",
       "confidence": 7,
       "reason": "Strong gap up with bullish MACD and consistent higher lows on 5m candles",
-      "tags": ["momentum", "high-volume"],
-      "mode": "DAY_TRADE"
+      "tags": ["key-level", "watchlist"],  // Track 1 ideas tagged key-level + watchlist; Track 2 tagged momentum / high-volume / etc.
+      "mode": "DAY_TRADE",
+      "entryPrice": 548.55,   // pre-computed trigger level (Track 1) or AI-derived (Track 2)
+      "stopLoss": 545.40,
+      "targetPrice": 555.00
     }
   ],
   "swingTrades": [],
