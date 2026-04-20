@@ -2170,19 +2170,18 @@ Deno.serve(async (req) => {
       // Sort final dayIdeas by confidence descending
       dayIdeas.sort((a, b) => b.confidence - a.confidence);
 
-      // Only persist to DB when AI ran successfully — if Gemini was rate-limited/quota-exhausted,
-      // keep the previous scan in the DB so we don't serve empty results for the rest of the day.
-      // Never overwrite a non-empty result with an empty array — preserve previous good scan.
-      if (dayAISucceeded) {
-        if (dayIdeas.length > 0) {
-          await writeToDB(sb, 'day_trades', dayIdeas, 390);
-        } else {
-          console.log('[Trade Scanner] Day scan produced 0 ideas — preserving previous scan results');
-          dayIdeas = dayRow?.data ?? [];
-        }
+      // Caching rules:
+      // - If we have any ideas (from Track 1, Track 2, or both) → always write to DB
+      // - If Track 2 AI failed but Track 1 produced ideas → still write those to DB
+      // - Only fall back to previous DB scan if we truly have nothing at all
+      if (dayIdeas.length > 0) {
+        await writeToDB(sb, 'day_trades', dayIdeas, 390);
+      } else if (!dayAISucceeded) {
+        console.warn('[Trade Scanner] Day AI failed and Track 1 empty — skipping DB write to preserve previous results');
+        dayIdeas = dayRow?.data ?? [];
       } else {
-        console.warn('[Trade Scanner] Day AI failed — skipping DB write to preserve previous results');
-        dayIdeas = dayRow?.data ?? []; // Fall back to whatever was in DB
+        console.log('[Trade Scanner] Day scan produced 0 ideas — preserving previous scan results');
+        dayIdeas = dayRow?.data ?? [];
       }
     }
 
