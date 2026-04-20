@@ -720,11 +720,16 @@ export interface CategoryPerformance {
   wins: number;
   losses: number;
   winRate: number;
+  /** Realized P&L from closed trades only */
+  realizedPnl: number;
+  /** Unrealized P&L from active/open positions */
+  unrealizedPnl: number;
+  /** realizedPnl + unrealizedPnl — kept for backward compat */
   totalPnl: number;
   avgPnl: number;
   avgReturnPct: number;
-  bestTrade: { ticker: string; pnl: number } | null;
-  worstTrade: { ticker: string; pnl: number } | null;
+  bestTrade: { ticker: string; pnl: number; isOpen?: boolean } | null;
+  worstTrade: { ticker: string; pnl: number; isOpen?: boolean } | null;
   totalDeployed: number;
 }
 
@@ -874,8 +879,8 @@ export async function recalculatePerformanceByCategory(): Promise<CategoryPerfor
     const wins = completed.filter(t => (t.pnl ?? 0) > 0);
     const losses = completed.filter(t => (t.pnl ?? 0) < 0);
 
-    const totalPnl = completed.reduce((s, t) => s + (t.pnl ?? 0), 0);
-    const avgPnl = completed.length > 0 ? totalPnl / completed.length : 0;
+    const realizedPnl = completed.reduce((s, t) => s + (t.pnl ?? 0), 0);
+    const avgPnl = completed.length > 0 ? realizedPnl / completed.length : 0;
 
     // Avg return %
     const returns = completed
@@ -883,15 +888,17 @@ export async function recalculatePerformanceByCategory(): Promise<CategoryPerfor
       .map(t => ((t.pnl ?? 0) / ((t.fill_price ?? 1) * (t.quantity ?? 1))) * 100);
     const avgReturnPct = returns.length > 0 ? returns.reduce((a, b) => a + b, 0) / returns.length : 0;
 
-    // For active long-term positions with unrealized P&L, include in active stats
-    const unrealizedPnl = active
-      .filter(t => t.status === 'FILLED' && t.pnl != null)
-      .reduce((s, t) => s + (t.pnl ?? 0), 0);
+    // Unrealized P&L from active FILLED positions (live floating gains/losses)
+    const filledActive = active.filter(t => t.status === 'FILLED' && t.pnl != null);
+    const unrealizedPnl = filledActive.reduce((s, t) => s + (t.pnl ?? 0), 0);
 
-    // Best/worst
-    const sortedByPnl = [...completed].sort((a, b) => (b.pnl ?? 0) - (a.pnl ?? 0));
-    const best = sortedByPnl[0] ?? null;
-    const worst = sortedByPnl[sortedByPnl.length - 1] ?? null;
+    // Best/worst: include active FILLED positions so open losers like POOL show up
+    const allForBestWorst = [
+      ...completed.map(t => ({ ticker: t.ticker, pnl: t.pnl ?? 0, isOpen: false })),
+      ...filledActive.map(t => ({ ticker: t.ticker, pnl: t.pnl ?? 0, isOpen: true })),
+    ].sort((a, b) => b.pnl - a.pnl);
+    const best = allForBestWorst[0] ?? null;
+    const worst = allForBestWorst[allForBestWorst.length - 1] ?? null;
 
     const totalDeployed = active.reduce((s, t) => s + (t.position_size ?? 0), 0);
 
@@ -902,11 +909,13 @@ export async function recalculatePerformanceByCategory(): Promise<CategoryPerfor
       wins: wins.length,
       losses: losses.length,
       winRate: completed.length > 0 ? (wins.length / completed.length) * 100 : 0,
-      totalPnl: totalPnl + unrealizedPnl,
+      realizedPnl,
+      unrealizedPnl,
+      totalPnl: realizedPnl + unrealizedPnl,
       avgPnl,
       avgReturnPct,
-      bestTrade: best ? { ticker: best.ticker, pnl: best.pnl ?? 0 } : null,
-      worstTrade: worst && completed.length > 0 ? { ticker: worst.ticker, pnl: worst.pnl ?? 0 } : null,
+      bestTrade: best,
+      worstTrade: allForBestWorst.length > 0 ? worst : null,
       totalDeployed,
     });
   }
