@@ -157,6 +157,7 @@ const REALTIME_DEBOUNCE_MS = 3000; // coalesce day_trades + swing_trades writes
 let _running = false;
 let _lastRun: Date | null = null;
 let _lastRunResult: string = 'never';
+let _ibWasConnected = false; // watchdog: track previous connection state
 let _lastCycleSummary: string[] = [];
 let _runCount = 0;
 let _lastSuggestedFindsDate = '';
@@ -2996,68 +2997,6 @@ async function checkLossCutOpportunities(
   }
 }
 
-// ── Suggested Finds At-Risk Alerts ──────────────────────
-// Runs every scheduler cycle. Flags any LONG_TERM position down >$500 in the
-// auto-trader event log (visible in Today's Activity). Fires at most once per 24h
-// per ticker to avoid spam.
-
-async function checkSuggestedFindsAlerts(
-  _config: AutoTraderConfig,
-  positions: EnrichedPosition[],
-): Promise<void> {
-  const ALERT_THRESHOLD_DOLLARS = 500;
-  const ALERT_COOLDOWN_HOURS = 24;
-
-  const activeTrades = await getActiveTrades();
-  const longTermFilled = activeTrades.filter(t =>
-    t.mode === 'LONG_TERM' &&
-    (t.status === 'FILLED' || t.status === 'PARTIAL')
-  );
-
-  for (const trade of longTermFilled) {
-    const ibPos = positions.find(p => p.symbol.toUpperCase() === trade.ticker.toUpperCase());
-    if (!ibPos || ibPos.mktPrice <= 0 || ibPos.avgCost <= 0) continue;
-
-    const unrealizedPnl = ibPos.unrealizedPnl;
-    if (unrealizedPnl >= -ALERT_THRESHOLD_DOLLARS) continue;
-
-    // Throttle: only alert once per ALERT_COOLDOWN_HOURS per ticker
-    const recentAlerts = await getRecentSuggestedFindAlerts(trade.ticker);
-    if (recentAlerts.length > 0) {
-      const hoursSince = (Date.now() - new Date(recentAlerts[0].created_at).getTime()) / 3_600_000;
-      if (hoursSince < ALERT_COOLDOWN_HOURS) continue;
-    }
-
-    const lossPct = ((ibPos.avgCost - ibPos.mktPrice) / ibPos.avgCost) * 100;
-    const dollarLoss = Math.abs(unrealizedPnl).toFixed(0);
-
-    const recommendation = lossPct >= 20
-      ? 'Cut recommended — thesis likely broken (>20% down)'
-      : lossPct >= 15
-        ? 'Review now — approaching loss cut Tier 2 (15%)'
-        : 'Monitor — down >$500, watch for further weakness';
-
-    log(`${trade.ticker}: ⚠️  At-risk review — down $${dollarLoss} (-${lossPct.toFixed(1)}%)`);
-    persistEvent(
-      trade.ticker,
-      'warning',
-      `⚠️ Position review: -$${dollarLoss} (-${lossPct.toFixed(1)}%) | ${recommendation}`,
-      {
-        action: 'flagged',
-        source: 'suggested_finds_review',
-        metadata: {
-          unrealizedPnl,
-          lossPct: parseFloat(lossPct.toFixed(2)),
-          recommendation,
-          costBasis: ibPos.avgCost,
-          currentPrice: ibPos.mktPrice,
-          shares: Math.abs(ibPos.position),
-        },
-      }
-    );
-  }
-}
-
 // ── Portfolio Snapshot ───────────────────────────────────
 
 async function savePortfolioSnapshotQuiet(
@@ -3378,7 +3317,27 @@ async function runSchedulerCycle(): Promise<void> {
     log(`═══ Cycle #${_runCount} starting ═══`);
     resetProcessedTickersIfNewDay();
 
-    if (!isConnected()) {
+    const ibNowConnected = isConnected();
+
+    // IB connectivity watchdog: log a warning event when IB drops during market hours
+    // so it shows up in Smart Trading → Recent Smart Actions feed.
+    if (_ibWasConnected && !ibNowConnected && isMarketHoursET()) {
+      log('⚠️  IB Gateway disconnected during market hours — loss cuts and position management are SUSPENDED');
+      persistEvent('SYSTEM', 'warning',
+        '⚠️ IB disconnected during market hours — loss cuts, dip buys and profit takes are suspended until reconnected',
+        { action: 'flagged', source: 'system', metadata: { reason: 'ib_disconnected' } }
+      );
+    }
+    if (ibNowConnected && !_ibWasConnected) {
+      log('IB Gateway reconnected');
+      persistEvent('SYSTEM', 'success',
+        'IB Gateway reconnected — position management resumed',
+        { action: 'executed', source: 'system', metadata: { reason: 'ib_reconnected' } }
+      );
+    }
+    _ibWasConnected = ibNowConnected;
+
+    if (!ibNowConnected) {
       log('IB Gateway not connected — skipping cycle');
       _lastRunResult = 'skipped: IB disconnected';
       return;
