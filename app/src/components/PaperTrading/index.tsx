@@ -271,9 +271,15 @@ export function PaperTrading() {
     );
   }, [todaysExecuted]);
 
-  const totalCostBasis = ibPositions.reduce((sum, p) => sum + Math.abs(p.position) * p.avgCost, 0);
-  const totalMktValue = ibPositions.reduce((sum, p) => sum + p.mktValue, 0);
-  const totalUnrealizedPnl = ibPositions.reduce((sum, p) => sum + p.unrealizedPnl, 0);
+  // Only include equity (stock) positions in the header stats.
+  // Options positions report avgCost as a per-contract premium value, while mktPrice is
+  // the underlying stock price — mixing them produces wildly wrong cost basis / market value.
+  // Options are tracked separately in the Options tab.
+  const equityPositions = ibPositions.filter(p => !p.secType || p.secType === 'STK');
+  const optionPositionCount = ibPositions.filter(p => p.secType === 'OPT').length;
+  const totalCostBasis = equityPositions.reduce((sum, p) => sum + Math.abs(p.position) * p.avgCost, 0);
+  const totalMktValue = equityPositions.reduce((sum, p) => sum + p.mktValue, 0);
+  const totalUnrealizedPnl = equityPositions.reduce((sum, p) => sum + p.unrealizedPnl, 0);
   const uniqueOrderTickers = new Set(ibOrders.map(o => o.ticker)).size;
 
   return (
@@ -358,8 +364,12 @@ export function PaperTrading() {
         <StatCard
           icon={<Briefcase className="w-4 h-4" />}
           label="Holdings"
-          value={String(ibPositions.length)}
-          subtitle={uniqueOrderTickers > 0 ? `${uniqueOrderTickers} open order${uniqueOrderTickers > 1 ? 's' : ''}` : undefined}
+          value={String(equityPositions.length)}
+          subtitle={
+            optionPositionCount > 0
+              ? `+${optionPositionCount} option${optionPositionCount > 1 ? 's' : ''} • ${uniqueOrderTickers > 0 ? `${uniqueOrderTickers} order${uniqueOrderTickers > 1 ? 's' : ''}` : 'no orders'}`
+              : uniqueOrderTickers > 0 ? `${uniqueOrderTickers} open order${uniqueOrderTickers > 1 ? 's' : ''}` : undefined
+          }
           color="blue"
         />
         <StatCard

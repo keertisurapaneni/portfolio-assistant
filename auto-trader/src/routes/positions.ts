@@ -38,30 +38,38 @@ router.get('/positions', async (_req, res) => {
     const pricePromises = symbols.map(s => getQuotePrice(s));
     const prices = await Promise.all(pricePromises);
 
-    // Map to IBPosition shape the web app expects, now with real market data
+    // Map to IBPosition shape the web app expects, now with real market data.
+    // Options (secType === 'OPT') are flagged separately: avgCost from IB is the per-contract
+    // premium (premium × 100 multiplier), so using the underlying stock price to compute
+    // mktValue would produce completely wrong numbers. We mark them as unpriced so the
+    // frontend can exclude them from portfolio-level stats (they're tracked in the Options tab).
     res.json(
       openPositions.map((p, i) => {
-        const mktPrice = prices[i] ?? 0;
+        const isOption = p.secType === 'OPT';
+        const mktPrice = isOption ? 0 : (prices[i] ?? 0);
         const absPosition = Math.abs(p.position);
-        const mktValue = absPosition * mktPrice;
+
+        // For options: show avgCost as-is (premium per contract) but mark mktValue = 0
+        // so the frontend can distinguish "option we can't price here" vs "stock we couldn't
+        // get a quote for" using the secType field.
+        const mktValue = isOption ? 0 : absPosition * mktPrice;
         const costBasis = absPosition * p.avgCost;
-        // For long positions: unrealized = mktValue - costBasis
-        // For short positions: unrealized = costBasis - mktValue (profit when price drops)
-        const unrealizedPnl = p.position > 0
-          ? mktValue - costBasis
-          : costBasis - mktValue;
+        const unrealizedPnl = (!isOption && mktPrice > 0)
+          ? (p.position > 0 ? mktValue - costBasis : costBasis - mktValue)
+          : 0;
 
         return {
           acctId: p.account,
           conid: p.conId,
           contractDesc: p.symbol,
+          secType: p.secType,   // "STK" | "OPT" | "FUT" etc — used by frontend to filter stats
           position: p.position,
           mktPrice,
           mktValue,
           avgCost: p.avgCost,
           avgPrice: p.avgCost,
-          realizedPnl: 0,    // would need execution tracking
-          unrealizedPnl: mktPrice > 0 ? unrealizedPnl : 0,
+          realizedPnl: 0,       // would need execution tracking to populate
+          unrealizedPnl,
           currency: 'USD',
         };
       })

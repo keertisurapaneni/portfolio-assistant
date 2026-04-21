@@ -31,6 +31,8 @@ export interface IBPosition {
   acctId: string;
   conid: number;
   contractDesc: string;
+  /** IB security type: "STK" for stocks, "OPT" for options, "FUT" for futures, etc. */
+  secType?: string;
   position: number;
   mktPrice: number;
   mktValue: number;
