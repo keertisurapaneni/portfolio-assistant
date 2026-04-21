@@ -251,3 +251,27 @@ export async function paperTradeOptionManually(opp: OptionsScanOpportunity): Pro
   });
   if (error) throw error;
 }
+
+// ── Activity Log ─────────────────────────────────────────
+
+export interface OptionsActivityEvent {
+  id: string;
+  ticker: string;
+  event_type: 'info' | 'success' | 'warning' | 'error';
+  message: string;
+  metadata: Record<string, unknown> | null;
+  created_at: string;
+}
+
+/** Fetch recent options-wheel activity events (newest first) */
+export async function getOptionsActivityLog(limit = 50): Promise<OptionsActivityEvent[]> {
+  const { data, error } = await supabase
+    .from('auto_trade_events')
+    .select('id, ticker, event_type, message, metadata, created_at')
+    .in('mode', ['OPTIONS_PUT', 'OPTIONS_CALL'])
+    .order('created_at', { ascending: false })
+    .limit(limit);
+
+  if (error) return [];
+  return (data ?? []) as OptionsActivityEvent[];
+}

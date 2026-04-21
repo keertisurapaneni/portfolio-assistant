@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { RefreshCw, Plus, X, AlertTriangle, CheckCircle, BarChart2 } from 'lucide-react';
+import { RefreshCw, Plus, X, AlertTriangle, CheckCircle, BarChart2, Activity } from 'lucide-react';
 import { cn } from '../../../lib/utils';
 import { fmtUsd } from '../utils';
 import {
@@ -9,6 +9,7 @@ import {
   getOpenOptionsPositions,
   getClosedOptionsPositions,
   getOptionsMonthlyStats,
+  getOptionsActivityLog,
   addToOptionsWatchlist,
   removeFromOptionsWatchlist,
   paperTradeOptionManually,
@@ -16,6 +17,7 @@ import {
   type OptionsScanOpportunity,
   type OpenOptionsPosition,
   type OptionsMonthlyStats,
+  type OptionsActivityEvent,
 } from '../../../lib/optionsApi';
 
 // ── Helpers ──────────────────────────────────────────────
@@ -277,22 +279,24 @@ export function OptionsTab() {
   const [closedPositions, setClosedPositions] = useState<OpenOptionsPosition[]>([]);
   const [watchlist, setWatchlist] = useState<WatchlistTicker[]>([]);
   const [stats, setStats] = useState<OptionsMonthlyStats | null>(null);
+  const [activityLog, setActivityLog] = useState<OptionsActivityEvent[]>([]);
   const [loading, setLoading] = useState(true);
   const [showSkipped, setShowSkipped] = useState(false);
   const [addTicker, setAddTicker] = useState('');
   const [addingTicker, setAddingTicker] = useState(false);
-  const [activeSection, setActiveSection] = useState<'opportunities' | 'positions' | 'history' | 'watchlist'>('opportunities');
+  const [activeSection, setActiveSection] = useState<'opportunities' | 'positions' | 'history' | 'watchlist' | 'log'>('opportunities');
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [opps, skippedOpps, openPos, closedPos, wl, monthStats] = await Promise.all([
+      const [opps, skippedOpps, openPos, closedPos, wl, monthStats, log] = await Promise.all([
         getLatestOptionsScan(),
         getSkippedOptionsScan(),
         getOpenOptionsPositions(),
         getClosedOptionsPositions(20),
         getOptionsWatchlist(),
         getOptionsMonthlyStats(),
+        getOptionsActivityLog(50),
       ]);
       setOpportunities(opps);
       setSkipped(skippedOpps);
@@ -300,6 +304,7 @@ export function OptionsTab() {
       setClosedPositions(closedPos);
       setWatchlist(wl);
       setStats(monthStats);
+      setActivityLog(log);
     } catch (err) {
       console.error('Options tab load error:', err);
     } finally {
@@ -336,6 +341,7 @@ export function OptionsTab() {
     { id: 'positions' as const, label: 'Open', count: openPositions.length },
     { id: 'history' as const, label: 'History', count: closedPositions.length },
     { id: 'watchlist' as const, label: 'Watchlist', count: watchlist.filter(w => w.active).length },
+    { id: 'log' as const, label: 'Log', count: activityLog.length },
   ];
 
   return (
@@ -493,6 +499,62 @@ export function OptionsTab() {
                     {fmtUsd(pos.pnl ?? 0, 0, true)}
                   </p>
                   <p className="text-[9px] text-[hsl(var(--muted-foreground))]">{pos.status.toLowerCase()}</p>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      )}
+
+      {/* Activity Log */}
+      {activeSection === 'log' && (
+        <div className="space-y-2">
+          {activityLog.length === 0 ? (
+            <div className="rounded-xl border border-dashed border-[hsl(var(--border))] p-6 text-center">
+              <Activity className="w-8 h-8 text-[hsl(var(--muted-foreground))] mx-auto mb-2 opacity-40" />
+              <p className="text-sm text-[hsl(var(--muted-foreground))]">No activity yet.</p>
+              <p className="text-[11px] text-[hsl(var(--muted-foreground))] mt-1 opacity-70">Events appear here when scans run, orders are placed, and positions close.</p>
+            </div>
+          ) : (
+            activityLog.map(evt => (
+              <div
+                key={evt.id}
+                className={cn(
+                  'flex gap-3 rounded-xl border px-3 py-2.5 text-sm',
+                  evt.event_type === 'success' && 'border-emerald-200 bg-emerald-50',
+                  evt.event_type === 'warning' && 'border-amber-200 bg-amber-50',
+                  evt.event_type === 'error'   && 'border-red-200 bg-red-50',
+                  evt.event_type === 'info'    && 'border-[hsl(var(--border))] bg-[hsl(var(--card))]',
+                )}
+              >
+                {/* icon */}
+                <div className="mt-0.5 shrink-0">
+                  {evt.event_type === 'success' && <CheckCircle className="w-4 h-4 text-emerald-600" />}
+                  {evt.event_type === 'warning' && <AlertTriangle className="w-4 h-4 text-amber-600" />}
+                  {evt.event_type === 'error'   && <AlertTriangle className="w-4 h-4 text-red-600" />}
+                  {evt.event_type === 'info'    && <Activity className="w-4 h-4 text-violet-500" />}
+                </div>
+                {/* body */}
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-baseline gap-1.5 flex-wrap">
+                    <span className={cn(
+                      'text-[11px] font-bold uppercase tracking-wide',
+                      evt.event_type === 'success' && 'text-emerald-700',
+                      evt.event_type === 'warning' && 'text-amber-700',
+                      evt.event_type === 'error'   && 'text-red-700',
+                      evt.event_type === 'info'    && 'text-violet-700',
+                    )}>{evt.ticker}</span>
+                    <span className="text-[11px] text-[hsl(var(--muted-foreground))]">
+                      {new Date(evt.created_at).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
+                    </span>
+                  </div>
+                  <p className={cn(
+                    'text-[12px] leading-snug mt-0.5',
+                    evt.event_type === 'success' && 'text-emerald-800',
+                    evt.event_type === 'warning' && 'text-amber-800',
+                    evt.event_type === 'error'   && 'text-red-800',
+                    evt.event_type === 'info'    && 'text-[hsl(var(--foreground))]',
+                  )}>{evt.message}</p>
                 </div>
               </div>
             ))

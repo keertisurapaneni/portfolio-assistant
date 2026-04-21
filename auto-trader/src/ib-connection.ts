@@ -479,7 +479,11 @@ export function placeOptionsOrder(params: OptionsOrderParams): Promise<OptionsOr
       return reject(new Error('Not connected to IB Gateway'));
     }
 
-    const { symbol, right, strike, expiry, contracts, limitPrice, account } = params;
+    const { symbol, right, strike, expiry, contracts, account } = params;
+    // IB requires limit prices to conform to minimum tick increments.
+    // Options ≥ $3.00 use $0.05 ticks; options < $3.00 use $0.01 ticks.
+    const tick = params.limitPrice >= 3.0 ? 0.05 : 0.01;
+    const limitPrice = Math.round(params.limitPrice / tick) * tick;
 
     const contract: Contract = {
       symbol: symbol.toUpperCase(),

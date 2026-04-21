@@ -16,7 +16,7 @@
  *   8. Sector concentration cap (max 2 per sector)
  */
 
-import { getSupabase } from './supabase.js';
+import { getSupabase, createAutoTradeEvent } from './supabase.js';
 import { getOptionsChain, type OptionGreeks } from './options-chain.js';
 import { isConnected, placeOptionsOrder, getDefaultAccount } from '../ib-connection.js';
 
@@ -744,6 +744,15 @@ export async function autoTradeOption(ticket: OptionsTradeTicket): Promise<{ tra
   if (!isConnected()) {
     console.warn('[Options Auto-Trade] IB not connected — falling back to paper trade');
     const tradeId = await paperTradeOption(ticket);
+    createAutoTradeEvent({
+      ticker: ticket.ticker,
+      event_type: 'warning',
+      action: 'executed',
+      source: 'scanner',
+      mode: 'OPTIONS_PUT',
+      message: `Paper trade opened — IB offline. Sold $${ticket.strike}P exp ${ticket.expiry}, premium $${ticket.premium.toFixed(2)}`,
+      metadata: { strike: ticket.strike, expiry: ticket.expiry, premium: ticket.premium, paper: true },
+    });
     return { tradeId, ibOrderId: null, isLive: false };
   }
 
@@ -760,10 +769,29 @@ export async function autoTradeOption(ticket: OptionsTradeTicket): Promise<{ tra
 
     console.log(`[Options Auto-Trade] Placed IB order ${orderId} for ${ticket.ticker} $${ticket.strike}P`);
     const tradeId = await paperTradeOption(ticket, orderId);
+    createAutoTradeEvent({
+      ticker: ticket.ticker,
+      event_type: 'success',
+      action: 'executed',
+      source: 'scanner',
+      mode: 'OPTIONS_PUT',
+      message: `Live order placed #${orderId} — Sold $${ticket.strike}P exp ${ticket.expiry}, limit $${ticket.premium.toFixed(2)}`,
+      metadata: { ibOrderId: orderId, strike: ticket.strike, expiry: ticket.expiry, premium: ticket.premium },
+    });
     return { tradeId, ibOrderId: orderId, isLive: true };
   } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err);
     console.error('[Options Auto-Trade] IB order failed, falling back to paper:', err);
     const tradeId = await paperTradeOption(ticket);
+    createAutoTradeEvent({
+      ticker: ticket.ticker,
+      event_type: 'error',
+      action: 'failed',
+      source: 'scanner',
+      mode: 'OPTIONS_PUT',
+      message: `IB order failed — paper fallback. $${ticket.strike}P exp ${ticket.expiry}. Error: ${errMsg}`,
+      metadata: { strike: ticket.strike, expiry: ticket.expiry, premium: ticket.premium, error: errMsg },
+    });
     return { tradeId, ibOrderId: null, isLive: false };
   }
 }
