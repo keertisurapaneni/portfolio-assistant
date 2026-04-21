@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { BrowserRouter, Routes, Route, NavLink, useLocation } from 'react-router-dom';
 import { SpeedInsights } from '@vercel/speed-insights/react';
 import { Analytics } from '@vercel/analytics/react';
-import { Activity, Briefcase, Brain, Lightbulb, RefreshCw, TrendingUp, User, LogOut, ChevronDown, Bot, CircleDollarSign } from 'lucide-react';
+import { Activity, Briefcase, Brain, Lightbulb, RefreshCw, User, LogOut, ChevronDown, Bot, CircleDollarSign } from 'lucide-react';
 import type { StockWithConviction, RiskProfile } from './types';
 import { getUserData, saveUserData, addTickers, updateStock, removeStock, clearAllData, importStocksWithPositions } from './lib/storage';
 import { getCloudUserData, cloudAddTickers, cloudRemoveTicker, cloudClearAll, migrateGuestToCloud, cloudImportStocksWithPositions } from './lib/cloudStorage';
@@ -18,7 +18,6 @@ import { useAutoTradeScheduler } from './hooks/useAutoTradeScheduler';
 // Components
 import { Dashboard } from './components/Dashboard';
 import { SuggestedFinds } from './components/SuggestedFinds';
-import { MarketMovers } from './components/MarketMovers';
 import { TradingSignals } from './components/TradingSignals';
 import { PaperTrading } from './components/PaperTrading';
 import { OptionsWheelPage } from './components/OptionsWheelPage';
@@ -74,7 +73,7 @@ function AppContent() {
   const location = useLocation();
   const { user, loading: authLoading, signOut } = useAuth();
   const isAuthed = !!user;
-  const activeTab = location.pathname === '/finds' ? 'suggested' : location.pathname === '/movers' ? 'movers' : location.pathname === '/signals' ? 'signals' : 'portfolio';
+  const activeTab = location.pathname === '/finds' ? 'suggested' : location.pathname === '/signals' ? 'signals' : 'portfolio';
 
   // Background auto-trade scheduler — runs scanner every 30 min during market hours
   useAutoTradeScheduler();
@@ -545,7 +544,7 @@ function AppContent() {
   };
 
   // Note: Stock adding is now only through the Add Tickers modal on the portfolio tab.
-  // Suggested Finds and Market Movers are read-only discovery tabs.
+  // Suggested Finds is a read-only discovery tab.
 
   // Refresh all stock data
   const handleRefreshAll = async () => {
@@ -858,18 +857,6 @@ function AppContent() {
               <Lightbulb className="w-4 h-4" />
               Suggested Finds
             </NavLink>
-            <NavLink
-              to="/movers"
-              className={({ isActive }) => cn(
-                'flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all',
-                isActive
-                  ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-md shadow-blue-500/25'
-                  : 'text-slate-500 hover:text-slate-700 hover:bg-white/80'
-              )}
-            >
-              <TrendingUp className="w-4 h-4" />
-              Movers
-            </NavLink>
             {isAuthed && (
               <NavLink
                 to="/options"
@@ -926,7 +913,6 @@ function AppContent() {
             />
           } />
           <Route path="/finds" element={<SuggestedFinds existingTickers={existingTickers} />} />
-          <Route path="/movers" element={<MarketMovers />} />
           <Route path="/signals" element={<TradingSignals />} />
           {isAuthed && <Route path="/paper-trading" element={<PaperTrading />} />}
           {isAuthed && <Route path="/options" element={<OptionsWheelPage />} />}

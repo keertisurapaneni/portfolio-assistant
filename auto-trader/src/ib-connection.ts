@@ -6,7 +6,7 @@
  * - Exposes connection state + account info to REST routes
  */
 
-import { IBApi, EventName, Contract, Order, OrderAction, OrderType, SecType, TimeInForce } from '@stoqey/ib';
+import { IBApi, EventName, Contract, Order, OrderAction, OrderType, SecType, TimeInForce, OptionType } from '@stoqey/ib';
 
 // ── Configuration ────────────────────────────────────────
 
@@ -487,7 +487,7 @@ export function placeOptionsOrder(params: OptionsOrderParams): Promise<OptionsOr
       exchange: 'SMART',
       currency: 'USD',
       strike,
-      right,
+      right: right === 'P' ? OptionType.Put : OptionType.Call,
       lastTradeDateOrContractMonth: expiry,
       multiplier: 100,
     };

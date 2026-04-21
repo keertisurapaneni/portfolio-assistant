@@ -486,9 +486,7 @@ async function checkStock(
   // RSI check is a soft signal — don't hard-block, just reduce score
   const rsiBonus = rsiOk;
 
-  // Check 6: IB options chain (requires IB connection)
-  if (!isConnected()) return { ticker, skipped: true, reason: 'ib_not_connected' };
-
+  // Check 6: Options chain — uses IB when connected, Black-Scholes synthetic fallback otherwise
   // In bear mode: target 15-delta + 21 DTE; normal: 20-25 delta + 30-45 DTE
   const chain = await getOptionsChain(
     ticker,
