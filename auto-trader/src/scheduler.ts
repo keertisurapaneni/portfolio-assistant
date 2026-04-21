@@ -67,6 +67,7 @@ import { generateSuggestedFinds } from './lib/discovery.js';
 import { runOptionsScan, paperTradeOption } from './lib/options-scanner.js';
 import { runOptionsManageCycle } from './lib/options-manager.js';
 import { runDipWatcher } from './lib/dip-watcher.js';
+import { warmPositionPriceCache } from './routes/positions.js';
 
 // ── Types ────────────────────────────────────────────────
 
@@ -3501,6 +3502,14 @@ async function runSchedulerCycle(): Promise<void> {
 
     // 13. Daily rehydration (after 4:15 PM ET)
     await runDailyRehydration(config);
+
+    // 14. Pre-warm position price cache so the next page load is instant.
+    // Runs in background — cycle timing not affected.
+    const { requestPositions } = await import('./ib-connection.js');
+    requestPositions().then(async (posData) => {
+      const symbols = [...new Set(posData.filter(p => p.position !== 0 && p.secType !== 'OPT').map(p => p.symbol))];
+      if (symbols.length > 0) warmPositionPriceCache(symbols).catch(() => {});
+    }).catch(() => {}); // non-blocking
 
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
     _lastRunResult = `ok (${elapsed}s)`;

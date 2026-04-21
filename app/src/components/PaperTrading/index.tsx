@@ -277,9 +277,16 @@ export function PaperTrading() {
   // Options are tracked separately in the Options tab.
   const equityPositions = ibPositions.filter(p => !p.secType || p.secType === 'STK');
   const optionPositionCount = ibPositions.filter(p => p.secType === 'OPT').length;
-  const totalCostBasis = equityPositions.reduce((sum, p) => sum + Math.abs(p.position) * p.avgCost, 0);
-  const totalMktValue = equityPositions.reduce((sum, p) => sum + p.mktValue, 0);
-  const totalUnrealizedPnl = equityPositions.reduce((sum, p) => sum + p.unrealizedPnl, 0);
+
+  // Only include positions where we actually got a real market price.
+  // Positions with mktPrice = 0 (Finnhub rate-limited or symbol unknown) would inflate
+  // cost basis while contributing $0 to market value, creating a phantom loss gap.
+  const pricedEquityPositions = equityPositions.filter(p => p.mktPrice > 0);
+  const unpricedCount = equityPositions.length - pricedEquityPositions.length;
+
+  const totalCostBasis = pricedEquityPositions.reduce((sum, p) => sum + Math.abs(p.position) * p.avgCost, 0);
+  const totalMktValue = pricedEquityPositions.reduce((sum, p) => sum + p.mktValue, 0);
+  const totalUnrealizedPnl = pricedEquityPositions.reduce((sum, p) => sum + p.unrealizedPnl, 0);
   const uniqueOrderTickers = new Set(ibOrders.map(o => o.ticker)).size;
 
   return (
@@ -366,11 +373,13 @@ export function PaperTrading() {
           label="Holdings"
           value={String(equityPositions.length)}
           subtitle={
-            optionPositionCount > 0
-              ? `+${optionPositionCount} option${optionPositionCount > 1 ? 's' : ''} • ${uniqueOrderTickers > 0 ? `${uniqueOrderTickers} order${uniqueOrderTickers > 1 ? 's' : ''}` : 'no orders'}`
-              : uniqueOrderTickers > 0 ? `${uniqueOrderTickers} open order${uniqueOrderTickers > 1 ? 's' : ''}` : undefined
+            unpricedCount > 0
+              ? `${unpricedCount} unpriced (rate limit)`
+              : optionPositionCount > 0
+                ? `+${optionPositionCount} option${optionPositionCount > 1 ? 's' : ''} • ${uniqueOrderTickers > 0 ? `${uniqueOrderTickers} order${uniqueOrderTickers > 1 ? 's' : ''}` : 'no orders'}`
+                : uniqueOrderTickers > 0 ? `${uniqueOrderTickers} open order${uniqueOrderTickers > 1 ? 's' : ''}` : undefined
           }
-          color="blue"
+          color={unpricedCount > 0 ? 'red' : 'blue'}
         />
         <StatCard
           icon={<DollarSign className="w-4 h-4" />}

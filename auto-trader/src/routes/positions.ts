@@ -13,19 +13,55 @@ const router = Router();
 const FINNHUB_BASE = 'https://finnhub.io/api/v1';
 const FINNHUB_KEY = process.env.FINNHUB_API_KEY ?? '';
 
+/** In-memory price cache: symbol → { price, fetchedAt } */
+const priceCache = new Map<string, { price: number | null; fetchedAt: number }>();
+const CACHE_TTL_MS = 5 * 60_000; // 5-minute TTL — re-fetch at most once per 5 minutes
+
 /** Fetch current price for a ticker from Finnhub. Returns null on failure. */
 async function getQuotePrice(symbol: string): Promise<number | null> {
   if (!FINNHUB_KEY) return null;
+
+  const cached = priceCache.get(symbol);
+  if (cached && Date.now() - cached.fetchedAt < CACHE_TTL_MS) {
+    return cached.price;
+  }
+
   try {
     const res = await fetch(
       `${FINNHUB_BASE}/quote?symbol=${symbol.toUpperCase()}&token=${FINNHUB_KEY}`
     );
     if (!res.ok) return null;
     const data = await res.json() as { c?: number };
-    return data.c && data.c > 0 ? data.c : null;
+    const price = data.c && data.c > 0 ? data.c : null;
+    priceCache.set(symbol, { price, fetchedAt: Date.now() });
+    return price;
   } catch {
     return null;
   }
+}
+
+const delay = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
+
+/**
+ * Fetch prices for a list of symbols sequentially with a small delay between each.
+ * Firing all requests in parallel against Finnhub's 60 req/min free tier causes
+ * rate-limit failures that silently return null → 0, making portfolio stats wrong.
+ * Sequential with 60ms gaps = ~16 req/s, comfortably under the limit.
+ * De-duplication ensures each unique symbol is only fetched once.
+ */
+async function getQuotePricesStaggered(symbols: string[]): Promise<(number | null)[]> {
+  const uniqueSymbols = [...new Set(symbols)];
+  const priceMap = new Map<string, number | null>();
+
+  for (let i = 0; i < uniqueSymbols.length; i++) {
+    const symbol = uniqueSymbols[i]!;
+    priceMap.set(symbol, await getQuotePrice(symbol));
+    if (i < uniqueSymbols.length - 1) {
+      await delay(250); // 250ms ≈ 4 req/s — leaves headroom for the scanner's concurrent Finnhub calls
+    }
+  }
+
+  return symbols.map(s => priceMap.get(s) ?? null);
 }
 
 router.get('/positions', async (_req, res) => {
@@ -33,10 +69,10 @@ router.get('/positions', async (_req, res) => {
     const positions = await requestPositions();
     const openPositions = positions.filter(p => p.position !== 0);
 
-    // Fetch current prices in parallel for all positions
+    // Fetch current prices sequentially to avoid Finnhub rate-limit failures
+    // (Promise.all with 36 parallel requests causes silent null returns)
     const symbols = openPositions.map(p => p.symbol);
-    const pricePromises = symbols.map(s => getQuotePrice(s));
-    const prices = await Promise.all(pricePromises);
+    const prices = await getQuotePricesStaggered(symbols);
 
     // Map to IBPosition shape the web app expects, now with real market data.
     // Options (secType === 'OPT') are flagged separately: avgCost from IB is the per-contract
@@ -92,5 +128,18 @@ router.get('/quote/:symbol', async (req, res) => {
 
   res.json({ symbol, price });
 });
+
+/**
+ * Pre-warm the position price cache for a list of symbols.
+ * Called by the scheduler after each scan cycle so page loads are instant.
+ */
+export async function warmPositionPriceCache(symbols: string[]): Promise<void> {
+  try {
+    await getQuotePricesStaggered(symbols);
+    console.log(`[Positions] Price cache warmed for ${symbols.length} symbols`);
+  } catch (err) {
+    console.warn('[Positions] Cache warm failed:', err);
+  }
+}
 
 export default router;
