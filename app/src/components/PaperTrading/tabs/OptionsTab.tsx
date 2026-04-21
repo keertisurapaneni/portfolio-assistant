@@ -163,11 +163,21 @@ function PositionCard({ pos }: { pos: OpenOptionsPosition }) {
         </span>
       </div>
 
-      <div className="grid grid-cols-5 gap-1 text-center">
+      <div className="grid grid-cols-3 gap-1 text-center mb-1">
         <div>
           <p className="text-[9px] text-[hsl(var(--muted-foreground))]">Strike</p>
           <p className="text-xs font-bold text-[hsl(var(--foreground))]">${pos.option_strike}</p>
         </div>
+        <div>
+          <p className="text-[9px] text-[hsl(var(--muted-foreground))]">Break-Even</p>
+          <p className="text-xs font-bold text-violet-700">${(pos.option_net_price ?? (pos.option_strike - pos.option_premium)).toFixed(2)}</p>
+        </div>
+        <div>
+          <p className="text-[9px] text-[hsl(var(--muted-foreground))]">Expiry</p>
+          <p className="text-xs font-bold text-[hsl(var(--foreground))]">{formatExpiry(pos.option_expiry)}</p>
+        </div>
+      </div>
+      <div className="grid grid-cols-3 gap-1 text-center">
         <div>
           <p className="text-[9px] text-[hsl(var(--muted-foreground))]">Collected</p>
           <p className="text-xs font-bold text-emerald-600">+${Math.round((pos.option_premium ?? 0) * 100)}</p>
@@ -183,10 +193,6 @@ function PositionCard({ pos }: { pos: OpenOptionsPosition }) {
           <p className="text-xs font-bold text-[hsl(var(--foreground))]">
             {profitCapturePct != null ? `${profitCapturePct.toFixed(0)}%` : '—'}
           </p>
-        </div>
-        <div>
-          <p className="text-[9px] text-[hsl(var(--muted-foreground))]">Expiry</p>
-          <p className="text-xs font-bold text-[hsl(var(--foreground))]">{formatExpiry(pos.option_expiry)}</p>
         </div>
       </div>
 
@@ -492,26 +498,44 @@ export function OptionsTab() {
           {closedPositions.length === 0 ? (
             <div className="text-center py-8 text-sm text-[hsl(var(--muted-foreground))]">No closed options trades yet</div>
           ) : (
-            closedPositions.map(pos => (
-              <div key={pos.id} className="flex items-center justify-between rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-3">
-                <div>
-                  <div className="flex items-center gap-1.5">
-                    <span className="text-sm font-bold">{pos.ticker}</span>
-                    <span className="text-[10px] px-1 py-0.5 rounded bg-violet-100 text-violet-700">PUT</span>
-                    {pos.option_assigned && <span className="text-[10px] px-1 py-0.5 rounded bg-amber-100 text-amber-700">Assigned</span>}
+            closedPositions.map(pos => {
+              const isRolled = pos.close_reason === 'rolled';
+              const isStopped = pos.close_reason === 'stop_loss';
+              const isExpired = pos.close_reason === 'expired_worthless';
+              const isProfit = pos.close_reason === '50pct_profit';
+              return (
+                <div key={pos.id} className={cn(
+                  'flex items-center justify-between rounded-xl border p-3',
+                  isRolled ? 'border-blue-200 bg-blue-50' :
+                  isStopped ? 'border-red-200 bg-red-50' :
+                  'border-[hsl(var(--border))] bg-[hsl(var(--card))]'
+                )}>
+                  <div>
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <span className="text-sm font-bold">{pos.ticker}</span>
+                      <span className="text-[10px] px-1 py-0.5 rounded bg-violet-100 text-violet-700">PUT</span>
+                      {isRolled && <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 font-semibold">↩️ Rolled</span>}
+                      {isStopped && <span className="text-[10px] px-1.5 py-0.5 rounded bg-red-100 text-red-700 font-semibold">🛑 Stopped</span>}
+                      {isExpired && <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 font-semibold">✅ Expired</span>}
+                      {isProfit && <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 font-semibold">💰 50% Close</span>}
+                      {pos.option_assigned && <span className="text-[10px] px-1 py-0.5 rounded bg-amber-100 text-amber-700">Assigned</span>}
+                    </div>
+                    <p className="text-[10px] text-[hsl(var(--muted-foreground))] mt-0.5">
+                      Strike ${pos.option_strike} · Collected ${Math.round((pos.option_premium ?? 0) * 100)} · Exp {formatExpiry(pos.option_expiry)}
+                    </p>
+                    {isRolled && pos.notes && (
+                      <p className="text-[10px] text-blue-600 mt-0.5">{pos.notes}</p>
+                    )}
                   </div>
-                  <p className="text-[10px] text-[hsl(var(--muted-foreground))]">
-                    Strike ${pos.option_strike} · Collected ${Math.round((pos.option_premium ?? 0) * 100)} · Exp {formatExpiry(pos.option_expiry)}
-                  </p>
+                  <div className="text-right">
+                    <p className={cn('text-sm font-bold', (pos.pnl ?? 0) >= 0 ? 'text-emerald-600' : 'text-red-600')}>
+                      {fmtUsd(pos.pnl ?? 0, 0, true)}
+                    </p>
+                    <p className="text-[9px] text-[hsl(var(--muted-foreground))]">{pos.close_reason?.replace(/_/g, ' ') ?? pos.status.toLowerCase()}</p>
+                  </div>
                 </div>
-                <div className="text-right">
-                  <p className={cn('text-sm font-bold', (pos.pnl ?? 0) >= 0 ? 'text-emerald-600' : 'text-red-600')}>
-                    {fmtUsd(pos.pnl ?? 0, 0, true)}
-                  </p>
-                  <p className="text-[9px] text-[hsl(var(--muted-foreground))]">{pos.status.toLowerCase()}</p>
-                </div>
-              </div>
-            ))
+              );
+            })
           )}
         </div>
       )}

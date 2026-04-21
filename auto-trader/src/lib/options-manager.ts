@@ -230,7 +230,30 @@ export async function runOptionsManageCycle(): Promise<ManageCycleResult> {
     // Update live P&L on the trade
     await sb.from('paper_trades').update({ pnl }).eq('id', pos.id);
 
-    // ── Check 3: 50% profit — auto close ──
+    // ── Check 3: Hard stop-loss at 200% of premium collected ──
+    // If the put has gone 2× against us (currentPremium > 3× what we collected),
+    // close immediately to protect capital rather than hope for a bounce.
+    if (currentPremium > premiumCollected * 3) {
+      const lossAmount = Math.abs(pnl);
+      await sb.from('paper_trades').update({
+        status: 'CLOSED',
+        close_price: currentPremium,
+        pnl,
+        pnl_percent: (pnl / (pos.option_capital_req ?? pos.option_strike * 100)) * 100,
+        closed_at: new Date().toISOString(),
+        close_reason: 'stop_loss',
+        option_close_pct: profitCapturePct,
+      }).eq('id', pos.id);
+
+      console.log(`[Options Manager] STOP-LOSS: ${pos.ticker} $${pos.option_strike}P — premium 3×+ original, closing for -$${lossAmount.toFixed(0)}`);
+      persistEvent(pos.ticker, 'error',
+        `🛑 ${pos.ticker} $${pos.option_strike} put stopped — premium blew past 3× ($${currentPremium.toFixed(2)} vs collected $${premiumCollected.toFixed(2)}), taking -$${lossAmount.toFixed(0)} loss`,
+        { action: 'closed', source: 'options', metadata: { reason: 'stop_loss', pnl, currentPremium, premiumCollected } }
+      );
+      continue;
+    }
+
+    // ── Check 3b: 50% profit — auto close ──
     if (profitCapturePct >= 50) {
       await sb.from('paper_trades').update({
         status: 'CLOSED',
@@ -246,6 +269,58 @@ export async function runOptionsManageCycle(): Promise<ManageCycleResult> {
       persistEvent(pos.ticker, 'success',
         `💰 ${pos.ticker} $${pos.option_strike} put closed at ${profitCapturePct.toFixed(0)}% profit — captured $${pnl.toFixed(0)}`,
         { action: 'closed', source: 'options', metadata: { reason: '50pct_profit', pnl, profitCapturePct } }
+      );
+      continue;
+    }
+
+    // ── Check 3c: Auto-roll when stock threatens strike ──
+    // Trigger: stock dropped 5%+ below strike AND we've lost 50%+ of premium AND DTE > 7 (still time to roll)
+    if (stockPrice < pos.option_strike * 0.95 && currentPremium > premiumCollected * 1.5 && dte > 7) {
+      const rolledPnl = (premiumCollected - currentPremium) * 100; // loss on buyback
+      const newExpiry = new Date();
+      newExpiry.setDate(newExpiry.getDate() + 35); // roll ~35 DTE forward
+      const newExpiryStr = newExpiry.toISOString().split('T')[0];
+
+      // New strike: 5% below current stock price (give more room after the move)
+      const newStrike = Math.round(stockPrice * 0.95 / 0.5) * 0.5;
+      // Estimate new credit: ~80% of original premium (wider strike + more DTE = decent credit)
+      const estimatedNewCredit = premiumCollected * 0.8;
+      const netDebit = currentPremium - estimatedNewCredit; // net cost of rolling (should be < 0 if credit roll)
+
+      // Close current position as rolled
+      await sb.from('paper_trades').update({
+        status: 'CLOSED',
+        close_price: currentPremium,
+        pnl: rolledPnl,
+        pnl_percent: (rolledPnl / (pos.option_capital_req ?? pos.option_strike * 100)) * 100,
+        closed_at: new Date().toISOString(),
+        close_reason: 'rolled',
+        option_close_pct: profitCapturePct,
+      }).eq('id', pos.id);
+
+      // Open new rolled position as paper trade
+      await sb.from('paper_trades').insert({
+        ticker: pos.ticker,
+        mode: pos.mode,
+        status: 'FILLED',
+        option_strike: newStrike,
+        option_expiry: newExpiryStr,
+        option_premium: estimatedNewCredit,
+        option_capital_req: newStrike * 100,
+        option_net_price: newStrike - estimatedNewCredit,
+        option_prob_profit: 75, // conservative estimate for new position
+        fill_price: estimatedNewCredit,
+        filled_at: new Date().toISOString(),
+        opened_at: new Date().toISOString(),
+        pnl: 0,
+        notes: `Rolled from $${pos.option_strike} (net debit: $${(netDebit * 100).toFixed(0)})`,
+      });
+
+      result.rollAlerts.push(pos.ticker);
+      console.log(`[Options Manager] AUTO-ROLL: ${pos.ticker} $${pos.option_strike}P → $${newStrike}P exp ${newExpiryStr}`);
+      persistEvent(pos.ticker, 'warning',
+        `↩️ ${pos.ticker} auto-rolled $${pos.option_strike}P → $${newStrike}P (${newExpiryStr}) — stock at $${stockPrice.toFixed(2)}, net debit $${(netDebit * 100).toFixed(0)}`,
+        { action: 'rolled', source: 'options', metadata: { oldStrike: pos.option_strike, newStrike, newExpiry: newExpiryStr, stockPrice, netDebit: netDebit * 100 } }
       );
       continue;
     }

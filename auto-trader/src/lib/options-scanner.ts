@@ -37,6 +37,7 @@ const MAX_POSITIONS_NORMAL = 5;            // max concurrent open options puts
 const MAX_POSITIONS_HIGH_VIX = 3;          // VIX > 25
 const EARNINGS_BLACKOUT_DAYS = 7;
 const IV_SPIKE_THRESHOLD = 20;             // points — sudden IV jump = news event
+const MIN_PROB_PROFIT = 75;                // minimum 75% OTM probability (video: 80-90%, we set 75 as floor)
 const MAX_SPREAD_PCT = 0.30;               // bid-ask spread must be < 30% of mid
 const MIN_SENTIMENT_SCORE = -0.3;          // block if Finnhub bearish score < this
 const NEWS_LOOKBACK_DAYS = 7;              // check news from last N days
@@ -576,6 +577,12 @@ async function checkStock(
   );
   if (!chain?.bestPut) return { ticker, skipped: true, reason: 'no_options_chain' };
   const put = chain.bestPut;
+
+  // Check 6: Probability of profit floor — only sell when OTM probability ≥ 75%
+  checks.probProfit = `${put.probProfit.toFixed(0)}%_need_${MIN_PROB_PROFIT}%`;
+  if (put.probProfit < MIN_PROB_PROFIT) {
+    return { ticker, skipped: true, reason: `low_prob_profit:${put.probProfit.toFixed(0)}pct` };
+  }
 
   // Check 6.5: Liquidity — bid-ask spread must be < 30% of mid
   const spread = put.ask - put.bid;
