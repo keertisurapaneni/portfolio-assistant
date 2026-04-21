@@ -29,7 +29,7 @@ const MIN_IV_RANK = 50;                    // only sell when premium is elevated
 const RSI_OVERSOLD = 38;                   // RSI threshold for oversold
 const MAX_POSITIONS_NORMAL = 5;            // max concurrent open options puts
 const MAX_POSITIONS_HIGH_VIX = 3;          // VIX > 25
-const EARNINGS_BLACKOUT_DAYS = 14;
+const EARNINGS_BLACKOUT_DAYS = 7;
 const IV_SPIKE_THRESHOLD = 20;             // points — sudden IV jump = news event
 const MAX_SPREAD_PCT = 0.30;               // bid-ask spread must be < 30% of mid
 const MIN_SENTIMENT_SCORE = -0.3;          // block if Finnhub bearish score < this
