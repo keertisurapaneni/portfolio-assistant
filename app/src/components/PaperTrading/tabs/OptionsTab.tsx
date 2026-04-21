@@ -533,6 +533,8 @@ export function OptionsTab() {
               const isStopped = pos.close_reason === 'stop_loss';
               const isExpired = pos.close_reason === 'expired_worthless';
               const isProfit = pos.close_reason === '50pct_profit';
+              const is21DteWin = pos.close_reason === '21dte_profit';
+              const is21DteCut = pos.close_reason === '21dte_close';
               const histROC = calcAnnualizedROC(pos.pnl, pos.option_capital_req, pos.opened_at, pos.closed_at);
               return (
                 <div key={pos.id} className={cn(
@@ -545,10 +547,12 @@ export function OptionsTab() {
                     <div className="flex items-center gap-1.5 flex-wrap">
                       <span className="text-sm font-bold">{pos.ticker}</span>
                       <span className="text-[10px] px-1 py-0.5 rounded bg-violet-100 text-violet-700">PUT</span>
-                      {isRolled && <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 font-semibold">↩️ Rolled</span>}
-                      {isStopped && <span className="text-[10px] px-1.5 py-0.5 rounded bg-red-100 text-red-700 font-semibold">🛑 Stopped</span>}
-                      {isExpired && <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 font-semibold">✅ Expired</span>}
-                      {isProfit && <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 font-semibold">💰 50% Close</span>}
+                      {isRolled   && <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 font-semibold">↩️ Rolled</span>}
+                      {isStopped  && <span className="text-[10px] px-1.5 py-0.5 rounded bg-red-100 text-red-700 font-semibold">🛑 Stopped</span>}
+                      {isExpired  && <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 font-semibold">✅ Expired</span>}
+                      {isProfit   && <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 font-semibold">💰 50% Close</span>}
+                      {is21DteWin && <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 font-semibold">⏱️ 21 DTE Close</span>}
+                      {is21DteCut && <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 font-semibold">⚠️ 21 DTE Cut</span>}
                       {pos.option_assigned && <span className="text-[10px] px-1 py-0.5 rounded bg-amber-100 text-amber-700">Assigned</span>}
                     </div>
                     <p className="text-[10px] text-[hsl(var(--muted-foreground))] mt-0.5">

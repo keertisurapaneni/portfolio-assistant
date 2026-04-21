@@ -325,13 +325,29 @@ export async function runOptionsManageCycle(): Promise<ManageCycleResult> {
       continue;
     }
 
-    // ── Check 4: 21 DTE roll/close alert ──
+    // ── Check 4: 21 DTE hard close (tastytrade rule) ──
+    // At 21 DTE the remaining theta decay curve flattens — risk/reward no longer favors holding.
+    // Close regardless of P&L: lock in any profit, or cut exposure before gamma risk accelerates.
     if (dte <= 21 && dte > 0) {
+      const isWinner = pnl >= 0;
+      const closeReason = isWinner ? '21dte_profit' : '21dte_close';
+      await sb.from('paper_trades').update({
+        status: 'CLOSED',
+        close_price: currentPremium,
+        pnl,
+        pnl_percent: (pnl / (pos.option_capital_req ?? pos.option_strike * 100)) * 100,
+        closed_at: new Date().toISOString(),
+        close_reason: closeReason,
+        option_close_pct: profitCapturePct,
+      }).eq('id', pos.id);
+
       result.rollAlerts.push(pos.ticker);
-      persistEvent(pos.ticker, 'warning',
-        `⚠️ ${pos.ticker} $${pos.option_strike} put expires in ${dte} days — roll or close decision needed`,
-        { action: 'flagged', source: 'options', metadata: { reason: 'dte_alert', dte, currentPnl: pnl } }
+      console.log(`[Options Manager] 21 DTE CLOSE: ${pos.ticker} $${pos.option_strike}P — ${isWinner ? `profit +$${pnl.toFixed(0)}` : `loss -$${Math.abs(pnl).toFixed(0)}`} (${dte}d left)`);
+      persistEvent(pos.ticker, isWinner ? 'success' : 'warning',
+        `${isWinner ? '⏱️' : '⚠️'} ${pos.ticker} $${pos.option_strike} put closed at 21 DTE — ${isWinner ? `locked in +$${pnl.toFixed(0)}` : `cut loss at -$${Math.abs(pnl).toFixed(0)}`} with ${dte} days remaining`,
+        { action: 'closed', source: 'options', metadata: { reason: closeReason, dte, pnl, profitCapturePct } }
       );
+      continue;
     }
 
     // ── Check 5: Assignment detection (stock price below strike) ──
