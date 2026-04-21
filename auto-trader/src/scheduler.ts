@@ -3471,7 +3471,7 @@ async function runSchedulerCycle(): Promise<void> {
 
     // 12. Options wheel — morning scan (9:00–10:30 AM ET only)
     const nowET = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }));
-    const issMorningScanWindow = nowET.getHours() === 10 && nowET.getMinutes() < 30;
+    const issMorningScanWindow = (nowET.getHours() === 10) || (nowET.getHours() === 11 && nowET.getMinutes() < 30);
     if (issMorningScanWindow) {
       try {
         const freeCapital = config.portfolioValue * (1 - (config.maxTotalAllocation ?? 0.8));
