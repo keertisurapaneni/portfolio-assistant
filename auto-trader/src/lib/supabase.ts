@@ -180,7 +180,7 @@ export async function saveConfigPartial(
 export interface PaperTrade {
   id: string;
   ticker: string;
-  mode: 'DAY_TRADE' | 'SWING_TRADE' | 'LONG_TERM';
+  mode: 'DAY_TRADE' | 'SWING_TRADE' | 'LONG_TERM' | 'OPTIONS_PUT' | 'OPTIONS_CALL';
   signal: 'BUY' | 'SELL';
   strategy_source: string | null;
   strategy_source_url: string | null;
@@ -238,7 +238,7 @@ export interface ExternalStrategySignal {
   strategy_video_heading: string | null;
   ticker: string;
   signal: 'BUY' | 'SELL';
-  mode: 'DAY_TRADE' | 'SWING_TRADE' | 'LONG_TERM';
+  mode: 'DAY_TRADE' | 'SWING_TRADE' | 'LONG_TERM' | 'OPTIONS_PUT' | 'OPTIONS_CALL';
   confidence: number;
   entry_price: number | null;
   stop_loss: number | null;
@@ -442,7 +442,7 @@ export async function findExternalStrategySignal(params: {
   sourceName: string;
   ticker: string;
   signal: 'BUY' | 'SELL';
-  mode: 'DAY_TRADE' | 'SWING_TRADE' | 'LONG_TERM';
+  mode: 'DAY_TRADE' | 'SWING_TRADE' | 'LONG_TERM' | 'OPTIONS_PUT' | 'OPTIONS_CALL';
   executeOnDate: string;
   strategyVideoId?: string;
 }): Promise<ExternalStrategySignal | null> {
@@ -599,7 +599,7 @@ export async function getStrategySourcePerformance(): Promise<StrategySourcePerf
 
 export async function getRecentClosedStrategyOutcomes(params: {
   sourceName: string;
-  mode?: 'DAY_TRADE' | 'SWING_TRADE' | 'LONG_TERM';
+  mode?: 'DAY_TRADE' | 'SWING_TRADE' | 'LONG_TERM' | 'OPTIONS_PUT' | 'OPTIONS_CALL';
   strategyVideoId?: string | null;
   limit?: number;
 }): Promise<StrategyClosedTradeOutcome[]> {

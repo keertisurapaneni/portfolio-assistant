@@ -1321,7 +1321,7 @@ function calculatePositionSize(
   config: AutoTraderConfig,
   params: {
     price: number;
-    mode: 'LONG_TERM' | 'DAY_TRADE' | 'SWING_TRADE';
+    mode: 'LONG_TERM' | 'DAY_TRADE' | 'SWING_TRADE' | 'OPTIONS_PUT' | 'OPTIONS_CALL';
     conviction?: number;
     suggestedFindTag?: 'Steady Compounder' | 'Gold Mine';
     entryPrice?: number;
@@ -2586,6 +2586,9 @@ async function syncPositions(
   const activeTrades = await getActiveTrades();
 
   for (const trade of activeTrades) {
+    // Options positions are managed exclusively by options-manager — never touch them here.
+    if (trade.mode === 'OPTIONS_PUT' || trade.mode === 'OPTIONS_CALL') continue;
+
     const ibPos = positions.find(
       p => p.symbol.toUpperCase() === trade.ticker.toUpperCase()
     );
