@@ -33,6 +33,7 @@ const RANGE_BOUND_BAND_PCT = 25;           // stock stayed within ±25% of midpo
 const RSI_OVERSOLD = 38;                   // RSI threshold for oversold
 const DELTA_TARGET_NORMAL = 0.30;          // target 30-delta (0.20–0.40 window) for more premium
 const DELTA_TARGET_HIGH_CONVICTION = 0.35; // nudge to 35-delta when RSI oversold + IV elevated
+const DELTA_TARGET_LEVERAGED = 0.18;       // leveraged ETFs: 18-delta = ~82% prob OTM (higher vol needs more cushion)
 const MAX_POSITIONS_NORMAL = 5;            // max concurrent open options puts
 const MAX_POSITIONS_HIGH_VIX = 3;          // VIX > 25
 const EARNINGS_BLACKOUT_DAYS = 7;
@@ -484,9 +485,11 @@ async function checkStock(
   checks.minPrice = price >= effectiveMinPrice;
   if (price < effectiveMinPrice) return { ticker, skipped: true, reason: `price_too_low_${price.toFixed(0)}` };
 
-  // Check 3.2: Dip detection — did stock drop ≥5% from its recent 20-day high?
-  // A dip entry means elevated IV + larger OTM cushion = premium entry (the video's key insight)
+  // Check 3.2: Dip detection + SMA20 computation (shared candle fetch)
+  // Dip entry: stock dropped ≥5% from 20-day high = elevated IV, larger OTM cushion
+  // SMA20: used later as a strike floor — Henry's insight (Bollinger Band middle = 20-day SMA)
   let dipEntry = false;
+  let sma20: number | null = null;
   try {
     const to = Math.floor(Date.now() / 1000);
     const from = to - 86400 * 25;
@@ -498,6 +501,11 @@ async function checkStock(
       const dipPct = ((recentHigh - price) / recentHigh) * 100;
       dipEntry = dipPct >= DIP_ENTRY_BONUS_THRESHOLD;
       checks.dipEntry = `${dipPct.toFixed(1)}%_from_20d_high${dipEntry ? '_DIP' : ''}`;
+    }
+    // SMA20: average of last 20 close prices
+    if (dipData?.c && dipData.c.length >= 5) {
+      const closes = dipData.c.slice(-20);
+      sma20 = closes.reduce((a, b) => a + b, 0) / closes.length;
     }
   } catch { /* non-blocking */ }
 
@@ -563,10 +571,12 @@ async function checkStock(
   const rsiBonus = rsiOk;
 
   // Check 6: Options chain — uses IB when connected, Black-Scholes synthetic fallback otherwise
-  // Bear mode: 15-delta + 21 DTE. High-conviction (oversold RSI + elevated IV): 35-delta. Normal: 30-delta.
+  // Priority: bear mode (15Δ) > leveraged ETF (18Δ) > high-conviction RSI (35Δ) > normal (30Δ)
+  // Leveraged ETFs (3×) need a lower delta because their vol is amplified — 18Δ ≈ 82% prob OTM
   let deltaTarget = DELTA_TARGET_NORMAL;
   if (ctx.bearMode) deltaTarget = BEAR_DELTA_TARGET;
-  else if (rsiBonus) deltaTarget = DELTA_TARGET_HIGH_CONVICTION; // RSI oversold = nudge toward more premium
+  else if (leverageFactor > 1) deltaTarget = DELTA_TARGET_LEVERAGED;
+  else if (rsiBonus) deltaTarget = DELTA_TARGET_HIGH_CONVICTION;
 
   const chain = await getOptionsChain(
     ticker,
@@ -578,11 +588,25 @@ async function checkStock(
   if (!chain?.bestPut) return { ticker, skipped: true, reason: 'no_options_chain' };
   const put = chain.bestPut;
 
-  // Check 6: Probability of profit floor — only sell when OTM probability ≥ 75%
+  // Check 6a: SMA20 strike floor (Henry "Invest with Henry" insight)
+  // The put strike must be at or below the 20-day SMA (= Bollinger Band middle).
+  // This ensures the stock must break below its own recent average before threatening assignment —
+  // anchoring the strike to a real technical support level, not just a raw delta.
+  // Dip entries are exempt: if stock is already below SMA20, the strike is priced accordingly.
+  if (sma20 !== null && put.strike > sma20 && !dipEntry) {
+    checks.sma20Floor = `strike:${put.strike}_above_sma20:${sma20.toFixed(1)}_BLOCKED`;
+    return { ticker, skipped: true, reason: `strike_above_sma20:${sma20.toFixed(1)}` };
+  }
+  checks.sma20Floor = sma20 !== null
+    ? `strike:${put.strike}_sma20:${sma20.toFixed(1)}_ok`
+    : 'sma20_no_data';
+
+  // Check 6b: Probability of profit floor — only sell when OTM probability ≥ 75%
   checks.probProfit = `${put.probProfit.toFixed(0)}%_need_${MIN_PROB_PROFIT}%`;
   if (put.probProfit < MIN_PROB_PROFIT) {
     return { ticker, skipped: true, reason: `low_prob_profit:${put.probProfit.toFixed(0)}pct` };
   }
+
 
   // Check 6.5: Liquidity — bid-ask spread must be < 30% of mid
   const spread = put.ask - put.bid;
