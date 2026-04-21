@@ -640,7 +640,7 @@ export async function runOptionsScan(freeCapital = 100_000): Promise<OptionsScan
     }
   }
 
-  // Persist scan results
+  // Persist opportunities
   for (const opp of opportunities) {
     await sb.from('options_scan_results').upsert({
       ticker: opp.ticker,
@@ -657,6 +657,16 @@ export async function runOptionsScan(freeCapital = 100_000): Promise<OptionsScan
       annual_yield: opp.annualYield,
       checks_passed: opp.checksDetail,
       bear_mode: opp.bearMode,
+    }, { onConflict: 'ticker,scan_date,signal' });
+  }
+
+  // Persist skipped tickers so the UI can explain why nothing showed up
+  for (const s of skipped) {
+    await sb.from('options_scan_results').upsert({
+      ticker: s.ticker,
+      scan_date: scanDate,
+      signal: 'NO_SIGNAL',
+      skip_reason: s.reason,
     }, { onConflict: 'ticker,scan_date,signal' });
   }
 

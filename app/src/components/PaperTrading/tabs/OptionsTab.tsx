@@ -5,6 +5,7 @@ import { fmtUsd } from '../utils';
 import {
   getOptionsWatchlist,
   getLatestOptionsScan,
+  getSkippedOptionsScan,
   getOpenOptionsPositions,
   getClosedOptionsPositions,
   getOptionsMonthlyStats,
@@ -193,13 +194,36 @@ function PositionCard({ pos }: { pos: OpenOptionsPosition }) {
 
 // ── Main Tab ─────────────────────────────────────────────
 
+function formatSkipReason(reason: string): string {
+  if (reason.startsWith('earnings_in_')) return `Earnings in ${reason.split('_')[2]}d`;
+  if (reason.startsWith('high_beta:')) return `Beta too high (${reason.split(':')[1]})`;
+  if (reason.startsWith('below_sma50:')) return `Below 50d SMA ($${reason.split(':')[1]})`;
+  if (reason.startsWith('down_')) return `Down ${reason.split('_')[1]} in 3mo`;
+  if (reason.startsWith('low_premium_')) return `Premium too low`;
+  if (reason.startsWith('wide_spread:')) return `Wide bid/ask spread`;
+  if (reason.startsWith('sector_limit:')) return `Sector cap (${reason.split(':')[1]})`;
+  if (reason.startsWith('bear_mode_non_defensive:')) return `Bear mode — non-defensive sector`;
+  if (reason.startsWith('negative_sentiment:')) return `Negative news sentiment`;
+  if (reason.startsWith('news_red_flag:')) return `Red flag in news (${reason.split(':')[1]})`;
+  if (reason.startsWith('iv_spike:')) return `IV spike detected`;
+  if (reason === 'duplicate_open_position') return 'Already have an open position';
+  if (reason === 'max_positions') return 'Max positions reached';
+  if (reason === 'insufficient_capital') return 'Insufficient capital';
+  if (reason === 'no_options_chain') return 'No options chain data';
+  if (reason === 'no_bid_no_market') return 'No bid — illiquid';
+  if (reason === 'too_early_opening_30min') return 'Too early (opening volatility)';
+  return reason.replace(/_/g, ' ');
+}
+
 export function OptionsTab() {
   const [opportunities, setOpportunities] = useState<OptionsScanOpportunity[]>([]);
+  const [skipped, setSkipped] = useState<OptionsScanOpportunity[]>([]);
   const [openPositions, setOpenPositions] = useState<OpenOptionsPosition[]>([]);
   const [closedPositions, setClosedPositions] = useState<OpenOptionsPosition[]>([]);
   const [watchlist, setWatchlist] = useState<WatchlistTicker[]>([]);
   const [stats, setStats] = useState<OptionsMonthlyStats | null>(null);
   const [loading, setLoading] = useState(true);
+  const [showSkipped, setShowSkipped] = useState(false);
   const [addTicker, setAddTicker] = useState('');
   const [addingTicker, setAddingTicker] = useState(false);
   const [activeSection, setActiveSection] = useState<'opportunities' | 'positions' | 'history' | 'watchlist'>('opportunities');
@@ -207,14 +231,16 @@ export function OptionsTab() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [opps, openPos, closedPos, wl, monthStats] = await Promise.all([
+      const [opps, skippedOpps, openPos, closedPos, wl, monthStats] = await Promise.all([
         getLatestOptionsScan(),
+        getSkippedOptionsScan(),
         getOpenOptionsPositions(),
         getClosedOptionsPositions(20),
         getOptionsWatchlist(),
         getOptionsMonthlyStats(),
       ]);
       setOpportunities(opps);
+      setSkipped(skippedOpps);
       setOpenPositions(openPos);
       setClosedPositions(closedPos);
       setWatchlist(wl);
@@ -332,12 +358,39 @@ export function OptionsTab() {
           {loading ? (
             <div className="text-center py-8 text-sm text-[hsl(var(--muted-foreground))]">Scanning watchlist...</div>
           ) : opportunities.length === 0 ? (
-            <div className="text-center py-8 space-y-2">
-              <BarChart2 className="w-8 h-8 mx-auto text-[hsl(var(--muted-foreground))] opacity-40" />
-              <p className="text-sm text-[hsl(var(--muted-foreground))]">No opportunities found today</p>
-              <p className="text-xs text-[hsl(var(--muted-foreground))] opacity-60">
-                The morning scan runs 9–10:30 AM ET. Check back then or add more tickers to the watchlist.
-              </p>
+            <div className="space-y-3">
+              <div className="text-center py-6 space-y-2">
+                <BarChart2 className="w-8 h-8 mx-auto text-[hsl(var(--muted-foreground))] opacity-40" />
+                <p className="text-sm text-[hsl(var(--muted-foreground))]">No opportunities found today</p>
+                <p className="text-xs text-[hsl(var(--muted-foreground))] opacity-60">
+                  Scan runs 10–10:30 AM ET · Restart auto-trader with latest build to see filter reasons below.
+                </p>
+              </div>
+              {skipped.length > 0 && (
+                <div className="rounded-xl border border-[hsl(var(--border))] overflow-hidden">
+                  <button
+                    onClick={() => setShowSkipped(v => !v)}
+                    className="w-full flex items-center justify-between px-4 py-2.5 bg-[hsl(var(--muted))]/40 hover:bg-[hsl(var(--muted))]/60 transition-colors text-left"
+                  >
+                    <span className="text-xs font-semibold text-[hsl(var(--muted-foreground))]">
+                      Why were {skipped.length} tickers filtered out?
+                    </span>
+                    <span className="text-xs text-[hsl(var(--muted-foreground))]">{showSkipped ? '▲' : '▼'}</span>
+                  </button>
+                  {showSkipped && (
+                    <div className="divide-y divide-[hsl(var(--border))]">
+                      {skipped.map(s => (
+                        <div key={s.id} className="flex items-center justify-between px-4 py-2">
+                          <span className="text-xs font-semibold text-[hsl(var(--foreground))]">{s.ticker}</span>
+                          <span className="text-xs text-[hsl(var(--muted-foreground))]">
+                            {formatSkipReason(s.skip_reason ?? '')}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           ) : (
             opportunities.map(opp => (

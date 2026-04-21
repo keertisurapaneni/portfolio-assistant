@@ -111,6 +111,18 @@ export async function getLatestOptionsScan(): Promise<OptionsScanOpportunity[]> 
   return (data ?? []) as OptionsScanOpportunity[];
 }
 
+export async function getSkippedOptionsScan(): Promise<OptionsScanOpportunity[]> {
+  const today = new Date().toISOString().slice(0, 10);
+  const { data, error } = await supabase
+    .from('options_scan_results')
+    .select('*')
+    .eq('scan_date', today)
+    .eq('signal', 'NO_SIGNAL')
+    .order('ticker');
+  if (error) throw error;
+  return (data ?? []) as OptionsScanOpportunity[];
+}
+
 export async function getRecentOptionsScan(daysBack = 3): Promise<OptionsScanOpportunity[]> {
   const from = new Date(Date.now() - daysBack * 86400_000).toISOString().slice(0, 10);
   const { data, error } = await supabase
