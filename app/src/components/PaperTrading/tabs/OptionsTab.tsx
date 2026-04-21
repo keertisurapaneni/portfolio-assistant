@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { TrendingUp, RefreshCw, Plus, X, AlertTriangle, CheckCircle, BarChart2 } from 'lucide-react';
+import { RefreshCw, Plus, X, AlertTriangle, CheckCircle, BarChart2 } from 'lucide-react';
 import { cn } from '../../../lib/utils';
 import { fmtUsd } from '../utils';
 import {
@@ -194,6 +194,59 @@ function PositionCard({ pos }: { pos: OpenOptionsPosition }) {
   );
 }
 
+// ── How It Works Strip ───────────────────────────────────
+
+const STEPS = [
+  {
+    icon: '🔍',
+    title: 'Morning Scan',
+    desc: 'Every day at 10 AM ET the engine screens your watchlist — checking IV rank, earnings proximity, trend, beta, and news.',
+  },
+  {
+    icon: '💰',
+    title: 'Sell a Put',
+    desc: 'On qualifying stocks, it sells a cash-secured put at the 20-delta strike. You collect premium upfront — that\'s yours regardless.',
+  },
+  {
+    icon: '⏳',
+    title: 'Let Time Decay Work',
+    desc: 'Theta (time decay) erodes the option\'s value daily. At 50% profit the position auto-closes to lock in gains and free up capital.',
+  },
+  {
+    icon: '🔄',
+    title: 'Roll or Repeat',
+    desc: 'Near expiry, decide to roll to the next month or let it expire worthless. If assigned, sell covered calls on the shares.',
+  },
+];
+
+function HowItWorks() {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="rounded-xl border border-violet-100 bg-violet-50/50 overflow-hidden">
+      <button
+        onClick={() => setOpen(v => !v)}
+        className="w-full flex items-center justify-between px-4 py-2.5 text-left hover:bg-violet-50 transition-colors"
+      >
+        <span className="text-xs font-semibold text-violet-700">How the wheel works</span>
+        <span className="text-[10px] text-violet-500">{open ? '▲ hide' : '▼ show'}</span>
+      </button>
+      {open && (
+        <div className="grid grid-cols-2 gap-px bg-violet-100 border-t border-violet-100 sm:grid-cols-4">
+          {STEPS.map((step, i) => (
+            <div key={i} className="bg-white/80 px-3 py-3 space-y-1">
+              <div className="flex items-center gap-1.5">
+                <span className="text-base">{step.icon}</span>
+                <span className="text-[11px] font-bold text-violet-800">{step.title}</span>
+              </div>
+              <p className="text-[10px] text-[hsl(var(--muted-foreground))] leading-relaxed">{step.desc}</p>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Main Tab ─────────────────────────────────────────────
 
 function formatSkipReason(reason: string): string {
@@ -287,17 +340,16 @@ export function OptionsTab() {
 
   return (
     <div className="space-y-4">
-      {/* Header */}
+      {/* Refresh + PAPER badge */}
       <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <TrendingUp className="w-5 h-5 text-violet-600" />
-          <h2 className="text-base font-bold text-[hsl(var(--foreground))]">Options Wheel Engine</h2>
-          <span className="text-[10px] px-2 py-0.5 rounded-full bg-violet-100 text-violet-700 font-semibold">PAPER</span>
-        </div>
+        <span className="text-[10px] px-2 py-0.5 rounded-full bg-violet-100 text-violet-700 font-semibold">PAPER</span>
         <button onClick={load} disabled={loading} className="p-1.5 rounded-lg hover:bg-[hsl(var(--muted))] transition-colors">
           <RefreshCw className={cn('w-4 h-4 text-[hsl(var(--muted-foreground))]', loading && 'animate-spin')} />
         </button>
       </div>
+
+      {/* How it works */}
+      <HowItWorks />
 
       {/* Monthly Scorecard */}
       {stats && (
