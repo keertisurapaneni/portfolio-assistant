@@ -60,6 +60,7 @@ export interface OpenOptionsPosition {
   close_reason: string | null;
   pnl: number | null;
   opened_at: string;
+  closed_at: string | null;
   notes: string | null;
 }
 
@@ -145,7 +146,7 @@ export async function getRecentOptionsScan(daysBack = 3): Promise<OptionsScanOpp
 export async function getOpenOptionsPositions(): Promise<OpenOptionsPosition[]> {
   const { data, error } = await supabase
     .from('paper_trades')
-    .select('id, ticker, mode, option_strike, option_expiry, option_premium, option_capital_req, option_prob_profit, option_iv_rank, option_annual_yield, option_net_price, option_assigned, status, pnl, opened_at, notes')
+    .select('id, ticker, mode, option_strike, option_expiry, option_premium, option_capital_req, option_prob_profit, option_iv_rank, option_annual_yield, option_net_price, option_assigned, status, pnl, opened_at, closed_at, notes')
     .in('mode', ['OPTIONS_PUT', 'OPTIONS_CALL'])
     .in('status', ['PENDING', 'SUBMITTED', 'FILLED', 'PARTIAL'])
     .order('option_expiry', { ascending: true });
@@ -158,7 +159,7 @@ export async function getOpenOptionsPositions(): Promise<OpenOptionsPosition[]> 
 export async function getClosedOptionsPositions(limit = 50): Promise<OpenOptionsPosition[]> {
   const { data, error } = await supabase
     .from('paper_trades')
-    .select('id, ticker, mode, option_strike, option_expiry, option_premium, option_capital_req, option_prob_profit, option_iv_rank, option_annual_yield, option_net_price, option_assigned, status, close_reason, pnl, opened_at, notes')
+    .select('id, ticker, mode, option_strike, option_expiry, option_premium, option_capital_req, option_prob_profit, option_iv_rank, option_annual_yield, option_net_price, option_assigned, status, close_reason, pnl, opened_at, closed_at, notes')
     .in('mode', ['OPTIONS_PUT', 'OPTIONS_CALL'])
     .in('status', ['CLOSED', 'TARGET_HIT', 'STOPPED'])
     .order('closed_at', { ascending: false })

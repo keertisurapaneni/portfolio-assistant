@@ -40,6 +40,25 @@ function dteBadgeColor(dte: number): string {
   return 'bg-emerald-100 text-emerald-700';
 }
 
+/**
+ * Annualized return on capital reserved.
+ * Formula: (pnl / capitalReq) × (365 / daysHeld) × 100
+ * For open positions, daysHeld = elapsed since opened_at (minimum 1 day).
+ * For closed positions, daysHeld = closed_at - opened_at.
+ */
+function calcAnnualizedROC(
+  pnl: number | null,
+  capitalReq: number | null,
+  openedAt: string,
+  closedAt?: string | null,
+): number | null {
+  if (pnl == null || !capitalReq || capitalReq <= 0) return null;
+  const start = new Date(openedAt).getTime();
+  const end = closedAt ? new Date(closedAt).getTime() : Date.now();
+  const daysHeld = Math.max(1, (end - start) / (1000 * 60 * 60 * 24));
+  return (pnl / capitalReq) * (365 / daysHeld) * 100;
+}
+
 // ── Trade Opportunity Card ────────────────────────────────
 
 function OpportunityCard({ opp, onPaperTrade }: { opp: OptionsScanOpportunity; onPaperTrade: (opp: OptionsScanOpportunity) => Promise<void> }) {
@@ -142,6 +161,7 @@ function PositionCard({ pos }: { pos: OpenOptionsPosition }) {
   const profitCapturePct = pos.option_premium && pos.pnl != null
     ? Math.max(0, (pos.pnl / (pos.option_premium * 100)) * 100)
     : null;
+  const annualROC = calcAnnualizedROC(pos.pnl, pos.option_capital_req, pos.opened_at, pos.closed_at);
 
   return (
     <div className={cn(
@@ -158,9 +178,19 @@ function PositionCard({ pos }: { pos: OpenOptionsPosition }) {
             <span className="text-[10px] px-1.5 py-0.5 rounded bg-red-100 text-red-700 font-medium">ASSIGNED</span>
           )}
         </div>
-        <span className={cn('text-[10px] px-2 py-0.5 rounded-full font-semibold', dteBadgeColor(dte))}>
-          {dte}d left
-        </span>
+        <div className="flex items-center gap-1.5">
+          {annualROC != null && (
+            <span className={cn(
+              'text-[10px] px-2 py-0.5 rounded-full font-semibold',
+              annualROC >= 0 ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'
+            )}>
+              {annualROC >= 0 ? '+' : ''}{annualROC.toFixed(0)}% ann.
+            </span>
+          )}
+          <span className={cn('text-[10px] px-2 py-0.5 rounded-full font-semibold', dteBadgeColor(dte))}>
+            {dte}d left
+          </span>
+        </div>
       </div>
 
       <div className="grid grid-cols-3 gap-1 text-center mb-1">
@@ -503,6 +533,7 @@ export function OptionsTab() {
               const isStopped = pos.close_reason === 'stop_loss';
               const isExpired = pos.close_reason === 'expired_worthless';
               const isProfit = pos.close_reason === '50pct_profit';
+              const histROC = calcAnnualizedROC(pos.pnl, pos.option_capital_req, pos.opened_at, pos.closed_at);
               return (
                 <div key={pos.id} className={cn(
                   'flex items-center justify-between rounded-xl border p-3',
@@ -531,6 +562,11 @@ export function OptionsTab() {
                     <p className={cn('text-sm font-bold', (pos.pnl ?? 0) >= 0 ? 'text-emerald-600' : 'text-red-600')}>
                       {fmtUsd(pos.pnl ?? 0, 0, true)}
                     </p>
+                    {histROC != null && (
+                      <p className={cn('text-[10px] font-semibold', histROC >= 0 ? 'text-emerald-600' : 'text-red-600')}>
+                        {histROC >= 0 ? '+' : ''}{histROC.toFixed(0)}% ann. ROC
+                      </p>
+                    )}
                     <p className="text-[9px] text-[hsl(var(--muted-foreground))]">{pos.close_reason?.replace(/_/g, ' ') ?? pos.status.toLowerCase()}</p>
                   </div>
                 </div>
