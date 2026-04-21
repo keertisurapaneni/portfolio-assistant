@@ -48,11 +48,16 @@ const BEAR_DEFENSIVE_SECTORS = [           // only these sectors in bear mode
   'Consumer Staples', 'Utilities', 'Health Care', 'Financials',
 ];
 
-const RED_FLAG_KEYWORDS = [
-  'fraud', 'sec investigation', 'doj', 'department of justice', 'class action',
-  'bankruptcy', 'chapter 11', 'chapter 7', 'delisting', 'going concern',
-  'fda rejection', 'recall', 'restatement', 'accounting irregularit',
-  'ceo resign', 'cfo resign', 'whistleblower', 'ponzi', 'subpoena',
+// Hard stops — one headline is enough (existential / regulatory)
+const RED_FLAG_HARD = [
+  'fraud', 'sec investigation', 'doj', 'department of justice',
+  'chapter 11', 'chapter 7', 'going concern', 'delisting',
+  'fda rejection', 'restatement', 'accounting irregularit',
+  'whistleblower', 'ponzi', 'subpoena',
+];
+// Soft stops — require 2+ headlines to avoid incidental mentions on large caps
+const RED_FLAG_SOFT = [
+  'bankruptcy', 'class action', 'recall', 'ceo resign', 'cfo resign',
 ];
 
 // ── Types ────────────────────────────────────────────────
@@ -97,8 +102,17 @@ interface ScanContext {
 
 // ── Finnhub Helpers ──────────────────────────────────────
 
+// Finnhub free tier = 60 calls/min. Rate-limit to ~50/min (1200ms gap) with
+// a simple queue so bursts don't exhaust the quota mid-scan.
+let _lastFinnhubCall = 0;
+const FINNHUB_MIN_GAP_MS = 1200;
+
 async function fetchJson<T>(url: string): Promise<T | null> {
   try {
+    const now = Date.now();
+    const wait = FINNHUB_MIN_GAP_MS - (now - _lastFinnhubCall);
+    if (wait > 0) await new Promise(r => setTimeout(r, wait));
+    _lastFinnhubCall = Date.now();
     const res = await fetch(url);
     if (!res.ok) return null;
     return res.json() as Promise<T>;
@@ -241,16 +255,20 @@ async function getNewsSentiment(ticker: string): Promise<NewsSentimentResult> {
   const score = bullishPct - bearishPct;
   const articlesCount = sentiment?.buzz?.articlesInLastWeek ?? (news?.length ?? 0);
 
-  // Scan headlines for red-flag keywords
+  // Scan headlines only (not summaries — large caps always have incidental mentions)
   let redFlagFound = false;
   let redFlagReason: string | null = null;
+  const softHits = new Map<string, number>();
   for (const article of news ?? []) {
-    const text = `${article.headline ?? ''} ${article.summary ?? ''}`.toLowerCase();
-    const hit = RED_FLAG_KEYWORDS.find(kw => text.includes(kw));
-    if (hit) {
-      redFlagFound = true;
-      redFlagReason = hit;
-      break;
+    const headline = (article.headline ?? '').toLowerCase();
+    const hard = RED_FLAG_HARD.find(kw => headline.includes(kw));
+    if (hard) { redFlagFound = true; redFlagReason = hard; break; }
+    const soft = RED_FLAG_SOFT.find(kw => headline.includes(kw));
+    if (soft) softHits.set(soft, (softHits.get(soft) ?? 0) + 1);
+  }
+  if (!redFlagFound) {
+    for (const [kw, count] of softHits) {
+      if (count >= 2) { redFlagFound = true; redFlagReason = kw; break; }
     }
   }
 

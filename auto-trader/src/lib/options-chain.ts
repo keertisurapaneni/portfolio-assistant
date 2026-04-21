@@ -326,6 +326,7 @@ function getOptionGreeksForContract(
     function cleanup() {
       emitter.off(EventName.tickOptionComputation, greeksHandler);
       emitter.off(EventName.tickPrice, priceHandler);
+      emitter.off(EventName.error, errorHandler);
       try { (ib as unknown as { cancelMktData: (id: number) => void }).cancelMktData(reqId); } catch { /* ignore */ }
     }
 
@@ -378,12 +379,28 @@ function getOptionGreeksForContract(
       if (tickType === 2) askPrice = price;  // ASK
     };
 
+    // Immediately bail on "not subscribed" errors — no point waiting 12 s per strike.
+    // IB error event signature: (err: Error, code: number, reqId: number)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const errorHandler = (_err: any, code: number, id: number) => {
+      if (id !== reqId) return;
+      // 354 = not subscribed, 10091 = needs additional subscription
+      if ((code === 354 || code === 10091) && !resolved) {
+        resolved = true;
+        clearTimeout(timeout);
+        cleanup();
+        resolve(null);
+      }
+    };
+
     emitter.on(EventName.tickOptionComputation, greeksHandler);
     emitter.on(EventName.tickPrice, priceHandler);
+    emitter.on(EventName.error, errorHandler);
 
-    // Request market data with generic ticks for Greeks
+    // Request market data — for OPT contracts tickOptionComputation fires automatically;
+    // generic tick 13 is invalid for options, so use empty string to avoid IB error 321.
     (ib as unknown as { reqMktData: (id: number, c: Contract, genericTicks: string, snapshot: boolean, regulatory: boolean, options: unknown[]) => void })
-      .reqMktData(reqId, contract, '13,100,101', false, false, []);
+      .reqMktData(reqId, contract, '', false, false, []);
   });
 }
 
@@ -442,28 +459,33 @@ export async function getOptionsChain(
   deltaTarget?: number,   // override delta target (bear mode uses 0.15)
   dteDays?: number,       // override DTE window center (bear mode uses 21)
 ): Promise<OptionsChainSummary | null> {
-  if (!isConnected()) {
-    const synthetic = await getSyntheticOptionsChain(symbol, underlyingPrice, deltaTarget, dteDays);
-    if (synthetic) synthetic.ivRank = storedIvRank;
-    return synthetic;
-  }
+  const syntheticFallback = async () => {
+    const s = await getSyntheticOptionsChain(symbol, underlyingPrice, deltaTarget, dteDays);
+    if (s) s.ivRank = storedIvRank;
+    return s;
+  };
 
-  // Step 1: Get underlying conId
+  if (!isConnected()) return syntheticFallback();
+
+  // Step 1–4: Try live IB data. Fall back to synthetic at any failure point so the
+  // scanner keeps running even when market data subscriptions are missing.
   const contractInfo = await searchContract(symbol);
-  if (!contractInfo) return null;
+  if (!contractInfo) return syntheticFallback();
 
-  // Step 2: Get option chain parameters (strikes + expiries)
   const params = await getOptionChainParams(contractInfo.conId, symbol);
-  if (!params || params.expirations.length === 0) return null;
+  if (!params || params.expirations.length === 0) return syntheticFallback();
 
   // Step 3: Pick the best expiry — bear mode targets 21 DTE, normal 30-45 DTE
   const expiry = dteDays
     ? pickBestExpiryForDte(params.expirations, dteDays)
     : pickBestExpiry(params.expirations);
-  if (!expiry) return null;
+  if (!expiry) return syntheticFallback();
 
   // Step 4: Find best put strike — use caller-specified delta target if provided
   const bestPut = await findBestPutStrike(symbol, params.strikes, expiry, underlyingPrice, deltaTarget);
+
+  // If Greeks failed (e.g. market data not subscribed), fall back to synthetic.
+  if (!bestPut) return syntheticFallback();
 
   // Step 5: Optionally find best covered call (just above current price)
   const callStrike = params.strikes.find(s => s > underlyingPrice * 1.05) ?? null;
