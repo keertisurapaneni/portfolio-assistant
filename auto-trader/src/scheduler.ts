@@ -3119,7 +3119,7 @@ async function preGenerateSuggestedFinds(
 ): Promise<void> {
   const today = getETDateString();
   if (_lastSuggestedFindsDate === today) return;
-  if (getETMinutes() < 9 * 60) return; // before 9 AM ET
+  if (getETMinutes() < 9 * 60 + 30) return; // wait for market open (9:30 AM ET)
 
   try {
     log('Fetching today\'s Suggested Finds...');
@@ -3478,13 +3478,15 @@ async function runSchedulerCycle(): Promise<void> {
         const scanResult = await runOptionsScan(Math.max(freeCapital, 50_000));
         if (scanResult.opportunities.length > 0) {
           log(`Options scan: ${scanResult.opportunities.length} opportunities found`);
-          // Auto paper-trade top 3 opportunities
           for (const opp of scanResult.opportunities.slice(0, 3)) {
             const id = await paperTradeOption(opp);
             if (id) log(`  → Paper traded ${opp.ticker} $${opp.strike}P @ $${opp.premium.toFixed(2)} (${opp.annualYield.toFixed(1)}% annual yield)`);
           }
         } else {
           log(`Options scan: no opportunities today (${scanResult.skipped.length} stocks checked)`);
+          for (const s of scanResult.skipped) {
+            log(`  ✗ ${s.ticker}: ${s.reason}`);
+          }
         }
       } catch (err) {
         log(`Options scan error: ${err instanceof Error ? err.message : 'unknown'}`);
