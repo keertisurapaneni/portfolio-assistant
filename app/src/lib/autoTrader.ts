@@ -2298,6 +2298,9 @@ export async function syncPositions(accountId: string): Promise<void> {
     ]);
 
     for (const trade of activeTrades) {
+      // Options positions are managed exclusively by the backend options-manager — skip here.
+      if (trade.mode === 'OPTIONS_PUT' || trade.mode === 'OPTIONS_CALL') continue;
+
       const ibPos = ibPositions.find(
         p => p.contractDesc.toUpperCase() === trade.ticker.toUpperCase()
       );

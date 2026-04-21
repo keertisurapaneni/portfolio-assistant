@@ -141,9 +141,7 @@ function PositionCard({ pos }: { pos: OpenOptionsPosition }) {
       <div className="flex items-center justify-between mb-2">
         <div className="flex items-center gap-2">
           <span className="text-sm font-bold text-[hsl(var(--foreground))]">{pos.ticker}</span>
-          <span className="text-[10px] px-1.5 py-0.5 rounded bg-violet-100 text-violet-700 font-medium">
-            ${pos.option_strike}P
-          </span>
+          <span className="text-[10px] px-1.5 py-0.5 rounded bg-violet-100 text-violet-700 font-medium">PUT</span>
           {pos.option_assigned && (
             <span className="text-[10px] px-1.5 py-0.5 rounded bg-red-100 text-red-700 font-medium">ASSIGNED</span>
           )}
@@ -153,7 +151,11 @@ function PositionCard({ pos }: { pos: OpenOptionsPosition }) {
         </span>
       </div>
 
-      <div className="grid grid-cols-4 gap-1.5 text-center">
+      <div className="grid grid-cols-5 gap-1 text-center">
+        <div>
+          <p className="text-[9px] text-[hsl(var(--muted-foreground))]">Strike</p>
+          <p className="text-xs font-bold text-[hsl(var(--foreground))]">${pos.option_strike}</p>
+        </div>
         <div>
           <p className="text-[9px] text-[hsl(var(--muted-foreground))]">Collected</p>
           <p className="text-xs font-bold text-emerald-600">+${Math.round((pos.option_premium ?? 0) * 100)}</p>
@@ -422,11 +424,11 @@ export function OptionsTab() {
                 <div>
                   <div className="flex items-center gap-1.5">
                     <span className="text-sm font-bold">{pos.ticker}</span>
-                    <span className="text-[10px] px-1 py-0.5 rounded bg-violet-100 text-violet-700">${pos.option_strike}P</span>
+                    <span className="text-[10px] px-1 py-0.5 rounded bg-violet-100 text-violet-700">PUT</span>
                     {pos.option_assigned && <span className="text-[10px] px-1 py-0.5 rounded bg-amber-100 text-amber-700">Assigned</span>}
                   </div>
                   <p className="text-[10px] text-[hsl(var(--muted-foreground))]">
-                    Collected ${Math.round((pos.option_premium ?? 0) * 100)} · Exp {formatExpiry(pos.option_expiry)}
+                    Strike ${pos.option_strike} · Collected ${Math.round((pos.option_premium ?? 0) * 100)} · Exp {formatExpiry(pos.option_expiry)}
                   </p>
                 </div>
                 <div className="text-right">

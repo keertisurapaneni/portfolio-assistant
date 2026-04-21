@@ -64,10 +64,9 @@ async function getCurrentPremium(
   stockPrice: number,
 ): Promise<number | null> {
   if (!isConnected()) return null;
-  const expiry = expiryISO.replace(/-/g, ''); // YYYYMMDD
   const chain = await getOptionsChain(ticker, stockPrice);
   if (!chain?.bestPut) return null;
-  // Find the matching strike in the chain (approximate — chain returns best strike)
+  // Only use the chain value if it's for the same strike (±5 points)
   if (Math.abs(chain.bestPut.strike - strike) < 5) {
     return chain.bestPut.mid;
   }
