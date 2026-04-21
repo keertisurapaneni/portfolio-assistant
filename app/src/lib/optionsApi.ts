@@ -38,6 +38,9 @@ export interface OptionsScanOpportunity {
   checks_passed: Record<string, boolean | string>;
   skip_reason: string | null;
   bear_mode?: boolean;
+  leverage_factor?: number;
+  dip_entry?: boolean;
+  contracts?: number;
 }
 
 export interface OpenOptionsPosition {

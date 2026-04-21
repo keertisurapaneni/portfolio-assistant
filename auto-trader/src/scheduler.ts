@@ -66,6 +66,7 @@ import { logClosedTradePerformance } from './lib/tradePerformanceLog.js';
 import { generateSuggestedFinds } from './lib/discovery.js';
 import { runOptionsScan, paperTradeOption } from './lib/options-scanner.js';
 import { runOptionsManageCycle } from './lib/options-manager.js';
+import { runDipWatcher } from './lib/dip-watcher.js';
 
 // ── Types ────────────────────────────────────────────────
 
@@ -227,6 +228,16 @@ export function startScheduler(): void {
   } else {
     log('Transcript ingest skipped: scripts/ingest_video.py not found');
   }
+
+  // Dip-entry watcher: every 5 minutes during market hours (10:00–15:55 ET)
+  // Detects when watchlist stocks drop ≥5% from 20-day high within an uptrend.
+  // Alerts fire to the Options Log tab so you can act on premium entries.
+  cron.schedule('*/5 10-15 * * 1-5', () => {
+    runDipWatcher().catch(err => {
+      console.error('[Dip Watcher] Failed:', err);
+    });
+  }, { timezone: 'America/New_York' });
+  log('Dip watcher: every 5 min 10:00–15:55 ET (detects ≥5% pullbacks in uptrends)');
 
   // EOD day-trade auto-close: 3:55 PM ET on weekdays.
   // Mirrors browser scheduleDayTradeAutoClose — ensures positions close even when browser is shut.

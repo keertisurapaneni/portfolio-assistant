@@ -61,9 +61,15 @@ function OpportunityCard({ opp, onPaperTrade }: { opp: OptionsScanOpportunity; o
     <div className="rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-4">
       <div className="flex items-start justify-between mb-3">
         <div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             <span className="text-sm font-bold text-[hsl(var(--foreground))]">{opp.ticker}</span>
             <span className="text-[10px] px-1.5 py-0.5 rounded bg-violet-100 text-violet-700 font-semibold">SELL PUT</span>
+            {opp.leverage_factor && opp.leverage_factor > 1 && (
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-purple-100 text-purple-700 font-bold">{opp.leverage_factor}x ETF</span>
+            )}
+            {opp.dip_entry && (
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 font-semibold">📉 DIP ENTRY</span>
+            )}
             {opp.bear_mode && (
               <span className="text-[10px] px-1.5 py-0.5 rounded bg-red-100 text-red-700 font-semibold">🐻 BEAR MODE</span>
             )}
@@ -78,8 +84,8 @@ function OpportunityCard({ opp, onPaperTrade }: { opp: OptionsScanOpportunity; o
         <div className="text-right">
           <p className="text-base font-bold text-emerald-600">+${Math.round(opp.premium * 100)}</p>
           <p className="text-[10px] text-[hsl(var(--muted-foreground))]">
-            {(opp as OptionsScanOpportunity & { contracts?: number }).contracts && (opp as OptionsScanOpportunity & { contracts?: number }).contracts! > 1
-              ? <span className="text-violet-600 font-semibold">{(opp as OptionsScanOpportunity & { contracts?: number }).contracts}x contracts</span>
+            {opp.contracts && opp.contracts > 1
+              ? <span className="text-violet-600 font-semibold">{opp.contracts}x contracts</span>
               : '1 contract'}
           </p>
         </div>

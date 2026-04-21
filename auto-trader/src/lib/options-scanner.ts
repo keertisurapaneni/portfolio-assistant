@@ -24,7 +24,9 @@ import { isConnected, placeOptionsOrder, getDefaultAccount } from '../ib-connect
 
 const FINNHUB_KEY = process.env.FINNHUB_API_KEY ?? '';
 const MIN_STOCK_PRICE = 20;
-const MIN_PREMIUM_YIELD_PCT = 0.8;        // at least 0.8% of strike per 30 days
+const MIN_PREMIUM_YIELD_PCT = 1.5;        // at least 1.5% of strike per 30 days (regular stocks)
+const MIN_PREMIUM_YIELD_LEVERAGED = 5.0;  // leveraged ETFs must hit 5% monthly (their whole point)
+const DIP_ENTRY_BONUS_THRESHOLD = 5;      // stock dropped ≥5% from recent high = premium entry
 const MIN_IV_RANK = 50;                    // only sell when premium is elevated
 const MIN_IV_RANK_RANGE_BOUND = 25;        // lower bar for range-bound stocks (steady chop = sell regardless)
 const RANGE_BOUND_BAND_PCT = 25;           // stock stayed within ±25% of midpoint over 12m = range-bound
@@ -83,6 +85,8 @@ export interface OptionsTradeTicket {
   probProfit: number;
   annualYield: number;
   contracts: number;         // 1–3 based on conviction
+  leverageFactor: number;    // 1 = regular stock, 2 = 2x ETF, 3 = 3x ETF
+  dipEntry: boolean;         // true = stock dipped ≥5% from recent high = premium entry
   checksPassedCount: number;
   checksDetail: Record<string, boolean | string>;
   bearMode: boolean;        // true = bear market conservative params applied
@@ -91,6 +95,14 @@ export interface OptionsTradeTicket {
 interface WatchlistEntry {
   ticker: string;
   min_price: number | null;
+  notes: string | null;
+}
+
+/** Parse leverage factor from watchlist notes field. Format: "Nx|Description" */
+function parseLeverageFactor(notes: string | null): number {
+  if (!notes) return 1;
+  const m = notes.match(/^(\d+)x\|/);
+  return m ? parseInt(m[1]) : 1;
 }
 
 interface ScanContext {
@@ -438,6 +450,7 @@ async function checkStock(
   ticker: string,
   minPrice: number | null,
   ctx: ScanContext,
+  leverageFactor = 1,
 ): Promise<OptionsTradeTicket | { ticker: string; skipped: true; reason: string }> {
   const checks: Record<string, boolean | string> = {};
 
@@ -469,6 +482,23 @@ async function checkStock(
   const effectiveMinPrice = minPrice ?? MIN_STOCK_PRICE;
   checks.minPrice = price >= effectiveMinPrice;
   if (price < effectiveMinPrice) return { ticker, skipped: true, reason: `price_too_low_${price.toFixed(0)}` };
+
+  // Check 3.2: Dip detection — did stock drop ≥5% from its recent 20-day high?
+  // A dip entry means elevated IV + larger OTM cushion = premium entry (the video's key insight)
+  let dipEntry = false;
+  try {
+    const to = Math.floor(Date.now() / 1000);
+    const from = to - 86400 * 25;
+    const dipData = await fetchJson<{ c?: number[]; h?: number[] }>(
+      `https://finnhub.io/api/v1/stock/candle?symbol=${ticker}&resolution=D&from=${from}&to=${to}&token=${FINNHUB_KEY}`
+    );
+    if (dipData?.h && dipData.h.length >= 5) {
+      const recentHigh = Math.max(...dipData.h.slice(-20));
+      const dipPct = ((recentHigh - price) / recentHigh) * 100;
+      dipEntry = dipPct >= DIP_ENTRY_BONUS_THRESHOLD;
+      checks.dipEntry = `${dipPct.toFixed(1)}%_from_20d_high${dipEntry ? '_DIP' : ''}`;
+    }
+  } catch { /* non-blocking */ }
 
   // Check 3.5: Stock trend — must be above its own 50-day SMA and not down >20% in 3 months
   const trend = await getStockTrend(ticker);
@@ -559,12 +589,17 @@ async function checkStock(
   }
 
   // Check 7: Premium yield threshold (use bid price for conservative estimate)
+  // Leveraged ETFs must hit 5% monthly — that's their whole purpose.
+  // Regular stocks need ≥1.5% monthly. Dip entries get a 0.5% grace (IV is elevated).
   const dte = daysToExpiryFromStr(put.expiry);
   const conservativePremium = put.bid; // worst-case fill at bid
   const dailyYield = conservativePremium / put.strike;
   const monthlyYield = dailyYield * 30;
-  checks.premiumYield = monthlyYield >= MIN_PREMIUM_YIELD_PCT / 100;
-  if (monthlyYield < MIN_PREMIUM_YIELD_PCT / 100) return { ticker, skipped: true, reason: `low_premium_${(monthlyYield * 100).toFixed(2)}pct` };
+  const yieldFloor = leverageFactor > 1
+    ? MIN_PREMIUM_YIELD_LEVERAGED / 100
+    : (MIN_PREMIUM_YIELD_PCT - (dipEntry ? 0.5 : 0)) / 100;
+  checks.premiumYield = `${(monthlyYield * 100).toFixed(2)}%_need_${(yieldFloor * 100).toFixed(1)}%`;
+  if (monthlyYield < yieldFloor) return { ticker, skipped: true, reason: `low_premium_${(monthlyYield * 100).toFixed(2)}pct` };
 
   // Check 8: Capital sufficiency (bear mode uses 50% position size)
   const capitalRequired = put.strike * 100;
@@ -625,10 +660,16 @@ async function checkStock(
     ivRank,
     probProfit: put.probProfit,
     annualYield: put.annualYield,
-    // Scale contracts 1–3 by conviction: prob_profit + IV rank + RSI signal
-    contracts: put.probProfit >= 80 && (ivRank ?? 0) >= 65 && rsiBonus ? 3
-      : put.probProfit >= 75 && (ivRank ?? 0) >= 55 ? 2
-      : 1,
+    // Scale contracts 1–3 by conviction: prob_profit + IV rank + RSI + dip entry
+    // Dip entries get +1 contract (entering at a discount stacks the odds)
+    contracts: Math.min(3, (
+      (put.probProfit >= 80 && (ivRank ?? 0) >= 65 && rsiBonus ? 3
+        : put.probProfit >= 75 && (ivRank ?? 0) >= 55 ? 2
+        : 1)
+      + (dipEntry ? 1 : 0)
+    )),
+    leverageFactor,
+    dipEntry,
     checksPassedCount,
     checksDetail: checks,
     bearMode: ctx.bearMode,
@@ -653,7 +694,7 @@ export async function runOptionsScan(freeCapital = 100_000): Promise<OptionsScan
   // Load active watchlist
   const { data: watchlist } = await sb
     .from('options_watchlist')
-    .select('ticker, min_price')
+    .select('ticker, min_price, notes')
     .eq('active', true)
     .order('ticker');
 
@@ -667,7 +708,8 @@ export async function runOptionsScan(freeCapital = 100_000): Promise<OptionsScan
 
   // Scan each ticker (sequential to avoid IB request flooding)
   for (const entry of watchlist as WatchlistEntry[]) {
-    const result = await checkStock(entry.ticker, entry.min_price, ctx);
+    const leverageFactor = parseLeverageFactor(entry.notes);
+    const result = await checkStock(entry.ticker, entry.min_price, ctx, leverageFactor);
 
     if ('skipped' in result) {
       skipped.push({ ticker: result.ticker, reason: result.reason });
