@@ -522,9 +522,10 @@ async function checkStock(
   }
 
   // Check 3.6: Beta filter — skip high-beta stocks (too volatile for wheel strategy)
+  // Leveraged ETFs are intentionally high-beta; they have dedicated delta/yield gates instead.
   const beta = await getStockBeta(ticker);
   checks.beta = beta !== null ? beta.toFixed(2) : 'unknown';
-  if (beta !== null && beta > MAX_BETA) {
+  if (beta !== null && beta > MAX_BETA && leverageFactor === 1) {
     return { ticker, skipped: true, reason: `high_beta:${beta.toFixed(2)}` };
   }
 
@@ -622,10 +623,12 @@ async function checkStock(
   // Check 7: Premium yield threshold (use bid price for conservative estimate)
   // Leveraged ETFs must hit 5% monthly — that's their whole purpose.
   // Regular stocks need ≥1.5% monthly. Dip entries get a 0.5% grace (IV is elevated).
+  // monthlyYield normalizes by DTE so a 10-DTE and 45-DTE option at the same premium
+  // are evaluated correctly — yield = (premium / strike) * (30 / dte).
   const dte = daysToExpiryFromStr(put.expiry);
   const conservativePremium = put.bid; // worst-case fill at bid
-  const dailyYield = conservativePremium / put.strike;
-  const monthlyYield = dailyYield * 30;
+  const effectiveDte = Math.max(1, dte); // guard against 0 DTE edge case
+  const monthlyYield = (conservativePremium / put.strike) * (30 / effectiveDte);
   const yieldFloor = leverageFactor > 1
     ? MIN_PREMIUM_YIELD_LEVERAGED / 100
     : (MIN_PREMIUM_YIELD_PCT - (dipEntry ? 0.5 : 0)) / 100;
@@ -747,8 +750,9 @@ export async function runOptionsScan(freeCapital = 100_000): Promise<OptionsScan
     } else {
       opportunities.push(result);
 
-      // Increment open count to respect position limit during scan
+      // Increment open count and decrement free capital to respect limits within this scan
       ctx.openPutCount += 1;
+      ctx.freeCapital = Math.max(0, ctx.freeCapital - result.capitalRequired);
     }
 
     // Small delay between IB requests to avoid throttling

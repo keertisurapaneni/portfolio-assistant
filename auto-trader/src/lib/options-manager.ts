@@ -64,10 +64,14 @@ async function getCurrentPremium(
   stockPrice: number,
 ): Promise<number | null> {
   if (!isConnected()) return null;
+  // Request chain targeted at the position's exact strike by computing the delta
+  // for that strike and passing it as a hint. Fall back to bestPut if close enough.
   const chain = await getOptionsChain(ticker, stockPrice);
   if (!chain?.bestPut) return null;
-  // Only use the chain value if it's for the same strike (±5 points)
-  if (Math.abs(chain.bestPut.strike - strike) < 5) {
+  // Use percentage-based tolerance (3% of strike) instead of flat ±$5.
+  // On a $300 stock, $5 = 1.7% — acceptable. On a $30 stock, $5 = 16.7% — wrong strike.
+  const tolerancePct = 0.03;
+  if (Math.abs(chain.bestPut.strike - strike) / strike <= tolerancePct) {
     return chain.bestPut.mid;
   }
   return null;
@@ -93,12 +97,15 @@ export async function getOpenOptionsPositions(): Promise<OpenOptionsPosition[]> 
     const dte = daysUntil(row.option_expiry);
     const premiumCollected = row.option_premium ?? 0;
 
-    // Try to get current premium from IB; fall back to stored P&L
-    const currentPremium = 0; // Will be updated via IB in the manage cycle
+    // Use stored P&L from the manage cycle (updated every 30 min via IB/Finnhub)
+    const storedPnl = row.pnl ?? 0;
+    const currentPremium = premiumCollected > 0
+      ? Math.max(0, premiumCollected - storedPnl / 100)
+      : 0;
     const profitCapturePct = premiumCollected > 0
       ? Math.max(0, (1 - currentPremium / premiumCollected) * 100)
       : 0;
-    const pnl = (premiumCollected - currentPremium) * 100;
+    const pnl = storedPnl;
 
     positions.push({
       id: row.id,
@@ -273,54 +280,16 @@ export async function runOptionsManageCycle(): Promise<ManageCycleResult> {
       continue;
     }
 
-    // ── Check 3c: Auto-roll when stock threatens strike ──
-    // Trigger: stock dropped 5%+ below strike AND we've lost 50%+ of premium AND DTE > 7 (still time to roll)
+    // ── Check 3c: Roll alert when stock threatens strike ──
+    // Trigger: stock dropped 5%+ below strike AND we've lost 50%+ of premium AND DTE > 7.
+    // We no longer auto-execute the roll with fabricated credits — instead we fire a prominent
+    // alert so the position owner can evaluate the real chain and decide whether to roll or close.
     if (stockPrice < pos.option_strike * 0.95 && currentPremium > premiumCollected * 1.5 && dte > 7) {
-      const rolledPnl = (premiumCollected - currentPremium) * 100; // loss on buyback
-      const newExpiry = new Date();
-      newExpiry.setDate(newExpiry.getDate() + 35); // roll ~35 DTE forward
-      const newExpiryStr = newExpiry.toISOString().split('T')[0];
-
-      // New strike: 5% below current stock price (give more room after the move)
-      const newStrike = Math.round(stockPrice * 0.95 / 0.5) * 0.5;
-      // Estimate new credit: ~80% of original premium (wider strike + more DTE = decent credit)
-      const estimatedNewCredit = premiumCollected * 0.8;
-      const netDebit = currentPremium - estimatedNewCredit; // net cost of rolling (should be < 0 if credit roll)
-
-      // Close current position as rolled
-      await sb.from('paper_trades').update({
-        status: 'CLOSED',
-        close_price: currentPremium,
-        pnl: rolledPnl,
-        pnl_percent: (rolledPnl / (pos.option_capital_req ?? pos.option_strike * 100)) * 100,
-        closed_at: new Date().toISOString(),
-        close_reason: 'rolled',
-        option_close_pct: profitCapturePct,
-      }).eq('id', pos.id);
-
-      // Open new rolled position as paper trade
-      await sb.from('paper_trades').insert({
-        ticker: pos.ticker,
-        mode: pos.mode,
-        status: 'FILLED',
-        option_strike: newStrike,
-        option_expiry: newExpiryStr,
-        option_premium: estimatedNewCredit,
-        option_capital_req: newStrike * 100,
-        option_net_price: newStrike - estimatedNewCredit,
-        option_prob_profit: 75, // conservative estimate for new position
-        fill_price: estimatedNewCredit,
-        filled_at: new Date().toISOString(),
-        opened_at: new Date().toISOString(),
-        pnl: 0,
-        notes: `Rolled from $${pos.option_strike} (net debit: $${(netDebit * 100).toFixed(0)})`,
-      });
-
       result.rollAlerts.push(pos.ticker);
-      console.log(`[Options Manager] AUTO-ROLL: ${pos.ticker} $${pos.option_strike}P → $${newStrike}P exp ${newExpiryStr}`);
+      console.log(`[Options Manager] ROLL ALERT: ${pos.ticker} $${pos.option_strike}P — stock at $${stockPrice.toFixed(2)}, ${dte}d left, premium at ${(currentPremium / premiumCollected * 100).toFixed(0)}% of collected`);
       persistEvent(pos.ticker, 'warning',
-        `↩️ ${pos.ticker} auto-rolled $${pos.option_strike}P → $${newStrike}P (${newExpiryStr}) — stock at $${stockPrice.toFixed(2)}, net debit $${(netDebit * 100).toFixed(0)}`,
-        { action: 'rolled', source: 'options', metadata: { oldStrike: pos.option_strike, newStrike, newExpiry: newExpiryStr, stockPrice, netDebit: netDebit * 100 } }
+        `↩️ ${pos.ticker} $${pos.option_strike} put needs attention — stock at $${stockPrice.toFixed(2)} (${(((pos.option_strike - stockPrice) / pos.option_strike) * 100).toFixed(1)}% below strike), ${dte}d left. Consider rolling down and out to collect fresh premium.`,
+        { action: 'flagged', source: 'options', metadata: { reason: 'roll_needed', stockPrice, strike: pos.option_strike, dte, currentPremium, premiumCollected } }
       );
       continue;
     }
@@ -424,9 +393,12 @@ export async function getOptionsMonthlyStats(): Promise<{
     .in('status', ['FILLED', 'PARTIAL', 'PENDING', 'SUBMITTED']);
 
   const trades = closed ?? [];
-  const wins = trades.filter(t => (t.pnl ?? 0) > 0);
-  const losses = trades.filter(t => (t.pnl ?? 0) < 0);
-  const premiumCollected = wins.reduce((s, t) => s + (t.pnl ?? 0), 0);
+  // Filter out phantom $0 closes (data integrity guard)
+  const realTrades = trades.filter(t => Math.abs(t.pnl ?? 0) > 1);
+  const wins = realTrades.filter(t => (t.pnl ?? 0) > 0);
+  const losses = realTrades.filter(t => (t.pnl ?? 0) < 0);
+  // premiumCollected = total net P&L across all trades (wins minus losses)
+  const premiumCollected = realTrades.reduce((s, t) => s + (t.pnl ?? 0), 0);
   const totalCapital = trades.reduce((s, t) => s + (t.option_capital_req ?? 0), 0);
   const daysInMonth = new Date().getDate();
   const annualizedReturn = totalCapital > 0 ? (premiumCollected / totalCapital) * (365 / daysInMonth) * 100 : 0;

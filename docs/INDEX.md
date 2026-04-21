@@ -5,6 +5,7 @@ Current implementation docs for each major feature.
 
 | Doc | Description |
 |-----|-------------|
+| [Options Wheel Engine](./features/options-wheel-engine.md) | Complete reference: 21 entry checks, delta targets, position manager lifecycle, close reasons, go-live gate |
 | [Auto-Trader Execution Paths](./features/auto-trader-execution-paths.md) | Three trade sources (Scanner, Influencer, Suggested Finds) — gate logic, FA checks, position sizing |
 | [Trade Scanner](./features/trade-scanner.md) | Two-pass day/swing scanner — InPlayScore, Gemini AI, pre-market gaps |
 | [Trading Signals Indicators](./features/trading-signals-indicators.md) | Indicator engine — RSI, MACD, EMA, ATR, ADX fed to AI prompts |
