@@ -3325,17 +3325,9 @@ async function runSchedulerCycle(): Promise<void> {
     // so it shows up in Smart Trading → Recent Smart Actions feed.
     if (_ibWasConnected && !ibNowConnected && isMarketHoursET()) {
       log('⚠️  IB Gateway disconnected during market hours — loss cuts and position management are SUSPENDED');
-      persistEvent('SYSTEM', 'warning',
-        '⚠️ IB disconnected during market hours — loss cuts, dip buys and profit takes are suspended until reconnected',
-        { action: 'flagged', source: 'system', metadata: { reason: 'ib_disconnected' } }
-      );
     }
     if (ibNowConnected && !_ibWasConnected) {
       log('IB Gateway reconnected');
-      persistEvent('SYSTEM', 'success',
-        'IB Gateway reconnected — position management resumed',
-        { action: 'executed', source: 'system', metadata: { reason: 'ib_reconnected' } }
-      );
     }
     _ibWasConnected = ibNowConnected;
 
