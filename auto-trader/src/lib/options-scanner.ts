@@ -105,7 +105,7 @@ interface ScanContext {
 // Finnhub free tier = 60 calls/min. Rate-limit to ~50/min (1200ms gap) with
 // a simple queue so bursts don't exhaust the quota mid-scan.
 let _lastFinnhubCall = 0;
-const FINNHUB_MIN_GAP_MS = 1200;
+const FINNHUB_MIN_GAP_MS = 800;
 
 async function fetchJson<T>(url: string): Promise<T | null> {
   try {

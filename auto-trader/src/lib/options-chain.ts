@@ -212,12 +212,13 @@ function daysToExpiry(expiryYYYYMMDD: string): number {
 }
 
 function pickBestExpiry(expirations: string[]): string | null {
-  // Target 30–45 DTE for optimal theta decay
-  const candidates = expirations
+  // Target 30–45 DTE for optimal theta decay.
+  // Prefer the closest to 38 DTE that's at least 14 days away (avoid expiry-week chop).
+  const valid = expirations
     .map(e => ({ e, dte: daysToExpiry(e) }))
-    .filter(x => x.dte >= 25 && x.dte <= 50)
+    .filter(x => x.dte >= 14)
     .sort((a, b) => Math.abs(a.dte - 38) - Math.abs(b.dte - 38));
-  return candidates[0]?.e ?? null;
+  return valid[0]?.e ?? null;
 }
 
 /** Pick expiry closest to a specific DTE target (e.g. 21 for bear mode). */
