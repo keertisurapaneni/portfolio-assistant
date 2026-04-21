@@ -77,7 +77,11 @@ function OpportunityCard({ opp, onPaperTrade }: { opp: OptionsScanOpportunity; o
         </div>
         <div className="text-right">
           <p className="text-base font-bold text-emerald-600">+${Math.round(opp.premium * 100)}</p>
-          <p className="text-[10px] text-[hsl(var(--muted-foreground))]">per contract</p>
+          <p className="text-[10px] text-[hsl(var(--muted-foreground))]">
+            {(opp as OptionsScanOpportunity & { contracts?: number }).contracts && (opp as OptionsScanOpportunity & { contracts?: number }).contracts! > 1
+              ? <span className="text-violet-600 font-semibold">{(opp as OptionsScanOpportunity & { contracts?: number }).contracts}x contracts</span>
+              : '1 contract'}
+          </p>
         </div>
       </div>
 
@@ -85,7 +89,7 @@ function OpportunityCard({ opp, onPaperTrade }: { opp: OptionsScanOpportunity; o
         <div className="bg-[hsl(var(--muted))]/40 rounded-lg p-2">
           <p className="text-[9px] text-[hsl(var(--muted-foreground))] uppercase tracking-wide">Net Price</p>
           <p className="text-xs font-bold text-[hsl(var(--foreground))]">${opp.net_price?.toFixed(2)}</p>
-          <p className="text-[9px] text-[hsl(var(--muted-foreground))]">if assigned</p>
+          <p className="text-[9px] text-emerald-600">entry price if assigned</p>
         </div>
         <div className="bg-[hsl(var(--muted))]/40 rounded-lg p-2">
           <p className="text-[9px] text-[hsl(var(--muted-foreground))] uppercase tracking-wide">Prob Profit</p>
@@ -105,7 +109,7 @@ function OpportunityCard({ opp, onPaperTrade }: { opp: OptionsScanOpportunity; o
 
       <div className="flex items-center justify-between">
         <p className="text-[10px] text-[hsl(var(--muted-foreground))]">
-          Requires <span className="font-semibold">${(opp.capital_req / 1000).toFixed(0)}K</span> reserve if assigned
+          Reserve <span className="font-semibold">${(opp.capital_req / 1000).toFixed(0)}K</span> · worst case you own the stock at net cost
         </p>
         {done ? (
           <span className="flex items-center gap-1 text-[11px] text-emerald-600 font-semibold">
@@ -183,13 +187,13 @@ function PositionCard({ pos }: { pos: OpenOptionsPosition }) {
       {dte <= 21 && !pos.option_assigned && (
         <div className="mt-2 flex items-center gap-1 text-[10px] text-amber-700">
           <AlertTriangle className="w-3 h-3" />
-          Roll or close decision needed
+          <span>{dte <= 7 ? 'Expiring soon — let it expire or roll to next month' : 'Within 21 days — consider rolling to collect more premium'}</span>
         </div>
       )}
       {pos.option_assigned && (
-        <div className="mt-2 flex items-center gap-1 text-[10px] text-red-700">
-          <AlertTriangle className="w-3 h-3" />
-          Assigned — sell a covered call on these shares
+        <div className="mt-2 rounded-lg bg-blue-50 border border-blue-200 px-2 py-1.5">
+          <p className="text-[10px] font-semibold text-blue-700">📌 Wheel step 2 — you now own 100 shares</p>
+          <p className="text-[10px] text-blue-600 mt-0.5">Sell a covered call above your net cost to keep collecting premium.</p>
         </div>
       )}
     </div>

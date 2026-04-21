@@ -26,7 +26,11 @@ const FINNHUB_KEY = process.env.FINNHUB_API_KEY ?? '';
 const MIN_STOCK_PRICE = 20;
 const MIN_PREMIUM_YIELD_PCT = 0.8;        // at least 0.8% of strike per 30 days
 const MIN_IV_RANK = 50;                    // only sell when premium is elevated
+const MIN_IV_RANK_RANGE_BOUND = 25;        // lower bar for range-bound stocks (steady chop = sell regardless)
+const RANGE_BOUND_BAND_PCT = 25;           // stock stayed within ±25% of midpoint over 12m = range-bound
 const RSI_OVERSOLD = 38;                   // RSI threshold for oversold
+const DELTA_TARGET_NORMAL = 0.30;          // target 30-delta (0.20–0.40 window) for more premium
+const DELTA_TARGET_HIGH_CONVICTION = 0.35; // nudge to 35-delta when RSI oversold + IV elevated
 const MAX_POSITIONS_NORMAL = 5;            // max concurrent open options puts
 const MAX_POSITIONS_HIGH_VIX = 3;          // VIX > 25
 const EARNINGS_BLACKOUT_DAYS = 7;
@@ -78,6 +82,7 @@ export interface OptionsTradeTicket {
   ivRank: number | null;
   probProfit: number;
   annualYield: number;
+  contracts: number;         // 1–3 based on conviction
   checksPassedCount: number;
   checksDetail: Record<string, boolean | string>;
   bearMode: boolean;        // true = bear market conservative params applied
@@ -214,6 +219,28 @@ async function getStockTrend(ticker: string): Promise<StockTrendResult | null> {
   const price3mAgo = closes[Math.max(0, closes.length - 63)]; // ~63 trading days = 3 months
   const change3m = price3mAgo > 0 ? ((price - price3mAgo) / price3mAgo) * 100 : 0;
   return { aboveSma50: price > sma50, sma50, price, change3m };
+}
+
+// ── Range-Bound Detection ────────────────────────────────
+// A range-bound stock oscillates within a tight band — ideal for wheel selling
+// even when IV rank is below our normal threshold.
+
+async function isRangeBound(ticker: string): Promise<{ rangeBound: boolean; bandPct: number }> {
+  const to = Math.floor(Date.now() / 1000);
+  const from = to - 86400 * 252; // ~1 year of trading days
+  const data = await fetchJson<{ c?: number[]; h?: number[]; l?: number[] }>(
+    `https://finnhub.io/api/v1/stock/candle?symbol=${ticker}&resolution=D&from=${from}&to=${to}&token=${FINNHUB_KEY}`
+  );
+  if (!data?.h || !data.l || data.h.length < 100) return { rangeBound: false, bandPct: 0 };
+
+  const yearHigh = Math.max(...data.h);
+  const yearLow = Math.min(...data.l);
+  const midpoint = (yearHigh + yearLow) / 2;
+  if (midpoint === 0) return { rangeBound: false, bandPct: 0 };
+
+  // Band = how wide the range is as % of midpoint
+  const bandPct = ((yearHigh - yearLow) / midpoint) * 100;
+  return { rangeBound: bandPct <= RANGE_BOUND_BAND_PCT, bandPct };
 }
 
 // ── Beta ──────────────────────────────────────────────────
@@ -505,12 +532,16 @@ async function checkStock(
   const rsiBonus = rsiOk;
 
   // Check 6: Options chain — uses IB when connected, Black-Scholes synthetic fallback otherwise
-  // In bear mode: target 15-delta + 21 DTE; normal: 20-25 delta + 30-45 DTE
+  // Bear mode: 15-delta + 21 DTE. High-conviction (oversold RSI + elevated IV): 35-delta. Normal: 30-delta.
+  let deltaTarget = DELTA_TARGET_NORMAL;
+  if (ctx.bearMode) deltaTarget = BEAR_DELTA_TARGET;
+  else if (rsiBonus) deltaTarget = DELTA_TARGET_HIGH_CONVICTION; // RSI oversold = nudge toward more premium
+
   const chain = await getOptionsChain(
     ticker,
     price,
     null,
-    ctx.bearMode ? BEAR_DELTA_TARGET : undefined,
+    deltaTarget,
     ctx.bearMode ? BEAR_DTE_TARGET : undefined,
   );
   if (!chain?.bestPut) return { ticker, skipped: true, reason: 'no_options_chain' };
@@ -543,11 +574,17 @@ async function checkStock(
   checks.capitalSufficient = ctx.freeCapital >= effectiveCapitalRequired;
   if (ctx.freeCapital < effectiveCapitalRequired) return { ticker, skipped: true, reason: 'insufficient_capital' };
 
-  // Check 9: IV rank
+  // Check 9: IV rank — range-bound stocks get a lower bar (steady chop = reliable premium)
   const currentIvPct = chain.currentIV * 100;
   const ivRank = await getIvRank(ticker, currentIvPct);
-  checks.ivRank = ivRank !== null ? `${ivRank}` : 'building_history';
-  const ivOk = ivRank === null || ivRank >= MIN_IV_RANK;
+  const rangeBoundResult = ivRank !== null && ivRank < MIN_IV_RANK
+    ? await isRangeBound(ticker)
+    : { rangeBound: false, bandPct: 0 };
+  const effectiveMinIvRank = rangeBoundResult.rangeBound ? MIN_IV_RANK_RANGE_BOUND : MIN_IV_RANK;
+  checks.ivRank = ivRank !== null
+    ? `${ivRank}${rangeBoundResult.rangeBound ? `_range_bound(${rangeBoundResult.bandPct.toFixed(0)}%band)` : ''}`
+    : 'building_history';
+  const ivOk = ivRank === null || ivRank >= effectiveMinIvRank;
 
   // Check 9.5: IV spike — sudden >20pt jump = news event, skip
   const ivSpike = await checkIvSpike(ticker, currentIvPct);
@@ -588,6 +625,10 @@ async function checkStock(
     ivRank,
     probProfit: put.probProfit,
     annualYield: put.annualYield,
+    // Scale contracts 1–3 by conviction: prob_profit + IV rank + RSI signal
+    contracts: put.probProfit >= 80 && (ivRank ?? 0) >= 65 && rsiBonus ? 3
+      : put.probProfit >= 75 && (ivRank ?? 0) >= 55 ? 2
+      : 1,
     checksPassedCount,
     checksDetail: checks,
     bearMode: ctx.bearMode,
@@ -717,7 +758,7 @@ export async function paperTradeOption(
     option_strike: ticket.strike,
     option_expiry: `${ticket.expiry.slice(0, 4)}-${ticket.expiry.slice(4, 6)}-${ticket.expiry.slice(6, 8)}`,
     option_premium: ticket.premium,
-    option_contracts: 1,
+    option_contracts: ticket.contracts ?? 1,
     option_delta: ticket.delta,
     option_iv_rank: ticket.ivRank,
     option_prob_profit: ticket.probProfit,
@@ -750,8 +791,8 @@ export async function autoTradeOption(ticket: OptionsTradeTicket): Promise<{ tra
       action: 'executed',
       source: 'scanner',
       mode: 'OPTIONS_PUT',
-      message: `Paper trade opened — IB offline. Sold $${ticket.strike}P exp ${ticket.expiry}, premium $${ticket.premium.toFixed(2)}`,
-      metadata: { strike: ticket.strike, expiry: ticket.expiry, premium: ticket.premium, paper: true },
+      message: `Paper trade opened — IB offline. Sold ${ticket.contracts ?? 1}x $${ticket.strike}P exp ${ticket.expiry}, premium $${ticket.premium.toFixed(2)}/contract`,
+      metadata: { strike: ticket.strike, expiry: ticket.expiry, premium: ticket.premium, contracts: ticket.contracts ?? 1, paper: true },
     });
     return { tradeId, ibOrderId: null, isLive: false };
   }
@@ -762,7 +803,7 @@ export async function autoTradeOption(ticket: OptionsTradeTicket): Promise<{ tra
       right: 'P',
       strike: ticket.strike,
       expiry: ticket.expiry,
-      contracts: 1,
+      contracts: ticket.contracts ?? 1,
       limitPrice: ticket.premium,
       account: getDefaultAccount() ?? undefined,
     });
@@ -775,8 +816,8 @@ export async function autoTradeOption(ticket: OptionsTradeTicket): Promise<{ tra
       action: 'executed',
       source: 'scanner',
       mode: 'OPTIONS_PUT',
-      message: `Live order placed #${orderId} — Sold $${ticket.strike}P exp ${ticket.expiry}, limit $${ticket.premium.toFixed(2)}`,
-      metadata: { ibOrderId: orderId, strike: ticket.strike, expiry: ticket.expiry, premium: ticket.premium },
+      message: `Live order placed #${orderId} — Sold ${ticket.contracts ?? 1}x $${ticket.strike}P exp ${ticket.expiry}, limit $${ticket.premium.toFixed(2)}/contract`,
+      metadata: { ibOrderId: orderId, strike: ticket.strike, expiry: ticket.expiry, premium: ticket.premium, contracts: ticket.contracts ?? 1 },
     });
     return { tradeId, ibOrderId: orderId, isLive: true };
   } catch (err) {
