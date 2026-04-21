@@ -53,6 +53,15 @@ Operational how-tos and deployment references.
 | [Implementation Patterns](../_bmad-output/planning-artifacts/architecture/implementation-patterns-consistency-rules.md) | Code standards and consistency rules |
 | [Integration Points](../_bmad-output/planning-artifacts/architecture/integration-points-api-contracts.md) | External API contracts (Finnhub, Yahoo, Gemini, IB) |
 
+## Session Notes (Cursor)
+Design sessions and multi-step implementation plans.
+
+| Doc | Description |
+|-----|-------------|
+| [Options Wheel Engine — Design (2026-04-20)](./cursor/2026-04-20-options-wheel-engine.md) | Initial brainstorming, signal library (46 ideas), decision tree, UI spec |
+| [Options Wheel Strategy Upgrades (2026-04-21)](./cursor/2026-04-21-options-wheel-strategy-upgrades.md) | Video-analysis-driven upgrades: prob-profit floor, break-even display, ROC, stop-loss, auto-roll, 21 DTE hard close |
+| [Trade Scanner — Key Levels (2026-04-20)](./cursor/2026-04-20-trade-scanner-track1-key-levels.md) | Track 1 key levels enhancement design |
+
 ## Archive
 Historical planning artifacts and session notes — kept for reference, superseded by implementation.
 
