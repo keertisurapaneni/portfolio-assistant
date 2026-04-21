@@ -184,7 +184,8 @@ export async function getOptionsMonthlyStats(): Promise<OptionsMonthlyStats> {
       .in('status', ['FILLED', 'PARTIAL', 'PENDING', 'SUBMITTED']),
   ]);
 
-  const trades = closed ?? [];
+  // Only count trades with meaningful P&L (> $1) — excludes spurious $0 closes
+  const trades = (closed ?? []).filter(t => Math.abs(t.pnl ?? 0) > 1);
   const wins = trades.filter(t => (t.pnl ?? 0) > 0);
   const losses = trades.filter(t => (t.pnl ?? 0) < 0);
   const premiumCollected = wins.reduce((s: number, t: { pnl: number | null }) => s + (t.pnl ?? 0), 0);

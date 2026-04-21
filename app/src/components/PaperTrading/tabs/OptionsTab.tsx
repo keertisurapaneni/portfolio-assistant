@@ -415,9 +415,14 @@ export function OptionsTab() {
             <div className="space-y-3">
               <div className="text-center py-6 space-y-2">
                 <BarChart2 className="w-8 h-8 mx-auto text-[hsl(var(--muted-foreground))] opacity-40" />
-                <p className="text-sm text-[hsl(var(--muted-foreground))]">No opportunities found today</p>
+                <p className="text-sm text-[hsl(var(--muted-foreground))]">
+                  {openPositions.length > 0 ? 'Today\'s trades are open' : 'No opportunities found today'}
+                </p>
                 <p className="text-xs text-[hsl(var(--muted-foreground))] opacity-60">
-                  Scan runs 10–10:30 AM ET · Restart auto-trader with latest build to see filter reasons below.
+                  {openPositions.length > 0
+                    ? `The auto-trader placed ${openPositions.length} put${openPositions.length > 1 ? 's' : ''} this morning — check the Open tab to manage them.`
+                    : 'Scan runs 10–11:30 AM ET on weekdays. Add quality stocks to your watchlist to get picks.'
+                  }
                 </p>
               </div>
               {skipped.length > 0 && (
