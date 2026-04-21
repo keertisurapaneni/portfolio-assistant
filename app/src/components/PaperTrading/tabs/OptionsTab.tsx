@@ -193,37 +193,31 @@ function PositionCard({ pos }: { pos: OpenOptionsPosition }) {
         </div>
       </div>
 
-      <div className="grid grid-cols-3 gap-1 text-center mb-1">
-        <div>
-          <p className="text-[9px] text-[hsl(var(--muted-foreground))]">Strike</p>
-          <p className="text-xs font-bold text-[hsl(var(--foreground))]">${pos.option_strike}</p>
+      {/* Line 2: Risk picture — strike → break-even anchored to expiry */}
+      <div className="flex items-baseline justify-between mb-1.5">
+        <div className="flex items-baseline gap-1.5">
+          <span className="text-xs font-bold text-[hsl(var(--foreground))]">${pos.option_strike}</span>
+          <span className="text-[10px] text-[hsl(var(--muted-foreground))]">strike</span>
+          <span className="text-[10px] text-[hsl(var(--muted-foreground))]">→</span>
+          <span className="text-xs font-bold text-violet-700">
+            ${(pos.option_net_price ?? (pos.option_strike - pos.option_premium)).toFixed(2)}
+          </span>
+          <span className="text-[10px] text-[hsl(var(--muted-foreground))]">B/E</span>
         </div>
-        <div>
-          <p className="text-[9px] text-[hsl(var(--muted-foreground))]">Break-Even</p>
-          <p className="text-xs font-bold text-violet-700">${(pos.option_net_price ?? (pos.option_strike - pos.option_premium)).toFixed(2)}</p>
-        </div>
-        <div>
-          <p className="text-[9px] text-[hsl(var(--muted-foreground))]">Expiry</p>
-          <p className="text-xs font-bold text-[hsl(var(--foreground))]">{formatExpiry(pos.option_expiry)}</p>
-        </div>
+        <span className="text-[10px] text-[hsl(var(--muted-foreground))]">{formatExpiry(pos.option_expiry)}</span>
       </div>
-      <div className="grid grid-cols-3 gap-1 text-center">
-        <div>
-          <p className="text-[9px] text-[hsl(var(--muted-foreground))]">Collected</p>
-          <p className="text-xs font-bold text-emerald-600">+${Math.round((pos.option_premium ?? 0) * 100)}</p>
-        </div>
-        <div>
-          <p className="text-[9px] text-[hsl(var(--muted-foreground))]">P&L</p>
-          <p className={cn('text-xs font-bold', (pos.pnl ?? 0) >= 0 ? 'text-emerald-600' : 'text-red-600')}>
-            {fmtUsd(pos.pnl ?? 0, 0, true)}
-          </p>
-        </div>
-        <div>
-          <p className="text-[9px] text-[hsl(var(--muted-foreground))]">Captured</p>
-          <p className="text-xs font-bold text-[hsl(var(--foreground))]">
-            {profitCapturePct != null ? `${profitCapturePct.toFixed(0)}%` : '—'}
-          </p>
-        </div>
+
+      {/* Line 3: Performance — collected · P&L · captured */}
+      <div className="flex items-center gap-3 text-[11px]">
+        <span className="font-semibold text-emerald-600">+${Math.round((pos.option_premium ?? 0) * 100)} collected</span>
+        <span className="text-[hsl(var(--muted-foreground))]">·</span>
+        <span className={cn('font-semibold', (pos.pnl ?? 0) >= 0 ? 'text-emerald-600' : 'text-red-600')}>
+          {fmtUsd(pos.pnl ?? 0, 0, true)} P&L
+        </span>
+        <span className="text-[hsl(var(--muted-foreground))]">·</span>
+        <span className="text-[hsl(var(--muted-foreground))]">
+          {profitCapturePct != null ? `${profitCapturePct.toFixed(0)}% captured` : '—'}
+        </span>
       </div>
 
       {dte <= 21 && !pos.option_assigned && (
