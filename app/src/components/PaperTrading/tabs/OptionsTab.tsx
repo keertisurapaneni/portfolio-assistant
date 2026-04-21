@@ -158,9 +158,6 @@ function OpportunityCard({ opp, onPaperTrade }: { opp: OptionsScanOpportunity; o
 
 function PositionCard({ pos }: { pos: OpenOptionsPosition }) {
   const dte = daysUntil(pos.option_expiry);
-  const profitCapturePct = pos.option_premium && pos.pnl != null
-    ? Math.max(0, (pos.pnl / (pos.option_premium * 100)) * 100)
-    : null;
   const annualROC = calcAnnualizedROC(pos.pnl, pos.option_capital_req, pos.opened_at, pos.closed_at);
 
   return (
@@ -193,31 +190,32 @@ function PositionCard({ pos }: { pos: OpenOptionsPosition }) {
         </div>
       </div>
 
-      {/* Line 2: Risk picture — strike → break-even anchored to expiry */}
-      <div className="flex items-baseline justify-between mb-1.5">
-        <div className="flex items-baseline gap-1.5">
-          <span className="text-xs font-bold text-[hsl(var(--foreground))]">${pos.option_strike}</span>
-          <span className="text-[10px] text-[hsl(var(--muted-foreground))]">strike</span>
-          <span className="text-[10px] text-[hsl(var(--muted-foreground))]">→</span>
-          <span className="text-xs font-bold text-violet-700">
-            ${(pos.option_net_price ?? (pos.option_strike - pos.option_premium)).toFixed(2)}
-          </span>
-          <span className="text-[10px] text-[hsl(var(--muted-foreground))]">B/E</span>
+      {/* Single data row: 5 columns, labels below values */}
+      <div className="grid grid-cols-5 gap-1 text-center">
+        <div>
+          <p className="text-xs font-bold text-[hsl(var(--foreground))]">${pos.option_strike}</p>
+          <p className="text-[9px] text-[hsl(var(--muted-foreground))] mt-0.5">Strike</p>
         </div>
-        <span className="text-[10px] text-[hsl(var(--muted-foreground))]">{formatExpiry(pos.option_expiry)}</span>
-      </div>
-
-      {/* Line 3: Performance — collected · P&L · captured */}
-      <div className="flex items-center gap-3 text-[11px]">
-        <span className="font-semibold text-emerald-600">+${Math.round((pos.option_premium ?? 0) * 100)} collected</span>
-        <span className="text-[hsl(var(--muted-foreground))]">·</span>
-        <span className={cn('font-semibold', (pos.pnl ?? 0) >= 0 ? 'text-emerald-600' : 'text-red-600')}>
-          {fmtUsd(pos.pnl ?? 0, 0, true)} P&L
-        </span>
-        <span className="text-[hsl(var(--muted-foreground))]">·</span>
-        <span className="text-[hsl(var(--muted-foreground))]">
-          {profitCapturePct != null ? `${profitCapturePct.toFixed(0)}% captured` : '—'}
-        </span>
+        <div>
+          <p className="text-xs font-bold text-violet-700">
+            ${(pos.option_net_price ?? (pos.option_strike - pos.option_premium)).toFixed(2)}
+          </p>
+          <p className="text-[9px] text-[hsl(var(--muted-foreground))] mt-0.5">B/E</p>
+        </div>
+        <div>
+          <p className="text-xs font-bold text-emerald-600">+${Math.round((pos.option_premium ?? 0) * 100)}</p>
+          <p className="text-[9px] text-[hsl(var(--muted-foreground))] mt-0.5">Collected</p>
+        </div>
+        <div>
+          <p className={cn('text-xs font-bold', (pos.pnl ?? 0) >= 0 ? 'text-emerald-600' : 'text-red-600')}>
+            {fmtUsd(pos.pnl ?? 0, 0, true)}
+          </p>
+          <p className="text-[9px] text-[hsl(var(--muted-foreground))] mt-0.5">P&L</p>
+        </div>
+        <div>
+          <p className="text-xs font-bold text-[hsl(var(--foreground))]">{formatExpiry(pos.option_expiry)}</p>
+          <p className="text-[9px] text-[hsl(var(--muted-foreground))] mt-0.5">Expiry</p>
+        </div>
       </div>
 
       {dte <= 21 && !pos.option_assigned && (
