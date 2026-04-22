@@ -271,6 +271,8 @@ export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], 
             {events.map((event) => {
               // Signal generators pick their own tickers with their own entry/exit levels.
               // Even if our scanner also has the ticker, it's coincidental — don't conflate.
+              // EXCEPTION: if the signal is from a stale video (heading references a different
+              // date), treat it like an execution strategy and fall back to scannerTickers.
               const SIGNAL_GENERATORS = new Set([
                 'Somesh | Day Trader | Investor',
                 'Kay Capitals',
@@ -282,7 +284,15 @@ export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], 
                 'Casper SMC Wisdom',
               ]);
               const stratSource = event.strategy_source ?? '';
-              const isPureExternal = SIGNAL_GENERATORS.has(stratSource);
+
+              // Detect stale rescheduled videos — heading must contain today's date (e.g. "April 22")
+              const todayMonths = ['january','february','march','april','may','june','july','august','september','october','november','december'];
+              const todayMonth = todayMonths[new Date().getMonth()];
+              const todayDay = new Date().getDate().toString();
+              const heading = (event.strategy_video_heading ?? '').toLowerCase();
+              const isFromTodayVideo = !heading || (heading.includes(todayMonth) && heading.includes(todayDay));
+
+              const isPureExternal = SIGNAL_GENERATORS.has(stratSource) && isFromTodayVideo;
               const isExecutionStrategy = EXECUTION_STRATEGIES.has(stratSource);
               const isOurScan = event.source === 'scanner'
                 || (!isPureExternal && (isExecutionStrategy || scannerTickers.has(event.ticker.toUpperCase())));
