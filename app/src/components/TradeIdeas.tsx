@@ -138,13 +138,23 @@ export function TradeIdeas({ onSelectTicker }: TradeIdeasProps) {
     return () => clearInterval(t);
   }, []);
 
-  // Load tickers that already have paper trades (active or recent)
+  // Load tickers that have a DAY_TRADE or SWING_TRADE placed today.
+  // Intentionally excludes long-term holds, options, and external signals so the
+  // "TRADED" badge only lights up when the scanner actually acted on this idea today.
   useEffect(() => {
+    const todayPrefix = new Date().toISOString().slice(0, 10); // "YYYY-MM-DD"
     Promise.all([getActiveTrades(), getAllTrades(50)])
       .then(([active, all]) => {
+        const relevantModes = new Set(['DAY_TRADE', 'SWING_TRADE']);
         const tickers = new Set<string>();
-        active.forEach(t => tickers.add(t.ticker.toUpperCase()));
-        all.forEach(t => tickers.add(t.ticker.toUpperCase()));
+        // Active trades: only day/swing
+        active
+          .filter(t => relevantModes.has(t.mode ?? ''))
+          .forEach(t => tickers.add(t.ticker.toUpperCase()));
+        // Recent trades: only day/swing placed today
+        all
+          .filter(t => relevantModes.has(t.mode ?? '') && (t.opened_at ?? '').startsWith(todayPrefix))
+          .forEach(t => tickers.add(t.ticker.toUpperCase()));
         setTradedTickers(tickers);
       })
       .catch(console.error);
@@ -692,7 +702,7 @@ function IdeaCard({
       {traded && (
         <div className="absolute top-2 right-2 flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-emerald-100 border border-emerald-200">
           <CheckCircle className="w-3 h-3 text-emerald-600" />
-          <span className="text-[9px] font-bold text-emerald-700">TRADED</span>
+          <span className="text-[9px] font-bold text-emerald-700">TRADED TODAY</span>
         </div>
       )}
 
