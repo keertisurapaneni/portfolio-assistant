@@ -222,6 +222,21 @@ function PositionCard({ pos }: { pos: OpenOptionsPosition }) {
         </div>
       </div>
 
+      {/* Placed date + reason */}
+      <div className="mt-2 flex items-start justify-between gap-2">
+        <p className="text-[10px] text-[hsl(var(--muted-foreground))]">
+          Placed{' '}
+          <span className="font-medium">
+            {new Date(pos.opened_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
+          </span>
+        </p>
+        {pos.scanner_reason && (
+          <p className="text-[10px] text-[hsl(var(--muted-foreground))] text-right leading-snug">
+            {pos.scanner_reason}
+          </p>
+        )}
+      </div>
+
       {dte <= 21 && !pos.option_assigned && (
         <div className="mt-2 flex items-center gap-1 text-[10px] text-amber-700">
           <AlertTriangle className="w-3 h-3" />
