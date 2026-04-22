@@ -128,6 +128,52 @@ export async function assignUnknownToSource(params: {
   return { assigned: data.assigned ?? 0, video_ids: data.video_ids ?? [] };
 }
 
+/**
+ * Known signal generators — analysts who pick their own tickers with their own entry/exit levels.
+ * Distinct from execution strategies (Casper) that apply rules on top of our scanner signals.
+ * Used to auto-suggest daily_signal category and validate assignments.
+ */
+export const KNOWN_SIGNAL_GENERATORS = new Set([
+  'Somesh | Day Trader | Investor',
+  'Kay Capitals',
+]);
+
+/**
+ * Purge stale PENDING signals for a video and re-import from its extracted_signals.
+ * Call this whenever a video's strategy_type changes to daily_signal so only the
+ * correct tickers (from the transcript) are live — not leftover generic ones.
+ */
+export async function reimportSignalsForVideo(videoId: string): Promise<{ ok: boolean; imported: number; error?: string }> {
+  const { supabase } = await import('./supabaseClient');
+
+  // 1. Delete all PENDING signals for this video so stale generic ones are removed
+  await supabase
+    .from('external_strategy_signals')
+    .delete()
+    .eq('strategy_video_id', videoId)
+    .eq('status', 'PENDING');
+
+  // 2. Re-import from extracted_signals (respects daily_signal logic — only the 4 transcript tickers)
+  const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/import-strategy-signals`;
+  const key = import.meta.env.VITE_SUPABASE_ANON_KEY;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(key && { Authorization: `Bearer ${key}` }),
+    },
+    body: JSON.stringify({ video_id: videoId }),
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({})) as Record<string, unknown>;
+    return { ok: false, imported: 0, error: String(err?.error ?? `Import failed: ${res.status}`) };
+  }
+
+  const data = await res.json() as { ok?: boolean; imported?: number; skipped?: boolean; reason?: string };
+  return { ok: true, imported: data.imported ?? 0 };
+}
+
 /** Update strategy video metadata (source, category) */
 export async function updateStrategyVideoMetadata(params: {
   video_id: string;

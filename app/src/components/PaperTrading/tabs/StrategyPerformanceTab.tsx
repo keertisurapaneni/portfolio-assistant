@@ -11,6 +11,7 @@ import type {
 import { fetchInfluencerTradePatterns } from '../../../lib/paperTradesApi';
 import {
   fixUnknownSources, assignUnknownToSource, updateStrategyVideoMetadata,
+  reimportSignalsForVideo, KNOWN_SIGNAL_GENERATORS,
   extractFromTranscript, cleanupStrategyAssignments, fetchYouTubeTranscript,
   addUrlsToQueue, processQueue, getQueue, type StrategyVideoQueueItem,
   deleteStrategyVideo,
@@ -429,6 +430,11 @@ export function StrategyPerformanceTab({ sources, videos, statuses, onRefresh }:
     setUpdatingCategoryVideoId(videoId);
     try {
       await updateStrategyVideoMetadata({ video_id: videoId, strategy_type: strategyType });
+      // When upgrading to daily_signal: purge stale generic signals and re-import
+      // from the transcript so only the analyst's actual tickers are live.
+      if (strategyType === 'daily_signal') {
+        await reimportSignalsForVideo(videoId);
+      }
       onRefresh();
     } finally {
       setUpdatingCategoryVideoId(null);
@@ -1213,7 +1219,14 @@ export function StrategyPerformanceTab({ sources, videos, statuses, onRefresh }:
                                               <span className="text-[10px] text-[hsl(var(--muted-foreground))]">Assign to:</span>
                                               <select
                                                 value={videoAssignSelections[baseKey]?.source ?? ''}
-                                                onChange={(e) => setVideoAssignSelections(prev => ({ ...prev, [baseKey]: { ...prev[baseKey], source: e.target.value, category: prev[baseKey]?.category ?? 'generic_strategy' } }))}
+                                                onChange={(e) => {
+                                                  const newSource = e.target.value;
+                                                  // Auto-default to daily_signal for known signal generators
+                                                  const autoCategory = KNOWN_SIGNAL_GENERATORS.has(newSource)
+                                                    ? 'daily_signal'
+                                                    : (videoAssignSelections[baseKey]?.category ?? 'generic_strategy');
+                                                  setVideoAssignSelections(prev => ({ ...prev, [baseKey]: { ...prev[baseKey], source: newSource, category: autoCategory } }));
+                                                }}
                                                 className="text-xs border rounded px-2 py-1 bg-white min-w-[140px]"
                                               >
                                                 <option value="">Select source…</option>
@@ -1225,11 +1238,15 @@ export function StrategyPerformanceTab({ sources, videos, statuses, onRefresh }:
                                               <select
                                                 value={videoAssignSelections[baseKey]?.category ?? 'generic_strategy'}
                                                 onChange={(e) => setVideoAssignSelections(prev => ({ ...prev, [baseKey]: { ...prev[baseKey], category: e.target.value, source: prev[baseKey]?.source ?? '' } }))}
-                                                className="text-xs border rounded px-2 py-1 bg-white"
+                                                className={`text-xs border rounded px-2 py-1 bg-white ${KNOWN_SIGNAL_GENERATORS.has(videoAssignSelections[baseKey]?.source ?? '') && (videoAssignSelections[baseKey]?.category ?? '') === 'generic_strategy' ? 'border-amber-400 bg-amber-50' : ''}`}
+                                                title={KNOWN_SIGNAL_GENERATORS.has(videoAssignSelections[baseKey]?.source ?? '') && (videoAssignSelections[baseKey]?.category ?? '') === 'generic_strategy' ? 'Signal generators like Somesh should be Daily signal — generic will import all scanner tickers instead of just their picks' : undefined}
                                               >
                                                 <option value="daily_signal">Daily signal</option>
                                                 <option value="generic_strategy">Generic strategy</option>
                                               </select>
+                                              {KNOWN_SIGNAL_GENERATORS.has(videoAssignSelections[baseKey]?.source ?? '') && (videoAssignSelections[baseKey]?.category ?? '') === 'generic_strategy' && (
+                                                <span className="text-[10px] text-amber-600 font-medium">⚠ Should be Daily signal</span>
+                                              )}
                                               <button
                                                 onClick={() => handleAssignVideo(video.videoId!, baseKey)}
                                                 disabled={!videoAssignSelections[baseKey]?.source || assigningVideoId === video.videoId}
@@ -1240,7 +1257,7 @@ export function StrategyPerformanceTab({ sources, videos, statuses, onRefresh }:
                                             </div>
                                           )}
                                           {sourceName !== 'Unknown' && video.videoId && (
-                                            <div className="mt-2 flex items-center gap-2">
+                                            <div className="mt-2 flex items-center gap-2 flex-wrap">
                                               <span className="text-[10px] text-[hsl(var(--muted-foreground))]">Category:</span>
                                               <select
                                                 value={video.strategyType ?? 'generic_strategy'}
@@ -1249,13 +1266,17 @@ export function StrategyPerformanceTab({ sources, videos, statuses, onRefresh }:
                                                   if (v) handleCategoryChange(video.videoId!, v);
                                                 }}
                                                 disabled={updatingCategoryVideoId === video.videoId}
-                                                className="text-xs border rounded px-2 py-1 bg-white"
+                                                className={`text-xs border rounded px-2 py-1 bg-white ${KNOWN_SIGNAL_GENERATORS.has(sourceName) && (video.strategyType ?? 'generic_strategy') === 'generic_strategy' ? 'border-amber-400 bg-amber-50' : ''}`}
+                                                title={KNOWN_SIGNAL_GENERATORS.has(sourceName) && (video.strategyType ?? 'generic_strategy') === 'generic_strategy' ? 'Signal generators like Somesh should be Daily signal — changing to daily_signal will re-import only their transcript tickers' : undefined}
                                               >
                                                 <option value="daily_signal">Daily signal</option>
                                                 <option value="generic_strategy">Generic strategy</option>
                                               </select>
+                                              {KNOWN_SIGNAL_GENERATORS.has(sourceName) && (video.strategyType ?? 'generic_strategy') === 'generic_strategy' && (
+                                                <span className="text-[10px] text-amber-600 font-medium">⚠ Should be Daily signal</span>
+                                              )}
                                               {updatingCategoryVideoId === video.videoId && (
-                                                <span className="text-[10px] text-[hsl(var(--muted-foreground))]">Updating…</span>
+                                                <span className="text-[10px] text-[hsl(var(--muted-foreground))]">Updating & re-importing signals…</span>
                                               )}
                                             </div>
                                           )}
