@@ -302,6 +302,11 @@ export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], 
                   </td>
                   <td className="px-4 py-3 text-xs text-[hsl(var(--muted-foreground))]">
                     <span className="font-medium text-[hsl(var(--foreground))]">{sourceLabel}</span>
+                    {event.strategy_source && (
+                      <span className="ml-1 px-1 py-0.5 rounded text-[10px] font-semibold bg-indigo-50 text-indigo-600 border border-indigo-200">
+                        {event.strategy_source}
+                      </span>
+                    )}
                     {qtyMatch
                       ? <span> · {qtyMatch[1]} shares @ ${qtyMatch[2]}</span>
                       : <span> · {msg.replace(/^External signal executed:\s*/i, '').slice(0, 45)}</span>
