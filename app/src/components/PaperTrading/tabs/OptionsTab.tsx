@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { RefreshCw, Plus, X, AlertTriangle, CheckCircle, BarChart2, Activity } from 'lucide-react';
+import { RefreshCw, Plus, X, AlertTriangle, CheckCircle, BarChart2, Activity, Pencil, Check } from 'lucide-react';
 import { cn } from '../../../lib/utils';
 import { fmtUsd } from '../utils';
 import {
@@ -12,6 +12,8 @@ import {
   getOptionsActivityLog,
   addToOptionsWatchlist,
   removeFromOptionsWatchlist,
+  updateOptionsWatchlistNotes,
+  lookupTickerDescription,
   paperTradeOptionManually,
   type WatchlistTicker,
   type OptionsScanOpportunity,
@@ -321,7 +323,10 @@ export function OptionsTab() {
   const [loading, setLoading] = useState(true);
   const [showSkipped, setShowSkipped] = useState(false);
   const [addTicker, setAddTicker] = useState('');
+  const [addNotes, setAddNotes] = useState('');
   const [addingTicker, setAddingTicker] = useState(false);
+  const [editingNotes, setEditingNotes] = useState<string | null>(null); // ticker being edited
+  const [editNotesValue, setEditNotesValue] = useState('');
   const [activeSection, setActiveSection] = useState<'opportunities' | 'positions' | 'history' | 'watchlist' | 'log'>('opportunities');
 
   const load = useCallback(async () => {
@@ -356,8 +361,12 @@ export function OptionsTab() {
     if (!addTicker.trim()) return;
     setAddingTicker(true);
     try {
-      await addToOptionsWatchlist(addTicker.trim().toUpperCase());
+      const ticker = addTicker.trim().toUpperCase();
+      // Auto-fetch description from Finnhub if the user didn't type one
+      const notes = addNotes.trim() || (await lookupTickerDescription(ticker)) || undefined;
+      await addToOptionsWatchlist(ticker, notes);
       setAddTicker('');
+      setAddNotes('');
       await load();
     } finally {
       setAddingTicker(false);
@@ -366,6 +375,12 @@ export function OptionsTab() {
 
   async function handleRemoveTicker(ticker: string) {
     await removeFromOptionsWatchlist(ticker);
+    await load();
+  }
+
+  async function handleSaveNotes(ticker: string) {
+    await updateOptionsWatchlistNotes(ticker, editNotesValue);
+    setEditingNotes(null);
     await load();
   }
 
@@ -632,38 +647,89 @@ export function OptionsTab() {
       {activeSection === 'watchlist' && (
         <div className="space-y-3">
           {/* Add ticker */}
-          <div className="flex gap-2">
-            <input
-              type="text"
-              placeholder="Add ticker (e.g. AAPL)"
-              value={addTicker}
-              onChange={e => setAddTicker(e.target.value.toUpperCase())}
-              onKeyDown={e => e.key === 'Enter' && handleAddTicker()}
-              className="flex-1 text-sm px-3 py-2 rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--background))] focus:outline-none focus:ring-2 focus:ring-violet-500"
-            />
-            <button
-              onClick={handleAddTicker}
-              disabled={addingTicker || !addTicker.trim()}
-              className="px-3 py-2 rounded-lg bg-violet-600 text-white text-sm font-semibold hover:bg-violet-700 disabled:opacity-50 transition-colors"
-            >
-              <Plus className="w-4 h-4" />
-            </button>
+          <div className="flex flex-col gap-1.5">
+            <div className="flex gap-2">
+              <input
+                type="text"
+                placeholder="Ticker (e.g. SNOW)"
+                value={addTicker}
+                onChange={e => setAddTicker(e.target.value.toUpperCase())}
+                onKeyDown={e => e.key === 'Enter' && handleAddTicker()}
+                className="w-28 text-sm px-3 py-2 rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--background))] focus:outline-none focus:ring-2 focus:ring-violet-500"
+              />
+              <input
+                type="text"
+                placeholder="Description (optional)"
+                value={addNotes}
+                onChange={e => setAddNotes(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && handleAddTicker()}
+                className="flex-1 text-sm px-3 py-2 rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--background))] focus:outline-none focus:ring-2 focus:ring-violet-500"
+              />
+              <button
+                onClick={handleAddTicker}
+                disabled={addingTicker || !addTicker.trim()}
+                className="px-3 py-2 rounded-lg bg-violet-600 text-white text-sm font-semibold hover:bg-violet-700 disabled:opacity-50 transition-colors"
+              >
+                <Plus className="w-4 h-4" />
+              </button>
+            </div>
           </div>
 
           {/* Watchlist items */}
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
             {watchlist.filter(w => w.active).map(w => (
-              <div key={w.id} className="flex items-start justify-between rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] px-3 py-2 gap-2">
-                <div className="min-w-0">
+              <div key={w.id} className="flex flex-col rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] px-3 py-2 gap-1">
+                <div className="flex items-start justify-between gap-1">
                   <p className="text-sm font-bold text-[hsl(var(--foreground))]">{w.ticker}</p>
-                  {w.notes && <p className="text-[10px] text-[hsl(var(--muted-foreground))] leading-snug">{w.notes}</p>}
+                  <div className="flex items-center gap-0.5 shrink-0">
+                    <button
+                      title="Edit description"
+                      onClick={() => {
+                        setEditingNotes(w.ticker);
+                        setEditNotesValue(w.notes ?? '');
+                      }}
+                      className="p-1 rounded hover:bg-[hsl(var(--muted))] transition-colors"
+                    >
+                      <Pencil className="w-3 h-3 text-[hsl(var(--muted-foreground))]" />
+                    </button>
+                    <button
+                      onClick={() => handleRemoveTicker(w.ticker)}
+                      className="p-1 rounded hover:bg-[hsl(var(--muted))] transition-colors"
+                    >
+                      <X className="w-3 h-3 text-[hsl(var(--muted-foreground))]" />
+                    </button>
+                  </div>
                 </div>
-                <button
-                  onClick={() => handleRemoveTicker(w.ticker)}
-                  className="p-1 mt-0.5 shrink-0 rounded hover:bg-[hsl(var(--muted))] transition-colors"
-                >
-                  <X className="w-3 h-3 text-[hsl(var(--muted-foreground))]" />
-                </button>
+
+                {editingNotes === w.ticker ? (
+                  <div className="flex gap-1">
+                    <input
+                      autoFocus
+                      type="text"
+                      value={editNotesValue}
+                      onChange={e => setEditNotesValue(e.target.value)}
+                      onKeyDown={e => {
+                        if (e.key === 'Enter') handleSaveNotes(w.ticker);
+                        if (e.key === 'Escape') setEditingNotes(null);
+                      }}
+                      placeholder="Add description..."
+                      className="flex-1 text-[11px] px-2 py-1 rounded border border-violet-300 bg-[hsl(var(--background))] focus:outline-none focus:ring-1 focus:ring-violet-500"
+                    />
+                    <button
+                      onClick={() => handleSaveNotes(w.ticker)}
+                      className="p-1 rounded bg-violet-100 hover:bg-violet-200 transition-colors"
+                    >
+                      <Check className="w-3 h-3 text-violet-700" />
+                    </button>
+                  </div>
+                ) : (
+                  <p className={cn(
+                    'text-[10px] leading-snug',
+                    w.notes ? 'text-[hsl(var(--muted-foreground))]' : 'text-[hsl(var(--muted-foreground))]/40 italic'
+                  )}>
+                    {w.notes ?? 'no description'}
+                  </p>
+                )}
               </div>
             ))}
           </div>

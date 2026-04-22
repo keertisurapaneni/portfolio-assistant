@@ -25,11 +25,80 @@ import {
 import { getActiveTrades, getAllTrades } from '../lib/paperTradesApi';
 import { Spinner } from './Spinner';
 
-// ── Client-side cache ───────────────────────────────────
+// ── Market hours ─────────────────────────────────────────
+// Auto-refresh only fires during actionable US trading windows (Eastern Time).
+// Outside these windows the component shows cached data without burning AI keys.
 
+const MARKET_WINDOWS_ET: Array<{ start: [number, number]; end: [number, number] }> = [
+  { start: [7, 0],  end: [9, 30]  }, // pre-market scouting
+  { start: [9, 30], end: [16, 0]  }, // regular session
+  { start: [16, 0], end: [18, 0]  }, // early after-hours
+];
+
+/** Returns true when the current moment falls inside an actionable trading window (Mon–Fri, ET). */
+function isMarketHoursWindow(): boolean {
+  const now = new Date();
+  // Convert local time → US Eastern using the browser's Intl API.
+  const etParts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    hour: 'numeric', minute: 'numeric', weekday: 'short',
+    hour12: false,
+  }).formatToParts(now);
+
+  const get = (type: string) => etParts.find(p => p.type === type)?.value ?? '';
+  const weekday = get('weekday'); // 'Mon', 'Tue', …
+  if (weekday === 'Sat' || weekday === 'Sun') return false;
+
+  const h = parseInt(get('hour'), 10);
+  const m = parseInt(get('minute'), 10);
+  const totalMin = h * 60 + m;
+
+  return MARKET_WINDOWS_ET.some(({ start, end }) => {
+    const startMin = start[0] * 60 + start[1];
+    const endMin   = end[0]   * 60 + end[1];
+    return totalMin >= startMin && totalMin < endMin;
+  });
+}
+
+// ── Client-side cache (L1: memory, L2: localStorage) ─────
+
+const CACHE_KEY = 'trade-ideas-cache-v1';
+// Day trades: stale after 45 min inside market hours (AI keys are precious).
+// Swing trades embedded in same payload — refresh together.
+const CACHE_TTL = 45 * 60 * 1000;
+
+interface PersistedCache { result: ScanResult; time: number }
+
+function readLocalCache(): { result: ScanResult; time: number } | null {
+  try {
+    const raw = localStorage.getItem(CACHE_KEY);
+    if (!raw) return null;
+    const parsed: PersistedCache = JSON.parse(raw);
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function writeLocalCache(result: ScanResult, time: number) {
+  try {
+    const payload: PersistedCache = { result, time };
+    localStorage.setItem(CACHE_KEY, JSON.stringify(payload));
+  } catch {
+    // storage quota exceeded — silent fail
+  }
+}
+
+// L1: in-memory for same-session fast path
 let _cache: ScanResult | null = null;
 let _cacheTime = 0;
-const CACHE_TTL = 5 * 60 * 1000; // 5 min client-side (DB has its own TTL)
+
+// Hydrate L1 from L2 on module load so browser-refresh doesn't force a refetch.
+const _persisted = readLocalCache();
+if (_persisted) {
+  _cache = _persisted.result;
+  _cacheTime = _persisted.time;
+}
 
 // ── Props ───────────────────────────────────────────────
 
@@ -60,7 +129,14 @@ export function TradeIdeas({ onSelectTicker }: TradeIdeasProps) {
   const [autoTrading, setAutoTrading] = useState(false);
   const [, setAutoTradeResults] = useState<ProcessResult[]>([]);
   const [tradedTickers, setTradedTickers] = useState<Set<string>>(new Set());
+  const [marketOpen, setMarketOpen] = useState(() => isMarketHoursWindow());
   const processedRef = useRef<Set<string>>(new Set()); // track already-processed tickers
+
+  // Re-check market hours every minute so the badge updates as windows open/close.
+  useEffect(() => {
+    const t = setInterval(() => setMarketOpen(isMarketHoursWindow()), 60_000);
+    return () => clearInterval(t);
+  }, []);
 
   // Load tickers that already have paper trades (active or recent)
   useEffect(() => {
@@ -86,6 +162,7 @@ export function TradeIdeas({ onSelectTicker }: TradeIdeasProps) {
       const result = await fetchTradeIdeas(undefined, force);
       _cache = result;
       _cacheTime = Date.now();
+      writeLocalCache(result, _cacheTime);
       setData(result);
 
       // Second call on force refresh: explicitly request a swing scan.
@@ -99,6 +176,7 @@ export function TradeIdeas({ onSelectTicker }: TradeIdeasProps) {
         };
         _cache = merged;
         _cacheTime = Date.now();
+        writeLocalCache(merged, _cacheTime);
         setData(merged);
       }
     } catch (err) {
@@ -108,7 +186,20 @@ export function TradeIdeas({ onSelectTicker }: TradeIdeasProps) {
     }
   }, []);
 
-  useEffect(() => { load(); }, [load]);
+  // Auto-fetch only fires when:
+  //   1. Inside an actionable market-hours window (pre-market, session, early after-hours) AND
+  //   2. The cache is stale (older than CACHE_TTL or absent)
+  // Outside market hours we show whatever is cached without burning AI keys.
+  // Manual refresh (the RefreshCw button) always bypasses this gate via load(true).
+  useEffect(() => {
+    if (_cache) setData(_cache); // always hydrate UI from cache immediately
+
+    const cacheStale = !_cache || Date.now() - _cacheTime >= CACHE_TTL;
+    if (cacheStale && isMarketHoursWindow()) {
+      load();
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Auto-trade: when new data arrives and auto-trading is enabled,
   // process any new ideas that haven't been processed yet
@@ -161,6 +252,11 @@ export function TradeIdeas({ onSelectTicker }: TradeIdeasProps) {
             <span className="text-[10px] text-[hsl(var(--muted-foreground))]/60">
               &middot; Scanned {formatScanAge(data.timestamp)}
               {data.cached && ' (cached)'}
+            </span>
+          )}
+          {!marketOpen && !loading && (
+            <span className="text-[10px] text-[hsl(var(--muted-foreground))]/50 italic">
+              · market closed
             </span>
           )}
           {loading && <Spinner size="xs" className="text-amber-500" />}

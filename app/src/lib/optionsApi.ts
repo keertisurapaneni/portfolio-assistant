@@ -9,6 +9,25 @@ const supabaseUrl = import.meta.env.VITE_SUPABASE_URL as string;
 const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY as string;
 const supabase = createClient(supabaseUrl, supabaseKey);
 
+const FINNHUB_BASE = 'https://finnhub.io/api/v1';
+const FINNHUB_KEY = import.meta.env.VITE_FINNHUB_API_KEY as string;
+
+/** Fetches company name + sector from Finnhub and returns a one-line description. */
+export async function lookupTickerDescription(ticker: string): Promise<string | null> {
+  if (!FINNHUB_KEY) return null;
+  try {
+    const res = await fetch(
+      `${FINNHUB_BASE}/stock/profile2?symbol=${encodeURIComponent(ticker)}&token=${FINNHUB_KEY}`
+    );
+    if (!res.ok) return null;
+    const p = await res.json();
+    if (!p?.name) return null;
+    return p.finnhubIndustry ? `${p.name} — ${p.finnhubIndustry}` : p.name;
+  } catch {
+    return null;
+  }
+}
+
 // ── Types ────────────────────────────────────────────────
 
 export interface WatchlistTicker {
@@ -98,6 +117,14 @@ export async function removeFromOptionsWatchlist(ticker: string): Promise<void> 
   const { error } = await supabase
     .from('options_watchlist')
     .update({ active: false })
+    .eq('ticker', ticker.toUpperCase());
+  if (error) throw error;
+}
+
+export async function updateOptionsWatchlistNotes(ticker: string, notes: string): Promise<void> {
+  const { error } = await supabase
+    .from('options_watchlist')
+    .update({ notes: notes.trim() || null })
     .eq('ticker', ticker.toUpperCase());
   if (error) throw error;
 }
