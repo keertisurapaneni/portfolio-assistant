@@ -90,6 +90,9 @@ export interface OptionsScanOpportunity {
   leverage_factor?: number;
   dip_entry?: boolean;
   contracts?: number;
+  bb_lower?: number | null;
+  bb_upper?: number | null;
+  bb_signal?: 'at_lower' | 'near_lower' | null;
 }
 
 export interface OpenOptionsPosition {
@@ -122,6 +125,7 @@ export interface OptionsMonthlyStats {
   winRate: number;
   openPositions: number;
   annualizedReturn: number;
+  projectedMonthlyIncome: number; // total premium locked in from all currently open puts
 }
 
 // ── Watchlist ────────────────────────────────────────────
@@ -243,7 +247,7 @@ export async function getOptionsMonthlyStats(): Promise<OptionsMonthlyStats> {
       .gte('closed_at', monthStart.toISOString()),
     supabase
       .from('paper_trades')
-      .select('id')
+      .select('id, option_premium, option_contracts')
       .in('mode', ['OPTIONS_PUT', 'OPTIONS_CALL'])
       .in('status', ['FILLED', 'PARTIAL', 'PENDING', 'SUBMITTED']),
   ]);
@@ -257,6 +261,12 @@ export async function getOptionsMonthlyStats(): Promise<OptionsMonthlyStats> {
   const daysInMonth = new Date().getDate();
   const annualizedReturn = totalCapital > 0 ? (premiumCollected / totalCapital) * (365 / daysInMonth) * 100 : 0;
 
+  // Projected income = total premium locked in across all currently open puts
+  // (premium/share × contracts × 100 shares/contract)
+  const projectedMonthlyIncome = (open ?? []).reduce((sum: number, t: { option_premium: number | null; option_contracts: number | null }) => {
+    return sum + (t.option_premium ?? 0) * (t.option_contracts ?? 1) * 100;
+  }, 0);
+
   return {
     premiumCollected,
     wins: wins.length,
@@ -264,6 +274,7 @@ export async function getOptionsMonthlyStats(): Promise<OptionsMonthlyStats> {
     winRate: trades.length > 0 ? (wins.length / trades.length) * 100 : 0,
     openPositions: (open ?? []).length,
     annualizedReturn,
+    projectedMonthlyIncome,
   };
 }
 

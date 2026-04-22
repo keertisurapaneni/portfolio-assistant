@@ -1,6 +1,6 @@
 # Strategy System — Architecture
 
-**Last updated:** 2026-02-20
+**Last updated:** 2026-04-22
 
 ## Overview
 
@@ -41,13 +41,30 @@ See [`docs/cursor/2026-02-20-strategy-video-ingestion-flow.md`](./cursor/2026-02
 | **daily_signal** | Video with concrete levels (e.g. "TSLA above 414, target 420, stop 407") | `import-strategy-signals` edge function auto-creates PENDING `external_strategy_signals` immediately after extraction |
 | **generic_strategy** | Rules/patterns (e.g. "enter on pullback to EMA") | Auto-trader creates signals from scanner candidates matching the strategy's timeframe |
 
+**Critical:** Named analysts (Somesh, Kay Capitals) must always be `daily_signal`. If set as `generic_strategy`, their signals will be created for ALL scanner tickers instead of just their transcript picks. Changing to `daily_signal` in the UI automatically purges stale PENDING signals and re-imports only the correct tickers.
+
+### Signal Generators vs Execution Strategies
+
+A key distinction for trade attribution:
+
+| Category | Examples | Ticker source | Attribution |
+|----------|---------|---------------|-------------|
+| **Signal generator** | Somesh, Kay Capitals | Picks their own tickers with their own entry/exit levels | `External signal · Somesh` |
+| **Execution strategy** | Casper Clipping, Casper SMC Wisdom | Applies candlestick/SMC rules ON TOP of our scanner tickers | `Trade signal + Casper Clipping` |
+
+If a ticker is in both our scanner (`trade_scans`) AND a signal generator fires it, the two trades are **independent** (different entry prices / targets). Both appear separately in Today's Activity.
+
+Stale signals: if a `daily_signal` video fires on a date different from its `trade_date` (rescheduled due to holiday or late import), its heading won't match today's date — the UI treats it as an execution strategy and defers to `scannerTickers` for attribution.
+
+Known signal generators are defined in `KNOWN_SIGNAL_GENERATORS` (`strategyVideoQueueApi.ts`) and `SIGNAL_GENERATORS` (`TodayActivityTab.tsx`).
+
 ### Source Attribution
 
 Each signal and paper trade carries:
 - `strategy_source` — source name (e.g. "Casper SMC Wisdom")
 - `strategy_source_url` — `https://www.instagram.com/{handle}/`
 - `strategy_video_id` — video ID
-- `strategy_video_heading` — extracted title/heading
+- `strategy_video_heading` — extracted title/heading (used to detect stale rescheduled signals)
 
 ---
 
@@ -193,12 +210,25 @@ Video links are platform-aware:
 
 ---
 
-## 9. Key File Reference
+## 9. Safeguards Against Miscategorization
+
+When a video's `strategy_type` is changed to `daily_signal` in the UI:
+1. All PENDING signals for that video are deleted from `external_strategy_signals`
+2. `import-strategy-signals` is called to re-import only the correct transcript tickers
+3. This fires automatically — no manual cleanup needed
+
+When assigning an unknown video to a known signal generator (Somesh, Kay Capitals):
+- The category dropdown auto-defaults to `Daily signal`
+- An amber `⚠ Should be Daily signal` warning appears if left as Generic strategy
+
+---
+
+## 10. Key File Reference
 
 | Concern | Primary Files |
 |---------|---------------|
 | Add Videos UI + 3-step pipeline | `app/src/components/PaperTrading/tabs/StrategyPerformanceTab.tsx` |
-| Strategy API client | `app/src/lib/strategyVideoQueueApi.ts` |
+| Strategy API client + signal generators set | `app/src/lib/strategyVideoQueueApi.ts` |
 | Queue processing | `supabase/functions/process-strategy-video-queue/index.ts` |
 | YouTube captions | `supabase/functions/fetch-youtube-transcript/index.ts` |
 | Instagram trigger | `supabase/functions/trigger-instagram-ingest/index.ts` |

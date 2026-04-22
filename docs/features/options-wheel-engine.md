@@ -1,6 +1,6 @@
 # Options Wheel Engine
 
-**Last updated:** 2026-04-21  
+**Last updated:** 2026-04-22  
 **Status:** Live — paper trading mode (IB paper account DUP876374)  
 **Auto-trade:** Configurable via `auto_trader_config.options_auto_trade_enabled`
 
@@ -24,9 +24,11 @@ Scheduler (every 15 min, market hours)
   └─ runDipWatcher()           dip-watcher.ts       — every 5 min, dip entry detection
 
 Frontend
-  └─ /options (OptionsWheelPage)
-       └─ OptionsTab.tsx       — Today / Open / History / Watchlist / Log tabs
+  └─ /options (OptionsWheelPage) — visible to all users (no login required)
+       └─ OptionsTab.tsx       — Open / History / Watchlist / Log tabs
 ```
+
+> **Note:** The "Today" (opportunities) tab was removed — open positions and watchlist with live prices are the primary daily views.
 
 **Data stores:**
 - `options_watchlist` — approved tickers with min_price and notes (leverage factor)
@@ -48,7 +50,7 @@ Runs sequentially for each watchlist ticker. First failing check skips the ticke
 | 1.5 | Duplicate ticker | No open put already exists on this ticker | `duplicate_open_position` |
 | 2 | Position limit | Max 5 concurrent puts (3 when VIX > 25) | `max_positions` |
 | 3 | Min price | Stock ≥ $20 (or watchlist override) | `price_too_low_X` |
-| 3.2 | Dip detection | Checks 20-day candles: ≥5% drop from recent high = dip entry bonus | informational |
+| 3.2 | Dip detection + Bollinger Bands | Fetches 30-day candles (zero extra API calls). ≥5% drop = dip entry bonus. Computes SMA20 ± 2σ → BB lower/upper bands + `bb_signal` (`at_lower` / `near_lower`). Stored in `options_scan_results`. | informational |
 | 3.5 | Stock trend | Must be above 50-day SMA; not down >20% in 3 months | `below_sma50:X` / `down_Xpct_3m` |
 | 3.6 | Beta filter | Skip if beta > 1.5 (leveraged ETFs exempt — they have dedicated gates) | `high_beta:X.XX` |
 | 4 | Earnings blackout | No earnings within 7 days | `earnings_in_Xd` |
@@ -74,16 +76,30 @@ Runs sequentially for each watchlist ticker. First failing check skips the ticke
 | High conviction (RSI oversold) | 0.35 | ~65% |
 | Normal | 0.30 | ~70% |
 
+### Bollinger Band Timing Signal
+
+Computed at check 3.2 from 20-day closes. Zero extra API calls — uses the same candle fetch as dip detection.
+
+| `bb_signal` | Meaning | Impact |
+|-------------|---------|--------|
+| `at_lower` | Price ≤ BB lower band | Stock oversold, IV elevated, best premium entry. +1 contract bonus. |
+| `near_lower` | Price ≤ BB lower × 1.05 | Near oversold — good entry but not maximum conviction. |
+| `null` | Price in normal range | No BB timing bonus. |
+
+Stored in `options_scan_results` as `bb_lower`, `bb_upper`, `bb_signal`.
+
 ### Contract Scaling (1–3 contracts)
 
-Conviction score determines contracts:
+Stacking order: base conviction → +1 dip entry → +1 BB lower band touch. Capped at 3.
 
 | Condition | Contracts |
 |-----------|-----------|
-| Prob profit ≥ 80% AND IV rank ≥ 65 AND RSI oversold | 3 |
-| Prob profit ≥ 75% AND IV rank ≥ 55 | 2 |
-| All others | 1 |
-| + dip entry bonus | +1 (capped at 3) |
+| Prob profit ≥ 80% AND IV rank ≥ 65 AND RSI oversold | 3 (base) |
+| Prob profit ≥ 75% AND IV rank ≥ 55 | 2 (base) |
+| All others | 1 (base) |
+| + dip entry bonus | +1 |
+| + BB `at_lower` signal | +1 |
+| **Ceiling** | **3** |
 
 ---
 
@@ -151,6 +167,7 @@ Current leveraged ETFs on watchlist: SOXL, TQQQ, NVDL, AAPU, TSLL
 - **Premium collected:** sum of all closed trade P&L (wins + losses) — net result
 - **Win rate:** closed trades with pnl > $1 / total closed trades with |pnl| > $1
 - **Annualized return:** `(netPnl / totalCapitalDeployed) × (365 / daysElapsed) × 100`
+- **Projected monthly income:** total premium locked in from all currently open puts — `sum(option_premium × option_contracts × 100)`. Shows the maximum income achievable if all open positions expire worthless.
 
 ---
 
@@ -167,17 +184,30 @@ Current leveraged ETFs on watchlist: SOXL, TQQQ, NVDL, AAPU, TSLL
 
 ---
 
+## Watchlist
+
+Managed via the Watchlist tab. Each card shows:
+- Live market price + day change % (Finnhub real-time)
+- Notes/description (auto-populated from Finnhub company profile on add)
+
+Adding a ticker automatically fetches its description from Finnhub and inserts it into `options_watchlist.notes`. No manual note entry required.
+
+Current watchlist includes: NVDA, AMD, PLTR, GOOGL, MSFT, AAPL, META, CRM, SNOW, NOW, CRDO, AVGO, ALAB, APP, SOXL, TQQQ, NVDL, TSLL + others.
+
+---
+
 ## Key Files
 
 | File | Purpose |
 |------|---------|
-| `auto-trader/src/lib/options-scanner.ts` | Entry scan, all 21 checks, trade ticket generation |
+| `auto-trader/src/lib/options-scanner.ts` | Entry scan, all checks, BB computation, trade ticket generation |
 | `auto-trader/src/lib/options-manager.ts` | Position management, close/alert logic, monthly stats |
 | `auto-trader/src/lib/options-chain.ts` | IB chain fetch + Black-Scholes synthetic fallback |
 | `auto-trader/src/lib/dip-watcher.ts` | Dip entry detection, runs every 5 min |
 | `auto-trader/src/scheduler.ts` | Cron schedule wiring |
-| `app/src/components/PaperTrading/tabs/OptionsTab.tsx` | Full UI |
-| `app/src/lib/optionsApi.ts` | Frontend Supabase queries |
+| `app/src/components/PaperTrading/tabs/OptionsTab.tsx` | UI — Open / History / Watchlist / Log |
+| `app/src/lib/optionsApi.ts` | Frontend Supabase queries, live price fetch, projected income |
+| `supabase/migrations/20260422000003_options_scan_bb_signal.sql` | Adds `bb_lower`, `bb_upper`, `bb_signal` columns to `options_scan_results` |
 
 ---
 

@@ -89,6 +89,10 @@ export interface OptionsTradeTicket {
   contracts: number;         // 1–3 based on conviction
   leverageFactor: number;    // 1 = regular stock, 2 = 2x ETF, 3 = 3x ETF
   dipEntry: boolean;         // true = stock dipped ≥5% from recent high = premium entry
+  bbLower: number | null;    // Bollinger Band lower band (SMA20 - 2σ)
+  bbUpper: number | null;    // Bollinger Band upper band (SMA20 + 2σ)
+  bbSignal: 'at_lower' | 'near_lower' | null; // timing: at/near lower BB = prime entry
+  rsiOversold: boolean;      // RSI < threshold and turning up
   checksPassedCount: number;
   checksDetail: Record<string, boolean | string>;
   bearMode: boolean;        // true = bear market conservative params applied
@@ -485,14 +489,18 @@ async function checkStock(
   checks.minPrice = price >= effectiveMinPrice;
   if (price < effectiveMinPrice) return { ticker, skipped: true, reason: `price_too_low_${price.toFixed(0)}` };
 
-  // Check 3.2: Dip detection + SMA20 computation (shared candle fetch)
+  // Check 3.2: Dip detection + SMA20 + Bollinger Bands (shared candle fetch — zero extra API calls)
   // Dip entry: stock dropped ≥5% from 20-day high = elevated IV, larger OTM cushion
-  // SMA20: used later as a strike floor — Henry's insight (Bollinger Band middle = 20-day SMA)
+  // SMA20 = BB middle band; ±2σ gives lower/upper bands.
+  // BB lower band touch = prime entry: stock oversold, IV elevated, bigger OTM cushion.
   let dipEntry = false;
   let sma20: number | null = null;
+  let bbLower: number | null = null;
+  let bbUpper: number | null = null;
+  let bbSignal: 'at_lower' | 'near_lower' | null = null;
   try {
     const to = Math.floor(Date.now() / 1000);
-    const from = to - 86400 * 25;
+    const from = to - 86400 * 30; // extra buffer so we reliably get 20 trading days
     const dipData = await fetchJson<{ c?: number[]; h?: number[] }>(
       `https://finnhub.io/api/v1/stock/candle?symbol=${ticker}&resolution=D&from=${from}&to=${to}&token=${FINNHUB_KEY}`
     );
@@ -502,8 +510,21 @@ async function checkStock(
       dipEntry = dipPct >= DIP_ENTRY_BONUS_THRESHOLD;
       checks.dipEntry = `${dipPct.toFixed(1)}%_from_20d_high${dipEntry ? '_DIP' : ''}`;
     }
-    // SMA20: average of last 20 close prices
-    if (dipData?.c && dipData.c.length >= 5) {
+    // SMA20 + Bollinger Bands (needs ≥ 20 closes)
+    if (dipData?.c && dipData.c.length >= 20) {
+      const closes20 = dipData.c.slice(-20);
+      const mean = closes20.reduce((a, b) => a + b, 0) / 20;
+      const variance = closes20.reduce((sum, v) => sum + (v - mean) ** 2, 0) / 20;
+      const stdDev = Math.sqrt(variance);
+      sma20 = mean;
+      bbLower = mean - 2 * stdDev;
+      bbUpper = mean + 2 * stdDev;
+      // Timing signal: at/near lower band = oversold, best premium entry window
+      if (price <= bbLower) bbSignal = 'at_lower';
+      else if (price <= bbLower * 1.05) bbSignal = 'near_lower';
+      checks.bollingerBand = `lower:${bbLower.toFixed(2)}_upper:${bbUpper.toFixed(2)}_signal:${bbSignal ?? 'none'}`;
+    } else if (dipData?.c && dipData.c.length >= 5) {
+      // Fallback: fewer candles, compute SMA20 from whatever we have
       const closes = dipData.c.slice(-20);
       sma20 = closes.reduce((a, b) => a + b, 0) / closes.length;
     }
@@ -676,7 +697,14 @@ async function checkStock(
     ctx.freeCapital >= capitalRequired,
     ivOk,
     !ivSpike.spiked,
+    bbSignal !== null,  // BB lower band touch is a positive signal
   ].filter(Boolean).length;
+
+  // Scale contracts 1–3 by conviction.
+  // Stacking order: base score → +1 for dip entry → +1 for BB lower band touch (high conviction entry)
+  const baseContracts = (put.probProfit >= 80 && (ivRank ?? 0) >= 65 && rsiBonus) ? 3
+    : (put.probProfit >= 75 && (ivRank ?? 0) >= 55) ? 2 : 1;
+  const contracts = Math.min(3, baseContracts + (dipEntry ? 1 : 0) + (bbSignal === 'at_lower' ? 1 : 0));
 
   return {
     ticker,
@@ -694,16 +722,13 @@ async function checkStock(
     ivRank,
     probProfit: put.probProfit,
     annualYield: put.annualYield,
-    // Scale contracts 1–3 by conviction: prob_profit + IV rank + RSI + dip entry
-    // Dip entries get +1 contract (entering at a discount stacks the odds)
-    contracts: Math.min(3, (
-      (put.probProfit >= 80 && (ivRank ?? 0) >= 65 && rsiBonus ? 3
-        : put.probProfit >= 75 && (ivRank ?? 0) >= 55 ? 2
-        : 1)
-      + (dipEntry ? 1 : 0)
-    )),
+    contracts,
     leverageFactor,
     dipEntry,
+    bbLower,
+    bbUpper,
+    bbSignal,
+    rsiOversold: rsiBonus,
     checksPassedCount,
     checksDetail: checks,
     bearMode: ctx.bearMode,
@@ -793,6 +818,9 @@ export async function runOptionsScan(freeCapital = 100_000): Promise<OptionsScan
       annual_yield: opp.annualYield,
       checks_passed: opp.checksDetail,
       bear_mode: opp.bearMode,
+      bb_lower: opp.bbLower,
+      bb_upper: opp.bbUpper,
+      bb_signal: opp.bbSignal,
     }, { onConflict: 'ticker,scan_date,signal' });
   }
 
