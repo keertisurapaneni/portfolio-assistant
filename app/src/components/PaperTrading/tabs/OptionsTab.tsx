@@ -4,8 +4,6 @@ import { cn } from '../../../lib/utils';
 import { fmtUsd } from '../utils';
 import {
   getOptionsWatchlist,
-  getLatestOptionsScan,
-  getSkippedOptionsScan,
   getOpenOptionsPositions,
   getClosedOptionsPositions,
   getOptionsMonthlyStats,
@@ -16,9 +14,7 @@ import {
   lookupTickerDescription,
   fetchWatchlistQuotes,
   type TickerQuote,
-  paperTradeOptionManually,
   type WatchlistTicker,
-  type OptionsScanOpportunity,
   type OpenOptionsPosition,
   type OptionsMonthlyStats,
   type OptionsActivityEvent,
@@ -70,6 +66,14 @@ function OpportunityCard({ opp, onPaperTrade }: { opp: OptionsScanOpportunity; o
   const [done, setDone] = useState(false);
   const dte = daysUntil(opp.expiry);
 
+  // 3-signal conviction score: BB lower band + IV rank ≥60 + RSI oversold
+  const bbHit = opp.bb_signal === 'at_lower' || opp.bb_signal === 'near_lower';
+  const ivHit = (opp.iv_rank ?? 0) >= 60;
+  const rsiStr = typeof opp.checks_passed?.rsiOversold === 'string' ? opp.checks_passed.rsiOversold as string : '';
+  const rsiVal = rsiStr ? parseFloat(rsiStr) : NaN;
+  const rsiHit = !isNaN(rsiVal) && rsiVal < 38;
+  const signalScore = [bbHit, ivHit, rsiHit].filter(Boolean).length;
+
   async function handlePaperTrade() {
     setLoading(true);
     try {
@@ -87,14 +91,30 @@ function OpportunityCard({ opp, onPaperTrade }: { opp: OptionsScanOpportunity; o
           <div className="flex items-center gap-2 flex-wrap">
             <span className="text-sm font-bold text-[hsl(var(--foreground))]">{opp.ticker}</span>
             <span className="text-[10px] px-1.5 py-0.5 rounded bg-violet-100 text-violet-700 font-semibold">SELL PUT</span>
+            {/* 3-signal conviction badge */}
+            {signalScore >= 1 && (
+              <span className={cn(
+                'text-[10px] px-1.5 py-0.5 rounded font-bold',
+                signalScore === 3 ? 'bg-emerald-100 text-emerald-700 border border-emerald-300' :
+                signalScore === 2 ? 'bg-amber-100 text-amber-700 border border-amber-300' :
+                'bg-slate-100 text-slate-600 border border-slate-200'
+              )}>
+                ⚡ {signalScore}/3 signals
+              </span>
+            )}
             {opp.leverage_factor && opp.leverage_factor > 1 && (
               <span className="text-[10px] px-1.5 py-0.5 rounded bg-purple-100 text-purple-700 font-bold">{opp.leverage_factor}x ETF</span>
             )}
+            {opp.bb_signal && (
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-cyan-100 text-cyan-700 font-semibold border border-cyan-200">
+                📊 BB {opp.bb_signal === 'at_lower' ? 'touch' : 'near'}
+              </span>
+            )}
             {opp.dip_entry && (
-              <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 font-semibold">📉 DIP ENTRY</span>
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 font-semibold">📉 DIP</span>
             )}
             {opp.bear_mode && (
-              <span className="text-[10px] px-1.5 py-0.5 rounded bg-red-100 text-red-700 font-semibold">🐻 BEAR MODE</span>
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-red-100 text-red-700 font-semibold">🐻 BEAR</span>
             )}
             {opp.iv_rank && opp.iv_rank >= 60 && (
               <span className="text-[10px] px-1.5 py-0.5 rounded bg-orange-100 text-orange-700 font-semibold">IV {opp.iv_rank}%</span>
@@ -354,37 +374,30 @@ function formatSkipReason(reason: string): string {
 }
 
 export function OptionsTab() {
-  const [opportunities, setOpportunities] = useState<OptionsScanOpportunity[]>([]);
-  const [skipped, setSkipped] = useState<OptionsScanOpportunity[]>([]);
   const [openPositions, setOpenPositions] = useState<OpenOptionsPosition[]>([]);
   const [closedPositions, setClosedPositions] = useState<OpenOptionsPosition[]>([]);
   const [watchlist, setWatchlist] = useState<WatchlistTicker[]>([]);
   const [stats, setStats] = useState<OptionsMonthlyStats | null>(null);
   const [activityLog, setActivityLog] = useState<OptionsActivityEvent[]>([]);
   const [loading, setLoading] = useState(true);
-  const [showSkipped, setShowSkipped] = useState(false);
   const [addTicker, setAddTicker] = useState('');
   const [addNotes, setAddNotes] = useState('');
   const [addingTicker, setAddingTicker] = useState(false);
   const [editingNotes, setEditingNotes] = useState<string | null>(null); // ticker being edited
   const [editNotesValue, setEditNotesValue] = useState('');
   const [prices, setPrices] = useState<Map<string, TickerQuote>>(new Map());
-  const [activeSection, setActiveSection] = useState<'opportunities' | 'positions' | 'history' | 'watchlist' | 'log'>('opportunities');
+  const [activeSection, setActiveSection] = useState<'positions' | 'history' | 'watchlist' | 'log'>('positions');
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [opps, skippedOpps, openPos, closedPos, wl, monthStats, log] = await Promise.all([
-        getLatestOptionsScan(),
-        getSkippedOptionsScan(),
+      const [openPos, closedPos, wl, monthStats, log] = await Promise.all([
         getOpenOptionsPositions(),
         getClosedOptionsPositions(20),
         getOptionsWatchlist(),
         getOptionsMonthlyStats(),
         getOptionsActivityLog(50),
       ]);
-      setOpportunities(opps);
-      setSkipped(skippedOpps);
       setOpenPositions(openPos);
       setClosedPositions(closedPos);
       setWatchlist(wl);
@@ -434,13 +447,7 @@ export function OptionsTab() {
     await load();
   }
 
-  async function handlePaperTrade(opp: OptionsScanOpportunity) {
-    await paperTradeOptionManually(opp);
-    await load();
-  }
-
   const sections = [
-    { id: 'opportunities' as const, label: 'Today', count: opportunities.length },
     { id: 'positions' as const, label: 'Open', count: openPositions.length },
     { id: 'history' as const, label: 'History', count: closedPositions.length },
     { id: 'watchlist' as const, label: 'Watchlist', count: watchlist.filter(w => w.active).length },
@@ -514,59 +521,6 @@ export function OptionsTab() {
           </button>
         ))}
       </div>
-
-      {/* Today's Opportunities */}
-      {activeSection === 'opportunities' && (
-        <div className="space-y-3">
-          {loading ? (
-            <div className="text-center py-8 text-sm text-[hsl(var(--muted-foreground))]">Scanning watchlist...</div>
-          ) : opportunities.length === 0 ? (
-            <div className="space-y-3">
-              <div className="text-center py-6 space-y-2">
-                <BarChart2 className="w-8 h-8 mx-auto text-[hsl(var(--muted-foreground))] opacity-40" />
-                <p className="text-sm text-[hsl(var(--muted-foreground))]">
-                  {openPositions.length > 0 ? 'Today\'s trades are open' : 'No opportunities found today'}
-                </p>
-                <p className="text-xs text-[hsl(var(--muted-foreground))] opacity-60">
-                  {openPositions.length > 0
-                    ? `The auto-trader placed ${openPositions.length} put${openPositions.length > 1 ? 's' : ''} this morning — check the Open tab to manage them.`
-                    : 'Scan runs 10–11:30 AM ET on weekdays. Add quality stocks to your watchlist to get picks.'
-                  }
-                </p>
-              </div>
-              {skipped.length > 0 && (
-                <div className="rounded-xl border border-[hsl(var(--border))] overflow-hidden">
-                  <button
-                    onClick={() => setShowSkipped(v => !v)}
-                    className="w-full flex items-center justify-between px-4 py-2.5 bg-[hsl(var(--muted))]/40 hover:bg-[hsl(var(--muted))]/60 transition-colors text-left"
-                  >
-                    <span className="text-xs font-semibold text-[hsl(var(--muted-foreground))]">
-                      Why were {skipped.length} tickers filtered out?
-                    </span>
-                    <span className="text-xs text-[hsl(var(--muted-foreground))]">{showSkipped ? '▲' : '▼'}</span>
-                  </button>
-                  {showSkipped && (
-                    <div className="divide-y divide-[hsl(var(--border))]">
-                      {skipped.map(s => (
-                        <div key={s.id} className="flex items-center justify-between px-4 py-2">
-                          <span className="text-xs font-semibold text-[hsl(var(--foreground))]">{s.ticker}</span>
-                          <span className="text-xs text-[hsl(var(--muted-foreground))]">
-                            {formatSkipReason(s.skip_reason ?? '')}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          ) : (
-            opportunities.map(opp => (
-              <OpportunityCard key={opp.id} opp={opp} onPaperTrade={handlePaperTrade} />
-            ))
-          )}
-        </div>
-      )}
 
       {/* Open Positions */}
       {activeSection === 'positions' && (
