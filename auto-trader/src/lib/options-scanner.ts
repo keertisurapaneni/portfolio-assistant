@@ -945,7 +945,7 @@ export async function autoTradeOption(ticket: OptionsTradeTicket): Promise<{ tra
 /**
  * Read options auto-trade setting from DB.
  */
-async function getOptionsAutoTradeConfig(): Promise<{ enabled: boolean; maxContracts: number }> {
+export async function getOptionsAutoTradeConfig(): Promise<{ enabled: boolean; maxContracts: number }> {
   const sb = getSupabase();
   const { data } = await sb
     .from('auto_trader_config')

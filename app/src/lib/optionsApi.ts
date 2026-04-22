@@ -102,6 +102,7 @@ export interface OpenOptionsPosition {
   option_strike: number;
   option_expiry: string;
   option_premium: number;
+  option_contracts: number | null;
   option_capital_req: number;
   option_prob_profit: number;
   option_iv_rank: number | null;
@@ -209,12 +210,22 @@ export async function getRecentOptionsScan(daysBack = 3): Promise<OptionsScanOpp
 export async function getOpenOptionsPositions(): Promise<OpenOptionsPosition[]> {
   const { data, error } = await supabase
     .from('paper_trades')
-    .select('id, ticker, mode, option_strike, option_expiry, option_premium, option_capital_req, option_prob_profit, option_iv_rank, option_annual_yield, option_net_price, option_delta, option_assigned, status, pnl, opened_at, closed_at, notes, scanner_reason')
+    .select('id, ticker, mode, option_strike, option_expiry, option_premium, option_contracts, option_capital_req, option_prob_profit, option_iv_rank, option_annual_yield, option_net_price, option_delta, option_assigned, status, close_reason, pnl, opened_at, closed_at, notes, scanner_reason')
     .in('mode', ['OPTIONS_PUT', 'OPTIONS_CALL'])
     .in('status', ['PENDING', 'SUBMITTED', 'FILLED', 'PARTIAL'])
     .order('option_expiry', { ascending: true });
   if (error) throw error;
   return (data ?? []) as OpenOptionsPosition[];
+}
+
+/** Fetch the options capital budget cap from auto_trader_config. */
+export async function getOptionsMaxAllocation(): Promise<number | null> {
+  const { data } = await supabase
+    .from('auto_trader_config')
+    .select('max_total_allocation')
+    .eq('id', 'default')
+    .single();
+  return (data as { max_total_allocation?: number } | null)?.max_total_allocation ?? null;
 }
 
 // ── Closed / History ─────────────────────────────────────

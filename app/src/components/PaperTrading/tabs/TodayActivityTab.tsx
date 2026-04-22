@@ -6,6 +6,167 @@ import { executeSignal } from '../../../lib/paperTradesApi';
 import { fmtUsd } from '../utils';
 import { supabase } from '../../../lib/supabaseClient';
 
+// ── Options Wheel section ─────────────────────────────────
+
+interface OptionsTrade {
+  id: string;
+  ticker: string;
+  mode: string;
+  scanner_signal: string | null;
+  status: string;
+  pnl: number | null;
+  close_reason: string | null;
+  option_premium: number | null;
+  option_contracts: number | null;
+  opened_at: string | null;
+  closed_at: string | null;
+  notes: string | null;
+}
+
+function optionsActionLabel(trade: OptionsTrade): { label: string; color: string } {
+  if (trade.close_reason === '50pct_profit') return { label: 'Closed 50%', color: 'bg-emerald-100 text-emerald-700' };
+  if (trade.close_reason === 'rolled') return { label: 'Rolled', color: 'bg-blue-100 text-blue-700' };
+  if (trade.close_reason === 'stop_loss' || trade.status === 'STOPPED') return { label: 'Stop-loss', color: 'bg-red-100 text-red-700' };
+  if (trade.close_reason === 'expired_worthless') return { label: 'Expired', color: 'bg-emerald-100 text-emerald-700' };
+  if (trade.close_reason === '21dte_profit' || trade.close_reason === '21dte_close') return { label: '21 DTE Close', color: 'bg-emerald-100 text-emerald-700' };
+  if (trade.closed_at) return { label: 'Closed', color: 'bg-slate-100 text-slate-600' };
+  return { label: 'Opened', color: 'bg-blue-100 text-blue-700' };
+}
+
+function OptionsWheelSection({ todayStart }: { todayStart: Date }) {
+  const [trades, setTrades] = useState<OptionsTrade[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    async function fetchOptionsTrades() {
+      setLoading(true);
+      try {
+        const [{ data: opened }, { data: closed }] = await Promise.all([
+          supabase
+            .from('paper_trades')
+            .select('id, ticker, mode, scanner_signal, status, pnl, close_reason, option_premium, option_contracts, opened_at, closed_at, notes')
+            .in('mode', ['OPTIONS_PUT', 'OPTIONS_CALL'])
+            .gte('opened_at', todayStart.toISOString())
+            .order('opened_at', { ascending: false }),
+          supabase
+            .from('paper_trades')
+            .select('id, ticker, mode, scanner_signal, status, pnl, close_reason, option_premium, option_contracts, opened_at, closed_at, notes')
+            .in('mode', ['OPTIONS_PUT', 'OPTIONS_CALL'])
+            .not('closed_at', 'is', null)
+            .gte('closed_at', todayStart.toISOString()),
+        ]);
+
+        // Merge by id — closed version takes precedence (has close info)
+        const merged = new Map<string, OptionsTrade>();
+        for (const t of (opened ?? [])) merged.set(t.id, t as OptionsTrade);
+        for (const t of (closed ?? [])) merged.set(t.id, t as OptionsTrade);
+
+        const sorted = [...merged.values()].sort((a, b) => {
+          const aTime = a.closed_at ?? a.opened_at ?? '';
+          const bTime = b.closed_at ?? b.opened_at ?? '';
+          return bTime.localeCompare(aTime);
+        });
+        setTrades(sorted);
+      } catch (err) {
+        console.error('Options trades fetch error:', err);
+      } finally {
+        setLoading(false);
+      }
+    }
+    fetchOptionsTrades();
+  }, [todayStart]);
+
+  const premiumTotal = trades.reduce((s, t) => s + (t.option_premium ?? 0) * (t.option_contracts ?? 1) * 100, 0);
+  const pnlTotal = trades.filter(t => t.pnl != null).reduce((s, t) => s + (t.pnl ?? 0), 0);
+
+  return (
+    <div className="rounded-xl border border-[hsl(var(--border))] bg-white overflow-hidden">
+      <div className="px-4 py-2.5 border-b border-[hsl(var(--border))] bg-[hsl(var(--secondary))] flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-semibold text-[hsl(var(--foreground))]">Options Wheel</span>
+          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-violet-100 text-violet-700 font-bold">
+            {loading ? '…' : trades.length}
+          </span>
+        </div>
+        {trades.length > 0 && (
+          <div className="flex items-center gap-3 text-[10px] text-[hsl(var(--muted-foreground))]">
+            {premiumTotal > 0 && (
+              <span>Premium: <span className="font-semibold text-emerald-600">+${premiumTotal.toFixed(0)}</span></span>
+            )}
+            {pnlTotal !== 0 && (
+              <span>P&L: <span className={cn('font-semibold', pnlTotal > 0 ? 'text-emerald-600' : 'text-red-600')}>{fmtUsd(pnlTotal, 0, true)}</span></span>
+            )}
+          </div>
+        )}
+      </div>
+
+      {loading ? (
+        <div className="px-4 py-5 text-center text-xs text-[hsl(var(--muted-foreground))]">Loading…</div>
+      ) : trades.length === 0 ? (
+        <div className="px-4 py-5 text-center text-xs text-[hsl(var(--muted-foreground))] opacity-60">
+          No options activity today
+        </div>
+      ) : (
+        <div className="divide-y divide-[hsl(var(--border))]">
+          {trades.map(trade => {
+            const { label: actionLabel, color: actionColor } = optionsActionLabel(trade);
+            const premium = (trade.option_premium ?? 0) * (trade.option_contracts ?? 1) * 100;
+            const timeStr = new Date(trade.closed_at ?? trade.opened_at ?? '').toLocaleTimeString(
+              undefined,
+              { hour: '2-digit', minute: '2-digit' }
+            );
+            const isOpen = !trade.closed_at;
+            const pnlColor = trade.pnl != null && trade.pnl > 0 ? 'text-emerald-600'
+              : trade.pnl != null && trade.pnl < 0 ? 'text-red-600'
+              : 'text-[hsl(var(--muted-foreground))]';
+
+            return (
+              <div key={trade.id} className={cn(
+                'flex items-center gap-3 px-4 py-2.5',
+                isOpen && 'bg-blue-50/30',
+              )}>
+                {/* Ticker + mode badge */}
+                <div className="flex items-center gap-1.5 w-24 shrink-0">
+                  <span className="text-sm font-bold text-[hsl(var(--foreground))]">{trade.ticker}</span>
+                  <span className={cn(
+                    'text-[10px] px-1 py-0.5 rounded font-medium',
+                    trade.mode === 'OPTIONS_CALL' ? 'bg-blue-100 text-blue-700' : 'bg-violet-100 text-violet-700'
+                  )}>
+                    {trade.mode === 'OPTIONS_CALL' ? 'CALL' : 'PUT'}
+                  </span>
+                </div>
+
+                {/* Action */}
+                <span className={cn('text-[10px] px-1.5 py-0.5 rounded font-semibold shrink-0', actionColor)}>
+                  {actionLabel}
+                </span>
+
+                {/* Premium collected */}
+                <span className="text-xs text-emerald-600 font-medium tabular-nums shrink-0">
+                  {premium > 0 ? `+$${premium.toFixed(0)}` : '—'}
+                </span>
+
+                {/* P&L */}
+                <span className={cn('text-xs font-semibold tabular-nums shrink-0', pnlColor)}>
+                  {trade.pnl != null ? fmtUsd(trade.pnl, 0, true) : '—'}
+                </span>
+
+                {/* Spacer */}
+                <div className="flex-1 min-w-0" />
+
+                {/* Time */}
+                <span className="text-[10px] text-[hsl(var(--muted-foreground))] tabular-nums shrink-0">
+                  {timeStr}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /** Convert raw failure_reason codes into human-readable labels. */
 function formatSkipReason(reason: string | null | undefined): string | null {
   if (!reason) return null;
@@ -41,6 +202,12 @@ export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], 
   const [executingId, setExecutingId] = useState<string | null>(null);
   const [executingAll, setExecutingAll] = useState(false);
   const [scannerTickers, setScannerTickers] = useState<Set<string>>(new Set());
+
+  const todayStart = (() => {
+    const d = new Date();
+    d.setHours(0, 0, 0, 0);
+    return d;
+  })();
 
   // Load today's trade scan tickers from DB to correctly attribute source
   useEffect(() => {
@@ -133,6 +300,8 @@ export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], 
             Scanner runs at 10 AM and 3:30 PM ET
           </p>
         </div>
+
+        <OptionsWheelSection todayStart={todayStart} />
 
         {todaySignalsForExecute.length > 0 && (
           <div className="rounded-xl border border-[hsl(var(--border))] bg-white overflow-hidden">
@@ -465,6 +634,8 @@ export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], 
           </div>
         </div>
       )}
+
+      <OptionsWheelSection todayStart={todayStart} />
     </div>
   );
 }

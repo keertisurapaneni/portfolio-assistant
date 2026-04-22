@@ -77,6 +77,22 @@ async function getCurrentPremium(
   return null;
 }
 
+async function getCurrentCallPremium(
+  ticker: string,
+  strike: number,
+  expiryISO: string,
+  stockPrice: number,
+): Promise<number | null> {
+  if (!isConnected()) return null;
+  const chain = await getOptionsChain(ticker, stockPrice);
+  if (!chain?.bestCall) return null;
+  const tolerancePct = 0.03;
+  if (Math.abs(chain.bestCall.strike - strike) / strike <= tolerancePct) {
+    return chain.bestCall.mid;
+  }
+  return null;
+}
+
 // ── Load Open Positions ──────────────────────────────────
 
 export async function getOpenOptionsPositions(): Promise<OpenOptionsPosition[]> {
@@ -281,10 +297,11 @@ export async function runOptionsManageCycle(): Promise<ManageCycleResult> {
     }
 
     // ── Check 3c: Roll alert when stock threatens strike ──
-    // Trigger: stock dropped 5%+ below strike AND we've lost 50%+ of premium AND DTE > 7.
+    // Trigger: stock dropped 3%+ below strike AND premium grown 1.2× — catches threat earlier
+    // when there's still more credit available on the roll. DTE > 7 to avoid last-week noise.
     // We no longer auto-execute the roll with fabricated credits — instead we fire a prominent
     // alert so the position owner can evaluate the real chain and decide whether to roll or close.
-    if (stockPrice < pos.option_strike * 0.95 && currentPremium > premiumCollected * 1.5 && dte > 7) {
+    if (stockPrice < pos.option_strike * 0.97 && currentPremium > premiumCollected * 1.2 && dte > 7) {
       result.rollAlerts.push(pos.ticker);
       console.log(`[Options Manager] ROLL ALERT: ${pos.ticker} $${pos.option_strike}P — stock at $${stockPrice.toFixed(2)}, ${dte}d left, premium at ${(currentPremium / premiumCollected * 100).toFixed(0)}% of collected`);
       persistEvent(pos.ticker, 'warning',
@@ -322,9 +339,127 @@ export async function runOptionsManageCycle(): Promise<ManageCycleResult> {
     // ── Check 5: Assignment detection (stock price below strike) ──
     if (stockPrice < pos.option_strike * 0.98 && !pos.option_assigned) {
       result.assignmentAlerts.push(pos.ticker);
+
+      // Mark the put as assigned so subsequent cycles don't re-trigger
+      await sb.from('paper_trades').update({ option_assigned: true }).eq('id', pos.id);
+
+      // Open a covered call at ~10 delta above current price (≈ price × 1.04, ~30-delta call)
+      const ccExpiry = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+      const ccExpiryISO = ccExpiry.toISOString().slice(0, 10);
+      const ccStrike = Math.round(stockPrice * 1.04 * 2) / 2; // round to nearest $0.50
+
+      // Fetch covered call premium from IB options chain
+      let ccPremium = 0;
+      try {
+        const ccChain = await getOptionsChain(pos.ticker, stockPrice, null, 0.30); // ~30-delta call
+        if (ccChain?.bestCall) {
+          ccPremium = ccChain.bestCall.bid; // conservative: use bid price
+        }
+      } catch { /* non-blocking — insert with 0 if chain unavailable */ }
+
+      await sb.from('paper_trades').insert({
+        ticker: pos.ticker,
+        mode: 'OPTIONS_CALL',
+        signal: 'SELL',
+        entry_price: stockPrice,
+        fill_price: stockPrice,
+        quantity: 1,
+        position_size: stockPrice * 100,
+        status: 'FILLED',
+        filled_at: new Date().toISOString(),
+        opened_at: new Date().toISOString(),
+        option_strike: ccStrike,
+        option_expiry: ccExpiryISO,
+        option_premium: ccPremium,
+        option_contracts: 1,
+        option_capital_req: stockPrice * 100,
+        option_assigned: false,
+        scanner_reason: 'wheel_assignment_covered_call',
+        notes: `Covered call after assignment on ${pos.ticker} put at $${pos.option_strike} — collected $${(ccPremium * 100).toFixed(0)} premium`,
+      });
+
+      console.log(`[Options Manager] Assignment detected — covered call queued: ${pos.ticker} $${ccStrike}C exp ${ccExpiryISO}`);
       persistEvent(pos.ticker, 'warning',
-        `📌 ${pos.ticker} stock ($${stockPrice.toFixed(2)}) is below put strike ($${pos.option_strike}) — assignment risk. Consider rolling or accepting shares.`,
-        { action: 'flagged', source: 'options', metadata: { reason: 'assignment_risk', stockPrice, strike: pos.option_strike } }
+        `📌 ${pos.ticker} assignment → covered call queued: $${ccStrike}C exp ${ccExpiryISO}, premium $${(ccPremium * 100).toFixed(0)}`,
+        { action: 'flagged', source: 'options', metadata: { reason: 'assignment_detected_covered_call_queued', stockPrice, strike: pos.option_strike, ccStrike, ccExpiry: ccExpiryISO, ccPremium } }
+      );
+    }
+  }
+
+  // ── Process Covered Calls ─────────────────────────────────
+  const { data: callData } = await sb
+    .from('paper_trades')
+    .select('id, ticker, mode, option_strike, option_expiry, option_premium, option_capital_req, option_assigned, fill_price, status, ib_order_id')
+    .eq('mode', 'OPTIONS_CALL')
+    .in('status', ['FILLED', 'PARTIAL']);
+
+  for (const pos of (callData ?? []) as PositionRow[]) {
+    if (!pos.option_strike || !pos.option_expiry) continue;
+
+    const dte = daysUntil(pos.option_expiry);
+    const premiumCollected = pos.option_premium ?? 0;
+
+    // Check A: Expired worthless (stock stayed below call strike) — keep premium
+    if (dte <= 0) {
+      await sb.from('paper_trades').update({
+        status: 'CLOSED',
+        close_price: 0,
+        pnl: premiumCollected * 100,
+        closed_at: new Date().toISOString(),
+        close_reason: 'expired_worthless',
+      }).eq('id', pos.id);
+      persistEvent(pos.ticker, 'success',
+        `✅ ${pos.ticker} $${pos.option_strike} covered call expired worthless — kept $${(premiumCollected * 100).toFixed(0)} premium`,
+        { action: 'closed', source: 'options', metadata: { reason: 'expired_worthless', premium: premiumCollected * 100 } }
+      );
+      continue;
+    }
+
+    if (!isConnected()) continue;
+
+    // Get fresh stock price
+    let stockPrice: number | null = null;
+    try {
+      const res = await fetch(`https://finnhub.io/api/v1/quote?symbol=${pos.ticker}&token=${process.env.FINNHUB_API_KEY}`);
+      const q = await res.json() as { c?: number };
+      stockPrice = q.c ?? null;
+    } catch { /* skip */ }
+    if (!stockPrice) continue;
+
+    // Get current call premium
+    const currentCallPremium = await getCurrentCallPremium(pos.ticker, pos.option_strike, pos.option_expiry, stockPrice);
+    if (currentCallPremium === null) continue;
+
+    const profitCapturePct = premiumCollected > 0
+      ? Math.max(0, (1 - currentCallPremium / premiumCollected) * 100)
+      : 0;
+    const pnl = (premiumCollected - currentCallPremium) * 100;
+    await sb.from('paper_trades').update({ pnl }).eq('id', pos.id);
+
+    // Check B: 50% profit — buy back cheap, free up the shares
+    if (profitCapturePct >= 50) {
+      await sb.from('paper_trades').update({
+        status: 'CLOSED',
+        close_price: currentCallPremium,
+        pnl,
+        closed_at: new Date().toISOString(),
+        close_reason: '50pct_profit',
+        option_close_pct: profitCapturePct,
+      }).eq('id', pos.id);
+      result.closed50Pct.push(pos.ticker);
+      persistEvent(pos.ticker, 'success',
+        `💰 ${pos.ticker} $${pos.option_strike} covered call closed at ${profitCapturePct.toFixed(0)}% profit — captured $${pnl.toFixed(0)}`,
+        { action: 'closed', source: 'options', metadata: { reason: '50pct_profit', pnl } }
+      );
+      continue;
+    }
+
+    // Check C: Roll alert — stock within 2% of call strike (at risk of being called away)
+    if (stockPrice >= pos.option_strike * 0.98 && dte > 5) {
+      result.rollAlerts.push(pos.ticker);
+      persistEvent(pos.ticker, 'warning',
+        `↩️ ${pos.ticker} covered call at risk — stock $${stockPrice.toFixed(2)} near call strike $${pos.option_strike} (${dte}d left). Consider rolling up.`,
+        { action: 'flagged', source: 'options', metadata: { reason: 'call_roll_needed', stockPrice, strike: pos.option_strike, dte } }
       );
     }
   }
@@ -358,7 +493,7 @@ export async function handleAssignment(positionId: string): Promise<void> {
 
   // Log assignment event
   persistEvent(pos.ticker, 'warning',
-    `📌 ${pos.ticker} put assigned — now own 100 shares at $${pos.option_net_price?.toFixed(2) ?? pos.option_strike} effective cost. Time to sell a covered call.`,
+    `📌 ${pos.ticker} put assigned — now own 100 shares at $${pos.option_net_price?.toFixed(2) ?? pos.option_strike} effective cost. Assignment detected — covered call queued.`,
     { action: 'flagged', source: 'options', metadata: { reason: 'assigned', strike: pos.option_strike, netPrice: pos.option_net_price } }
   );
 }

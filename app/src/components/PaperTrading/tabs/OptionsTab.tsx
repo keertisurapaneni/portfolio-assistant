@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { RefreshCw, Plus, X, AlertTriangle, CheckCircle, Activity, Pencil, Check } from 'lucide-react';
+import { RefreshCw, Plus, X, AlertTriangle, CheckCircle, Activity, Pencil, Check, TrendingUp, DollarSign } from 'lucide-react';
 import { cn } from '../../../lib/utils';
 import { fmtUsd } from '../utils';
 import {
@@ -8,6 +8,7 @@ import {
   getClosedOptionsPositions,
   getOptionsMonthlyStats,
   getOptionsActivityLog,
+  getOptionsMaxAllocation,
   addToOptionsWatchlist,
   removeFromOptionsWatchlist,
   updateOptionsWatchlistNotes,
@@ -59,28 +60,60 @@ function calcAnnualizedROC(
   return (pnl / capitalReq) * (365 / daysHeld) * 100;
 }
 
+function fmtK(n: number): string {
+  if (Math.abs(n) >= 1_000_000) return `$${(n / 1_000_000).toFixed(1)}M`;
+  if (Math.abs(n) >= 1_000) return `$${(n / 1_000).toFixed(0)}k`;
+  return `$${n.toFixed(0)}`;
+}
+
 // ── Open Position Card ────────────────────────────────────
 
-function PositionCard({ pos }: { pos: OpenOptionsPosition }) {
+function PositionCard({
+  pos,
+  currentPrice,
+  atRisk,
+}: {
+  pos: OpenOptionsPosition;
+  currentPrice?: TickerQuote;
+  atRisk?: boolean;
+}) {
   const dte = daysUntil(pos.option_expiry);
   const annualROC = calcAnnualizedROC(pos.pnl, pos.option_capital_req, pos.opened_at, pos.closed_at);
 
+  const priceDist = currentPrice != null
+    ? ((currentPrice.price - pos.option_strike) / pos.option_strike) * 100
+    : null;
+
+  const borderClass = atRisk
+    ? 'border-amber-300 bg-amber-50/60'
+    : dte <= 7 ? 'border-red-200 bg-red-50'
+    : dte <= 21 ? 'border-amber-200 bg-amber-50'
+    : 'border-[hsl(var(--border))] bg-[hsl(var(--card))]';
+
   return (
-    <div className={cn(
-      'rounded-xl border p-3',
-      dte <= 7 ? 'border-red-200 bg-red-50' :
-      dte <= 21 ? 'border-amber-200 bg-amber-50' :
-      'border-[hsl(var(--border))] bg-[hsl(var(--card))]'
-    )}>
+    <div className={cn('rounded-xl border p-3', borderClass)}>
       <div className="flex items-center justify-between mb-2">
         <div className="flex items-center gap-2">
           <span className="text-sm font-bold text-[hsl(var(--foreground))]">{pos.ticker}</span>
-          <span className="text-[10px] px-1.5 py-0.5 rounded bg-violet-100 text-violet-700 font-medium">PUT</span>
+          <span className="text-[10px] px-1.5 py-0.5 rounded bg-violet-100 text-violet-700 font-medium">
+            {pos.mode === 'OPTIONS_CALL' ? 'CALL' : 'PUT'}
+          </span>
           {pos.option_assigned && (
             <span className="text-[10px] px-1.5 py-0.5 rounded bg-red-100 text-red-700 font-medium">ASSIGNED</span>
           )}
         </div>
         <div className="flex items-center gap-1.5">
+          {currentPrice != null && (
+            <span className={cn(
+              'text-[10px] px-2 py-0.5 rounded-full font-semibold tabular-nums',
+              priceDist != null && priceDist < 5 ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-600'
+            )}>
+              ${currentPrice.price.toFixed(2)}
+              {priceDist != null && (
+                <span className="ml-1 opacity-70">{priceDist >= 0 ? '+' : ''}{priceDist.toFixed(1)}%</span>
+              )}
+            </span>
+          )}
           {annualROC != null && (
             <span className={cn(
               'text-[10px] px-2 py-0.5 rounded-full font-semibold',
@@ -108,7 +141,7 @@ function PositionCard({ pos }: { pos: OpenOptionsPosition }) {
           <p className="text-[9px] text-[hsl(var(--muted-foreground))] mt-0.5">B/E</p>
         </div>
         <div>
-          <p className="text-xs font-bold text-emerald-600">+${Math.round((pos.option_premium ?? 0) * 100)}</p>
+          <p className="text-xs font-bold text-emerald-600">+${Math.round((pos.option_premium ?? 0) * (pos.option_contracts ?? 1) * 100)}</p>
           <p className="text-[9px] text-[hsl(var(--muted-foreground))] mt-0.5">Collected</p>
         </div>
         <div>
@@ -231,6 +264,103 @@ function HowItWorks() {
   );
 }
 
+// ── Stats Header ─────────────────────────────────────────
+
+const MONTHLY_INCOME_TARGET = 5_000;
+
+function StatsHeader({
+  stats,
+  deployed,
+  maxAllocation,
+}: {
+  stats: OptionsMonthlyStats;
+  deployed: number;
+  maxAllocation: number;
+}) {
+  const progress = Math.min(stats.premiumCollected / MONTHLY_INCOME_TARGET, 1);
+  const progressPct = Math.round(progress * 100);
+  const barColor = progress > 0.5 ? 'bg-emerald-500' : progress > 0.25 ? 'bg-amber-400' : 'bg-red-400';
+
+  const deployedPct = maxAllocation > 0 ? Math.min(deployed / maxAllocation, 1) : 0;
+  const available = Math.max(maxAllocation - deployed, 0);
+
+  return (
+    <div className="space-y-2">
+      {/* Income progress row */}
+      <div className="rounded-xl border border-emerald-200 bg-emerald-50/60 px-4 py-3 space-y-2">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-1.5">
+            <TrendingUp className="w-3.5 h-3.5 text-emerald-700" />
+            <span className="text-xs font-semibold text-emerald-800">Monthly Income Target</span>
+          </div>
+          <span className="text-[10px] text-emerald-700">
+            Projected: <span className="font-semibold">{fmtUsd(stats.projectedMonthlyIncome, 0)}</span> if all held
+          </span>
+        </div>
+        <div className="space-y-1">
+          <div className="flex items-center justify-between text-xs">
+            <span className="font-bold text-emerald-800">
+              This Month: {fmtUsd(stats.premiumCollected, 0)} / {fmtUsd(MONTHLY_INCOME_TARGET, 0)}
+            </span>
+            <span className={cn(
+              'font-bold text-[10px]',
+              progress > 0.5 ? 'text-emerald-700' : progress > 0.25 ? 'text-amber-600' : 'text-red-600'
+            )}>
+              {progressPct}%
+            </span>
+          </div>
+          <div className="h-2 rounded-full bg-emerald-100 overflow-hidden">
+            <div
+              className={cn('h-full rounded-full transition-all duration-500', barColor)}
+              style={{ width: `${progressPct}%` }}
+            />
+          </div>
+        </div>
+        <div className="flex items-center gap-3 text-[10px] text-emerald-700">
+          <span>{stats.wins}W / {stats.losses}L · {stats.winRate.toFixed(0)}% win rate</span>
+          <span>·</span>
+          <span>{stats.annualizedReturn.toFixed(0)}% annualized</span>
+        </div>
+      </div>
+
+      {/* Budget meter */}
+      <div className="rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] px-4 py-3 space-y-2">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-1.5">
+            <DollarSign className="w-3.5 h-3.5 text-blue-600" />
+            <span className="text-xs font-semibold text-[hsl(var(--foreground))]">Options Capital</span>
+          </div>
+          <span className="text-[10px] text-[hsl(var(--muted-foreground))]">
+            Available: <span className="font-semibold text-emerald-600">{fmtK(available)}</span>
+          </span>
+        </div>
+        <div className="space-y-1">
+          <div className="flex items-center justify-between text-xs">
+            <span className="font-bold text-[hsl(var(--foreground))]">
+              {fmtK(deployed)} / {fmtK(maxAllocation)} deployed
+            </span>
+            <span className="text-[10px] text-[hsl(var(--muted-foreground))] font-medium">
+              {Math.round(deployedPct * 100)}%
+            </span>
+          </div>
+          <div className="h-2 rounded-full bg-[hsl(var(--muted))] overflow-hidden">
+            <div
+              className={cn(
+                'h-full rounded-full transition-all duration-500',
+                deployedPct > 0.8 ? 'bg-amber-400' : 'bg-blue-500'
+              )}
+              style={{ width: `${Math.round(deployedPct * 100)}%` }}
+            />
+          </div>
+        </div>
+        <p className="text-[10px] text-[hsl(var(--muted-foreground))]">
+          {stats.openPositions} open position{stats.openPositions !== 1 ? 's' : ''} · cash-secured puts reserved
+        </p>
+      </div>
+    </div>
+  );
+}
+
 // ── Main Tab ─────────────────────────────────────────────
 
 export function OptionsTab() {
@@ -243,9 +373,11 @@ export function OptionsTab() {
   const [addTicker, setAddTicker] = useState('');
   const [addNotes, setAddNotes] = useState('');
   const [addingTicker, setAddingTicker] = useState(false);
-  const [editingNotes, setEditingNotes] = useState<string | null>(null); // ticker being edited
+  const [editingNotes, setEditingNotes] = useState<string | null>(null);
   const [editNotesValue, setEditNotesValue] = useState('');
   const [prices, setPrices] = useState<Map<string, TickerQuote>>(new Map());
+  const [openPrices, setOpenPrices] = useState<Map<string, TickerQuote>>(new Map());
+  const [maxAllocation, setMaxAllocation] = useState<number>(500_000);
   const [activeSection, setActiveSection] = useState<'positions' | 'history' | 'watchlist' | 'log'>('positions');
 
   const load = useCallback(async () => {
@@ -272,7 +404,19 @@ export function OptionsTab() {
 
   useEffect(() => { load(); }, [load]);
 
-  // Fetch live prices whenever the watchlist tab is active and watchlist changes.
+  // Fetch max allocation from config once
+  useEffect(() => {
+    getOptionsMaxAllocation().then(v => { if (v != null) setMaxAllocation(v); });
+  }, []);
+
+  // Fetch live prices for open positions whenever positions load
+  useEffect(() => {
+    if (openPositions.length === 0) return;
+    const tickers = [...new Set(openPositions.map(p => p.ticker))];
+    fetchWatchlistQuotes(tickers).then(setOpenPrices);
+  }, [openPositions]);
+
+  // Fetch live prices for watchlist tab
   useEffect(() => {
     if (activeSection !== 'watchlist') return;
     const tickers = watchlist.filter(w => w.active).map(w => w.ticker);
@@ -285,7 +429,6 @@ export function OptionsTab() {
     setAddingTicker(true);
     try {
       const ticker = addTicker.trim().toUpperCase();
-      // Auto-fetch description from Finnhub if the user didn't type one
       const notes = addNotes.trim() || (await lookupTickerDescription(ticker)) || undefined;
       await addToOptionsWatchlist(ticker, notes);
       setAddTicker('');
@@ -307,6 +450,21 @@ export function OptionsTab() {
     await load();
   }
 
+  // Split open positions into needs-attention and healthy
+  const deployed = openPositions.reduce((s, p) => {
+    return s + (p.option_strike * 100 * (p.option_contracts ?? 1));
+  }, 0);
+
+  const [needsAttention, healthy] = openPositions.reduce<[OpenOptionsPosition[], OpenOptionsPosition[]]>(
+    ([atRisk, ok], pos) => {
+      const price = openPrices.get(pos.ticker);
+      const pnlNegative = (pos.pnl ?? 0) < 0;
+      const nearStrike = price != null && Math.abs(price.price - pos.option_strike) / pos.option_strike < 0.05;
+      return pnlNegative || nearStrike ? [[...atRisk, pos], ok] : [atRisk, [...ok, pos]];
+    },
+    [[], []]
+  );
+
   const sections = [
     { id: 'positions' as const, label: 'Open', count: openPositions.length },
     { id: 'history' as const, label: 'History', count: closedPositions.length },
@@ -327,33 +485,9 @@ export function OptionsTab() {
       {/* How it works */}
       <HowItWorks />
 
-      {/* Monthly Scorecard */}
+      {/* Stats Header — income progress + budget meter */}
       {stats && (
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-          <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-center">
-            <p className="text-[9px] text-emerald-700 uppercase tracking-wide font-semibold">Premium This Month</p>
-            <p className="text-lg font-bold text-emerald-700">{fmtUsd(stats.premiumCollected, 0, true)}</p>
-          </div>
-          <div className="rounded-xl border border-violet-200 bg-violet-50 p-3 text-center">
-            <p className="text-[9px] text-violet-700 uppercase tracking-wide font-semibold">Win Rate</p>
-            <p className={cn('text-lg font-bold', stats.winRate >= 70 ? 'text-emerald-600' : 'text-amber-600')}>
-              {stats.winRate.toFixed(0)}%
-            </p>
-            <p className="text-[9px] text-violet-600">{stats.wins}W / {stats.losses}L</p>
-          </div>
-          <div className="rounded-xl border border-blue-200 bg-blue-50 p-3 text-center">
-            <p className="text-[9px] text-blue-700 uppercase tracking-wide font-semibold">Annual Rate</p>
-            <p className={cn('text-lg font-bold', stats.annualizedReturn >= 60 ? 'text-emerald-600' : 'text-blue-600')}>
-              {stats.annualizedReturn.toFixed(0)}%
-            </p>
-            <p className="text-[9px] text-blue-600">annualized</p>
-          </div>
-          <div className="rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-3 text-center">
-            <p className="text-[9px] text-[hsl(var(--muted-foreground))] uppercase tracking-wide font-semibold">Open Positions</p>
-            <p className="text-lg font-bold text-[hsl(var(--foreground))]">{stats.openPositions}</p>
-            <p className="text-[9px] text-[hsl(var(--muted-foreground))]">active puts</p>
-          </div>
-        </div>
+        <StatsHeader stats={stats} deployed={deployed} maxAllocation={maxAllocation} />
       )}
 
       {/* Section Tabs */}
@@ -382,13 +516,52 @@ export function OptionsTab() {
         ))}
       </div>
 
-      {/* Open Positions */}
+      {/* Open Positions — split into Needs Attention / Healthy */}
       {activeSection === 'positions' && (
-        <div className="space-y-3">
+        <div className="space-y-4">
           {openPositions.length === 0 ? (
             <div className="text-center py-8 text-sm text-[hsl(var(--muted-foreground))]">No open options positions</div>
           ) : (
-            openPositions.map(pos => <PositionCard key={pos.id} pos={pos} />)
+            <>
+              {needsAttention.length > 0 && (
+                <div className="space-y-2">
+                  <div className="flex items-center gap-2 px-1">
+                    <span className="text-xs font-bold text-amber-700">⚠️ Needs Attention</span>
+                    <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 font-bold">
+                      {needsAttention.length}
+                    </span>
+                  </div>
+                  {needsAttention.map(pos => (
+                    <PositionCard
+                      key={pos.id}
+                      pos={pos}
+                      currentPrice={openPrices.get(pos.ticker)}
+                      atRisk
+                    />
+                  ))}
+                </div>
+              )}
+
+              {healthy.length > 0 && (
+                <div className="space-y-2">
+                  {needsAttention.length > 0 && (
+                    <div className="flex items-center gap-2 px-1">
+                      <span className="text-xs font-bold text-emerald-700">✅ Healthy</span>
+                      <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-700 font-bold">
+                        {healthy.length}
+                      </span>
+                    </div>
+                  )}
+                  {healthy.map(pos => (
+                    <PositionCard
+                      key={pos.id}
+                      pos={pos}
+                      currentPrice={openPrices.get(pos.ticker)}
+                    />
+                  ))}
+                </div>
+              )}
+            </>
           )}
         </div>
       )}
@@ -417,7 +590,9 @@ export function OptionsTab() {
                   <div>
                     <div className="flex items-center gap-1.5 flex-wrap">
                       <span className="text-sm font-bold">{pos.ticker}</span>
-                      <span className="text-[10px] px-1 py-0.5 rounded bg-violet-100 text-violet-700">PUT</span>
+                      <span className="text-[10px] px-1 py-0.5 rounded bg-violet-100 text-violet-700">
+                        {pos.mode === 'OPTIONS_CALL' ? 'CALL' : 'PUT'}
+                      </span>
                       {isRolled   && <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 font-semibold">↩️ Rolled</span>}
                       {isStopped  && <span className="text-[10px] px-1.5 py-0.5 rounded bg-red-100 text-red-700 font-semibold">🛑 Stopped</span>}
                       {isExpired  && <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 font-semibold">✅ Expired</span>}
@@ -427,7 +602,7 @@ export function OptionsTab() {
                       {pos.option_assigned && <span className="text-[10px] px-1 py-0.5 rounded bg-amber-100 text-amber-700">Assigned</span>}
                     </div>
                     <p className="text-[10px] text-[hsl(var(--muted-foreground))] mt-0.5">
-                      Strike ${pos.option_strike} · Collected ${Math.round((pos.option_premium ?? 0) * 100)} · Exp {formatExpiry(pos.option_expiry)}
+                      Strike ${pos.option_strike} · Collected ${Math.round((pos.option_premium ?? 0) * (pos.option_contracts ?? 1) * 100)} · Exp {formatExpiry(pos.option_expiry)}
                     </p>
                     {isRolled && pos.notes && (
                       <p className="text-[10px] text-blue-600 mt-0.5">{pos.notes}</p>
