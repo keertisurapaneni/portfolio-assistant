@@ -259,7 +259,20 @@ export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], 
               const isClosed = isSystemClose || (matched?.close_price != null) || CLOSED_STATUSES.includes(matched?.status ?? '');
               const isActive = !isClosed && matched && ['FILLED', 'PARTIAL'].includes(matched.status);
               const msg = event.message;
-              const qtyMatch = msg.match(/(\d+)\s+shares.*?@\s*~?\$?([\d.]+)/i);
+              // Match "7 shares @ $675" OR "BUY 7 @ $675" (external signal format)
+              const sharesMatch = msg.match(/(\d+)\s+shares.*?@\s*~?\$?([\d.]+)/i);
+              const externalMatch = msg.match(/(?:BUY|SELL)\s+(\d+)\s+@\s*~?\$?([\d.]+)/i);
+              const qtyMatch = sharesMatch ?? externalMatch;
+
+              const sourceLabel = event.source === 'external_signal' ? 'External signal'
+                : event.source === 'scanner' ? 'Trade signal'
+                : event.source === 'suggested_finds' ? 'Suggested find'
+                : event.source === 'dip_buy' ? 'Dip buy'
+                : event.source === 'profit_take' ? 'Profit take'
+                : event.source === 'loss_cut' ? 'Loss cut'
+                : event.source === 'system' ? 'System'
+                : event.source === 'manual' ? 'Manual'
+                : 'Trade';
 
               const modeLabel = event.mode === 'DAY_TRADE' ? 'Day'
                 : event.mode === 'SWING_TRADE' ? 'Swing'
@@ -288,7 +301,11 @@ export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], 
                     </span>
                   </td>
                   <td className="px-4 py-3 text-xs text-[hsl(var(--muted-foreground))]">
-                    {qtyMatch ? `${qtyMatch[1]} shares @ $${qtyMatch[2]}` : event.message.slice(0, 60)}
+                    <span className="font-medium text-[hsl(var(--foreground))]">{sourceLabel}</span>
+                    {qtyMatch
+                      ? <span> · {qtyMatch[1]} shares @ ${qtyMatch[2]}</span>
+                      : <span> · {msg.replace(/^External signal executed:\s*/i, '').slice(0, 45)}</span>
+                    }
                   </td>
                   <td className={cn(
                     'px-4 py-3 text-right tabular-nums font-semibold',
