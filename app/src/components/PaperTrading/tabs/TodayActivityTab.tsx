@@ -1,9 +1,10 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Zap, Play, Clock, PlayCircle, AlertCircle } from 'lucide-react';
 import { cn } from '../../../lib/utils';
 import type { AutoTradeEventRecord, PaperTrade, PendingStrategySignal } from '../../../lib/paperTradesApi';
 import { executeSignal } from '../../../lib/paperTradesApi';
 import { fmtUsd } from '../utils';
+import { supabase } from '../../../lib/supabaseClient';
 
 /** Convert raw failure_reason codes into human-readable labels. */
 function formatSkipReason(reason: string | null | undefined): string | null {
@@ -39,6 +40,26 @@ export interface TodayActivityTabProps {
 export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], onExecuteSignal }: TodayActivityTabProps) {
   const [executingId, setExecutingId] = useState<string | null>(null);
   const [executingAll, setExecutingAll] = useState(false);
+  const [scannerTickers, setScannerTickers] = useState<Set<string>>(new Set());
+
+  // Load today's trade scan tickers from DB to correctly attribute source
+  useEffect(() => {
+    supabase
+      .from('trade_scans')
+      .select('data')
+      .in('id', ['day_trades', 'swing_trades'])
+      .then(({ data }) => {
+        if (!data) return;
+        const tickers = new Set<string>();
+        for (const row of data) {
+          const ideas = row.data as Array<{ ticker: string }> | null;
+          if (Array.isArray(ideas)) {
+            ideas.forEach(i => { if (i.ticker) tickers.add(i.ticker.toUpperCase()); });
+          }
+        }
+        setScannerTickers(tickers);
+      });
+  }, []);
 
   const handleExecuteSignal = async (signal: PendingStrategySignal) => {
     setExecutingId(signal.id);
@@ -247,12 +268,8 @@ export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], 
             </tr>
           </thead>
           <tbody className="divide-y divide-[hsl(var(--border))]">
-            {/* Tickers our scanner touched today (executed or skipped) — used to attribute source correctly */}
-            {(() => {
-              const scannerTickers = new Set(
-                events.filter(e => e.source === 'scanner').map(e => e.ticker.toUpperCase())
-              );
-              return events.map((event) => { const isOurScan = scannerTickers.has(event.ticker.toUpperCase());
+            {events.map((event) => {
+              const isOurScan = event.source === 'scanner' || scannerTickers.has(event.ticker.toUpperCase());
               const matched = tradesByTicker.get(event.ticker)?.find(t =>
                 t.pnl != null || t.status === 'FILLED' || t.status === 'TARGET_HIT' || t.status === 'STOPPED' || t.status === 'CLOSED'
               );
@@ -337,7 +354,7 @@ export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], 
                   </td>
                 </tr>
               );
-            }); })()}
+            })}
           </tbody>
         </table>
       </div>
