@@ -857,18 +857,20 @@ function AppContent() {
               <Lightbulb className="w-4 h-4" />
               Suggested Finds
             </NavLink>
-            <NavLink
-              to="/options"
-              className={({ isActive }) => cn(
-                'flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all',
-                isActive
-                  ? 'bg-gradient-to-r from-violet-600 to-purple-600 text-white shadow-md shadow-violet-500/25'
-                  : 'text-slate-500 hover:text-slate-700 hover:bg-white/80'
-              )}
-            >
-              <CircleDollarSign className="w-4 h-4" />
-              Options Wheel
-            </NavLink>
+            {isAuthed && (
+              <NavLink
+                to="/options"
+                className={({ isActive }) => cn(
+                  'flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all',
+                  isActive
+                    ? 'bg-gradient-to-r from-violet-600 to-purple-600 text-white shadow-md shadow-violet-500/25'
+                    : 'text-slate-500 hover:text-slate-700 hover:bg-white/80'
+                )}
+              >
+                <CircleDollarSign className="w-4 h-4" />
+                Options Wheel
+              </NavLink>
+            )}
             {isAuthed && (
               <NavLink
                 to="/paper-trading"
@@ -913,7 +915,7 @@ function AppContent() {
           <Route path="/finds" element={<SuggestedFinds existingTickers={existingTickers} />} />
           <Route path="/signals" element={<TradingSignals />} />
           {isAuthed && <Route path="/paper-trading" element={<PaperTrading />} />}
-          <Route path="/options" element={<OptionsWheelPage />} />
+          {isAuthed && <Route path="/options" element={<OptionsWheelPage />} />}
         </Routes>
       </main>
 
