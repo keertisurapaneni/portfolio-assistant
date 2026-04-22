@@ -269,7 +269,23 @@ export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], 
           </thead>
           <tbody className="divide-y divide-[hsl(var(--border))]">
             {events.map((event) => {
-              const isOurScan = event.source === 'scanner' || scannerTickers.has(event.ticker.toUpperCase());
+              // Signal generators pick their own tickers with their own entry/exit levels.
+              // Even if our scanner also has the ticker, it's coincidental — don't conflate.
+              const SIGNAL_GENERATORS = new Set([
+                'Somesh | Day Trader | Investor',
+                'Kay Capitals',
+              ]);
+              // Execution strategies apply rules ON TOP of our scanner signals.
+              // Their tickers come from us — should show as "Trade signal + [strategy]".
+              const EXECUTION_STRATEGIES = new Set([
+                'Casper Clipping',
+                'Casper SMC Wisdom',
+              ]);
+              const stratSource = event.strategy_source ?? '';
+              const isPureExternal = SIGNAL_GENERATORS.has(stratSource);
+              const isExecutionStrategy = EXECUTION_STRATEGIES.has(stratSource);
+              const isOurScan = event.source === 'scanner'
+                || (!isPureExternal && (isExecutionStrategy || scannerTickers.has(event.ticker.toUpperCase())));
               const matched = tradesByTicker.get(event.ticker)?.find(t =>
                 t.pnl != null || t.status === 'FILLED' || t.status === 'TARGET_HIT' || t.status === 'STOPPED' || t.status === 'CLOSED'
               );
@@ -326,7 +342,7 @@ export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], 
                   </td>
                   <td className="px-4 py-3 text-xs text-[hsl(var(--muted-foreground))]">
                     <span className="font-medium text-[hsl(var(--foreground))]">{sourceLabel}</span>
-                    {event.strategy_source && event.source !== 'scanner' && !isOurScan && (
+                    {event.strategy_source && (event.source !== 'scanner') && (!isOurScan || isPureExternal) && (
                       <span className="ml-1 px-1 py-0.5 rounded text-[10px] font-semibold bg-indigo-50 text-indigo-600 border border-indigo-200">
                         {event.strategy_source}
                       </span>
