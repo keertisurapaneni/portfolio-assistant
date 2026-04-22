@@ -34,8 +34,8 @@ const RSI_OVERSOLD = 38;                   // RSI threshold for oversold
 const DELTA_TARGET_NORMAL = 0.30;          // target 30-delta (0.20–0.40 window) for more premium
 const DELTA_TARGET_HIGH_CONVICTION = 0.35; // nudge to 35-delta when RSI oversold + IV elevated
 const DELTA_TARGET_LEVERAGED = 0.18;       // leveraged ETFs: 18-delta = ~82% prob OTM (higher vol needs more cushion)
-const MAX_POSITIONS_NORMAL = 5;            // max concurrent open options puts
-const MAX_POSITIONS_HIGH_VIX = 3;          // VIX > 25
+const MAX_POSITIONS_NORMAL = 12;           // max concurrent open options puts (scaled for $1M paper capital)
+const MAX_POSITIONS_HIGH_VIX = 6;          // VIX > 25 — half positions in stress
 const EARNINGS_BLACKOUT_DAYS = 7;
 const IV_SPIKE_THRESHOLD = 20;             // points — sudden IV jump = news event
 const MIN_PROB_PROFIT = 75;                // minimum 75% OTM probability (video: 80-90%, we set 75 as floor)
