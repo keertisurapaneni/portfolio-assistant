@@ -2402,17 +2402,18 @@ async function executeExternalStrategySignal(
       action: 'executed',
       source: resolvedSource,
       mode: signal.mode,
-      strategy_source: signal.source_name,
-      strategy_source_url: signal.source_url,
-      strategy_video_id: signal.strategy_video_id,
-      strategy_video_heading: signal.strategy_video_heading,
+      // If the ticker was identified by our scanner, don't attribute to the influencer —
+      // the trade idea came from us, not from them.
+      strategy_source: alsoInScanner ? null : signal.source_name,
+      strategy_source_url: alsoInScanner ? null : signal.source_url,
+      strategy_video_id: alsoInScanner ? null : signal.strategy_video_id,
+      strategy_video_heading: alsoInScanner ? null : signal.strategy_video_heading,
       scanner_signal: side,
       scanner_confidence: signal.confidence,
       metadata: {
         external_signal_id: signal.id,
         allocation_split: allocationSplit,
         allocation_index: allocationIndex,
-        // Pattern-analysis fields — used to find "wins at 9:40-10:10, losses after 11 AM" patterns
         entry_time_et: getETTimeString(),
         spy_change_pct: spyChangePct,
       },
