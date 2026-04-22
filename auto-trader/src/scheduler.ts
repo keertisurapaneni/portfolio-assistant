@@ -1983,6 +1983,23 @@ async function executeSuggestedFindTrade(
   }
 }
 
+/**
+ * Returns true if the ticker appears in today's trade_scans results (day or swing).
+ * Used to tag external-signal trades that overlap with our own scanner picks.
+ */
+async function isTickerInTodayScan(ticker: string): Promise<boolean> {
+  const sb = getSupabase();
+  const { data } = await sb
+    .from('trade_scans')
+    .select('data')
+    .in('id', ['day_trades', 'swing_trades']);
+  if (!data) return false;
+  const up = ticker.toUpperCase();
+  return data.some((row: { data: Array<{ ticker: string }> }) =>
+    Array.isArray(row.data) && row.data.some((idea: { ticker: string }) => idea.ticker?.toUpperCase() === up)
+  );
+}
+
 async function executeExternalStrategySignal(
   signal: ExternalStrategySignal,
   config: AutoTraderConfig,
@@ -1996,6 +2013,11 @@ async function executeExternalStrategySignal(
   },
 ): Promise<'executed' | 'skipped' | 'failed' | 'waiting'> {
   const ticker = signal.ticker.toUpperCase();
+  // If the ticker was also identified by our trade scanner today, attribute the event
+  // to 'scanner' so the activity log shows "Trade signal" rather than "External signal".
+  // The strategy_source badge will still display the influencer name.
+  const alsoInScanner = await isTickerInTodayScan(ticker);
+  const resolvedSource = alsoInScanner ? 'scanner' : 'external_signal';
   const allocationSplit = Math.max(1, Math.floor(options?.allocationSplit ?? 1));
   const allocationIndex = Math.max(1, Math.floor(options?.allocationIndex ?? 1));
   const allowDuplicateTicker = options?.allowDuplicateTicker === true;
@@ -2008,7 +2030,7 @@ async function executeExternalStrategySignal(
     });
     persistEvent(ticker, 'warning', `External signal skipped: ${failureReason}`, {
       action: 'skipped',
-      source: 'external_signal',
+      source: resolvedSource,
       mode: signal.mode,
       strategy_source: signal.source_name,
       strategy_source_url: signal.source_url,
@@ -2028,7 +2050,7 @@ async function executeExternalStrategySignal(
     });
     persistEvent(ticker, 'warning', `External signal skipped: ${reason}`, {
       action: 'skipped',
-      source: 'external_signal',
+      source: resolvedSource,
       mode: signal.mode,
       strategy_source: signal.source_name,
       strategy_source_url: signal.source_url,
@@ -2261,7 +2283,7 @@ async function executeExternalStrategySignal(
     });
     persistEvent(ticker, 'warning', 'External signal skipped by risk checks', {
       action: 'skipped',
-      source: 'external_signal',
+      source: resolvedSource,
       mode: signal.mode,
       strategy_source: signal.source_name,
       strategy_source_url: signal.source_url,
@@ -2378,7 +2400,7 @@ async function executeExternalStrategySignal(
 
     persistEvent(ticker, 'success', `External signal executed: ${side} ${sizing.quantity} @ $${entryForRecord.toFixed(2)}`, {
       action: 'executed',
-      source: 'external_signal',
+      source: resolvedSource,
       mode: signal.mode,
       strategy_source: signal.source_name,
       strategy_source_url: signal.source_url,
@@ -2404,7 +2426,7 @@ async function executeExternalStrategySignal(
     });
     persistEvent(ticker, 'error', `External signal failed: ${message}`, {
       action: 'failed',
-      source: 'external_signal',
+      source: resolvedSource,
       mode: signal.mode,
       strategy_source: signal.source_name,
       strategy_source_url: signal.source_url,
