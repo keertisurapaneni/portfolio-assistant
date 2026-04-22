@@ -24,6 +24,7 @@ import { OptionsWheelPage } from './components/OptionsWheelPage';
 import { StockDetail } from './components/StockDetail';
 import { AddTickersModal } from './components/AddTickersModal';
 import { AuthModal } from './components/AuthModal';
+import { EngineHealthIndicator } from './components/EngineHealthIndicator';
 // BrokerConnect UI disabled — SnapTrade requires paid plan. Code preserved for future use.
 // import { BrokerConnect } from './components/BrokerConnect';
 import type { SyncResult } from './lib/brokerApi';
@@ -737,6 +738,9 @@ function AppContent() {
                   <RefreshCw className={cn('w-5 h-5', isRefreshing && 'animate-spin')} />
                 </button>
               )}
+
+              {/* Engine health indicator — only shown when authed */}
+              {isAuthed && <EngineHealthIndicator />}
 
               {/* Auth: Login button or User menu */}
               {!authLoading && (

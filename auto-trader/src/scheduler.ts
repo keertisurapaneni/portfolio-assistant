@@ -168,6 +168,7 @@ let _lastSuggestedFindsDate = '';
 let _lastSnapshotDate = '';
 let _lastRehydrationDate = '';
 let _lastAutoTuneDate = '';
+let _lastDeadmansAlertSent: Date | null = null;
 let _pendingDeployedDollar = 0;
 let _dailyDeployedDollar = 0;
 let _dailyDeployedDate = '';
@@ -252,6 +253,41 @@ export function startScheduler(): void {
   }, { timezone: 'America/New_York' });
 
   console.log('[Scheduler] Started — every 15 min + 9:36 ET first-candle pass + 15:55 EOD close (weekdays)');
+
+  // Dead man's switch — alerts if no successful cycle in 2+ hours during market hours
+  cron.schedule('*/30 * * * 1-5', async () => {
+    try {
+      const nowET = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }));
+      const etHour = nowET.getHours();
+      if (etHour < 9 || etHour >= 17) return;
+      if (etHour === 9 && nowET.getMinutes() < 30) return;
+
+      const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
+      if (_lastRun && _lastRun > twoHoursAgo) return;
+
+      const fourHoursAgo = new Date(Date.now() - 4 * 60 * 60 * 1000);
+      if (_lastDeadmansAlertSent && _lastDeadmansAlertSent > fourHoursAgo) return;
+
+      _lastDeadmansAlertSent = new Date();
+      const lastRunStr = _lastRun ? _lastRun.toLocaleString('en-US', { timeZone: 'America/New_York' }) : 'never';
+      await sendAlert(
+        'deadmans_switch',
+        '⚠️ Portfolio Engine: No activity in 2+ hours',
+        `The auto-trader scheduler has not completed a successful cycle in over 2 hours during market hours.
+
+Last successful run: ${lastRunStr} ET
+Last result: ${_lastRunResult}
+Cycle count: ${_runCount}
+
+Possible causes:
+- Auto-trader service crashed or was restarted
+- IB Gateway went offline
+- Server resource issue
+
+Action needed: Check the auto-trader service and restart if necessary.`,
+      );
+    } catch { /* non-blocking */ }
+  });
 
   // Realtime: execute trades immediately when scanner refreshes (e.g. from TradeIdeas UI)
   subscribeToTradeScans();
@@ -3340,6 +3376,48 @@ function unsubscribeFromTradeScans(): void {
   }
 }
 
+// ── Alert Helpers ─────────────────────────────────────────
+
+/**
+ * Send a critical alert email via the send-alert-email edge function.
+ * Fire-and-forget — never throws, never blocks the scheduler cycle.
+ */
+async function sendAlert(
+  alertType: string,
+  subject: string,
+  body: string,
+  ticker?: string,
+): Promise<void> {
+  try {
+    const supabaseUrl = getSupabaseUrl();
+    const serviceRoleKey = getSupabaseServiceRoleKey();
+    if (!supabaseUrl || !serviceRoleKey) return;
+
+    const sb = getSupabase();
+    const { data: cfg } = await sb
+      .from('auto_trader_config')
+      .select('alert_email, alerts_enabled')
+      .eq('id', 'default')
+      .single();
+
+    const alertEmail = (cfg as { alert_email?: string; alerts_enabled?: boolean } | null)?.alert_email;
+    const alertsEnabled = (cfg as { alert_email?: string; alerts_enabled?: boolean } | null)?.alerts_enabled ?? true;
+
+    if (!alertEmail || !alertsEnabled) return;
+
+    await fetch(`${supabaseUrl}/functions/v1/send-alert-email`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${serviceRoleKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ alert_type: alertType, ticker, subject, body, email_to: alertEmail }),
+    });
+  } catch {
+    // Non-blocking — never let alerting crash the scheduler
+  }
+}
+
 // ── Main Scheduler Cycle ─────────────────────────────────
 
 async function runSchedulerCycle(): Promise<void> {
@@ -3495,6 +3573,34 @@ async function runSchedulerCycle(): Promise<void> {
       if (optsMgr.closed50Pct.length > 0) log(`Options: closed at 50% profit — ${optsMgr.closed50Pct.join(', ')}`);
       if (optsMgr.rollAlerts.length > 0) log(`Options: roll/close alerts — ${optsMgr.rollAlerts.join(', ')}`);
       if (optsMgr.assignmentAlerts.length > 0) log(`Options: assignment risk — ${optsMgr.assignmentAlerts.join(', ')}`);
+      if (optsMgr.stopLossAlerts.length > 0) {
+        for (const ticker of optsMgr.stopLossAlerts) {
+          await sendAlert(
+            'stop_loss',
+            `🛑 Options Stop-Loss Triggered: ${ticker}`,
+            `An options position stop-loss was triggered for ${ticker}.
+
+The premium exceeded 3× the original collected — the position was closed automatically to protect capital.
+
+Check the Options Wheel → History tab for details.`,
+            ticker,
+          );
+        }
+      }
+      if (optsMgr.assignmentAlerts.length > 0) {
+        for (const ticker of optsMgr.assignmentAlerts) {
+          await sendAlert(
+            'assignment',
+            `📌 Options Assignment Detected: ${ticker}`,
+            `A put option assignment was detected for ${ticker}.
+
+Stock price dropped below the put strike. A covered call has been automatically queued.
+
+Check the Options Wheel → Open tab to review the covered call position.`,
+            ticker,
+          );
+        }
+      }
     } catch (err) {
       log(`Options manager error: ${err instanceof Error ? err.message : 'unknown'}`);
     }
@@ -3526,6 +3632,16 @@ async function runSchedulerCycle(): Promise<void> {
         const monthlyLossCap = -(optionsCapitalBudget * MONTHLY_LOSS_CAP_PCT);
         if (monthlyPnl < monthlyLossCap) {
           log(`⚠️  Options: monthly loss circuit-breaker triggered — P&L $${monthlyPnl.toFixed(0)} below cap $${monthlyLossCap.toFixed(0)}. No new positions until next month.`);
+          await sendAlert(
+            'circuit_breaker',
+            '🚨 Options Monthly Loss Circuit-Breaker Triggered',
+            `The options wheel monthly loss circuit-breaker has been triggered.
+
+Monthly P&L: $${monthlyPnl.toFixed(0)}
+Loss cap: $${monthlyLossCap.toFixed(0)}
+
+No new options positions will be opened until next month. Existing positions continue to be managed.`,
+          );
         } else {
           // ── Gradual ramp: limit new positions per day so capital deploys slowly ──
           // Caps how many NEW puts we open per morning scan. Increases as system proves itself:

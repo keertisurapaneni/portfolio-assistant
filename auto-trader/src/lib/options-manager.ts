@@ -152,6 +152,7 @@ export interface ManageCycleResult {
   rollAlerts: string[];
   assignmentAlerts: string[];
   expiredPositions: string[];
+  stopLossAlerts: string[];
 }
 
 export async function runOptionsManageCycle(): Promise<ManageCycleResult> {
@@ -161,6 +162,7 @@ export async function runOptionsManageCycle(): Promise<ManageCycleResult> {
     rollAlerts: [],
     assignmentAlerts: [],
     expiredPositions: [],
+    stopLossAlerts: [],
   };
 
   // Load auto-tuned wheel parameters from DB
@@ -278,6 +280,7 @@ export async function runOptionsManageCycle(): Promise<ManageCycleResult> {
         `🛑 ${pos.ticker} $${pos.option_strike} put stopped — premium blew past ${stopLossMultiplier}× ($${currentPremium.toFixed(2)} vs collected $${premiumCollected.toFixed(2)}), taking -$${lossAmount.toFixed(0)} loss`,
         { action: 'closed', source: 'options', metadata: { reason: 'stop_loss', pnl, currentPremium, premiumCollected, stopLossMultiplier } }
       );
+      result.stopLossAlerts.push(pos.ticker);
       continue;
     }
 
