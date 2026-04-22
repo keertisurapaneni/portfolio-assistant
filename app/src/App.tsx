@@ -917,7 +917,7 @@ function AppContent() {
           <Route path="/finds" element={<SuggestedFinds existingTickers={existingTickers} />} />
           <Route path="/signals" element={<TradingSignals />} />
           {isAuthed && <Route path="/paper-trading" element={<PaperTrading />} />}
-          <Route path="/options" element={<OptionsWheelPage isAuthed={isAuthed} />} />
+          {isAuthed && <Route path="/options" element={<OptionsWheelPage />} />}
         </Routes>
       </main>
 
