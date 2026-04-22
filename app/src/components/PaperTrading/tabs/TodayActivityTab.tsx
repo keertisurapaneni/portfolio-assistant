@@ -287,7 +287,8 @@ export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], 
               const qtyMatch = sharesMatch ?? externalMatch;
 
               const sourceLabel = event.source === 'scanner' ? 'Trade signal'
-                : (event.source === 'external_signal' && isOurScan) ? 'Trade signal + External'
+                : (event.source === 'external_signal' && isOurScan)
+                  ? (event.strategy_source ? `Trade signal + ${event.strategy_source}` : 'Trade signal + External')
                 : event.source === 'external_signal' ? 'External signal'
                 : event.source === 'suggested_finds' ? 'Suggested find'
                 : event.source === 'dip_buy' ? 'Dip buy'
@@ -325,7 +326,7 @@ export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], 
                   </td>
                   <td className="px-4 py-3 text-xs text-[hsl(var(--muted-foreground))]">
                     <span className="font-medium text-[hsl(var(--foreground))]">{sourceLabel}</span>
-                    {event.strategy_source && event.source !== 'scanner' && (
+                    {event.strategy_source && event.source !== 'scanner' && !isOurScan && (
                       <span className="ml-1 px-1 py-0.5 rounded text-[10px] font-semibold bg-indigo-50 text-indigo-600 border border-indigo-200">
                         {event.strategy_source}
                       </span>
