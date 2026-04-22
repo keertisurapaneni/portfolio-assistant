@@ -3504,17 +3504,15 @@ async function runSchedulerCycle(): Promise<void> {
     const issMorningScanWindow = (nowET.getHours() === 10) || (nowET.getHours() === 11 && nowET.getMinutes() < 30);
     if (issMorningScanWindow) {
       try {
-        // Free capital = portfolio value minus already-reserved options capital.
-        // maxTotalAllocation is stored as a dollar cap (e.g. 500000), not a fraction —
-        // so we compute free capital as: portfolioValue - currently reserved capital.
-        // Floor at $100k so the scanner always has enough to evaluate opportunities.
-        const reservedCapital = (config.maxTotalAllocation != null && config.maxTotalAllocation < 1)
-          ? config.portfolioValue * config.maxTotalAllocation   // fraction (legacy)
-          : (config.maxTotalAllocation ?? config.portfolioValue * 0.8); // dollar cap
-        const freeCapital = Math.max(config.portfolioValue - reservedCapital, 100_000);
-        const scanResult = await runOptionsScan(freeCapital);
+        // Options capital budget = maxTotalAllocation (stored as a dollar cap, e.g. $500,000).
+        // This is the dedicated options pool — separate from the day-trade/swing-trade budget.
+        // The remaining portfolio value is reserved for other strategies.
+        const optionsCapitalBudget = (config.maxTotalAllocation != null && config.maxTotalAllocation >= 1000)
+          ? config.maxTotalAllocation          // dollar amount (e.g. 500000)
+          : config.portfolioValue * 0.5;       // fallback: 50% of portfolio
+        const scanResult = await runOptionsScan(optionsCapitalBudget);
         if (scanResult.opportunities.length > 0) {
-          log(`Options scan: ${scanResult.opportunities.length} opportunities found (free capital: $${freeCapital.toLocaleString()})`);
+          log(`Options scan: ${scanResult.opportunities.length} opportunities found (options budget: $${optionsCapitalBudget.toLocaleString()})`);
           for (const opp of scanResult.opportunities.slice(0, 5)) {
             const id = await paperTradeOption(opp);
             if (id) log(`  → Paper traded ${opp.ticker} $${opp.strike}P @ $${opp.premium.toFixed(2)} (${opp.annualYield.toFixed(1)}% annual yield)`);
