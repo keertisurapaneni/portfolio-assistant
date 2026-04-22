@@ -222,17 +222,41 @@ function PositionCard({ pos }: { pos: OpenOptionsPosition }) {
         </div>
       </div>
 
-      {/* Placed date + reason */}
-      <div className="mt-2 flex items-start justify-between gap-2">
-        <p className="text-[10px] text-[hsl(var(--muted-foreground))]">
-          Placed{' '}
-          <span className="font-medium">
-            {new Date(pos.opened_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
-          </span>
+      {/* Strike explanation panel */}
+      <div className="mt-2 rounded-lg bg-[hsl(var(--muted))]/30 border border-[hsl(var(--border))] px-2.5 py-2 space-y-1.5">
+        {/* Header row: placed date + delta badge */}
+        <div className="flex items-center justify-between">
+          <p className="text-[10px] text-[hsl(var(--muted-foreground))]">
+            Placed{' '}
+            <span className="font-semibold text-[hsl(var(--foreground))]">
+              {new Date(pos.opened_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
+            </span>
+          </p>
+          {pos.option_delta != null && (
+            <span className="text-[10px] font-semibold bg-violet-50 text-violet-700 border border-violet-200 px-1.5 py-0.5 rounded-full">
+              Δ {Math.abs(pos.option_delta).toFixed(2)} · {Math.round((1 - Math.abs(pos.option_delta)) * 100)}% prob OTM
+            </span>
+          )}
+        </div>
+
+        {/* Why this strike */}
+        <p className="text-[10px] text-[hsl(var(--muted-foreground))] leading-snug">
+          <span className="font-medium text-[hsl(var(--foreground))]">Strike basis:</span>{' '}
+          ~30-delta targeting with a 20-day SMA floor — stock must break below its own 20-day average before assignment risk kicks in.
         </p>
+
+        {/* Scanner metrics */}
         {pos.scanner_reason && (
-          <p className="text-[10px] text-[hsl(var(--muted-foreground))] text-right leading-snug">
+          <p className="text-[10px] text-[hsl(var(--muted-foreground))] leading-snug">
+            <span className="font-medium text-[hsl(var(--foreground))]">At entry:</span>{' '}
             {pos.scanner_reason}
+          </p>
+        )}
+
+        {/* Notes (entry summary from scanner) */}
+        {pos.notes && (
+          <p className="text-[10px] text-[hsl(var(--muted-foreground))] leading-snug italic">
+            {pos.notes.replace(/^\[(AUTO|PAPER)\]\s*/i, '')}
           </p>
         )}
       </div>
