@@ -217,22 +217,22 @@ const STEPS = [
   {
     icon: '🔍',
     title: 'Morning Scan',
-    desc: 'Every day at 10 AM ET the engine screens your watchlist — checking IV rank, earnings proximity, trend, beta, and news.',
+    desc: 'Every day at 10 AM ET the engine screens the watchlist — 14 checks including IV rank, Bollinger Bands, earnings proximity, trend, beta, sector concentration, and news sentiment. A 1:30 PM re-scan redeploys capital freed by early closes.',
   },
   {
     icon: '💰',
     title: 'Sell a Put',
-    desc: 'On qualifying stocks, it sells a cash-secured put at the 20-delta strike. You collect premium upfront — that\'s yours regardless.',
+    desc: 'On qualifying stocks, it sells a cash-secured put at the 30-delta strike (below the 20-day SMA floor). Premium is collected upfront — yours to keep regardless of outcome.',
   },
   {
     icon: '⏳',
     title: 'Let Time Decay Work',
-    desc: 'Theta (time decay) erodes the option\'s value daily. At 50% profit the position auto-closes to lock in gains and free up capital.',
+    desc: 'Theta erodes the option\'s value daily. At 50% profit the position auto-closes to lock in gains and free up capital. Hard close at 21 DTE. Stop-loss if premium exceeds 3× collected.',
   },
   {
     icon: '🔄',
     title: 'Roll or Repeat',
-    desc: 'Near expiry, decide to roll to the next month or let it expire worthless. If assigned, sell covered calls on the shares.',
+    desc: 'If stock drops 3%+ below strike, a roll alert fires. If assigned, a covered call is automatically opened to collect more premium. The wheel is self-sustaining.',
   },
 ];
 
@@ -476,9 +476,8 @@ export function OptionsTab() {
 
   return (
     <div className="space-y-4">
-      {/* Refresh + PAPER badge */}
-      <div className="flex items-center justify-between">
-        <span className="text-[10px] px-2 py-0.5 rounded-full bg-violet-100 text-violet-700 font-semibold">PAPER</span>
+      {/* Refresh */}
+      <div className="flex items-center justify-end">
         <button onClick={load} disabled={loading} className="p-1.5 rounded-lg hover:bg-[hsl(var(--muted))] transition-colors">
           <RefreshCw className={cn('w-4 h-4 text-[hsl(var(--muted-foreground))]', loading && 'animate-spin')} />
         </button>
