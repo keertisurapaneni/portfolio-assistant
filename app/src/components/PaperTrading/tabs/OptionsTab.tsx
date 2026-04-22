@@ -459,12 +459,9 @@ export function OptionsTab() {
     ([atRisk, ok], pos) => {
       const price = openPrices.get(pos.ticker);
       const pnlNegative = (pos.pnl ?? 0) < 0;
-      // Flag if stock is below strike (in danger zone) OR within 2% above strike (close call).
-      // Stocks comfortably above strike are Healthy even if P&L fluctuates slightly.
-      const nearStrike = price != null && (
-        price.price < pos.option_strike ||
-        (price.price - pos.option_strike) / pos.option_strike < 0.02
-      );
+      // Flag only when stock is actually below the strike — genuine assignment risk.
+      // P&L negative already catches above-strike positions that are losing money.
+      const nearStrike = price != null && price.price < pos.option_strike;
       return pnlNegative || nearStrike ? [[...atRisk, pos], ok] : [atRisk, [...ok, pos]];
     },
     [[], []]
