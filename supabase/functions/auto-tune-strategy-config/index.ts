@@ -56,6 +56,11 @@ interface ConfigRow {
   long_term_bucket_pct: number | null;
   kelly_adaptive_enabled: boolean | null;
   max_positions: number | null;
+  options_min_iv_rank: number | null;
+  options_delta_target: number | null;
+  options_profit_close_pct: number | null;
+  options_stop_loss_multiplier: number | null;
+  options_max_contracts_per_scan: number | null;
 }
 
 // ── Defaults (must match auto-trader DEFAULT_CONFIG) ──────
@@ -475,6 +480,202 @@ Deno.serve(async (req) => {
             category: 'system',
           });
           updates.max_positions = newVal;
+        }
+      }
+    }
+
+    // ── Rule G: Options wheel auto-tuning ────────────────────────────────
+    // Analyzes last 30 days of OPTIONS_PUT and OPTIONS_CALL closed trades.
+    // Tunes: min IV rank, delta target, max contracts per scan, profit close %, stop loss multiplier.
+    const { data: optionsConfigData } = await supabase
+      .from('auto_trader_config')
+      .select('options_min_iv_rank, options_delta_target, options_profit_close_pct, options_stop_loss_multiplier, options_max_contracts_per_scan')
+      .eq('id', 'default')
+      .single();
+
+    const optsCfg = optionsConfigData as {
+      options_min_iv_rank?: number;
+      options_delta_target?: number;
+      options_profit_close_pct?: number;
+      options_stop_loss_multiplier?: number;
+      options_max_contracts_per_scan?: number;
+    } | null;
+
+    const optsMinIvRank = optsCfg?.options_min_iv_rank ?? 50;
+    const optsDeltaTarget = optsCfg?.options_delta_target ?? 0.30;
+    const optsProfitClosePct = optsCfg?.options_profit_close_pct ?? 50;
+    const optsStopLossMultiplier = optsCfg?.options_stop_loss_multiplier ?? 3.0;
+    const optsMaxContracts = optsCfg?.options_max_contracts_per_scan ?? 1;
+
+    const { data: optionsTradesData } = await supabase
+      .from('paper_trades')
+      .select('id, pnl, pnl_percent, close_reason, option_strike, option_premium, option_iv_rank, option_delta, opened_at, closed_at')
+      .in('mode', ['OPTIONS_PUT', 'OPTIONS_CALL'])
+      .in('status', ['CLOSED'])
+      .not('closed_at', 'is', null)
+      .gte('closed_at', since.toISOString())
+      .order('closed_at', { ascending: false })
+      .limit(200);
+
+    const optsTrades = (optionsTradesData ?? []) as Array<{
+      id: string;
+      pnl: number | null;
+      pnl_percent: number | null;
+      close_reason: string | null;
+      option_strike: number | null;
+      option_premium: number | null;
+      option_iv_rank: number | null;
+      option_delta: number | null;
+      opened_at: string | null;
+      closed_at: string | null;
+    }>;
+
+    // Always add options stats to categoryStats for audit visibility
+    if (optsTrades.length > 0) {
+      const optsPnlsAll = optsTrades.map(t => t.pnl ?? 0);
+      const optsWinsAll = optsPnlsAll.filter(p => p > 0);
+      const optsLossesAll = optsPnlsAll.filter(p => p < 0);
+      const optsReturnsAll = optsTrades.map(t => t.pnl_percent ?? 0);
+      categoryStats.push({
+        category: 'OPTIONS',
+        trades: optsTrades.length,
+        wins: optsWinsAll.length,
+        losses: optsLossesAll.length,
+        winRate: optsWinsAll.length / optsTrades.length,
+        avgReturnPct: optsReturnsAll.reduce((a, b) => a + b, 0) / optsReturnsAll.length,
+        totalPnl: optsPnlsAll.reduce((a, b) => a + b, 0),
+        profitFactor: profitFactor(optsPnlsAll.reduce((a, b) => a + b, 0), optsWinsAll, optsLossesAll),
+      });
+    }
+
+    if (optsTrades.length >= MIN_SAMPLE) {
+      const optsPnls = optsTrades.map(t => t.pnl ?? 0);
+      const optsWins = optsPnls.filter(p => p > 0);
+      const optsLosses = optsPnls.filter(p => p < 0);
+      const optsWinRate = optsTrades.length > 0 ? optsWins.length / optsTrades.length : 0;
+      const optsProfitFactor = profitFactor(optsPnls.reduce((a, b) => a + b, 0), optsWins, optsLosses);
+
+      // Count close reasons
+      const stopLossCount = optsTrades.filter(t => t.close_reason === 'stop_loss').length;
+      const assignedCount = optsTrades.filter(t => t.close_reason === 'assigned').length;
+      const profit50Count = optsTrades.filter(t => t.close_reason === '50pct_profit').length;
+      const expiredCount = optsTrades.filter(t => t.close_reason === 'expired_worthless').length;
+
+      const stopLossRate = optsTrades.length > 0 ? stopLossCount / optsTrades.length : 0;
+      const assignmentRate = optsTrades.length > 0 ? assignedCount / optsTrades.length : 0;
+
+      // Suppress unused-variable warnings
+      void profit50Count; void expiredCount;
+
+      // G1: Stop-loss rate too high → raise min IV rank (filter for better-premium entries)
+      if (stopLossRate > 0.15 && optsTrades.length >= MIN_SAMPLE) {
+        const newVal = Math.min(optsMinIvRank + 5, 75);
+        if (newVal !== optsMinIvRank) {
+          decisions.push({
+            param: 'options_min_iv_rank',
+            oldValue: optsMinIvRank,
+            newValue: newVal,
+            reason: `Options stop-loss rate ${(stopLossRate * 100).toFixed(0)}% (>${15}%) over ${optsTrades.length} trades — raising IV rank floor to filter lower-quality entries`,
+            category: 'OPTIONS_PUT',
+          });
+          updates.options_min_iv_rank = newVal;
+        }
+      } else if (stopLossRate < 0.05 && optsWinRate > 0.75 && optsMinIvRank > 40) {
+        // Very few stop-losses, winning well → can relax IV rank slightly
+        const newVal = Math.max(optsMinIvRank - 5, 40);
+        if (newVal !== optsMinIvRank) {
+          decisions.push({
+            param: 'options_min_iv_rank',
+            oldValue: optsMinIvRank,
+            newValue: newVal,
+            reason: `Options performing well: stop-loss rate ${(stopLossRate * 100).toFixed(0)}%, win rate ${(optsWinRate * 100).toFixed(0)}% — relaxing IV rank floor slightly to allow more entries`,
+            category: 'OPTIONS_PUT',
+          });
+          updates.options_min_iv_rank = newVal;
+        }
+      }
+
+      // G2: Assignment rate too high → nudge delta target lower (more OTM cushion)
+      if (assignmentRate > 0.20) {
+        const newVal = r1(Math.max(optsDeltaTarget - 0.02, 0.15));
+        if (newVal !== optsDeltaTarget) {
+          decisions.push({
+            param: 'options_delta_target',
+            oldValue: optsDeltaTarget,
+            newValue: newVal,
+            reason: `Options assignment rate ${(assignmentRate * 100).toFixed(0)}% (>${20}%) — nudging delta target lower for more OTM cushion`,
+            category: 'OPTIONS_PUT',
+          });
+          updates.options_delta_target = newVal;
+        }
+      } else if (assignmentRate < 0.05 && optsWinRate > 0.80 && optsDeltaTarget < 0.35) {
+        // Rarely getting assigned and winning consistently → can take slightly more premium (higher delta)
+        const newVal = r1(Math.min(optsDeltaTarget + 0.02, 0.35));
+        if (newVal !== optsDeltaTarget) {
+          decisions.push({
+            param: 'options_delta_target',
+            oldValue: optsDeltaTarget,
+            newValue: newVal,
+            reason: `Options assignment rate ${(assignmentRate * 100).toFixed(0)}%, win rate ${(optsWinRate * 100).toFixed(0)}% — nudging delta up slightly to collect more premium`,
+            category: 'OPTIONS_PUT',
+          });
+          updates.options_delta_target = newVal;
+        }
+      }
+
+      // G3: Win rate consistently strong → increase max contracts per scan
+      if (optsWinRate >= 0.80 && optsProfitFactor >= 1.5 && optsTrades.length >= 15 && optsMaxContracts < 5) {
+        const newVal = optsMaxContracts + 1;
+        decisions.push({
+          param: 'options_max_contracts_per_scan',
+          oldValue: optsMaxContracts,
+          newValue: newVal,
+          reason: `Options win rate ${(optsWinRate * 100).toFixed(0)}%, PF ${optsProfitFactor} over ${optsTrades.length} trades — scaling up daily deployment`,
+          category: 'OPTIONS_PUT',
+        });
+        updates.options_max_contracts_per_scan = newVal;
+      } else if (optsWinRate < 0.55 && optsProfitFactor < 0.9 && optsMaxContracts > 1) {
+        const newVal = Math.max(optsMaxContracts - 1, 1);
+        decisions.push({
+          param: 'options_max_contracts_per_scan',
+          oldValue: optsMaxContracts,
+          newValue: newVal,
+          reason: `Options win rate ${(optsWinRate * 100).toFixed(0)}%, PF ${optsProfitFactor} — reducing daily deployment until performance recovers`,
+          category: 'OPTIONS_PUT',
+        });
+        updates.options_max_contracts_per_scan = newVal;
+      }
+
+      // G4: 50% close happens very quickly (avg DTE at close < 8 days) → lower profit target to 40%
+      // This means we could be exiting even sooner and redeploying faster
+      const closedWithDte = optsTrades.filter(t => t.opened_at && t.closed_at && t.close_reason === '50pct_profit');
+      if (closedWithDte.length >= 5) {
+        const avgDaysToClose = closedWithDte.reduce((sum, t) => {
+          const days = (new Date(t.closed_at!).getTime() - new Date(t.opened_at!).getTime()) / (1000 * 60 * 60 * 24);
+          return sum + days;
+        }, 0) / closedWithDte.length;
+
+        if (avgDaysToClose < 8 && optsProfitClosePct > 40) {
+          const newVal = Math.max(optsProfitClosePct - 5, 40);
+          decisions.push({
+            param: 'options_profit_close_pct',
+            oldValue: optsProfitClosePct,
+            newValue: newVal,
+            reason: `50%-close positions averaging ${avgDaysToClose.toFixed(1)} days — lowering profit target slightly for faster capital recycling`,
+            category: 'OPTIONS_PUT',
+          });
+          updates.options_profit_close_pct = newVal;
+        } else if (avgDaysToClose > 20 && optsProfitClosePct < 60) {
+          // Takes a long time to hit target → raise it since we're not gaining from early exit
+          const newVal = Math.min(optsProfitClosePct + 5, 60);
+          decisions.push({
+            param: 'options_profit_close_pct',
+            oldValue: optsProfitClosePct,
+            newValue: newVal,
+            reason: `50%-close positions averaging ${avgDaysToClose.toFixed(1)} days to hit target — raising profit threshold slightly`,
+            category: 'OPTIONS_PUT',
+          });
+          updates.options_profit_close_pct = newVal;
         }
       }
     }

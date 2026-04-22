@@ -121,6 +121,8 @@ interface ScanContext {
   sectorByTicker: Map<string, string>;
   openCountBySector: Map<string, number>;
   freeCapital: number;
+  minIvRank: number;           // auto-tuned: minimum IV rank floor (default 50)
+  deltaTarget: number;         // auto-tuned: base delta target for put selection (default 0.30)
 }
 
 // ── Finnhub Helpers ──────────────────────────────────────
@@ -407,7 +409,11 @@ async function getIvRank(ticker: string, currentIv: number): Promise<number | nu
 
 // ── Build Scan Context ───────────────────────────────────
 
-async function buildScanContext(freeCapital: number): Promise<ScanContext> {
+async function buildScanContext(
+  freeCapital: number,
+  minIvRank: number,
+  deltaTarget: number,
+): Promise<ScanContext> {
   const sb = getSupabase();
   const [spyData, vix, openPositions] = await Promise.all([
     getSpySma200(),
@@ -447,6 +453,8 @@ async function buildScanContext(freeCapital: number): Promise<ScanContext> {
     sectorByTicker,
     openCountBySector,
     freeCapital,
+    minIvRank,
+    deltaTarget,
   };
 }
 
@@ -593,9 +601,9 @@ async function checkStock(
   const rsiBonus = rsiOk;
 
   // Check 6: Options chain — uses IB when connected, Black-Scholes synthetic fallback otherwise
-  // Priority: bear mode (15Δ) > leveraged ETF (18Δ) > high-conviction RSI (35Δ) > normal (30Δ)
+  // Priority: bear mode (15Δ) > leveraged ETF (18Δ) > high-conviction RSI (35Δ) > normal (ctx.deltaTarget, auto-tuned)
   // Leveraged ETFs (3×) need a lower delta because their vol is amplified — 18Δ ≈ 82% prob OTM
-  let deltaTarget = DELTA_TARGET_NORMAL;
+  let deltaTarget = ctx.deltaTarget;
   if (ctx.bearMode) deltaTarget = BEAR_DELTA_TARGET;
   else if (leverageFactor > 1) deltaTarget = DELTA_TARGET_LEVERAGED;
   else if (rsiBonus) deltaTarget = DELTA_TARGET_HIGH_CONVICTION;
@@ -665,12 +673,13 @@ async function checkStock(
   if (ctx.freeCapital < effectiveCapitalRequired) return { ticker, skipped: true, reason: 'insufficient_capital' };
 
   // Check 9: IV rank — range-bound stocks get a lower bar (steady chop = reliable premium)
+  // ctx.minIvRank is the auto-tuned floor (default 50); range-bound stocks use MIN_IV_RANK_RANGE_BOUND
   const currentIvPct = chain.currentIV * 100;
   const ivRank = await getIvRank(ticker, currentIvPct);
-  const rangeBoundResult = ivRank !== null && ivRank < MIN_IV_RANK
+  const rangeBoundResult = ivRank !== null && ivRank < ctx.minIvRank
     ? await isRangeBound(ticker)
     : { rangeBound: false, bandPct: 0 };
-  const effectiveMinIvRank = rangeBoundResult.rangeBound ? MIN_IV_RANK_RANGE_BOUND : MIN_IV_RANK;
+  const effectiveMinIvRank = rangeBoundResult.rangeBound ? MIN_IV_RANK_RANGE_BOUND : ctx.minIvRank;
   checks.ivRank = ivRank !== null
     ? `${ivRank}${rangeBoundResult.rangeBound ? `_range_bound(${rangeBoundResult.bandPct.toFixed(0)}%band)` : ''}`
     : 'building_history';
@@ -761,7 +770,9 @@ export async function runOptionsScan(freeCapital = 100_000): Promise<OptionsScan
     return { opportunities: [], skipped: [], scanDate, spyAboveSma200: true, vix: 20, openPutCount: 0 };
   }
 
-  const ctx = await buildScanContext(freeCapital);
+  // Fetch auto-trade config (including auto-tuned wheel params) before building scan context
+  const autoConfig = await getOptionsAutoTradeConfig();
+  const ctx = await buildScanContext(freeCapital, autoConfig.minIvRank, autoConfig.deltaTarget);
   const opportunities: OptionsTradeTicket[] = [];
   const skipped: Array<{ ticker: string; reason: string }> = [];
 
@@ -788,7 +799,7 @@ export async function runOptionsScan(freeCapital = 100_000): Promise<OptionsScan
   opportunities.sort((a, b) => b.annualYield - a.annualYield);
 
   // Auto-trade top opportunities if enabled
-  const { enabled: autoEnabled, maxContracts } = await getOptionsAutoTradeConfig();
+  const { enabled: autoEnabled, maxContracts } = autoConfig;
   if (autoEnabled && opportunities.length > 0) {
     const toTrade = opportunities.slice(0, maxContracts);
     for (const opp of toTrade) {
@@ -943,17 +954,28 @@ export async function autoTradeOption(ticket: OptionsTradeTicket): Promise<{ tra
 }
 
 /**
- * Read options auto-trade setting from DB.
+ * Read options auto-trade settings from DB, including auto-tuned wheel parameters.
  */
-export async function getOptionsAutoTradeConfig(): Promise<{ enabled: boolean; maxContracts: number }> {
+export async function getOptionsAutoTradeConfig(): Promise<{
+  enabled: boolean;
+  maxContracts: number;
+  minIvRank: number;
+  deltaTarget: number;
+  profitClosePct: number;
+  stopLossMultiplier: number;
+}> {
   const sb = getSupabase();
   const { data } = await sb
     .from('auto_trader_config')
-    .select('options_auto_trade_enabled, options_max_contracts_per_scan')
+    .select('options_auto_trade_enabled, options_max_contracts_per_scan, options_min_iv_rank, options_delta_target, options_profit_close_pct, options_stop_loss_multiplier')
     .eq('id', 'default')
     .single();
   return {
-    enabled: (data as { options_auto_trade_enabled?: boolean } | null)?.options_auto_trade_enabled ?? false,
-    maxContracts: (data as { options_max_contracts_per_scan?: number } | null)?.options_max_contracts_per_scan ?? 1,
+    enabled: (data as any)?.options_auto_trade_enabled ?? false,
+    maxContracts: (data as any)?.options_max_contracts_per_scan ?? 1,
+    minIvRank: (data as any)?.options_min_iv_rank ?? 50,
+    deltaTarget: (data as any)?.options_delta_target ?? 0.30,
+    profitClosePct: (data as any)?.options_profit_close_pct ?? 50,
+    stopLossMultiplier: (data as any)?.options_stop_loss_multiplier ?? 3.0,
   };
 }

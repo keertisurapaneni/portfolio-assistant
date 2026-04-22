@@ -9,6 +9,7 @@
  */
 
 import { getSupabase, createAutoTradeEvent } from './supabase.js';
+import { getOptionsAutoTradeConfig } from './options-scanner.js';
 import { getOptionsChain } from './options-chain.js';
 import { isConnected, requestOpenOrders } from '../ib-connection.js';
 
@@ -162,6 +163,11 @@ export async function runOptionsManageCycle(): Promise<ManageCycleResult> {
     expiredPositions: [],
   };
 
+  // Load auto-tuned wheel parameters from DB
+  const wheelConfig = await getOptionsAutoTradeConfig();
+  const profitClosePct = wheelConfig.profitClosePct;
+  const stopLossMultiplier = wheelConfig.stopLossMultiplier;
+
   // ── Check SUBMITTED orders for IB fills ──────────────────
   if (isConnected()) {
     const { data: submitted } = await sb
@@ -253,10 +259,9 @@ export async function runOptionsManageCycle(): Promise<ManageCycleResult> {
     // Update live P&L on the trade
     await sb.from('paper_trades').update({ pnl }).eq('id', pos.id);
 
-    // ── Check 3: Hard stop-loss at 200% of premium collected ──
-    // If the put has gone 2× against us (currentPremium > 3× what we collected),
-    // close immediately to protect capital rather than hope for a bounce.
-    if (currentPremium > premiumCollected * 3) {
+    // ── Check 3: Hard stop-loss — close when premium exceeds stopLossMultiplier × original ──
+    // stopLossMultiplier is auto-tuned by Rule G (default 3.0×).
+    if (currentPremium > premiumCollected * stopLossMultiplier) {
       const lossAmount = Math.abs(pnl);
       await sb.from('paper_trades').update({
         status: 'CLOSED',
@@ -268,16 +273,18 @@ export async function runOptionsManageCycle(): Promise<ManageCycleResult> {
         option_close_pct: profitCapturePct,
       }).eq('id', pos.id);
 
-      console.log(`[Options Manager] STOP-LOSS: ${pos.ticker} $${pos.option_strike}P — premium 3×+ original, closing for -$${lossAmount.toFixed(0)}`);
+      console.log(`[Options Manager] STOP-LOSS: ${pos.ticker} $${pos.option_strike}P — premium ${stopLossMultiplier}×+ original, closing for -$${lossAmount.toFixed(0)}`);
       persistEvent(pos.ticker, 'error',
-        `🛑 ${pos.ticker} $${pos.option_strike} put stopped — premium blew past 3× ($${currentPremium.toFixed(2)} vs collected $${premiumCollected.toFixed(2)}), taking -$${lossAmount.toFixed(0)} loss`,
-        { action: 'closed', source: 'options', metadata: { reason: 'stop_loss', pnl, currentPremium, premiumCollected } }
+        `🛑 ${pos.ticker} $${pos.option_strike} put stopped — premium blew past ${stopLossMultiplier}× ($${currentPremium.toFixed(2)} vs collected $${premiumCollected.toFixed(2)}), taking -$${lossAmount.toFixed(0)} loss`,
+        { action: 'closed', source: 'options', metadata: { reason: 'stop_loss', pnl, currentPremium, premiumCollected, stopLossMultiplier } }
       );
       continue;
     }
 
-    // ── Check 3b: 50% profit — auto close ──
-    if (profitCapturePct >= 50) {
+    // ── Check 3b: Profit capture threshold — auto close when target % reached ──
+    // profitClosePct is auto-tuned by Rule G (default 50%).
+    // close_reason stays '50pct_profit' so Rule G's close-reason analysis works correctly.
+    if (profitCapturePct >= profitClosePct) {
       await sb.from('paper_trades').update({
         status: 'CLOSED',
         close_price: currentPremium,
@@ -290,8 +297,8 @@ export async function runOptionsManageCycle(): Promise<ManageCycleResult> {
 
       result.closed50Pct.push(pos.ticker);
       persistEvent(pos.ticker, 'success',
-        `💰 ${pos.ticker} $${pos.option_strike} put closed at ${profitCapturePct.toFixed(0)}% profit — captured $${pnl.toFixed(0)}`,
-        { action: 'closed', source: 'options', metadata: { reason: '50pct_profit', pnl, profitCapturePct } }
+        `💰 ${pos.ticker} $${pos.option_strike} put closed at ${profitCapturePct.toFixed(0)}% profit (target ${profitClosePct}%) — captured $${pnl.toFixed(0)}`,
+        { action: 'closed', source: 'options', metadata: { reason: '50pct_profit', pnl, profitCapturePct, profitClosePct } }
       );
       continue;
     }
