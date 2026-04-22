@@ -28,6 +28,36 @@ export async function lookupTickerDescription(ticker: string): Promise<string | 
   }
 }
 
+export interface TickerQuote {
+  price: number;
+  change: number;
+  changePercent: number;
+}
+
+/** Fetches live quotes for a list of tickers from Finnhub in parallel. */
+export async function fetchWatchlistQuotes(tickers: string[]): Promise<Map<string, TickerQuote>> {
+  const result = new Map<string, TickerQuote>();
+  if (!FINNHUB_KEY || tickers.length === 0) return result;
+
+  const fetches = tickers.map(async (ticker) => {
+    try {
+      const res = await fetch(
+        `${FINNHUB_BASE}/quote?symbol=${encodeURIComponent(ticker)}&token=${FINNHUB_KEY}`
+      );
+      if (!res.ok) return;
+      const q = await res.json();
+      if (typeof q?.c === 'number' && q.c > 0) {
+        result.set(ticker, { price: q.c, change: q.d ?? 0, changePercent: q.dp ?? 0 });
+      }
+    } catch {
+      // silent — tile just won't show price
+    }
+  });
+
+  await Promise.all(fetches);
+  return result;
+}
+
 // ── Types ────────────────────────────────────────────────
 
 export interface WatchlistTicker {

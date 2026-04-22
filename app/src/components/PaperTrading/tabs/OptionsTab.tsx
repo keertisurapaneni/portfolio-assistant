@@ -14,6 +14,8 @@ import {
   removeFromOptionsWatchlist,
   updateOptionsWatchlistNotes,
   lookupTickerDescription,
+  fetchWatchlistQuotes,
+  type TickerQuote,
   paperTradeOptionManually,
   type WatchlistTicker,
   type OptionsScanOpportunity,
@@ -327,6 +329,7 @@ export function OptionsTab() {
   const [addingTicker, setAddingTicker] = useState(false);
   const [editingNotes, setEditingNotes] = useState<string | null>(null); // ticker being edited
   const [editNotesValue, setEditNotesValue] = useState('');
+  const [prices, setPrices] = useState<Map<string, TickerQuote>>(new Map());
   const [activeSection, setActiveSection] = useState<'opportunities' | 'positions' | 'history' | 'watchlist' | 'log'>('opportunities');
 
   const load = useCallback(async () => {
@@ -356,6 +359,14 @@ export function OptionsTab() {
   }, []);
 
   useEffect(() => { load(); }, [load]);
+
+  // Fetch live prices whenever the watchlist tab is active and watchlist changes.
+  useEffect(() => {
+    if (activeSection !== 'watchlist') return;
+    const tickers = watchlist.filter(w => w.active).map(w => w.ticker);
+    if (tickers.length === 0) return;
+    fetchWatchlistQuotes(tickers).then(setPrices);
+  }, [activeSection, watchlist]);
 
   async function handleAddTicker() {
     if (!addTicker.trim()) return;
@@ -677,10 +688,28 @@ export function OptionsTab() {
 
           {/* Watchlist items */}
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-            {watchlist.filter(w => w.active).map(w => (
+            {watchlist.filter(w => w.active).map(w => {
+              const quote = prices.get(w.ticker);
+              return (
               <div key={w.id} className="flex flex-col rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] px-3 py-2 gap-1">
                 <div className="flex items-start justify-between gap-1">
-                  <p className="text-sm font-bold text-[hsl(var(--foreground))]">{w.ticker}</p>
+                  <div className="flex flex-col min-w-0">
+                    <p className="text-sm font-bold text-[hsl(var(--foreground))]">{w.ticker}</p>
+                    {quote && (
+                      <div className="flex items-baseline gap-1.5 mt-0.5">
+                        <span className="text-xs font-semibold tabular-nums text-[hsl(var(--foreground))]">
+                          ${quote.price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </span>
+                        <span className={cn(
+                          'text-[10px] font-medium tabular-nums',
+                          quote.changePercent >= 0 ? 'text-emerald-600' : 'text-red-500'
+                        )}>
+                          {quote.changePercent >= 0 ? '+' : ''}{quote.changePercent.toFixed(2)}%
+                        </span>
+                      </div>
+                    )}
+                    {!quote && <span className="text-[10px] text-[hsl(var(--muted-foreground))]/40 tabular-nums">—</span>}
+                  </div>
                   <div className="flex items-center gap-0.5 shrink-0">
                     <button
                       title="Edit description"
@@ -731,7 +760,8 @@ export function OptionsTab() {
                   </p>
                 )}
               </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}
