@@ -10,7 +10,11 @@ import { cn } from '../lib/utils';
  * A standalone premium income engine for selling puts and covered calls
  * on quality stocks. Separate from Paper Trading — this is its own product.
  */
-export function OptionsWheelPage() {
+interface OptionsWheelPageProps {
+  isAuthed?: boolean;
+}
+
+export function OptionsWheelPage({ isAuthed = false }: OptionsWheelPageProps) {
   const [autoTradeEnabled, setAutoTradeEnabled] = useState(false);
   const [toggling, setToggling] = useState(false);
 
@@ -45,31 +49,33 @@ export function OptionsWheelPage() {
           </p>
         </div>
 
-        {/* Auto-trade toggle */}
-        <div className="flex flex-col items-end gap-1">
-          <button
-            onClick={handleToggle}
-            disabled={toggling}
-            className={cn(
-              'flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold transition-all',
-              autoTradeEnabled
-                ? 'bg-violet-600 text-white shadow-md shadow-violet-500/30 hover:bg-violet-700'
-                : 'bg-[hsl(var(--muted))] text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--muted))]/80',
-              toggling && 'opacity-60 cursor-not-allowed'
-            )}
-          >
-            {autoTradeEnabled
-              ? <Zap className="w-4 h-4" />
-              : <ZapOff className="w-4 h-4" />
-            }
-            {autoTradeEnabled ? 'Auto-Trade ON' : 'Auto-Trade OFF'}
-          </button>
-          <p className="text-[10px] text-[hsl(var(--muted-foreground))] text-right max-w-[160px]">
-            {autoTradeEnabled
-              ? 'Morning scan will place real IB orders'
-              : 'Paper-trading only — no real orders'}
-          </p>
-        </div>
+        {/* Auto-trade toggle — only visible to authenticated users */}
+        {isAuthed && (
+          <div className="flex flex-col items-end gap-1">
+            <button
+              onClick={handleToggle}
+              disabled={toggling}
+              className={cn(
+                'flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold transition-all',
+                autoTradeEnabled
+                  ? 'bg-violet-600 text-white shadow-md shadow-violet-500/30 hover:bg-violet-700'
+                  : 'bg-[hsl(var(--muted))] text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--muted))]/80',
+                toggling && 'opacity-60 cursor-not-allowed'
+              )}
+            >
+              {autoTradeEnabled
+                ? <Zap className="w-4 h-4" />
+                : <ZapOff className="w-4 h-4" />
+              }
+              {autoTradeEnabled ? 'Auto-Trade ON' : 'Auto-Trade OFF'}
+            </button>
+            <p className="text-[10px] text-[hsl(var(--muted-foreground))] text-right max-w-[160px]">
+              {autoTradeEnabled
+                ? 'Morning scan will place real IB orders'
+                : 'Paper-trading only — no real orders'}
+            </p>
+          </div>
+        )}
       </div>
 
       {/* Main content */}
