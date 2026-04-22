@@ -247,7 +247,12 @@ export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], 
             </tr>
           </thead>
           <tbody className="divide-y divide-[hsl(var(--border))]">
-            {events.map((event) => {
+            {/* Tickers our scanner touched today (executed or skipped) — used to attribute source correctly */}
+            {(() => {
+              const scannerTickers = new Set(
+                events.filter(e => e.source === 'scanner').map(e => e.ticker.toUpperCase())
+              );
+              return events.map((event) => { const isOurScan = scannerTickers.has(event.ticker.toUpperCase());
               const matched = tradesByTicker.get(event.ticker)?.find(t =>
                 t.pnl != null || t.status === 'FILLED' || t.status === 'TARGET_HIT' || t.status === 'STOPPED' || t.status === 'CLOSED'
               );
@@ -264,8 +269,8 @@ export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], 
               const externalMatch = msg.match(/(?:BUY|SELL)\s+(\d+)\s+@\s*~?\$?([\d.]+)/i);
               const qtyMatch = sharesMatch ?? externalMatch;
 
-              const sourceLabel = event.source === 'external_signal' ? 'External signal'
-                : event.source === 'scanner' ? 'Trade signal'
+              const sourceLabel = (event.source === 'scanner' || (event.source === 'external_signal' && isOurScan)) ? 'Trade signal'
+                : event.source === 'external_signal' ? 'External signal'
                 : event.source === 'suggested_finds' ? 'Suggested find'
                 : event.source === 'dip_buy' ? 'Dip buy'
                 : event.source === 'profit_take' ? 'Profit take'
@@ -302,7 +307,7 @@ export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], 
                   </td>
                   <td className="px-4 py-3 text-xs text-[hsl(var(--muted-foreground))]">
                     <span className="font-medium text-[hsl(var(--foreground))]">{sourceLabel}</span>
-                    {event.strategy_source && event.source !== 'scanner' && (
+                    {event.strategy_source && !isOurScan && event.source !== 'scanner' && (
                       <span className="ml-1 px-1 py-0.5 rounded text-[10px] font-semibold bg-indigo-50 text-indigo-600 border border-indigo-200">
                         {event.strategy_source}
                       </span>
@@ -332,7 +337,7 @@ export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], 
                   </td>
                 </tr>
               );
-            })}
+            }); })()}
           </tbody>
         </table>
       </div>
