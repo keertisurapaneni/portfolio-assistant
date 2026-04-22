@@ -702,7 +702,7 @@ function IdeaCard({
       {traded && (
         <div className="absolute top-2 right-2 flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-emerald-100 border border-emerald-200">
           <CheckCircle className="w-3 h-3 text-emerald-600" />
-          <span className="text-[9px] font-bold text-emerald-700">TRADED TODAY</span>
+          <span className="text-[9px] font-bold text-emerald-700">TRADED</span>
         </div>
       )}
 
