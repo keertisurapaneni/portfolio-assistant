@@ -216,3 +216,65 @@ Current watchlist includes: NVDA, AMD, PLTR, GOOGL, MSFT, AAPL, META, CRM, SNOW,
 Paper trading until **2 consecutive months** of annualized return > 60% (the "husband benchmark").  
 Enable live trading: set `options_auto_trade_enabled = true` in `auto_trader_config` table.  
 IB paper account: `DUP876374` → switch to live account credentials when ready.
+
+---
+
+## Phase 2 Roadmap
+
+Features to build after the paper trading track record is established (2 months > 60% annualized).
+
+### Post-Earnings IV Crush Entries
+
+**Status:** Planned — Phase 2  
+**Priority:** High  
+**Why:** Highest-conviction put-selling setup. Direction is confirmed, IV is still 30–50% elevated, and the binary risk is already resolved.
+
+**How it works:**
+- Company reports earnings → IV spikes then immediately begins collapsing ("IV crush")
+- A 24–48 hour window exists where premium is still elevated but direction is known
+- Selling puts in this window captures elevated premium *with* trend confirmation — the best of both worlds
+
+**Timing window:**
+```
+Day -7   → Scanner BLOCKS entry (earnings blackout)
+Day 0    → Earnings announced
+Day +1   → 🎯 Sweet spot: IV still 30-50% above normal, direction confirmed
+Day +2   → Still viable, IV normalizing
+Day +3+  → Window closed, IV back to baseline
+```
+
+**Implementation plan (when ready):**
+- The existing morning scan on day +1 naturally passes the blackout check (earnings now in the past)
+- Add `postEarningsMode` flag to `ScanContext` when a stock reported within last 48h
+- Lower IV rank floor to 35 (vs normal 50) — IV is falling but still elevated
+- Add +1 contract conviction bonus — direction confirmed = high confidence
+- Add earnings quality check: stock up ≥2% on report (bullish) or flat/recovering (resilient); skip if down >10% or guidance was cut
+- News sentiment check already in place catches "missed guidance" red flags
+
+**Stocks that suit this best:** Large-cap tech with predictable earnings reactions (NVDA, META, AAPL, MSFT, GOOGL) — these have the most liquid options chains and fastest IV normalization.
+
+### Tuning Log UI
+
+**Status:** Planned — Phase 2  
+**Priority:** Medium  
+**Why:** The auto-tune engine (Rules A–G) runs nightly and adjusts config silently. Currently invisible.
+
+**What to build:** A read-only "Tuning History" tab in Paper Trading → Strategy Performance showing the last 7 tune runs from `strategy_tune_log`:
+```
+Last tuned: Apr 22 at 4:47 PM — 2 adjustments
+  options_min_iv_rank    50 → 55   "stop-loss rate 18% — raising IV floor"
+  options_delta_target   0.30 → 0.28  "assignment rate 22% — more OTM cushion"
+Apr 21 — no changes needed
+Apr 20 — 1 adjustment: min_scanner_confidence 7.0 → 7.5
+```
+
+### Realized + Unrealized P&L Split
+
+**Status:** Planned — Phase 2  
+**Priority:** Medium  
+**Why:** Current stats header shows projected income but not the realized vs. unrealized breakdown.
+
+**What to add to Options Wheel stats header:**
+- Realized P&L this month (closed trades only) — "How much have I actually pocketed?"
+- Unrealized P&L on open positions — "If everything closed today, where do I stand?"
+- Covered call income as a separate line — tracks the wheel's second leg independently
