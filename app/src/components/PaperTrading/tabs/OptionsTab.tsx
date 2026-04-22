@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { RefreshCw, Plus, X, AlertTriangle, CheckCircle, BarChart2, Activity, Pencil, Check } from 'lucide-react';
+import { RefreshCw, Plus, X, AlertTriangle, CheckCircle, Activity, Pencil, Check } from 'lucide-react';
 import { cn } from '../../../lib/utils';
 import { fmtUsd } from '../utils';
 import {
@@ -57,125 +57,6 @@ function calcAnnualizedROC(
   const end = closedAt ? new Date(closedAt).getTime() : Date.now();
   const daysHeld = Math.max(1, (end - start) / (1000 * 60 * 60 * 24));
   return (pnl / capitalReq) * (365 / daysHeld) * 100;
-}
-
-// ── Trade Opportunity Card ────────────────────────────────
-
-function OpportunityCard({ opp, onPaperTrade }: { opp: OptionsScanOpportunity; onPaperTrade: (opp: OptionsScanOpportunity) => Promise<void> }) {
-  const [loading, setLoading] = useState(false);
-  const [done, setDone] = useState(false);
-  const dte = daysUntil(opp.expiry);
-
-  // 3-signal conviction score: BB lower band + IV rank ≥60 + RSI oversold
-  const bbHit = opp.bb_signal === 'at_lower' || opp.bb_signal === 'near_lower';
-  const ivHit = (opp.iv_rank ?? 0) >= 60;
-  const rsiStr = typeof opp.checks_passed?.rsiOversold === 'string' ? opp.checks_passed.rsiOversold as string : '';
-  const rsiVal = rsiStr ? parseFloat(rsiStr) : NaN;
-  const rsiHit = !isNaN(rsiVal) && rsiVal < 38;
-  const signalScore = [bbHit, ivHit, rsiHit].filter(Boolean).length;
-
-  async function handlePaperTrade() {
-    setLoading(true);
-    try {
-      await onPaperTrade(opp);
-      setDone(true);
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  return (
-    <div className="rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-4">
-      <div className="flex items-start justify-between mb-3">
-        <div>
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-sm font-bold text-[hsl(var(--foreground))]">{opp.ticker}</span>
-            <span className="text-[10px] px-1.5 py-0.5 rounded bg-violet-100 text-violet-700 font-semibold">SELL PUT</span>
-            {/* 3-signal conviction badge */}
-            {signalScore >= 1 && (
-              <span className={cn(
-                'text-[10px] px-1.5 py-0.5 rounded font-bold',
-                signalScore === 3 ? 'bg-emerald-100 text-emerald-700 border border-emerald-300' :
-                signalScore === 2 ? 'bg-amber-100 text-amber-700 border border-amber-300' :
-                'bg-slate-100 text-slate-600 border border-slate-200'
-              )}>
-                ⚡ {signalScore}/3 signals
-              </span>
-            )}
-            {opp.leverage_factor && opp.leverage_factor > 1 && (
-              <span className="text-[10px] px-1.5 py-0.5 rounded bg-purple-100 text-purple-700 font-bold">{opp.leverage_factor}x ETF</span>
-            )}
-            {opp.bb_signal && (
-              <span className="text-[10px] px-1.5 py-0.5 rounded bg-cyan-100 text-cyan-700 font-semibold border border-cyan-200">
-                📊 BB {opp.bb_signal === 'at_lower' ? 'touch' : 'near'}
-              </span>
-            )}
-            {opp.dip_entry && (
-              <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 font-semibold">📉 DIP</span>
-            )}
-            {opp.bear_mode && (
-              <span className="text-[10px] px-1.5 py-0.5 rounded bg-red-100 text-red-700 font-semibold">🐻 BEAR</span>
-            )}
-            {opp.iv_rank && opp.iv_rank >= 60 && (
-              <span className="text-[10px] px-1.5 py-0.5 rounded bg-orange-100 text-orange-700 font-semibold">IV {opp.iv_rank}%</span>
-            )}
-          </div>
-          <p className="text-[11px] text-[hsl(var(--muted-foreground))] mt-0.5">
-            ${opp.strike} strike · {formatExpiry(opp.expiry)} · {dte}d
-          </p>
-        </div>
-        <div className="text-right">
-          <p className="text-base font-bold text-emerald-600">+${Math.round(opp.premium * 100)}</p>
-          <p className="text-[10px] text-[hsl(var(--muted-foreground))]">
-            {opp.contracts && opp.contracts > 1
-              ? <span className="text-violet-600 font-semibold">{opp.contracts}x contracts</span>
-              : '1 contract'}
-          </p>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-3 gap-2 mb-3">
-        <div className="bg-[hsl(var(--muted))]/40 rounded-lg p-2">
-          <p className="text-[9px] text-[hsl(var(--muted-foreground))] uppercase tracking-wide">Net Price</p>
-          <p className="text-xs font-bold text-[hsl(var(--foreground))]">${opp.net_price?.toFixed(2)}</p>
-          <p className="text-[9px] text-emerald-600">entry price if assigned</p>
-        </div>
-        <div className="bg-[hsl(var(--muted))]/40 rounded-lg p-2">
-          <p className="text-[9px] text-[hsl(var(--muted-foreground))] uppercase tracking-wide">Prob Profit</p>
-          <p className={cn('text-xs font-bold', opp.prob_profit >= 70 ? 'text-emerald-600' : 'text-amber-600')}>
-            {opp.prob_profit?.toFixed(0)}%
-          </p>
-          <p className="text-[9px] text-[hsl(var(--muted-foreground))]">win probability</p>
-        </div>
-        <div className="bg-[hsl(var(--muted))]/40 rounded-lg p-2">
-          <p className="text-[9px] text-[hsl(var(--muted-foreground))] uppercase tracking-wide">Annual Yield</p>
-          <p className={cn('text-xs font-bold', opp.annual_yield >= 40 ? 'text-emerald-600' : 'text-blue-600')}>
-            {opp.annual_yield?.toFixed(1)}%
-          </p>
-          <p className="text-[9px] text-[hsl(var(--muted-foreground))]">on capital</p>
-        </div>
-      </div>
-
-      <div className="flex items-center justify-between">
-        <p className="text-[10px] text-[hsl(var(--muted-foreground))]">
-          Reserve <span className="font-semibold">${(opp.capital_req / 1000).toFixed(0)}K</span> · worst case you own the stock at net cost
-        </p>
-        {done ? (
-          <span className="flex items-center gap-1 text-[11px] text-emerald-600 font-semibold">
-            <CheckCircle className="w-3 h-3" /> Paper traded
-          </span>
-        ) : (
-          <button
-            onClick={handlePaperTrade}
-            disabled={loading}
-            className="text-[11px] px-3 py-1.5 rounded-lg bg-violet-600 text-white font-semibold hover:bg-violet-700 disabled:opacity-50 transition-colors"
-          >
-            {loading ? 'Adding...' : 'Paper Trade'}
-          </button>
-        )}
-      </div>
-    </div>
-  );
 }
 
 // ── Open Position Card ────────────────────────────────────
@@ -351,27 +232,6 @@ function HowItWorks() {
 }
 
 // ── Main Tab ─────────────────────────────────────────────
-
-function formatSkipReason(reason: string): string {
-  if (reason.startsWith('earnings_in_')) return `Earnings in ${reason.split('_')[2]}d`;
-  if (reason.startsWith('high_beta:')) return `Beta too high (${reason.split(':')[1]})`;
-  if (reason.startsWith('below_sma50:')) return `Below 50d SMA ($${reason.split(':')[1]})`;
-  if (reason.startsWith('down_')) return `Down ${reason.split('_')[1]} in 3mo`;
-  if (reason.startsWith('low_premium_')) return `Premium too low`;
-  if (reason.startsWith('wide_spread:')) return `Wide bid/ask spread`;
-  if (reason.startsWith('sector_limit:')) return `Sector cap (${reason.split(':')[1]})`;
-  if (reason.startsWith('bear_mode_non_defensive:')) return `Bear mode — non-defensive sector`;
-  if (reason.startsWith('negative_sentiment:')) return `Negative news sentiment`;
-  if (reason.startsWith('news_red_flag:')) return `Red flag in news (${reason.split(':')[1]})`;
-  if (reason.startsWith('iv_spike:')) return `IV spike detected`;
-  if (reason === 'duplicate_open_position') return 'Already have an open position';
-  if (reason === 'max_positions') return 'Max positions reached';
-  if (reason === 'insufficient_capital') return 'Insufficient capital';
-  if (reason === 'no_options_chain') return 'No options chain data';
-  if (reason === 'no_bid_no_market') return 'No bid — illiquid';
-  if (reason === 'too_early_opening_30min') return 'Too early (opening volatility)';
-  return reason.replace(/_/g, ' ');
-}
 
 export function OptionsTab() {
   const [openPositions, setOpenPositions] = useState<OpenOptionsPosition[]>([]);
