@@ -72,10 +72,12 @@ function PositionCard({
   pos,
   currentPrice,
   atRisk,
+  atRiskReason,
 }: {
   pos: OpenOptionsPosition;
   currentPrice?: TickerQuote;
   atRisk?: boolean;
+  atRiskReason?: string;
 }) {
   const dte = daysUntil(pos.option_expiry);
   const annualROC = calcAnnualizedROC(pos.pnl, pos.option_capital_req, pos.opened_at, pos.closed_at);
@@ -155,6 +157,14 @@ function PositionCard({
           <p className="text-[9px] text-[hsl(var(--muted-foreground))] mt-0.5">Expiry</p>
         </div>
       </div>
+
+      {/* Needs Attention — reason banner */}
+      {atRisk && atRiskReason && (
+        <div className="mt-2 flex items-start gap-1.5 rounded-lg bg-amber-50 border border-amber-200 px-2.5 py-2">
+          <AlertTriangle className="w-3 h-3 text-amber-600 mt-0.5 flex-shrink-0" />
+          <p className="text-[10px] text-amber-800 leading-snug">{atRiskReason}</p>
+        </div>
+      )}
 
       {/* Strike explanation panel */}
       <div className="mt-2 rounded-lg bg-[hsl(var(--muted))]/30 border border-[hsl(var(--border))] px-2.5 py-2 space-y-1.5">
@@ -450,19 +460,42 @@ export function OptionsTab() {
     await load();
   }
 
-  // Split open positions into needs-attention and healthy
+  // Split open positions into needs-attention and healthy, computing the reason for each flagged position.
   const deployed = openPositions.reduce((s, p) => {
     return s + (p.option_strike * 100 * (p.option_contracts ?? 1));
   }, 0);
 
+  const atRiskReasons = new Map<string, string>();
+
   const [needsAttention, healthy] = openPositions.reduce<[OpenOptionsPosition[], OpenOptionsPosition[]]>(
-    ([atRisk, ok], pos) => {
+    ([atRiskList, ok], pos) => {
       const price = openPrices.get(pos.ticker);
       const pnlNegative = (pos.pnl ?? 0) < 0;
       // Flag only when stock is actually below the strike — genuine assignment risk.
       // P&L negative already catches above-strike positions that are losing money.
-      const nearStrike = price != null && price.price < pos.option_strike;
-      return pnlNegative || nearStrike ? [[...atRisk, pos], ok] : [atRisk, [...ok, pos]];
+      const belowStrike = price != null && price.price < pos.option_strike;
+
+      if (belowStrike && pnlNegative) {
+        const gap = pos.option_strike - (price?.price ?? 0);
+        atRiskReasons.set(pos.id,
+          `Stock at $${price!.price.toFixed(2)} is $${gap.toFixed(2)} below your $${pos.option_strike} strike — assignment risk. ` +
+          `Current loss: ${fmtUsd(pos.pnl ?? 0, 0, true)}. Consider rolling down-and-out to a lower strike next month to collect fresh premium and buy more time.`
+        );
+      } else if (belowStrike) {
+        const gap = pos.option_strike - (price?.price ?? 0);
+        atRiskReasons.set(pos.id,
+          `Stock at $${price!.price.toFixed(2)} is $${gap.toFixed(2)} below your $${pos.option_strike} strike. ` +
+          `Assignment could happen near expiry. Consider rolling to a lower strike and further expiry to collect more premium.`
+        );
+      } else if (pnlNegative) {
+        atRiskReasons.set(pos.id,
+          `Position is currently at a loss of ${fmtUsd(pos.pnl ?? 0, 0, true)}. ` +
+          `This is often caused by an IV spike (market fear) rather than the stock moving — the premium inflated. ` +
+          `Stock is still above your $${pos.option_strike} strike, so no assignment risk yet. Monitor closely.`
+        );
+      }
+
+      return (belowStrike || pnlNegative) ? [[...atRiskList, pos], ok] : [atRiskList, [...ok, pos]];
     },
     [[], []]
   );
@@ -538,6 +571,7 @@ export function OptionsTab() {
                       pos={pos}
                       currentPrice={openPrices.get(pos.ticker)}
                       atRisk
+                      atRiskReason={atRiskReasons.get(pos.id)}
                     />
                   ))}
                 </div>
