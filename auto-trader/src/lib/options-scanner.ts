@@ -61,6 +61,16 @@ const STOCK_TREND_SMA_DAYS = 50;           // stock must be above its own 50-day
 const MAX_STOCK_DECLINE_3M_PCT = 20;       // skip if stock down >20% in 3 months
 const MARKET_OPEN_BUFFER_MS = 30 * 60_000; // don't trade in first 30 min after open
 
+// Market discount gate — skip if stock is within this % of its 52-week high.
+// Near all-time-highs = expensive entry, thin margin of safety, don't sell puts into euphoria.
+// Exception: if dipEntry is already true, the stock has already corrected — allow.
+const MAX_PCT_FROM_52W_HIGH = 5; // block if within 5% of 52-week high
+
+// Extended DTE when fear is high — collect more premium when IV is elevated.
+// Normal: 30-45 DTE. High-IV: 60 DTE for ~1.8× premium at ~1.4× capital tie-up.
+const HIGH_IV_RANK_DTE = 60;       // target DTE when IV rank is very elevated
+const HIGH_IV_RANK_DTE_THRESHOLD = 70; // IV rank floor for extended DTE
+
 // Bear market mode — more conservative params applied when SPY < SMA200
 const BEAR_DELTA_TARGET = 0.15;            // 15-delta puts (vs normal 20-25)
 const BEAR_DTE_TARGET = 21;                // shorter expiry
@@ -274,11 +284,14 @@ async function isRangeBound(ticker: string): Promise<{ rangeBound: boolean; band
 
 // ── Beta ──────────────────────────────────────────────────
 
-async function getStockBeta(ticker: string): Promise<number | null> {
-  const data = await fetchJson<{ metric?: { beta?: number } }>(
+async function getStockMetrics(ticker: string): Promise<{ beta: number | null; high52w: number | null }> {
+  const data = await fetchJson<{ metric?: { beta?: number; '52WeekHigh'?: number } }>(
     `https://finnhub.io/api/v1/stock/metric?symbol=${ticker}&metric=all&token=${FINNHUB_KEY}`
   );
-  return data?.metric?.beta ?? null;
+  return {
+    beta: data?.metric?.beta ?? null,
+    high52w: data?.metric?.['52WeekHigh'] ?? null,
+  };
 }
 
 // ── News & Sentiment ─────────────────────────────────────
@@ -389,6 +402,25 @@ function daysToExpiryFromStr(yyyymmdd: string): number {
  * Stores today's IV reading; returns the IV rank based on stored history.
  * IV rank = (current IV - 52w low) / (52w high - 52w low) * 100
  */
+/** Read the most recently stored IV rank for a ticker — used for DTE selection before the chain call. */
+async function getStoredIvRank(ticker: string): Promise<number | null> {
+  const sb = getSupabase();
+  const yearAgo = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const { data } = await sb
+    .from('options_iv_history')
+    .select('iv')
+    .eq('ticker', ticker)
+    .gte('date', yearAgo)
+    .order('date', { ascending: false });
+  if (!data || data.length < 10) return null;
+  const ivs = data.map(r => r.iv as number);
+  const current = ivs[0];
+  const min = Math.min(...ivs);
+  const max = Math.max(...ivs);
+  if (max === min) return 50;
+  return Math.round(((current - min) / (max - min)) * 100);
+}
+
 async function getIvRank(ticker: string, currentIv: number): Promise<number | null> {
   const sb = getSupabase();
   const yearAgo = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
@@ -564,10 +596,26 @@ async function checkStock(
 
   // Check 3.6: Beta filter — skip high-beta stocks (too volatile for wheel strategy)
   // Leveraged ETFs are intentionally high-beta; they have dedicated delta/yield gates instead.
-  const beta = await getStockBeta(ticker);
+  // Piggyback on same Finnhub /stock/metric call to also fetch 52-week high (no extra API call).
+  const metrics = await getStockMetrics(ticker);
+  const { beta, high52w } = metrics;
   checks.beta = beta !== null ? beta.toFixed(2) : 'unknown';
   if (beta !== null && beta > MAX_BETA && leverageFactor === 1) {
     return { ticker, skipped: true, reason: `high_beta:${beta.toFixed(2)}` };
+  }
+
+  // Check 3.7: Market discount gate — don't sell puts near 52-week highs.
+  // Near-highs = expensive entry, thin margin of safety, collecting tiny premium for big tail risk.
+  // Logic: if stock is within MAX_PCT_FROM_52W_HIGH of 52-week high AND it's not already in a dip,
+  // skip — wait for a better entry. dipEntry overrides this (stock already corrected ≥5%).
+  if (high52w !== null && high52w > 0 && !dipEntry) {
+    const pctFromHigh = ((high52w - price) / high52w) * 100;
+    checks.marketDiscount = `${pctFromHigh.toFixed(1)}%_from_52w_high_${high52w.toFixed(0)}`;
+    if (pctFromHigh < MAX_PCT_FROM_52W_HIGH) {
+      return { ticker, skipped: true, reason: `near_52w_high:${pctFromHigh.toFixed(1)}pct_from_${high52w.toFixed(0)}` };
+    }
+  } else {
+    checks.marketDiscount = high52w !== null ? `dip_entry_exempt` : 'no_52w_data';
   }
 
   // Check 4: Earnings blackout
@@ -620,12 +668,24 @@ async function checkStock(
   else if (leverageFactor > 1) deltaTarget = DELTA_TARGET_LEVERAGED;
   else if (rsiBonus) deltaTarget = DELTA_TARGET_HIGH_CONVICTION;
 
+  // Extended DTE when IV rank is very elevated — collect more premium during fear spikes.
+  // Bear mode always uses its shorter 21 DTE (fast recovery expected).
+  // When IV rank ≥ 70: use 60 DTE for ~1.8× premium at ~1.4× capital tie-up (better ratio).
+  let targetDte: number | undefined = ctx.bearMode ? BEAR_DTE_TARGET : undefined;
+  if (!ctx.bearMode) {
+    const storedIvRank = await getStoredIvRank(ticker).catch(() => null);
+    if (storedIvRank !== null && storedIvRank >= HIGH_IV_RANK_DTE_THRESHOLD) {
+      targetDte = HIGH_IV_RANK_DTE;
+      checks.dteExtended = `iv_rank_${storedIvRank}_→_${HIGH_IV_RANK_DTE}dte`;
+    }
+  }
+
   const chain = await getOptionsChain(
     ticker,
     price,
     null,
     deltaTarget,
-    ctx.bearMode ? BEAR_DTE_TARGET : undefined,
+    targetDte,
   );
   if (!chain?.bestPut) return { ticker, skipped: true, reason: 'no_options_chain' };
   const put = chain.bestPut;
