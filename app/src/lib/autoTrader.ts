@@ -877,9 +877,15 @@ export function calculatePositionSize(
   // a single trade from eating a huge chunk of the budget.
   const hardMaxDollar = alloc * 0.10;
 
+  // Day trades are intraday — cap at positionSize (default $5,000) regardless of dynamic
+  // sizing or risk-based formula. The risk-based formula can balloon when stops are tight
+  // (e.g. $2 stop on a $200 stock → 2,750 shares), causing outsized day-trade losses.
+  // Swing and long-term trades keep the larger allocation-based cap.
+  const modeMaxDollar = mode === 'DAY_TRADE' ? config.positionSize : hardMaxDollar;
+
   if (!config.useDynamicSizing || price <= 0) {
-    // Fallback: flat position sizing, but STILL capped by allocation
-    const cappedSize = Math.min(config.positionSize, hardMaxDollar);
+    // Fallback: flat position sizing, but STILL capped by mode
+    const cappedSize = Math.min(config.positionSize, modeMaxDollar);
     const qty = Math.max(1, Math.floor(cappedSize / price));
     return { quantity: qty, dollarSize: qty * price };
   }
@@ -888,11 +894,11 @@ export function calculatePositionSize(
 
   // Max single-position cap: the SMALLER of:
   //   - max_position_pct of portfolio (e.g. 5% of $1M = $50K)
-  //   - 10% of allocation cap (e.g. 10% of $250K = $25K)
+  //   - mode-specific hard cap (day trades: positionSize; others: 10% of allocation)
   // This prevents one stock from eating 20%+ of the allocation.
   const maxDollar = Math.min(
     pv * (config.maxPositionPct / 100),
-    hardMaxDollar,
+    modeMaxDollar,
   );
   let dollarSize: number;
 
