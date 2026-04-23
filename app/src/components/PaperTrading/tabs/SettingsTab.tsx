@@ -447,6 +447,27 @@ export function SettingsTab({ config, onUpdate }: SettingsTabProps) {
       </div>
 
       <div className="border-t border-[hsl(var(--border))] pt-6 mt-2">
+        <h4 className="text-sm font-semibold text-[hsl(var(--foreground))] mb-4">Suggested Finds</h4>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+          <div>
+            <label className="block text-sm font-medium text-[hsl(var(--foreground))] mb-1.5">
+              Position Size per Find
+            </label>
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-[hsl(var(--muted-foreground))]">$</span>
+              <NumInput
+                value={config.suggestedFindPositionSize}
+                onCommit={v => onUpdate({ suggestedFindPositionSize: v })}
+                className="w-full px-3 py-2 border border-[hsl(var(--border))] rounded-lg text-sm"
+                min={0} step={500}
+              />
+            </div>
+            <p className="text-xs text-[hsl(var(--muted-foreground))] mt-1">Flat $ per Suggested Find buy (0 = use dynamic sizing)</p>
+          </div>
+        </div>
+      </div>
+
+      <div className="border-t border-[hsl(var(--border))] pt-6 mt-2">
         <h4 className="text-sm font-semibold text-[hsl(var(--foreground))] mb-4">Capital Recycling</h4>
         <p className="text-xs text-[hsl(var(--muted-foreground))] mb-4">
           Automatically frees up capital when the allocation cap is reached, so new high-conviction signals aren't blocked.

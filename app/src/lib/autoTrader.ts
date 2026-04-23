@@ -163,6 +163,9 @@ export interface AutoTraderConfig {
   // ── Layer 5: Capital Recycling ──
   swingMaxHoldDays: number;         // auto-exit filled swing trades after N days (0 = off)
   capitalPressureEnabled: boolean;  // when at cap, auto-close best swing to make room
+
+  // ── Suggested Finds ──
+  suggestedFindPositionSize: number; // flat $ per Suggested Find (0 = use dynamic sizing)
 }
 
 const CONFIG_KEY = 'auto-trader-config';
@@ -229,6 +232,9 @@ const DEFAULT_CONFIG: AutoTraderConfig = {
   // Layer 5: Capital Recycling
   swingMaxHoldDays: 5,
   capitalPressureEnabled: true,
+
+  // Suggested Finds
+  suggestedFindPositionSize: 2000,
 };
 
 /**
@@ -313,6 +319,7 @@ export async function loadAutoTraderConfig(): Promise<AutoTraderConfig> {
         longTermBucketPct: Number(data.long_term_bucket_pct) || DEFAULT_CONFIG.longTermBucketPct,
         swingMaxHoldDays: Number(data.swing_max_hold_days ?? DEFAULT_CONFIG.swingMaxHoldDays),
         capitalPressureEnabled: data.capital_pressure_enabled ?? DEFAULT_CONFIG.capitalPressureEnabled,
+        suggestedFindPositionSize: Number(data.suggested_find_position_size ?? DEFAULT_CONFIG.suggestedFindPositionSize),
       };
       localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
       return config;
@@ -392,6 +399,7 @@ export async function saveAutoTraderConfig(config: Partial<AutoTraderConfig>): P
         long_term_bucket_pct: updated.longTermBucketPct,
         swing_max_hold_days: updated.swingMaxHoldDays,
         capital_pressure_enabled: updated.capitalPressureEnabled,
+        suggested_find_position_size: updated.suggestedFindPositionSize,
         updated_at: new Date().toISOString(),
       });
   } catch (err) {
@@ -889,10 +897,16 @@ export function calculatePositionSize(
   let dollarSize: number;
 
   if (mode === 'LONG_TERM' && conviction != null) {
-    // Base * conviction (Gold Mine capped at 1.25x; Steady Compounder up to 1.5x), then tag multiplier: Gold Mine → 0.75x final
-    const base = alloc * (config.baseAllocationPct / 100);
-    dollarSize = base * convictionMultiplier(conviction, suggestedFindTag);
-    if (suggestedFindTag === 'Gold Mine') dollarSize *= 0.75;
+    // If a flat per-position size is configured, use it directly (ignores conviction multipliers).
+    // This keeps Suggested Finds conservative during the testing phase.
+    if (config.suggestedFindPositionSize > 0) {
+      dollarSize = config.suggestedFindPositionSize;
+    } else {
+      // Dynamic: Base * conviction (Gold Mine capped at 1.25x; Steady Compounder up to 1.5x), then tag multiplier: Gold Mine → 0.75x final
+      const base = alloc * (config.baseAllocationPct / 100);
+      dollarSize = base * convictionMultiplier(conviction, suggestedFindTag);
+      if (suggestedFindTag === 'Gold Mine') dollarSize *= 0.75;
+    }
   } else if (stopLoss && entryPrice && Math.abs(entryPrice - stopLoss) > 0) {
     // Risk-based: risk budget / risk per share
     // Use ALLOCATION cap as base, not portfolio value, to keep trades reasonable
