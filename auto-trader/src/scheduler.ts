@@ -66,6 +66,7 @@ import { logClosedTradePerformance } from './lib/tradePerformanceLog.js';
 import { generateSuggestedFinds } from './lib/discovery.js';
 import { fetchRecentDailyCandles, detectCandlePatterns } from './lib/candle-patterns.js';
 import { runOptionsScan, paperTradeOption } from './lib/options-scanner.js';
+import { runEarningsScan, closeExpiredEarningsPositions } from './lib/earnings-scanner.js';
 import { runOptionsManageCycle } from './lib/options-manager.js';
 import { runDipWatcher } from './lib/dip-watcher.js';
 import { warmPositionPriceCache } from './routes/positions.js';
@@ -253,7 +254,27 @@ export function startScheduler(): void {
     }
   }, { timezone: 'America/New_York' });
 
-  console.log('[Scheduler] Started — every 15 min + 9:36 ET first-candle pass + 15:55 EOD close (weekdays)');
+  // Earnings IV-crush scanner — 2:30 PM ET, enter calendar spreads for tonight's AMC
+  // and tomorrow morning's BMO earnings announcements.
+  cron.schedule('30 14 * * 1-5', async () => {
+    try {
+      await runEarningsScan();
+    } catch (err) {
+      console.error('[EarningsScan] Scan failed:', err instanceof Error ? err.message : err);
+    }
+  }, { timezone: 'America/New_York' });
+
+  // Earnings IV-crush exit — 9:45 AM ET, close all open calendar spreads from prior day.
+  // IV crush has occurred by this point; the front-month premium has collapsed.
+  cron.schedule('45 9 * * 1-5', async () => {
+    try {
+      await closeExpiredEarningsPositions();
+    } catch (err) {
+      console.error('[EarningsExit] Close failed:', err instanceof Error ? err.message : err);
+    }
+  }, { timezone: 'America/New_York' });
+
+  console.log('[Scheduler] Started — every 15 min + 9:36 ET first-candle pass + 9:45 earnings exit + 14:30 earnings entry + 15:55 EOD close (weekdays)');
 
   // Dead man's switch — alerts if no successful cycle in 2+ hours during market hours
   cron.schedule('*/30 * * * 1-5', async () => {
