@@ -1488,17 +1488,28 @@ async function checkAllocationCap(
   const deployed = await getTotalDeployed(positions);
   const cap = config.maxTotalAllocation;
 
-  // Overall circuit breaker
-  if (deployed >= cap * 0.95) {
-    log(`CIRCUIT BREAKER: ${ticker} — already at $${deployed.toFixed(0)} of $${cap} cap`);
-    persistEvent(ticker, 'warning', 'Circuit breaker: at cap limit', {
-      action: 'skipped', source: 'system',
-      skip_reason: 'Circuit breaker: at cap limit',
-    });
-    return false;
-  }
-  if (deployed + positionSize > cap) {
-    log(`Allocation cap hit for ${ticker}: $${deployed.toFixed(0)} + $${positionSize.toFixed(0)} > $${cap}`);
+  // Overall circuit breaker — at 95%+ cap, try capital-pressure redeployment first.
+  // Only swing trades are eligible (day trades close at EOD; long-term should be held).
+  if (deployed >= cap * 0.95 || deployed + positionSize > cap) {
+    if (mode === 'SWING_TRADE' && config.capitalPressureEnabled) {
+      log(`Capital pressure triggered for ${ticker} — attempting to free $${positionSize.toFixed(0)}`);
+      const freed = await makeRoomForTrade(config, positionSize, positions);
+      if (freed >= positionSize * 0.8) {
+        log(`Capital pressure: freed $${freed.toFixed(0)} — retrying allocation check for ${ticker}`);
+        // Re-check deployed after the close (IB position will update on next cycle, use optimistic estimate)
+        const newDeployed = Math.max(0, deployed - freed);
+        if (newDeployed + positionSize <= cap) return true;
+      }
+    }
+    if (deployed >= cap * 0.95) {
+      log(`CIRCUIT BREAKER: ${ticker} — already at $${deployed.toFixed(0)} of $${cap} cap`);
+      persistEvent(ticker, 'warning', 'Circuit breaker: at cap limit', {
+        action: 'skipped', source: 'system',
+        skip_reason: 'Circuit breaker: at cap limit',
+      });
+    } else {
+      log(`Allocation cap hit for ${ticker}: $${deployed.toFixed(0)} + $${positionSize.toFixed(0)} > $${cap}`);
+    }
     return false;
   }
 
@@ -2935,6 +2946,125 @@ async function checkDipBuyOpportunities(
   }
 }
 
+// ── Capital Recycling ────────────────────────────────────
+
+/**
+ * Auto-exit swing trades that have been held past swingMaxHoldDays.
+ * Swing trades are meant to be short-duration (days, not weeks). If one is still open after N days
+ * the thesis likely didn't play out — free the capital for new opportunities.
+ */
+async function checkSwingHoldExpiry(
+  config: AutoTraderConfig,
+  positions: EnrichedPosition[],
+): Promise<void> {
+  const maxDays = config.swingMaxHoldDays ?? 5;
+  if (maxDays <= 0 || !config.accountId) return;
+
+  const activeTrades = await getActiveTrades();
+  const stale = activeTrades.filter(t =>
+    t.mode === 'SWING_TRADE' &&
+    t.status === 'FILLED' &&
+    t.filled_at != null &&
+    (Date.now() - new Date(t.filled_at).getTime()) / 86400000 > maxDays
+  );
+
+  for (const trade of stale) {
+    const ibPos = positions.find(p => p.symbol.toUpperCase() === trade.ticker.toUpperCase());
+    if (!ibPos || ibPos.position === 0) continue;
+
+    const qty = Math.abs(ibPos.position);
+    const side: 'BUY' | 'SELL' = ibPos.position > 0 ? 'SELL' : 'BUY';
+    const daysHeld = ((Date.now() - new Date(trade.filled_at!).getTime()) / 86400000).toFixed(1);
+    const gainPct = ibPos.avgCost > 0
+      ? ((ibPos.mktPrice - ibPos.avgCost) / ibPos.avgCost * 100).toFixed(1)
+      : '?';
+
+    try {
+      await placeMarketOrder({ symbol: trade.ticker, side, quantity: qty });
+      await createPaperTrade({
+        ticker: trade.ticker, mode: 'SWING_TRADE', signal: side,
+        entry_price: ibPos.mktPrice,
+        quantity: qty,
+        position_size: qty * ibPos.mktPrice,
+        status: 'SUBMITTED',
+        notes: `Auto-exit: swing held ${daysHeld} days (max ${maxDays}) — P&L ${gainPct}%`,
+        entry_trigger_type: 'swing_expiry',
+      });
+
+      log(`${trade.ticker}: SWING EXPIRY — held ${daysHeld} days, closing ${qty} shares at ${gainPct}% P&L`);
+      persistEvent(trade.ticker, 'success',
+        `⏱️ ${trade.ticker} swing auto-closed after ${daysHeld} days (max ${maxDays}d) — P&L ${gainPct}% — capital freed`,
+        { action: 'executed', source: 'swing_expiry', mode: 'SWING_TRADE',
+          metadata: { daysHeld, maxDays, gainPct, qty } }
+      );
+    } catch (err) {
+      log(`${trade.ticker}: Swing expiry close failed — ${err instanceof Error ? err.message : 'unknown'}`);
+    }
+  }
+}
+
+/**
+ * Capital-pressure redeployment: when deployed capital > 90% of cap, find the swing trade
+ * with the highest unrealized gain and close it to free capital for a new signal.
+ * Returns the dollar amount freed (0 if nothing closed).
+ */
+async function makeRoomForTrade(
+  config: AutoTraderConfig,
+  neededDollars: number,
+  positions: EnrichedPosition[],
+): Promise<number> {
+  if (!config.capitalPressureEnabled || !config.accountId) return 0;
+
+  const activeTrades = await getActiveTrades();
+  const swingsFilled = activeTrades.filter(t =>
+    t.mode === 'SWING_TRADE' && t.status === 'FILLED'
+  );
+
+  // Build candidates with live P&L from IB positions, sorted best gain first
+  const candidates = swingsFilled
+    .map(t => {
+      const ibPos = positions.find(p => p.symbol.toUpperCase() === t.ticker.toUpperCase());
+      if (!ibPos || ibPos.position === 0 || ibPos.avgCost <= 0) return null;
+      const gainPct = (ibPos.mktPrice - ibPos.avgCost) / ibPos.avgCost * 100;
+      const marketValue = Math.abs(ibPos.position) * ibPos.mktPrice;
+      return { trade: t, ibPos, gainPct, marketValue };
+    })
+    .filter((c): c is NonNullable<typeof c> => c !== null)
+    .sort((a, b) => b.gainPct - a.gainPct); // best gain first — take profits before taking losses
+
+  for (const candidate of candidates) {
+    if (candidate.marketValue < neededDollars * 0.8) continue; // not worth the round-trip if too small
+
+    const qty = Math.abs(candidate.ibPos.position);
+    const side: 'BUY' | 'SELL' = candidate.ibPos.position > 0 ? 'SELL' : 'BUY';
+
+    try {
+      await placeMarketOrder({ symbol: candidate.trade.ticker, side, quantity: qty });
+      await createPaperTrade({
+        ticker: candidate.trade.ticker, mode: 'SWING_TRADE', signal: side,
+        entry_price: candidate.ibPos.mktPrice,
+        quantity: qty,
+        position_size: candidate.marketValue,
+        status: 'SUBMITTED',
+        notes: `Capital pressure exit: freed $${candidate.marketValue.toFixed(0)} at +${candidate.gainPct.toFixed(1)}%`,
+        entry_trigger_type: 'capital_pressure',
+      });
+
+      log(`Capital pressure: closed ${candidate.trade.ticker} (+${candidate.gainPct.toFixed(1)}%) to free $${candidate.marketValue.toFixed(0)}`);
+      persistEvent(candidate.trade.ticker, 'success',
+        `♻️ ${candidate.trade.ticker} closed to free capital (+${candidate.gainPct.toFixed(1)}% gain) — $${candidate.marketValue.toFixed(0)} freed for new signal`,
+        { action: 'executed', source: 'capital_pressure', mode: 'SWING_TRADE',
+          metadata: { gainPct: candidate.gainPct, freed: candidate.marketValue } }
+      );
+      return candidate.marketValue;
+    } catch (err) {
+      log(`Capital pressure close failed for ${candidate.trade.ticker}: ${err instanceof Error ? err.message : 'unknown'}`);
+    }
+  }
+
+  return 0;
+}
+
 async function checkProfitTakeOpportunities(
   config: AutoTraderConfig,
   positions: EnrichedPosition[],
@@ -3510,10 +3640,11 @@ async function runSchedulerCycle(): Promise<void> {
       return;
     }
 
-    // 6. Position management: dip buy, profit take, loss cut
+    // 6. Position management: dip buy, profit take, loss cut, swing expiry
     await checkDipBuyOpportunities(config, positions);
     await checkProfitTakeOpportunities(config, positions);
     await checkLossCutOpportunities(config, positions);
+    await checkSwingHoldExpiry(config, positions); // free capital from stale swing trades
 
     // Load scanner ideas once per cycle (used by generic-video queue + scanner execution)
     let allIdeas: TradeIdea[] = [];

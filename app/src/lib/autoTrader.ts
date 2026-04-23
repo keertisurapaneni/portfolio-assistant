@@ -159,6 +159,10 @@ export interface AutoTraderConfig {
   earningsBlackoutDays: number;  // days before earnings to blackout
   kellyAdaptiveEnabled: boolean; // use Half-Kelly from trade history win rate
   longTermBucketPct: number;     // % of maxTotalAllocation reserved for long-term positions
+
+  // ── Layer 5: Capital Recycling ──
+  swingMaxHoldDays: number;         // auto-exit filled swing trades after N days (0 = off)
+  capitalPressureEnabled: boolean;  // when at cap, auto-close best swing to make room
 }
 
 const CONFIG_KEY = 'auto-trader-config';
@@ -221,6 +225,10 @@ const DEFAULT_CONFIG: AutoTraderConfig = {
   earningsBlackoutDays: 3,
   kellyAdaptiveEnabled: false,
   longTermBucketPct: 50, // matches DB default: 50% of maxTotalAllocation for long-term sleeve
+
+  // Layer 5: Capital Recycling
+  swingMaxHoldDays: 5,
+  capitalPressureEnabled: true,
 };
 
 /**
@@ -303,6 +311,8 @@ export async function loadAutoTraderConfig(): Promise<AutoTraderConfig> {
         earningsBlackoutDays: data.earnings_blackout_days ?? DEFAULT_CONFIG.earningsBlackoutDays,
         kellyAdaptiveEnabled: data.kelly_adaptive_enabled ?? DEFAULT_CONFIG.kellyAdaptiveEnabled,
         longTermBucketPct: Number(data.long_term_bucket_pct) || DEFAULT_CONFIG.longTermBucketPct,
+        swingMaxHoldDays: Number(data.swing_max_hold_days ?? DEFAULT_CONFIG.swingMaxHoldDays),
+        capitalPressureEnabled: data.capital_pressure_enabled ?? DEFAULT_CONFIG.capitalPressureEnabled,
       };
       localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
       return config;
@@ -380,6 +390,8 @@ export async function saveAutoTraderConfig(config: Partial<AutoTraderConfig>): P
         earnings_blackout_days: updated.earningsBlackoutDays,
         kelly_adaptive_enabled: updated.kellyAdaptiveEnabled,
         long_term_bucket_pct: updated.longTermBucketPct,
+        swing_max_hold_days: updated.swingMaxHoldDays,
+        capital_pressure_enabled: updated.capitalPressureEnabled,
         updated_at: new Date().toISOString(),
       });
   } catch (err) {

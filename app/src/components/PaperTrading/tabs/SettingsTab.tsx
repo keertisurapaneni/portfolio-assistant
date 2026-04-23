@@ -446,6 +446,36 @@ export function SettingsTab({ config, onUpdate }: SettingsTabProps) {
         </div>
       </div>
 
+      <div className="border-t border-[hsl(var(--border))] pt-6 mt-2">
+        <h4 className="text-sm font-semibold text-[hsl(var(--foreground))] mb-4">Capital Recycling</h4>
+        <p className="text-xs text-[hsl(var(--muted-foreground))] mb-4">
+          Automatically frees up capital when the allocation cap is reached, so new high-conviction signals aren't blocked.
+        </p>
+        <div className="space-y-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <SettingsInput
+              label="Swing Max Hold Days"
+              value={config.swingMaxHoldDays}
+              onChange={v => onUpdate({ swingMaxHoldDays: v })}
+              min={0} max={30} step={1}
+              help="Auto-close swing trades held longer than this (0 = off). Frees capital for fresh signals."
+            />
+          </div>
+          <div className="flex items-center gap-3">
+            <SettingsToggle
+              enabled={config.capitalPressureEnabled}
+              onToggle={() => onUpdate({ capitalPressureEnabled: !config.capitalPressureEnabled })}
+            />
+            <div>
+              <p className="text-sm font-medium text-[hsl(var(--foreground))]">Capital-Pressure Redeployment</p>
+              <p className="text-xs text-[hsl(var(--muted-foreground))]">
+                When at cap, auto-close the most-profitable open swing trade to make room for a new signal
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <div className="flex items-start gap-2 rounded-lg bg-amber-50 border border-amber-200/70 px-4 py-3 mt-4">
         <AlertTriangle className="w-4 h-4 text-amber-500 mt-0.5 flex-shrink-0" />
         <div>

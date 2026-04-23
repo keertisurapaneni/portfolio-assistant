@@ -73,6 +73,8 @@ export interface AutoTraderConfig {
   longTermBucketPct: number;
   /** Flat dollar size for influencer daily signal trades. 0 = use dynamic sizing. */
   externalSignalPositionSize: number;
+  swingMaxHoldDays: number;        // auto-exit filled swing trades after N days (0 = off)
+  capitalPressureEnabled: boolean; // when at cap, auto-close best swing to make room
 }
 
 const DEFAULT_CONFIG: AutoTraderConfig = {
@@ -100,8 +102,10 @@ const DEFAULT_CONFIG: AutoTraderConfig = {
   marketRegimeEnabled: true, maxSectorPct: 30,
   earningsAvoidEnabled: true, earningsBlackoutDays: 3,
   kellyAdaptiveEnabled: false,
-  longTermBucketPct: 50, // matches DB default: 50% of maxTotalAllocation for long-term sleeve
+  longTermBucketPct: 50,
   externalSignalPositionSize: 5000,
+  swingMaxHoldDays: 5,
+  capitalPressureEnabled: true,
 };
 
 export async function loadConfig(): Promise<AutoTraderConfig> {
@@ -161,6 +165,8 @@ export async function loadConfig(): Promise<AutoTraderConfig> {
     kellyAdaptiveEnabled: data.kelly_adaptive_enabled ?? DEFAULT_CONFIG.kellyAdaptiveEnabled,
     longTermBucketPct: Number(data.long_term_bucket_pct) || DEFAULT_CONFIG.longTermBucketPct,
     externalSignalPositionSize: Number(data.external_signal_position_size) || DEFAULT_CONFIG.externalSignalPositionSize,
+    swingMaxHoldDays: Number(data.swing_max_hold_days ?? DEFAULT_CONFIG.swingMaxHoldDays),
+    capitalPressureEnabled: data.capital_pressure_enabled ?? DEFAULT_CONFIG.capitalPressureEnabled,
   };
 }
 
