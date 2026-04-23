@@ -580,15 +580,17 @@ Deno.serve(async (req) => {
           });
           updates.options_min_iv_rank = newVal;
         }
-      } else if (stopLossRate < 0.05 && optsWinRate > 0.75 && optsMinIvRank > 40) {
-        // Very few stop-losses, winning well → can relax IV rank slightly
-        const newVal = Math.max(optsMinIvRank - 5, 40);
+      } else if (stopLossRate < 0.03 && optsWinRate > 0.80 && optsMinIvRank > 50 && optsTrades.length >= 20) {
+        // Only relax IV rank if: very few stop-losses (<3%), strong win rate (>80%), and
+        // we have enough data (20+ trades). High win rate alone is expected for OTM puts —
+        // the IV rank floor protects us from thin-premium entries when the market is calm.
+        const newVal = Math.max(optsMinIvRank - 3, 50); // never go below 50 via auto-tune
         if (newVal !== optsMinIvRank) {
           decisions.push({
             param: 'options_min_iv_rank',
             oldValue: optsMinIvRank,
             newValue: newVal,
-            reason: `Options performing well: stop-loss rate ${(stopLossRate * 100).toFixed(0)}%, win rate ${(optsWinRate * 100).toFixed(0)}% — relaxing IV rank floor slightly to allow more entries`,
+            reason: `Options performing strongly: stop-loss rate ${(stopLossRate * 100).toFixed(0)}%, win rate ${(optsWinRate * 100).toFixed(0)}% over ${optsTrades.length} trades — relaxing IV rank floor slightly`,
             category: 'OPTIONS_PUT',
           });
           updates.options_min_iv_rank = newVal;
@@ -608,29 +610,39 @@ Deno.serve(async (req) => {
           });
           updates.options_delta_target = newVal;
         }
-      } else if (assignmentRate < 0.05 && optsWinRate > 0.80 && optsDeltaTarget < 0.35) {
-        // Rarely getting assigned and winning consistently → can take slightly more premium (higher delta)
-        const newVal = r1(Math.min(optsDeltaTarget + 0.02, 0.35));
+      } else if (assignmentRate < 0.03 && optsWinRate > 0.82 && optsDeltaTarget < 0.30 && optsTrades.length >= 20) {
+        // Only nudge delta higher with very strong evidence: <3% assignment, >82% wins, 20+ trades.
+        // Delta above 0.30 means we're closer to ATM — more premium but much higher assignment risk.
+        // The video's warning: don't creep toward the strike just because recent trades worked.
+        const newVal = r1(Math.min(optsDeltaTarget + 0.02, 0.30)); // hard cap at 0.30 via auto-tune
         if (newVal !== optsDeltaTarget) {
           decisions.push({
             param: 'options_delta_target',
             oldValue: optsDeltaTarget,
             newValue: newVal,
-            reason: `Options assignment rate ${(assignmentRate * 100).toFixed(0)}%, win rate ${(optsWinRate * 100).toFixed(0)}% — nudging delta up slightly to collect more premium`,
+            reason: `Options assignment rate ${(assignmentRate * 100).toFixed(0)}%, win rate ${(optsWinRate * 100).toFixed(0)}% over ${optsTrades.length} trades — nudging delta up (auto-tune cap: 0.30)`,
             category: 'OPTIONS_PUT',
           });
           updates.options_delta_target = newVal;
         }
       }
 
-      // G3: Win rate consistently strong → increase max contracts per scan
-      if (optsWinRate >= 0.80 && optsProfitFactor >= 1.5 && optsTrades.length >= 15 && optsMaxContracts < 5) {
+      // G3: Win rate consistently strong → increase max contracts per scan.
+      // HARD CAP: never auto-tune above 3 contracts regardless of win streak.
+      // Rationale: a high win rate in options is expected (90%+ is normal for OTM puts).
+      // Win rate alone is NOT edge — it's the fat-tail loss that destroys accounts.
+      // Automated loosening after winning streaks is exactly the "psychological trap"
+      // of options selling: complacency → size increase → steamroller hits.
+      // Only humans should manually override the 3-contract cap after deliberate review.
+      const MAX_AUTO_CONTRACTS = 3; // absolute auto-tune ceiling
+      if (optsWinRate >= 0.80 && optsProfitFactor >= 1.5 && optsTrades.length >= 20 && optsMaxContracts < MAX_AUTO_CONTRACTS) {
+        // Extra evidence requirement vs before: need 20+ trades (not 15) and PF ≥ 1.5
         const newVal = optsMaxContracts + 1;
         decisions.push({
           param: 'options_max_contracts_per_scan',
           oldValue: optsMaxContracts,
           newValue: newVal,
-          reason: `Options win rate ${(optsWinRate * 100).toFixed(0)}%, PF ${optsProfitFactor} over ${optsTrades.length} trades — scaling up daily deployment`,
+          reason: `Options win rate ${(optsWinRate * 100).toFixed(0)}%, PF ${optsProfitFactor} over ${optsTrades.length} trades — scaling up (hard cap: ${MAX_AUTO_CONTRACTS})`,
           category: 'OPTIONS_PUT',
         });
         updates.options_max_contracts_per_scan = newVal;

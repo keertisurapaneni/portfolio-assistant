@@ -282,14 +282,41 @@ function StatsHeader({
   stats,
   deployed,
   maxAllocation,
+  openPositions,
+  openPrices,
 }: {
   stats: OptionsMonthlyStats;
   deployed: number;
   maxAllocation: number;
+  openPositions: OpenOptionsPosition[];
+  openPrices: Map<string, TickerQuote>;
 }) {
-  const progress = Math.min(stats.premiumCollected / MONTHLY_INCOME_TARGET, 1);
-  const progressPct = Math.round(progress * 100);
-  const barColor = progress > 0.5 ? 'bg-emerald-500' : progress > 0.25 ? 'bg-amber-400' : 'bg-red-400';
+  // Unrealized P&L across all open positions (negative = losing on premium value)
+  const totalUnrealizedPnl = openPositions.reduce((s, p) => s + (p.pnl ?? 0), 0);
+  // Net income = premiums locked in from closed trades minus open position losses
+  // This is the honest number: if you had to close everything today, this is what you keep.
+  const netIncome = stats.premiumCollected + totalUnrealizedPnl;
+  const netProgress = Math.min(Math.max(netIncome, 0) / MONTHLY_INCOME_TARGET, 1);
+  const netProgressPct = Math.round(netProgress * 100);
+  const barColor = netProgress > 0.5 ? 'bg-emerald-500' : netProgress > 0.25 ? 'bg-amber-400' : 'bg-red-400';
+
+  // Crash scenario — estimated loss if all put positions were assigned at depressed prices.
+  // This is the honest tail risk: the "steamroller" figure, not the win-rate figure.
+  const crashLoss30 = openPositions.reduce((s, p) => {
+    const currentPrice = openPrices.get(p.ticker)?.price ?? (p.option_strike * 0.95);
+    const crashPrice = currentPrice * 0.70;
+    if (p.option_strike <= crashPrice) return s; // still OTM — no loss at this crash level
+    const lossPerShare = p.option_strike - crashPrice;
+    const premiumCollectedPerShare = p.option_premium ?? 0;
+    return s + Math.max(0, (lossPerShare - premiumCollectedPerShare) * 100 * (p.option_contracts ?? 1));
+  }, 0);
+  const crashLoss50 = openPositions.reduce((s, p) => {
+    const currentPrice = openPrices.get(p.ticker)?.price ?? (p.option_strike * 0.95);
+    const crashPrice = currentPrice * 0.50;
+    const lossPerShare = Math.max(0, p.option_strike - crashPrice);
+    const premiumCollectedPerShare = p.option_premium ?? 0;
+    return s + Math.max(0, (lossPerShare - premiumCollectedPerShare) * 100 * (p.option_contracts ?? 1));
+  }, 0);
 
   const deployedPct = maxAllocation > 0 ? Math.min(deployed / maxAllocation, 1) : 0;
   const available = Math.max(maxAllocation - deployed, 0);
@@ -310,20 +337,30 @@ function StatsHeader({
         <div className="space-y-1">
           <div className="flex items-center justify-between text-xs">
             <span className="font-bold text-emerald-800">
-              This Month: {fmtUsd(stats.premiumCollected, 0)} / {fmtUsd(MONTHLY_INCOME_TARGET, 0)}
+              Net this month: {fmtUsd(netIncome, 0)} / {fmtUsd(MONTHLY_INCOME_TARGET, 0)}
             </span>
             <span className={cn(
               'font-bold text-[10px]',
-              progress > 0.5 ? 'text-emerald-700' : progress > 0.25 ? 'text-amber-600' : 'text-red-600'
+              netProgress > 0.5 ? 'text-emerald-700' : netProgress > 0.25 ? 'text-amber-600' : 'text-red-600'
             )}>
-              {progressPct}%
+              {netProgressPct}%
             </span>
           </div>
           <div className="h-2 rounded-full bg-emerald-100 overflow-hidden">
             <div
               className={cn('h-full rounded-full transition-all duration-500', barColor)}
-              style={{ width: `${progressPct}%` }}
+              style={{ width: `${netProgressPct}%` }}
             />
+          </div>
+          {/* Honest breakdown: closed premiums vs open unrealized */}
+          <div className="flex items-center gap-2 text-[10px] pt-0.5">
+            <span className="text-emerald-700">
+              Closed: <span className="font-semibold">{fmtUsd(stats.premiumCollected, 0)}</span>
+            </span>
+            <span className="text-[hsl(var(--muted-foreground))]">·</span>
+            <span className={cn(totalUnrealizedPnl >= 0 ? 'text-emerald-700' : 'text-red-600')}>
+              Open P&L: <span className="font-semibold">{fmtUsd(totalUnrealizedPnl, 0, true)}</span>
+            </span>
           </div>
         </div>
         <div className="flex items-center gap-3 text-[10px] text-emerald-700">
@@ -332,6 +369,33 @@ function StatsHeader({
           <span>{stats.annualizedReturn.toFixed(0)}% annualized</span>
         </div>
       </div>
+
+      {/* Crash scenario card — honest tail risk visibility */}
+      {openPositions.length > 0 && (crashLoss30 > 0 || crashLoss50 > 0) && (
+        <div className="rounded-xl border border-amber-200 bg-amber-50/60 px-4 py-3 space-y-1.5">
+          <div className="flex items-center gap-1.5">
+            <AlertTriangle className="w-3.5 h-3.5 text-amber-700" />
+            <span className="text-xs font-semibold text-amber-800">Tail Risk — Crash Scenarios</span>
+          </div>
+          <p className="text-[10px] text-amber-700 leading-relaxed">
+            Estimated loss if all open puts were assigned at depressed prices (premium offsets included).
+          </p>
+          <div className="grid grid-cols-2 gap-2 pt-0.5">
+            <div className="rounded-lg bg-amber-100/80 px-3 py-2 text-center">
+              <p className="text-[10px] text-amber-600 font-medium">Market −30%</p>
+              <p className="text-sm font-bold text-amber-800">
+                {crashLoss30 > 0 ? `−${fmtUsd(crashLoss30, 0)}` : '✓ All OTM'}
+              </p>
+            </div>
+            <div className="rounded-lg bg-red-100/80 px-3 py-2 text-center">
+              <p className="text-[10px] text-red-600 font-medium">Market −50%</p>
+              <p className="text-sm font-bold text-red-800">
+                {crashLoss50 > 0 ? `−${fmtUsd(crashLoss50, 0)}` : '✓ All OTM'}
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Budget meter */}
       <div className="rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] px-4 py-3 space-y-2">
@@ -521,7 +585,7 @@ export function OptionsTab() {
 
       {/* Stats Header — income progress + budget meter */}
       {stats && (
-        <StatsHeader stats={stats} deployed={deployed} maxAllocation={maxAllocation} />
+        <StatsHeader stats={stats} deployed={deployed} maxAllocation={maxAllocation} openPositions={openPositions} openPrices={openPrices} />
       )}
 
       {/* Section Tabs */}

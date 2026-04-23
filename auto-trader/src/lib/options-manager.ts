@@ -370,10 +370,14 @@ export async function runOptionsManageCycle(): Promise<ManageCycleResult> {
       // Mark the put as assigned so subsequent cycles don't re-trigger
       await sb.from('paper_trades').update({ option_assigned: true }).eq('id', pos.id);
 
-      // Open a covered call at ~10 delta above current price (≈ price × 1.04, ~30-delta call)
+      // Open a covered call at least 10% OTM above current price.
+      // This preserves upside participation in the recovery — a key risk the
+      // "picking up pennies" critique highlights: don't sell the big rebound cheaply.
+      // 10% floor means stock must rally ≥10% before shares are called away.
       const ccExpiry = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
       const ccExpiryISO = ccExpiry.toISOString().slice(0, 10);
-      const ccStrike = Math.round(stockPrice * 1.04 * 2) / 2; // round to nearest $0.50
+      const minCcStrike = stockPrice * 1.10; // hard floor: at least 10% OTM
+      const ccStrike = Math.round(minCcStrike * 4) / 4;  // round to nearest $0.25
 
       // Fetch covered call premium from IB options chain
       let ccPremium = 0;
