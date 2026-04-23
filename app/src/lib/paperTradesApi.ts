@@ -1358,7 +1358,20 @@ export async function getPendingStrategySignals(limit = 200): Promise<PendingStr
     .limit(limit);
 
   if (error) return [];
-  return (data ?? []) as PendingStrategySignal[];
+
+  // Deduplicate by (ticker, signal, entry_price, execute_on_date) — keep the most recent row.
+  // Duplicates occur when the same video is imported more than once (re-categorization, double-click)
+  // and the delete-before-insert runs under two different strategy_video_ids.
+  const seen = new Set<string>();
+  const deduped: PendingStrategySignal[] = [];
+  for (const row of (data ?? []) as PendingStrategySignal[]) {
+    const key = `${row.ticker}|${row.signal}|${row.entry_price}|${row.execute_on_date}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      deduped.push(row);
+    }
+  }
+  return deduped;
 }
 
 /** Today's external strategy signals (PENDING, EXPIRED, or SKIPPED) for manual execution. */
@@ -1373,7 +1386,18 @@ export async function getTodaySignalsForManualExecute(): Promise<PendingStrategy
     .limit(50);
 
   if (error) return [];
-  return (data ?? []) as PendingStrategySignal[];
+
+  // Deduplicate same as getPendingStrategySignals
+  const seen = new Set<string>();
+  const deduped: PendingStrategySignal[] = [];
+  for (const row of (data ?? []) as PendingStrategySignal[]) {
+    const key = `${row.ticker}|${row.signal}|${row.entry_price}|${row.execute_on_date}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      deduped.push(row);
+    }
+  }
+  return deduped;
 }
 
 /** Force-execute an external strategy signal via auto-trader (bypasses execution window). */
