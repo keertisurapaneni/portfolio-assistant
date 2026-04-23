@@ -62,6 +62,20 @@ export async function fetchWatchlistQuotes(tickers: string[]): Promise<Map<strin
 
 export type WatchlistTierType = 'STABLE' | 'GROWTH' | 'HIGH_VOL';
 
+export interface WatchlistCandidate {
+  ticker: string;
+  name: string | null;
+  price: number | null;
+  beta: number | null;
+  market_cap_b: number | null;
+  pct_from_52w_high: number | null;
+  tier: WatchlistTierType;
+  industry: string | null;
+  reason: string | null;
+  dismissed: boolean;
+  scanned_at: string;
+}
+
 export interface WatchlistTicker {
   id: string;
   ticker: string;
@@ -157,9 +171,36 @@ export async function addToOptionsWatchlist(ticker: string, notes?: string): Pro
 export async function removeFromOptionsWatchlist(ticker: string): Promise<void> {
   const { error } = await supabase
     .from('options_watchlist')
-    .update({ active: false })
+    .delete()
     .eq('ticker', ticker.toUpperCase());
   if (error) throw error;
+}
+
+export async function getWatchlistCandidates(): Promise<WatchlistCandidate[]> {
+  const { data, error } = await supabase
+    .from('options_watchlist_candidates')
+    .select('*')
+    .eq('dismissed', false)
+    .order('tier')
+    .order('pct_from_52w_high', { ascending: false });
+  if (error) throw error;
+  return (data ?? []) as WatchlistCandidate[];
+}
+
+export async function dismissWatchlistCandidate(ticker: string): Promise<void> {
+  const { error } = await supabase
+    .from('options_watchlist_candidates')
+    .update({ dismissed: true })
+    .eq('ticker', ticker.toUpperCase());
+  if (error) throw error;
+}
+
+export async function promoteWatchlistCandidate(ticker: string, notes?: string): Promise<void> {
+  await addToOptionsWatchlist(ticker, notes);
+  await supabase
+    .from('options_watchlist_candidates')
+    .update({ added_at: new Date().toISOString() })
+    .eq('ticker', ticker.toUpperCase());
 }
 
 export async function updateOptionsWatchlistNotes(ticker: string, notes: string): Promise<void> {

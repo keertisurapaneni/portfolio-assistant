@@ -14,8 +14,12 @@ import {
   updateOptionsWatchlistNotes,
   lookupTickerDescription,
   fetchWatchlistQuotes,
+  getWatchlistCandidates,
+  dismissWatchlistCandidate,
+  promoteWatchlistCandidate,
   type TickerQuote,
   type WatchlistTicker,
+  type WatchlistCandidate,
   type OpenOptionsPosition,
   type OptionsMonthlyStats,
   type OptionsActivityEvent,
@@ -449,6 +453,7 @@ export function OptionsTab() {
   const [openPositions, setOpenPositions] = useState<OpenOptionsPosition[]>([]);
   const [closedPositions, setClosedPositions] = useState<OpenOptionsPosition[]>([]);
   const [watchlist, setWatchlist] = useState<WatchlistTicker[]>([]);
+  const [candidates, setCandidates] = useState<WatchlistCandidate[]>([]);
   const [stats, setStats] = useState<OptionsMonthlyStats | null>(null);
   const [activityLog, setActivityLog] = useState<OptionsActivityEvent[]>([]);
   const [loading, setLoading] = useState(true);
@@ -465,18 +470,20 @@ export function OptionsTab() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [openPos, closedPos, wl, monthStats, log] = await Promise.all([
+      const [openPos, closedPos, wl, monthStats, log, cands] = await Promise.all([
         getOpenOptionsPositions(),
         getClosedOptionsPositions(20),
         getOptionsWatchlist(),
         getOptionsMonthlyStats(),
         getOptionsActivityLog(50),
+        getWatchlistCandidates(),
       ]);
       setOpenPositions(openPos);
       setClosedPositions(closedPos);
       setWatchlist(wl);
       setStats(monthStats);
       setActivityLog(log);
+      setCandidates(cands);
     } catch (err) {
       console.error('Options tab load error:', err);
     } finally {
@@ -934,6 +941,74 @@ export function OptionsTab() {
               );
             })}
           </div>
+
+          {/* Weekly screener suggestions */}
+        {candidates.length > 0 && (
+          <div className="mt-6 flex flex-col gap-3">
+            <div className="flex items-center gap-2">
+              <p className="text-xs font-semibold text-[hsl(var(--foreground))]">Weekly Suggestions</p>
+              <span className="text-[10px] bg-violet-100 text-violet-700 px-1.5 py-0.5 rounded-full font-medium">
+                {candidates.length} new
+              </span>
+              <span className="text-[10px] text-[hsl(var(--muted-foreground))]">— screened every Monday, click + to add</span>
+            </div>
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+              {candidates.map(c => (
+                <div key={c.ticker} className="flex flex-col rounded-xl border border-dashed border-violet-200 bg-violet-50/40 px-3 py-2 gap-1">
+                  <div className="flex items-start justify-between gap-1">
+                    <div className="flex flex-col min-w-0">
+                      <div className="flex items-center gap-1.5">
+                        <p className="text-sm font-bold text-[hsl(var(--foreground))]">{c.ticker}</p>
+                        <span className={cn(
+                          'text-[9px] font-semibold px-1 py-0.5 rounded uppercase tracking-wide',
+                          c.tier === 'STABLE'   && 'bg-emerald-100 text-emerald-700',
+                          c.tier === 'GROWTH'   && 'bg-blue-100 text-blue-700',
+                          c.tier === 'HIGH_VOL' && 'bg-amber-100 text-amber-700',
+                        )}>
+                          {c.tier === 'STABLE' ? 'Stable' : c.tier === 'HIGH_VOL' ? 'High Vol' : 'Growth'}
+                        </span>
+                      </div>
+                      {c.price && (
+                        <span className="text-xs tabular-nums text-[hsl(var(--muted-foreground))]">
+                          ${c.price.toFixed(0)} · β{c.beta?.toFixed(1)}
+                          {c.pct_from_52w_high && c.pct_from_52w_high > 5
+                            ? ` · ${c.pct_from_52w_high.toFixed(0)}% off high`
+                            : ''}
+                        </span>
+                      )}
+                      {c.reason && (
+                        <p className="text-[10px] text-[hsl(var(--muted-foreground))] mt-0.5 leading-tight">{c.reason}</p>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-0.5 shrink-0">
+                      <button
+                        title="Add to watchlist"
+                        onClick={async () => {
+                          await promoteWatchlistCandidate(c.ticker, c.reason ?? undefined);
+                          setCandidates(prev => prev.filter(x => x.ticker !== c.ticker));
+                          load();
+                        }}
+                        className="p-1 rounded hover:bg-emerald-100 transition-colors"
+                      >
+                        <span className="text-emerald-600 font-bold text-sm leading-none">+</span>
+                      </button>
+                      <button
+                        title="Dismiss"
+                        onClick={async () => {
+                          await dismissWatchlistCandidate(c.ticker);
+                          setCandidates(prev => prev.filter(x => x.ticker !== c.ticker));
+                        }}
+                        className="p-1 rounded hover:bg-[hsl(var(--muted))] transition-colors"
+                      >
+                        <X className="w-3 h-3 text-[hsl(var(--muted-foreground))]" />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
         </div>
       )}
     </div>
