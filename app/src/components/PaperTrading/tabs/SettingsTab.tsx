@@ -1,4 +1,5 @@
 import { AlertTriangle } from 'lucide-react';
+import { useState, useEffect } from 'react';
 import { cn } from '../../../lib/utils';
 import type { AutoTraderConfig } from '../../../lib/autoTrader';
 
@@ -28,6 +29,9 @@ function SettingsInput({ label, value, onChange, min, max, step, help }: {
   step?: number;
   help?: string;
 }) {
+  const [local, setLocal] = useState(String(value));
+  useEffect(() => { setLocal(String(value)); }, [value]);
+
   return (
     <div>
       <label className="block text-xs font-medium text-[hsl(var(--foreground))] mb-1">
@@ -35,8 +39,12 @@ function SettingsInput({ label, value, onChange, min, max, step, help }: {
       </label>
       <input
         type="number"
-        value={value}
-        onChange={e => onChange(Number(e.target.value))}
+        value={local}
+        onChange={e => setLocal(e.target.value)}
+        onBlur={() => {
+          const n = Number(local);
+          if (!isNaN(n) && n !== value) onChange(n);
+        }}
         className="w-full px-2 py-1.5 border border-[hsl(var(--border))] rounded-lg text-xs"
         min={min}
         max={max}
@@ -52,6 +60,62 @@ export interface SettingsTabProps {
   onUpdate: (updates: Partial<AutoTraderConfig>) => void;
 }
 
+// Thin wrapper so inline number inputs don't save on every keystroke.
+// Keeps local string state; commits to DB only on blur.
+function NumInput({
+  value,
+  onCommit,
+  className,
+  min,
+  max,
+  step,
+}: {
+  value: number;
+  onCommit: (v: number) => void;
+  className?: string;
+  min?: number;
+  max?: number;
+  step?: number;
+}) {
+  const [local, setLocal] = useState(String(value));
+  useEffect(() => { setLocal(String(value)); }, [value]);
+  return (
+    <input
+      type="number"
+      value={local}
+      onChange={e => setLocal(e.target.value)}
+      onBlur={() => {
+        const n = Number(local);
+        if (!isNaN(n) && n !== value) onCommit(n);
+      }}
+      className={className}
+      min={min}
+      max={max}
+      step={step}
+    />
+  );
+}
+
+function TextInput({ value, onCommit, className, placeholder }: {
+  value: string;
+  onCommit: (v: string) => void;
+  className?: string;
+  placeholder?: string;
+}) {
+  const [local, setLocal] = useState(value);
+  useEffect(() => { setLocal(value); }, [value]);
+  return (
+    <input
+      type="text"
+      value={local}
+      onChange={e => setLocal(e.target.value)}
+      onBlur={() => { if (local !== value) onCommit(local); }}
+      className={className}
+      placeholder={placeholder}
+    />
+  );
+}
+
 export function SettingsTab({ config, onUpdate }: SettingsTabProps) {
   return (
     <div className="rounded-xl border border-[hsl(var(--border))] bg-white p-6 space-y-6">
@@ -64,14 +128,9 @@ export function SettingsTab({ config, onUpdate }: SettingsTabProps) {
           </label>
           <div className="flex items-center gap-2">
             <span className="text-sm text-[hsl(var(--muted-foreground))]">$</span>
-            <input
-              type="number"
-              value={config.positionSize}
-              onChange={e => onUpdate({ positionSize: Number(e.target.value) })}
+            <NumInput value={config.positionSize} onCommit={v => onUpdate({ positionSize: v })}
               className="w-full px-3 py-2 border border-[hsl(var(--border))] rounded-lg text-sm"
-              min={100}
-              step={100}
-            />
+              min={100} step={100} />
           </div>
           <p className="text-xs text-[hsl(var(--muted-foreground))] mt-1">Fixed $ per trade — only used when dynamic sizing is disabled</p>
         </div>
@@ -80,14 +139,9 @@ export function SettingsTab({ config, onUpdate }: SettingsTabProps) {
           <label className="block text-sm font-medium text-[hsl(var(--foreground))] mb-1.5">
             Max Concurrent Positions
           </label>
-          <input
-            type="number"
-            value={config.maxPositions}
-            onChange={e => onUpdate({ maxPositions: Number(e.target.value) })}
+          <NumInput value={config.maxPositions} onCommit={v => onUpdate({ maxPositions: v })}
             className="w-full px-3 py-2 border border-[hsl(var(--border))] rounded-lg text-sm"
-            min={1}
-            max={10}
-          />
+            min={1} max={10} />
           <p className="text-xs text-[hsl(var(--muted-foreground))] mt-1">Max open positions at once</p>
         </div>
 
@@ -95,14 +149,9 @@ export function SettingsTab({ config, onUpdate }: SettingsTabProps) {
           <label className="block text-sm font-medium text-[hsl(var(--foreground))] mb-1.5">
             Min Scanner Confidence
           </label>
-          <input
-            type="number"
-            value={config.minScannerConfidence}
-            onChange={e => onUpdate({ minScannerConfidence: Number(e.target.value) })}
+          <NumInput value={config.minScannerConfidence} onCommit={v => onUpdate({ minScannerConfidence: v })}
             className="w-full px-3 py-2 border border-[hsl(var(--border))] rounded-lg text-sm"
-            min={1}
-            max={10}
-          />
+            min={1} max={10} />
           <p className="text-xs text-[hsl(var(--muted-foreground))] mt-1">Scanner confidence threshold (1-10)</p>
         </div>
 
@@ -110,14 +159,9 @@ export function SettingsTab({ config, onUpdate }: SettingsTabProps) {
           <label className="block text-sm font-medium text-[hsl(var(--foreground))] mb-1.5">
             Min Full Analysis Confidence
           </label>
-          <input
-            type="number"
-            value={config.minFAConfidence}
-            onChange={e => onUpdate({ minFAConfidence: Number(e.target.value) })}
+          <NumInput value={config.minFAConfidence} onCommit={v => onUpdate({ minFAConfidence: v })}
             className="w-full px-3 py-2 border border-[hsl(var(--border))] rounded-lg text-sm"
-            min={1}
-            max={10}
-          />
+            min={1} max={10} />
           <p className="text-xs text-[hsl(var(--muted-foreground))] mt-1">Fallback only — used when scanner lacks entry/stop/target</p>
         </div>
 
@@ -125,14 +169,9 @@ export function SettingsTab({ config, onUpdate }: SettingsTabProps) {
           <label className="block text-sm font-medium text-[hsl(var(--foreground))] mb-1.5">
             Suggested Finds Min Conviction
           </label>
-          <input
-            type="number"
-            value={config.minSuggestedFindsConviction}
-            onChange={e => onUpdate({ minSuggestedFindsConviction: Number(e.target.value) })}
+          <NumInput value={config.minSuggestedFindsConviction} onCommit={v => onUpdate({ minSuggestedFindsConviction: v })}
             className="w-full px-3 py-2 border border-[hsl(var(--border))] rounded-lg text-sm"
-            min={1}
-            max={10}
-          />
+            min={1} max={10} />
           <p className="text-xs text-[hsl(var(--muted-foreground))] mt-1">Only Undervalued/Deep Value stocks at this conviction or higher</p>
         </div>
 
@@ -140,13 +179,9 @@ export function SettingsTab({ config, onUpdate }: SettingsTabProps) {
           <label className="block text-sm font-medium text-[hsl(var(--foreground))] mb-1.5">
             IB Account ID
           </label>
-          <input
-            type="text"
-            value={config.accountId ?? ''}
-            onChange={e => onUpdate({ accountId: e.target.value || null })}
+          <TextInput value={config.accountId ?? ''} onCommit={v => onUpdate({ accountId: v || null })}
             className="w-full px-3 py-2 border border-[hsl(var(--border))] rounded-lg text-sm font-mono"
-            placeholder="Auto-detected from gateway"
-          />
+            placeholder="Auto-detected from gateway" />
           <p className="text-xs text-[hsl(var(--muted-foreground))] mt-1">Paper account ID (auto-detected on connect)</p>
         </div>
 
@@ -201,14 +236,9 @@ export function SettingsTab({ config, onUpdate }: SettingsTabProps) {
             </label>
             <div className="flex items-center gap-2">
               <span className="text-sm text-[hsl(var(--muted-foreground))]">$</span>
-              <input
-                type="number"
-                value={config.maxTotalAllocation}
-                onChange={e => onUpdate({ maxTotalAllocation: Number(e.target.value) })}
+              <NumInput value={config.maxTotalAllocation} onCommit={v => onUpdate({ maxTotalAllocation: v })}
                 className="w-full px-3 py-2 border border-[hsl(var(--border))] rounded-lg text-sm"
-                min={10000}
-                step={10000}
-              />
+                min={10000} step={10000} />
             </div>
             <p className="text-xs text-[hsl(var(--muted-foreground))] mt-1">Hard cap on total deployed capital</p>
           </div>
@@ -218,14 +248,9 @@ export function SettingsTab({ config, onUpdate }: SettingsTabProps) {
             </label>
             <div className="flex items-center gap-2">
               <span className="text-sm text-[hsl(var(--muted-foreground))]">$</span>
-              <input
-                type="number"
-                value={config.maxDailyDeployment}
-                onChange={e => onUpdate({ maxDailyDeployment: Number(e.target.value) })}
+              <NumInput value={config.maxDailyDeployment} onCommit={v => onUpdate({ maxDailyDeployment: v })}
                 className="w-full px-3 py-2 border border-[hsl(var(--border))] rounded-lg text-sm"
-                min={5000}
-                step={5000}
-              />
+                min={5000} step={5000} />
             </div>
             <p className="text-xs text-[hsl(var(--muted-foreground))] mt-1">Max new capital per day (prevents budget blowouts)</p>
           </div>
@@ -283,12 +308,10 @@ export function SettingsTab({ config, onUpdate }: SettingsTabProps) {
             ].map(tier => (
               <div key={tier.label} className="grid grid-cols-3 gap-3 items-center">
                 <span className="text-xs font-medium">{tier.label}</span>
-                <input type="number" value={config[tier.dipKey]}
-                  onChange={e => onUpdate({ [tier.dipKey]: Number(e.target.value) })}
+                <NumInput value={config[tier.dipKey]} onCommit={v => onUpdate({ [tier.dipKey]: v })}
                   className="px-2 py-1.5 border border-[hsl(var(--border))] rounded-lg text-xs w-full"
                   min={1} max={50} step={1} />
-                <input type="number" value={config[tier.sizeKey]}
-                  onChange={e => onUpdate({ [tier.sizeKey]: Number(e.target.value) })}
+                <NumInput value={config[tier.sizeKey]} onCommit={v => onUpdate({ [tier.sizeKey]: v })}
                   className="px-2 py-1.5 border border-[hsl(var(--border))] rounded-lg text-xs w-full"
                   min={10} max={200} step={10} />
               </div>
@@ -325,12 +348,10 @@ export function SettingsTab({ config, onUpdate }: SettingsTabProps) {
             ].map(tier => (
               <div key={tier.label} className="grid grid-cols-3 gap-3 items-center">
                 <span className="text-xs font-medium">{tier.label}</span>
-                <input type="number" value={config[tier.gainKey]}
-                  onChange={e => onUpdate({ [tier.gainKey]: Number(e.target.value) })}
+                <NumInput value={config[tier.gainKey]} onCommit={v => onUpdate({ [tier.gainKey]: v })}
                   className="px-2 py-1.5 border border-[hsl(var(--border))] rounded-lg text-xs w-full"
                   min={5} max={200} step={5} />
-                <input type="number" value={config[tier.trimKey]}
-                  onChange={e => onUpdate({ [tier.trimKey]: Number(e.target.value) })}
+                <NumInput value={config[tier.trimKey]} onCommit={v => onUpdate({ [tier.trimKey]: v })}
                   className="px-2 py-1.5 border border-[hsl(var(--border))] rounded-lg text-xs w-full"
                   min={5} max={50} step={5} />
               </div>
@@ -367,12 +388,10 @@ export function SettingsTab({ config, onUpdate }: SettingsTabProps) {
             ].map(tier => (
               <div key={tier.label} className="grid grid-cols-3 gap-3 items-center">
                 <span className="text-xs font-medium">{tier.label}</span>
-                <input type="number" value={config[tier.lossKey]}
-                  onChange={e => onUpdate({ [tier.lossKey]: Number(e.target.value) })}
+                <NumInput value={config[tier.lossKey]} onCommit={v => onUpdate({ [tier.lossKey]: v })}
                   className="px-2 py-1.5 border border-[hsl(var(--border))] rounded-lg text-xs w-full"
                   min={3} max={50} step={1} />
-                <input type="number" value={config[tier.sellKey]}
-                  onChange={e => onUpdate({ [tier.sellKey]: Number(e.target.value) })}
+                <NumInput value={config[tier.sellKey]} onCommit={v => onUpdate({ [tier.sellKey]: v })}
                   className="px-2 py-1.5 border border-[hsl(var(--border))] rounded-lg text-xs w-full"
                   min={10} max={100} step={5} />
               </div>
@@ -404,8 +423,7 @@ export function SettingsTab({ config, onUpdate }: SettingsTabProps) {
               <p className="text-xs text-[hsl(var(--muted-foreground))]">Skip new entries near earnings announcements</p>
             </div>
             {config.earningsAvoidEnabled && (
-              <input type="number" value={config.earningsBlackoutDays}
-                onChange={e => onUpdate({ earningsBlackoutDays: Number(e.target.value) })}
+              <NumInput value={config.earningsBlackoutDays} onCommit={v => onUpdate({ earningsBlackoutDays: v })}
                 className="w-16 px-2 py-1.5 border border-[hsl(var(--border))] rounded-lg text-xs text-right"
                 min={1} max={14} />
             )}
