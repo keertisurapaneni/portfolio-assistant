@@ -502,28 +502,22 @@ export function SettingsTab({ config, onUpdate }: SettingsTabProps) {
         <h3 className="text-sm font-semibold text-[hsl(var(--foreground))] mb-3">Suggested Finds — Auto-Sell Rules</h3>
         <p className="text-xs text-[hsl(var(--muted-foreground))] mb-3">
           Long-term positions are automatically closed when they hit these thresholds, freeing capital for new opportunities.
+          The trailing stop only fires <strong>after</strong> a position has been profitable — it won't sell a stock that's never recovered.
         </p>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <SettingsInput
-            label="Stop-Loss %"
-            value={config.ltStopLossPct}
-            onChange={v => onUpdate({ ltStopLossPct: v })}
-            min={-50} max={0} step={1}
-            help="Close if down more than this % (e.g. -10). Closes LMT & RTX immediately at -10."
+            label="Trailing Stop %"
+            value={config.ltTrailingStopPct}
+            onChange={v => onUpdate({ ltTrailingStopPct: v })}
+            min={0} max={50} step={1}
+            help="Sell if price falls this % from its peak — but only if the stock was ever in profit (0 = disabled)"
           />
           <SettingsInput
             label="Profit-Take %"
             value={config.ltProfitTakePct}
             onChange={v => onUpdate({ ltProfitTakePct: v })}
             min={0} max={100} step={1}
-            help="Close if up more than this % (e.g. 15 = +15% gain)"
-          />
-          <SettingsInput
-            label="Max Hold Days"
-            value={config.ltMaxHoldDays}
-            onChange={v => onUpdate({ ltMaxHoldDays: v })}
-            min={0} max={365} step={1}
-            help="Force-close after this many days (0 = disabled)"
+            help="Close immediately if up more than this % (e.g. 15 = lock in +15% gain)"
           />
         </div>
       </div>

@@ -163,9 +163,10 @@ export interface AutoTraderConfig {
   // ── Layer 5: Capital Recycling ──
   swingMaxHoldDays: number;         // auto-exit filled swing trades after N days (0 = off)
   capitalPressureEnabled: boolean;  // when at cap, auto-close best swing to make room
-  ltStopLossPct: number;            // long-term stop-loss threshold (e.g. -10 = -10%)
+  ltStopLossPct: number;            // long-term fixed stop-loss (0 = disabled, replaced by trailing)
   ltProfitTakePct: number;          // long-term profit-take threshold (e.g. 15 = +15%)
   ltMaxHoldDays: number;            // long-term max hold days (0 = disabled)
+  ltTrailingStopPct: number;        // trailing stop: sell if price falls this % from peak (only after profit peak)
 
   // ── Suggested Finds ──
   suggestedFindPositionSize: number; // flat $ per Suggested Find (0 = use dynamic sizing)
@@ -235,9 +236,10 @@ const DEFAULT_CONFIG: AutoTraderConfig = {
   // Layer 5: Capital Recycling
   swingMaxHoldDays: 5,
   capitalPressureEnabled: true,
-  ltStopLossPct: -10,
+  ltStopLossPct: 0,
   ltProfitTakePct: 15,
-  ltMaxHoldDays: 60,
+  ltMaxHoldDays: 0,
+  ltTrailingStopPct: 10,
 
   // Suggested Finds
   suggestedFindPositionSize: 2000,
@@ -328,6 +330,7 @@ export async function loadAutoTraderConfig(): Promise<AutoTraderConfig> {
         ltStopLossPct: Number(data.lt_stop_loss_pct ?? DEFAULT_CONFIG.ltStopLossPct),
         ltProfitTakePct: Number(data.lt_profit_take_pct ?? DEFAULT_CONFIG.ltProfitTakePct),
         ltMaxHoldDays: Number(data.lt_max_hold_days ?? DEFAULT_CONFIG.ltMaxHoldDays),
+        ltTrailingStopPct: Number(data.lt_trailing_stop_pct ?? DEFAULT_CONFIG.ltTrailingStopPct),
         suggestedFindPositionSize: Number(data.suggested_find_position_size ?? DEFAULT_CONFIG.suggestedFindPositionSize),
       };
       localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
@@ -411,6 +414,7 @@ export async function saveAutoTraderConfig(config: Partial<AutoTraderConfig>): P
         lt_stop_loss_pct: updated.ltStopLossPct,
         lt_profit_take_pct: updated.ltProfitTakePct,
         lt_max_hold_days: updated.ltMaxHoldDays,
+        lt_trailing_stop_pct: updated.ltTrailingStopPct,
         suggested_find_position_size: updated.suggestedFindPositionSize,
         updated_at: new Date().toISOString(),
       });

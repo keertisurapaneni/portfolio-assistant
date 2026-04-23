@@ -3083,37 +3083,76 @@ async function checkSwingHoldExpiry(
 }
 
 /**
- * Auto-exit long-term (Suggested Finds) positions that hit stop-loss, profit-take, or max hold days.
- * Keeps the long-term bucket from becoming a permanent "bag-holding" account.
+ * Auto-exit long-term (Suggested Finds) positions via:
+ *   1. Profit-take  — close if PnL% >= ltProfitTakePct (e.g. +15%)
+ *   2. Trailing stop — close if price falls ltTrailingStopPct% from its peak,
+ *                      BUT only if the peak was above the entry price (was ever in profit).
+ *                      This takes profits on the way down without bag-holding losers.
+ *   3. Fixed stop-loss — disabled by default (ltStopLossPct = 0), kept as fallback.
+ *
+ * Also updates price_peak on every cycle so the trailing stop tracks correctly.
  */
 async function checkLongTermAutoSell(
   config: AutoTraderConfig,
   positions: EnrichedPosition[],
 ): Promise<void> {
-  const stopLossPct = config.ltStopLossPct ?? -10;
+  const stopLossPct = config.ltStopLossPct ?? 0;       // 0 = disabled
   const profitTakePct = config.ltProfitTakePct ?? 15;
-  const maxHoldDays = config.ltMaxHoldDays ?? 60;
+  const maxHoldDays = config.ltMaxHoldDays ?? 0;        // 0 = disabled
+  const trailingStopPct = config.ltTrailingStopPct ?? 10;
   if (!config.accountId) return;
 
   const activeTrades = await getActiveTrades();
   const longTermOpen = activeTrades.filter(t => t.mode === 'LONG_TERM' && t.status === 'FILLED');
+  const today = new Date().toISOString().slice(0, 10);
 
   for (const trade of longTermOpen) {
     const ibPos = positions.find(p => p.symbol.toUpperCase() === trade.ticker.toUpperCase());
     if (!ibPos || ibPos.position === 0) continue;
 
-    const gainPct = ibPos.avgCost > 0
-      ? (ibPos.mktPrice - ibPos.avgCost) / ibPos.avgCost * 100
-      : 0;
-
+    const currentPrice = ibPos.mktPrice;
+    const entryPrice = ibPos.avgCost;
+    const gainPct = entryPrice > 0 ? (currentPrice - entryPrice) / entryPrice * 100 : 0;
     const daysHeld = trade.filled_at
       ? (Date.now() - new Date(trade.filled_at).getTime()) / 86400000
       : 0;
 
+    // Update price_peak if today's price is a new high (or first time tracking)
+    const storedPeak = trade.price_peak ?? 0;
+    const peakDate = trade.price_peak_date ?? null;
+    if (currentPrice > storedPeak || !peakDate) {
+      await updatePaperTrade(trade.id, {
+        price_peak: currentPrice,
+        price_peak_date: today,
+      });
+    }
+    const effectivePeak = Math.max(storedPeak, currentPrice);
+
+    // Evaluate exit conditions
     let reason: string | null = null;
-    if (gainPct <= stopLossPct) reason = `stop_loss:${gainPct.toFixed(1)}%<=${stopLossPct}%`;
-    else if (gainPct >= profitTakePct) reason = `profit_take:${gainPct.toFixed(1)}%>=${profitTakePct}%`;
-    else if (maxHoldDays > 0 && daysHeld >= maxHoldDays) reason = `max_hold:${daysHeld.toFixed(0)}d>=${maxHoldDays}d`;
+
+    // Profit-take: up enough, lock it in
+    if (gainPct >= profitTakePct) {
+      reason = `profit_take:+${gainPct.toFixed(1)}%>=${profitTakePct}%`;
+    }
+    // Trailing stop: only fires if the stock was ever in profit (peak > entry)
+    // Prevents selling never-recovered losers — just take profits on winners that turn down
+    else if (
+      trailingStopPct > 0 &&
+      effectivePeak > entryPrice &&
+      currentPrice < effectivePeak * (1 - trailingStopPct / 100)
+    ) {
+      const dropFromPeak = ((effectivePeak - currentPrice) / effectivePeak * 100).toFixed(1);
+      reason = `trailing_stop:${dropFromPeak}%_from_peak($${effectivePeak.toFixed(2)})`;
+    }
+    // Fixed stop-loss (disabled by default — backup for catastrophic drops)
+    else if (stopLossPct < 0 && gainPct <= stopLossPct) {
+      reason = `stop_loss:${gainPct.toFixed(1)}%<=${stopLossPct}%`;
+    }
+    // Max hold (disabled by default)
+    else if (maxHoldDays > 0 && daysHeld >= maxHoldDays) {
+      reason = `max_hold:${daysHeld.toFixed(0)}d>=${maxHoldDays}d`;
+    }
 
     if (!reason) continue;
 
@@ -3124,7 +3163,7 @@ async function checkLongTermAutoSell(
       await placeMarketOrder({ symbol: trade.ticker, side, quantity: qty });
       await updatePaperTrade(trade.id, {
         status: 'CLOSED',
-        close_price: ibPos.mktPrice,
+        close_price: currentPrice,
         pnl: ibPos.unrealizedPnl,
         pnl_percent: gainPct,
         close_reason: reason,
@@ -3132,12 +3171,15 @@ async function checkLongTermAutoSell(
       });
 
       const emoji = gainPct >= 0 ? '✅' : '🛑';
-      const label = reason.startsWith('stop_loss') ? 'stop-loss' : reason.startsWith('profit_take') ? 'profit-take' : 'max-hold exit';
-      log(`${trade.ticker}: LONG-TERM AUTO-SELL (${label}) — ${gainPct.toFixed(1)}% P&L, ${daysHeld.toFixed(0)} days held`);
+      const label = reason.startsWith('profit_take') ? 'profit-take'
+        : reason.startsWith('trailing_stop') ? 'trailing stop'
+        : reason.startsWith('stop_loss') ? 'stop-loss'
+        : 'max-hold exit';
+      log(`${trade.ticker}: LT AUTO-SELL (${label}) — ${gainPct.toFixed(1)}% P&L, peak $${effectivePeak.toFixed(2)}, held ${daysHeld.toFixed(0)}d`);
       persistEvent(trade.ticker, 'success',
         `${emoji} ${trade.ticker} long-term auto-closed (${label}) — ${gainPct.toFixed(1)}% P&L — capital freed`,
         { action: 'closed', source: 'lt_auto_sell', mode: 'LONG_TERM',
-          metadata: { reason, gainPct, daysHeld, qty, stopLossPct, profitTakePct, maxHoldDays } }
+          metadata: { reason, gainPct, daysHeld, qty, effectivePeak, entryPrice, trailingStopPct, profitTakePct } }
       );
     } catch (err) {
       log(`${trade.ticker}: Long-term auto-sell failed — ${err instanceof Error ? err.message : 'unknown'}`);
