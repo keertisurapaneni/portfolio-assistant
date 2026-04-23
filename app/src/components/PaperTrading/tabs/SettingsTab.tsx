@@ -497,6 +497,37 @@ export function SettingsTab({ config, onUpdate }: SettingsTabProps) {
         </div>
       </div>
 
+      {/* Long-term auto-sell */}
+      <div className="rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-4">
+        <h3 className="text-sm font-semibold text-[hsl(var(--foreground))] mb-3">Suggested Finds — Auto-Sell Rules</h3>
+        <p className="text-xs text-[hsl(var(--muted-foreground))] mb-3">
+          Long-term positions are automatically closed when they hit these thresholds, freeing capital for new opportunities.
+        </p>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <SettingsInput
+            label="Stop-Loss %"
+            value={config.ltStopLossPct}
+            onChange={v => onUpdate({ ltStopLossPct: v })}
+            min={-50} max={0} step={1}
+            help="Close if down more than this % (e.g. -10). Closes LMT & RTX immediately at -10."
+          />
+          <SettingsInput
+            label="Profit-Take %"
+            value={config.ltProfitTakePct}
+            onChange={v => onUpdate({ ltProfitTakePct: v })}
+            min={0} max={100} step={1}
+            help="Close if up more than this % (e.g. 15 = +15% gain)"
+          />
+          <SettingsInput
+            label="Max Hold Days"
+            value={config.ltMaxHoldDays}
+            onChange={v => onUpdate({ ltMaxHoldDays: v })}
+            min={0} max={365} step={1}
+            help="Force-close after this many days (0 = disabled)"
+          />
+        </div>
+      </div>
+
       <div className="flex items-start gap-2 rounded-lg bg-amber-50 border border-amber-200/70 px-4 py-3 mt-4">
         <AlertTriangle className="w-4 h-4 text-amber-500 mt-0.5 flex-shrink-0" />
         <div>

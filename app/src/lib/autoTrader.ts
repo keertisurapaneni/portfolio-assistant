@@ -163,6 +163,9 @@ export interface AutoTraderConfig {
   // ── Layer 5: Capital Recycling ──
   swingMaxHoldDays: number;         // auto-exit filled swing trades after N days (0 = off)
   capitalPressureEnabled: boolean;  // when at cap, auto-close best swing to make room
+  ltStopLossPct: number;            // long-term stop-loss threshold (e.g. -10 = -10%)
+  ltProfitTakePct: number;          // long-term profit-take threshold (e.g. 15 = +15%)
+  ltMaxHoldDays: number;            // long-term max hold days (0 = disabled)
 
   // ── Suggested Finds ──
   suggestedFindPositionSize: number; // flat $ per Suggested Find (0 = use dynamic sizing)
@@ -232,6 +235,9 @@ const DEFAULT_CONFIG: AutoTraderConfig = {
   // Layer 5: Capital Recycling
   swingMaxHoldDays: 5,
   capitalPressureEnabled: true,
+  ltStopLossPct: -10,
+  ltProfitTakePct: 15,
+  ltMaxHoldDays: 60,
 
   // Suggested Finds
   suggestedFindPositionSize: 2000,
@@ -319,6 +325,9 @@ export async function loadAutoTraderConfig(): Promise<AutoTraderConfig> {
         longTermBucketPct: Number(data.long_term_bucket_pct) || DEFAULT_CONFIG.longTermBucketPct,
         swingMaxHoldDays: Number(data.swing_max_hold_days ?? DEFAULT_CONFIG.swingMaxHoldDays),
         capitalPressureEnabled: data.capital_pressure_enabled ?? DEFAULT_CONFIG.capitalPressureEnabled,
+        ltStopLossPct: Number(data.lt_stop_loss_pct ?? DEFAULT_CONFIG.ltStopLossPct),
+        ltProfitTakePct: Number(data.lt_profit_take_pct ?? DEFAULT_CONFIG.ltProfitTakePct),
+        ltMaxHoldDays: Number(data.lt_max_hold_days ?? DEFAULT_CONFIG.ltMaxHoldDays),
         suggestedFindPositionSize: Number(data.suggested_find_position_size ?? DEFAULT_CONFIG.suggestedFindPositionSize),
       };
       localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
@@ -399,6 +408,9 @@ export async function saveAutoTraderConfig(config: Partial<AutoTraderConfig>): P
         long_term_bucket_pct: updated.longTermBucketPct,
         swing_max_hold_days: updated.swingMaxHoldDays,
         capital_pressure_enabled: updated.capitalPressureEnabled,
+        lt_stop_loss_pct: updated.ltStopLossPct,
+        lt_profit_take_pct: updated.ltProfitTakePct,
+        lt_max_hold_days: updated.ltMaxHoldDays,
         suggested_find_position_size: updated.suggestedFindPositionSize,
         updated_at: new Date().toISOString(),
       });

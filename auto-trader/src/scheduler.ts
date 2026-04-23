@@ -3083,6 +3083,69 @@ async function checkSwingHoldExpiry(
 }
 
 /**
+ * Auto-exit long-term (Suggested Finds) positions that hit stop-loss, profit-take, or max hold days.
+ * Keeps the long-term bucket from becoming a permanent "bag-holding" account.
+ */
+async function checkLongTermAutoSell(
+  config: AutoTraderConfig,
+  positions: EnrichedPosition[],
+): Promise<void> {
+  const stopLossPct = config.ltStopLossPct ?? -10;
+  const profitTakePct = config.ltProfitTakePct ?? 15;
+  const maxHoldDays = config.ltMaxHoldDays ?? 60;
+  if (!config.accountId) return;
+
+  const activeTrades = await getActiveTrades();
+  const longTermOpen = activeTrades.filter(t => t.mode === 'LONG_TERM' && t.status === 'FILLED');
+
+  for (const trade of longTermOpen) {
+    const ibPos = positions.find(p => p.symbol.toUpperCase() === trade.ticker.toUpperCase());
+    if (!ibPos || ibPos.position === 0) continue;
+
+    const gainPct = ibPos.avgCost > 0
+      ? (ibPos.mktPrice - ibPos.avgCost) / ibPos.avgCost * 100
+      : 0;
+
+    const daysHeld = trade.filled_at
+      ? (Date.now() - new Date(trade.filled_at).getTime()) / 86400000
+      : 0;
+
+    let reason: string | null = null;
+    if (gainPct <= stopLossPct) reason = `stop_loss:${gainPct.toFixed(1)}%<=${stopLossPct}%`;
+    else if (gainPct >= profitTakePct) reason = `profit_take:${gainPct.toFixed(1)}%>=${profitTakePct}%`;
+    else if (maxHoldDays > 0 && daysHeld >= maxHoldDays) reason = `max_hold:${daysHeld.toFixed(0)}d>=${maxHoldDays}d`;
+
+    if (!reason) continue;
+
+    const qty = Math.abs(ibPos.position);
+    const side: 'BUY' | 'SELL' = ibPos.position > 0 ? 'SELL' : 'BUY';
+
+    try {
+      await placeMarketOrder({ symbol: trade.ticker, side, quantity: qty });
+      await updatePaperTrade(trade.id, {
+        status: 'CLOSED',
+        close_price: ibPos.mktPrice,
+        pnl: ibPos.unrealizedPnl,
+        pnl_percent: gainPct,
+        close_reason: reason,
+        closed_at: new Date().toISOString(),
+      });
+
+      const emoji = gainPct >= 0 ? '✅' : '🛑';
+      const label = reason.startsWith('stop_loss') ? 'stop-loss' : reason.startsWith('profit_take') ? 'profit-take' : 'max-hold exit';
+      log(`${trade.ticker}: LONG-TERM AUTO-SELL (${label}) — ${gainPct.toFixed(1)}% P&L, ${daysHeld.toFixed(0)} days held`);
+      persistEvent(trade.ticker, 'success',
+        `${emoji} ${trade.ticker} long-term auto-closed (${label}) — ${gainPct.toFixed(1)}% P&L — capital freed`,
+        { action: 'closed', source: 'lt_auto_sell', mode: 'LONG_TERM',
+          metadata: { reason, gainPct, daysHeld, qty, stopLossPct, profitTakePct, maxHoldDays } }
+      );
+    } catch (err) {
+      log(`${trade.ticker}: Long-term auto-sell failed — ${err instanceof Error ? err.message : 'unknown'}`);
+    }
+  }
+}
+
+/**
  * Capital-pressure redeployment: when deployed capital > 90% of cap, find the swing trade
  * with the highest unrealized gain and close it to free capital for a new signal.
  * Returns the dollar amount freed (0 if nothing closed).
@@ -3723,7 +3786,8 @@ async function runSchedulerCycle(): Promise<void> {
     await checkDipBuyOpportunities(config, positions);
     await checkProfitTakeOpportunities(config, positions);
     await checkLossCutOpportunities(config, positions);
-    await checkSwingHoldExpiry(config, positions); // free capital from stale swing trades
+    await checkSwingHoldExpiry(config, positions);     // free capital from stale swing trades
+    await checkLongTermAutoSell(config, positions);    // stop-loss / profit-take / max-hold for Suggested Finds
 
     // Load scanner ideas once per cycle (used by generic-video queue + scanner execution)
     let allIdeas: TradeIdea[] = [];

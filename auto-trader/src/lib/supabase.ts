@@ -75,6 +75,9 @@ export interface AutoTraderConfig {
   externalSignalPositionSize: number;
   swingMaxHoldDays: number;        // auto-exit filled swing trades after N days (0 = off)
   capitalPressureEnabled: boolean; // when at cap, auto-close best swing to make room
+  ltStopLossPct: number;           // long-term stop-loss: close if PnL% < this (e.g. -10)
+  ltProfitTakePct: number;         // long-term profit-take: close if PnL% > this (e.g. 15)
+  ltMaxHoldDays: number;           // long-term max hold days (0 = disabled)
 }
 
 const DEFAULT_CONFIG: AutoTraderConfig = {
@@ -106,6 +109,9 @@ const DEFAULT_CONFIG: AutoTraderConfig = {
   externalSignalPositionSize: 5000,
   swingMaxHoldDays: 5,
   capitalPressureEnabled: true,
+  ltStopLossPct: -10,
+  ltProfitTakePct: 15,
+  ltMaxHoldDays: 60,
 };
 
 export async function loadConfig(): Promise<AutoTraderConfig> {
@@ -167,6 +173,9 @@ export async function loadConfig(): Promise<AutoTraderConfig> {
     externalSignalPositionSize: Number(data.external_signal_position_size) || DEFAULT_CONFIG.externalSignalPositionSize,
     swingMaxHoldDays: Number(data.swing_max_hold_days ?? DEFAULT_CONFIG.swingMaxHoldDays),
     capitalPressureEnabled: data.capital_pressure_enabled ?? DEFAULT_CONFIG.capitalPressureEnabled,
+    ltStopLossPct: Number(data.lt_stop_loss_pct ?? DEFAULT_CONFIG.ltStopLossPct),
+    ltProfitTakePct: Number(data.lt_profit_take_pct ?? DEFAULT_CONFIG.ltProfitTakePct),
+    ltMaxHoldDays: Number(data.lt_max_hold_days ?? DEFAULT_CONFIG.ltMaxHoldDays),
   };
 }
 
