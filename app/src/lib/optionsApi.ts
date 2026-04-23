@@ -60,6 +60,8 @@ export async function fetchWatchlistQuotes(tickers: string[]): Promise<Map<strin
 
 // ── Types ────────────────────────────────────────────────
 
+export type WatchlistTierType = 'STABLE' | 'GROWTH' | 'HIGH_VOL';
+
 export interface WatchlistTicker {
   id: string;
   ticker: string;
@@ -68,6 +70,7 @@ export interface WatchlistTicker {
   notes: string | null;
   active: boolean;
   created_at: string;
+  tier: WatchlistTierType;
 }
 
 export interface OptionsScanOpportunity {
@@ -127,6 +130,7 @@ export interface OptionsMonthlyStats {
   openPositions: number;
   annualizedReturn: number;
   projectedMonthlyIncome: number; // total premium locked in from all currently open puts
+  openPremiumAtRisk: number;      // cash already received from open positions, not yet earned
 }
 
 // ── Watchlist ────────────────────────────────────────────
@@ -278,6 +282,11 @@ export async function getOptionsMonthlyStats(): Promise<OptionsMonthlyStats> {
     return sum + (t.option_premium ?? 0) * (t.option_contracts ?? 1) * 100;
   }, 0);
 
+  // Premium at risk = cash already received from open positions, but not yet earned.
+  // This is the same as projectedMonthlyIncome — shown separately so the UI can
+  // display it as "collected but unearned" rather than hiding it in a footnote.
+  const openPremiumAtRisk = projectedMonthlyIncome;
+
   return {
     premiumCollected,
     wins: wins.length,
@@ -286,6 +295,7 @@ export async function getOptionsMonthlyStats(): Promise<OptionsMonthlyStats> {
     openPositions: (open ?? []).length,
     annualizedReturn,
     projectedMonthlyIncome,
+    openPremiumAtRisk,
   };
 }
 

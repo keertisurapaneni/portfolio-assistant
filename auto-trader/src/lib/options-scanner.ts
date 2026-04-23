@@ -121,11 +121,50 @@ export interface OptionsTradeTicket {
   bearMode: boolean;        // true = bear market conservative params applied
 }
 
+type WatchlistTier = 'STABLE' | 'GROWTH' | 'HIGH_VOL';
+
 interface WatchlistEntry {
   ticker: string;
   min_price: number | null;
   notes: string | null;
+  tier: WatchlistTier;
 }
+
+/**
+ * Per-tier scanner thresholds.
+ * STABLE   = blue-chip / dividend stocks → lower IV req, tighter delta, more contracts allowed
+ * GROWTH   = quality large-cap tech     → standard rules
+ * HIGH_VOL = high-beta / momentum       → higher IV floor, tighter delta (further OTM), 1 contract max
+ */
+const TIER_CONFIG: Record<WatchlistTier, {
+  maxBeta: number;
+  minIvRankOverride: number | null; // null = use auto-tuned ctx.minIvRank
+  deltaTarget: number | null;       // null = use auto-tuned ctx.deltaTarget
+  minProbProfit: number;
+  maxContracts: number;
+}> = {
+  STABLE: {
+    maxBeta: 1.2,
+    minIvRankOverride: 35,   // sell premium even at lower IV — stable names don't spike often
+    deltaTarget: 0.25,       // tighter = more margin of safety
+    minProbProfit: 70,       // 70% floor (vs 75% default) — stable stocks move less
+    maxContracts: 2,
+  },
+  GROWTH: {
+    maxBeta: 1.8,
+    minIvRankOverride: null, // use auto-tuned value (default 50)
+    deltaTarget: null,       // use auto-tuned value (default 0.30)
+    minProbProfit: 72,
+    maxContracts: 1,
+  },
+  HIGH_VOL: {
+    maxBeta: 2.5,
+    minIvRankOverride: 60,   // only sell when premium is genuinely elevated
+    deltaTarget: 0.20,       // further OTM — more cushion for volatile names
+    minProbProfit: 75,       // strictest floor
+    maxContracts: 1,
+  },
+};
 
 /** Parse leverage factor from watchlist notes field. Format: "Nx|Description" */
 function parseLeverageFactor(notes: string | null): number {
@@ -509,7 +548,9 @@ async function checkStock(
   minPrice: number | null,
   ctx: ScanContext,
   leverageFactor = 1,
+  tier: WatchlistTier = 'GROWTH',
 ): Promise<OptionsTradeTicket | { ticker: string; skipped: true; reason: string }> {
+  const tierCfg = TIER_CONFIG[tier];
   const checks: Record<string, boolean | string> = {};
 
   // Check 0: Time-of-day gate — skip first 30 min after open (wide spreads, erratic pricing)
@@ -594,13 +635,12 @@ async function checkStock(
     }
   }
 
-  // Check 3.6: Beta filter — skip high-beta stocks (too volatile for wheel strategy)
+  // Check 3.6: Beta filter — threshold is per-tier (STABLE=1.2, GROWTH=1.8, HIGH_VOL=2.5).
   // Leveraged ETFs are intentionally high-beta; they have dedicated delta/yield gates instead.
-  // Piggyback on same Finnhub /stock/metric call to also fetch 52-week high (no extra API call).
   const metrics = await getStockMetrics(ticker);
   const { beta, high52w } = metrics;
-  checks.beta = beta !== null ? beta.toFixed(2) : 'unknown';
-  if (beta !== null && beta > MAX_BETA && leverageFactor === 1) {
+  checks.beta = beta !== null ? `${beta.toFixed(2)} (${tier} cap: ${tierCfg.maxBeta})` : 'unknown';
+  if (beta !== null && beta > tierCfg.maxBeta && leverageFactor === 1) {
     return { ticker, skipped: true, reason: `high_beta:${beta.toFixed(2)}` };
   }
 
@@ -661,11 +701,11 @@ async function checkStock(
   const rsiBonus = rsiOk;
 
   // Check 6: Options chain — uses IB when connected, Black-Scholes synthetic fallback otherwise
-  // Priority: bear mode (15Δ) > leveraged ETF (18Δ) > high-conviction RSI (35Δ) > normal (ctx.deltaTarget, auto-tuned)
-  // Leveraged ETFs (3×) need a lower delta because their vol is amplified — 18Δ ≈ 82% prob OTM
+  // Priority: bear mode (15Δ) > leveraged ETF (18Δ) > tier override > high-conviction RSI (35Δ) > auto-tuned default
   let deltaTarget = ctx.deltaTarget;
   if (ctx.bearMode) deltaTarget = BEAR_DELTA_TARGET;
   else if (leverageFactor > 1) deltaTarget = DELTA_TARGET_LEVERAGED;
+  else if (tierCfg.deltaTarget !== null) deltaTarget = tierCfg.deltaTarget;
   else if (rsiBonus) deltaTarget = DELTA_TARGET_HIGH_CONVICTION;
 
   // Extended DTE when IV rank is very elevated — collect more premium during fear spikes.
@@ -703,9 +743,10 @@ async function checkStock(
     ? `strike:${put.strike}_sma20:${sma20.toFixed(1)}_ok`
     : 'sma20_no_data';
 
-  // Check 6b: Probability of profit floor — only sell when OTM probability ≥ 75%
-  checks.probProfit = `${put.probProfit.toFixed(0)}%_need_${MIN_PROB_PROFIT}%`;
-  if (put.probProfit < MIN_PROB_PROFIT) {
+  // Check 6b: Probability of profit floor — per-tier (STABLE=70%, GROWTH=72%, HIGH_VOL=75%)
+  const minProbProfit = tierCfg.minProbProfit;
+  checks.probProfit = `${put.probProfit.toFixed(0)}%_need_${minProbProfit}% (${tier})`;
+  if (put.probProfit < minProbProfit) {
     return { ticker, skipped: true, reason: `low_prob_profit:${put.probProfit.toFixed(0)}pct` };
   }
 
@@ -744,14 +785,15 @@ async function checkStock(
   checks.capitalSufficient = ctx.freeCapital >= effectiveCapitalRequired;
   if (ctx.freeCapital < effectiveCapitalRequired) return { ticker, skipped: true, reason: 'insufficient_capital' };
 
-  // Check 9: IV rank — range-bound stocks get a lower bar (steady chop = reliable premium)
-  // ctx.minIvRank is the auto-tuned floor (default 50); range-bound stocks use MIN_IV_RANK_RANGE_BOUND
+  // Check 9: IV rank — per-tier override takes precedence over auto-tuned ctx.minIvRank.
+  // Range-bound stocks get the lowest bar regardless of tier.
   const currentIvPct = chain.currentIV * 100;
   const ivRank = await getIvRank(ticker, currentIvPct);
-  const rangeBoundResult = ivRank !== null && ivRank < ctx.minIvRank
+  const effectiveCtxIvRank = tierCfg.minIvRankOverride !== null ? tierCfg.minIvRankOverride : ctx.minIvRank;
+  const rangeBoundResult = ivRank !== null && ivRank < effectiveCtxIvRank
     ? await isRangeBound(ticker)
     : { rangeBound: false, bandPct: 0 };
-  const effectiveMinIvRank = rangeBoundResult.rangeBound ? MIN_IV_RANK_RANGE_BOUND : ctx.minIvRank;
+  const effectiveMinIvRank = rangeBoundResult.rangeBound ? MIN_IV_RANK_RANGE_BOUND : effectiveCtxIvRank;
   checks.ivRank = ivRank !== null
     ? `${ivRank}${rangeBoundResult.rangeBound ? `_range_bound(${rangeBoundResult.bandPct.toFixed(0)}%band)` : ''}`
     : 'building_history';
@@ -781,11 +823,14 @@ async function checkStock(
     bbSignal !== null,  // BB lower band touch is a positive signal
   ].filter(Boolean).length;
 
-  // Scale contracts 1–3 by conviction.
-  // Stacking order: base score → +1 for dip entry → +1 for BB lower band touch (high conviction entry)
+  // Scale contracts 1–N by conviction, capped by tier config.
+  // Stacking: base score → +1 for dip entry → +1 for BB lower band touch (high conviction entry)
   const baseContracts = (put.probProfit >= 80 && (ivRank ?? 0) >= 65 && rsiBonus) ? 3
     : (put.probProfit >= 75 && (ivRank ?? 0) >= 55) ? 2 : 1;
-  const contracts = Math.min(3, baseContracts + (dipEntry ? 1 : 0) + (bbSignal === 'at_lower' ? 1 : 0));
+  const contracts = Math.min(
+    tierCfg.maxContracts,
+    baseContracts + (dipEntry ? 1 : 0) + (bbSignal === 'at_lower' ? 1 : 0),
+  );
 
   return {
     ticker,
@@ -834,7 +879,7 @@ export async function runOptionsScan(freeCapital = 100_000): Promise<OptionsScan
   // Load active watchlist
   const { data: watchlist } = await sb
     .from('options_watchlist')
-    .select('ticker, min_price, notes')
+    .select('ticker, min_price, notes, tier')
     .eq('active', true)
     .order('ticker');
 
@@ -851,7 +896,8 @@ export async function runOptionsScan(freeCapital = 100_000): Promise<OptionsScan
   // Scan each ticker (sequential to avoid IB request flooding)
   for (const entry of watchlist as WatchlistEntry[]) {
     const leverageFactor = parseLeverageFactor(entry.notes);
-    const result = await checkStock(entry.ticker, entry.min_price, ctx, leverageFactor);
+    const tier: WatchlistTier = (entry.tier as WatchlistTier) ?? 'GROWTH';
+    const result = await checkStock(entry.ticker, entry.min_price, ctx, leverageFactor, tier);
 
     if ('skipped' in result) {
       skipped.push({ ticker: result.ticker, reason: result.reason });

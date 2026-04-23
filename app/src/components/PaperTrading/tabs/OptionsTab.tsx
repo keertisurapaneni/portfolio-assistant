@@ -352,15 +352,23 @@ function StatsHeader({
               style={{ width: `${netProgressPct}%` }}
             />
           </div>
-          {/* Honest breakdown: closed premiums vs open unrealized */}
-          <div className="flex items-center gap-2 text-[10px] pt-0.5">
-            <span className="text-emerald-700">
-              Closed: <span className="font-semibold">{fmtUsd(stats.premiumCollected, 0)}</span>
-            </span>
-            <span className="text-[hsl(var(--muted-foreground))]">·</span>
-            <span className={cn(totalUnrealizedPnl >= 0 ? 'text-emerald-700' : 'text-red-600')}>
-              Open P&L: <span className="font-semibold">{fmtUsd(totalUnrealizedPnl, 0, true)}</span>
-            </span>
+          {/* Honest three-line breakdown */}
+          <div className="flex flex-col gap-0.5 text-[10px] pt-0.5">
+            <div className="flex items-center gap-2">
+              <span className="text-emerald-700">
+                ✅ Realized (closed): <span className="font-semibold">{fmtUsd(stats.premiumCollected, 0)}</span>
+              </span>
+              <span className="text-[hsl(var(--muted-foreground))]">·</span>
+              <span className={cn(totalUnrealizedPnl >= 0 ? 'text-emerald-700' : 'text-red-600')}>
+                Mark-to-market: <span className="font-semibold">{fmtUsd(totalUnrealizedPnl, 0, true)}</span>
+              </span>
+            </div>
+            {stats.openPremiumAtRisk > 0 && (
+              <span className="text-amber-700">
+                💰 Cash collected (open, unearned): <span className="font-semibold">{fmtUsd(stats.openPremiumAtRisk, 0)}</span>
+                <span className="text-[hsl(var(--muted-foreground))] ml-1">— kept when positions close profitably</span>
+              </span>
+            )}
           </div>
         </div>
         <div className="flex items-center gap-3 text-[10px] text-emerald-700">
@@ -846,7 +854,18 @@ export function OptionsTab() {
               <div key={w.id} className="flex flex-col rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] px-3 py-2 gap-1">
                 <div className="flex items-start justify-between gap-1">
                   <div className="flex flex-col min-w-0">
-                    <p className="text-sm font-bold text-[hsl(var(--foreground))]">{w.ticker}</p>
+                    <div className="flex items-center gap-1.5">
+                      <p className="text-sm font-bold text-[hsl(var(--foreground))]">{w.ticker}</p>
+                      <span className={cn(
+                        'text-[9px] font-semibold px-1 py-0.5 rounded uppercase tracking-wide',
+                        w.tier === 'STABLE'   && 'bg-emerald-100 text-emerald-700',
+                        w.tier === 'GROWTH'   && 'bg-blue-100 text-blue-700',
+                        w.tier === 'HIGH_VOL' && 'bg-amber-100 text-amber-700',
+                        !w.tier              && 'bg-gray-100 text-gray-500',
+                      )}>
+                        {w.tier === 'STABLE' ? 'Stable' : w.tier === 'HIGH_VOL' ? 'High Vol' : 'Growth'}
+                      </span>
+                    </div>
                     {quote && (
                       <div className="flex items-baseline gap-1.5 mt-0.5">
                         <span className="text-xs font-semibold tabular-nums text-[hsl(var(--foreground))]">
