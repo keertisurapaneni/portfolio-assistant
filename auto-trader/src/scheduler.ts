@@ -64,6 +64,7 @@ import {
 import { logLongTermPerformance } from './lib/performanceLog.js';
 import { logClosedTradePerformance } from './lib/tradePerformanceLog.js';
 import { generateSuggestedFinds } from './lib/discovery.js';
+import { fetchRecentDailyCandles, detectCandlePatterns } from './lib/candle-patterns.js';
 import { runOptionsScan, paperTradeOption } from './lib/options-scanner.js';
 import { runOptionsManageCycle } from './lib/options-manager.js';
 import { runDipWatcher } from './lib/dip-watcher.js';
@@ -1744,6 +1745,42 @@ async function executeScannerTrade(
 
   if (await hasActiveTrade(ticker)) return 'skipped:duplicate';
 
+  // ── Candlestick pattern confidence modifier ───────────────────────────
+  // Applies to scanner-generated day/swing ideas only (not influencer signals,
+  // not Suggested Finds, not options). Uses daily bars — no new API calls.
+  //
+  // Confirming patterns (e.g. bullish engulfing on BUY)  → +0.5 confidence
+  // Contradicting patterns (e.g. bearish engulfing on BUY) → -1.0 confidence
+  //   If confidence drops below minScannerConfidence, the idea is skipped.
+  // Neutral / no pattern detected → no change (non-blocking).
+  let adjustedConf = scannerConf;
+  let candlePatternLog: string[] = [];
+  if (mode === 'DAY_TRADE' || mode === 'SWING_TRADE') {
+    const candles = await fetchRecentDailyCandles(ticker).catch(() => null);
+    if (candles && candles.length >= 3) {
+      const result = detectCandlePatterns(candles, signal as 'BUY' | 'SELL');
+      candlePatternLog = result.patterns;
+      if (result.score > 0) {
+        adjustedConf = Math.min(10, adjustedConf + 0.5);
+        log(`${ticker}: candle patterns confirm ${signal} — +0.5 confidence → ${adjustedConf} (${result.patterns.join(', ')})`);
+      } else if (result.score < 0) {
+        adjustedConf = Math.max(0, adjustedConf - 1.0);
+        log(`${ticker}: candle patterns contradict ${signal} — -1.0 confidence → ${adjustedConf} (${result.patterns.join(', ')})`);
+        if (adjustedConf < config.minScannerConfidence) {
+          persistEvent(ticker, 'skipped', `Candle contradiction: ${result.patterns.join(', ')}`, {
+            action: 'skipped', source: 'scanner', mode,
+            skip_reason: `candle_contradiction: ${result.patterns.join(', ')}`,
+          });
+          return `skipped:candle_contradiction`;
+        }
+      } else {
+        log(`${ticker}: candle patterns — neutral/no pattern (${result.patterns.join(', ') || 'none'})`);
+      }
+    }
+  }
+  // Use adjustedConf from here on (replaces scannerConf in FA threshold checks below)
+  const effectiveScannerConf = adjustedConf;
+
   let entryPrice: number | null;
   let stopLoss: number | null;
   let targetPrice: number | null;
@@ -1790,7 +1827,7 @@ async function executeScannerTrade(
       targetPrice = idea.targetPrice;
     }
 
-    faConf = scannerConf; // Pass 2 confidence is on the same 0-10 scale
+    faConf = effectiveScannerConf; // Pass 2 confidence adjusted by candle modifier
     faRec = signal;       // Signal already reflects FA direction from Pass 2
     faRiskReward = idea.riskReward ?? null;
   } else {
@@ -1875,7 +1912,7 @@ async function executeScannerTrade(
 
     await createPaperTrade({
       ticker, mode, signal,
-      scanner_confidence: scannerConf,
+      scanner_confidence: effectiveScannerConf,
       fa_confidence: faConf,
       fa_recommendation: faRec,
       entry_price: entryPrice,
@@ -1893,6 +1930,9 @@ async function executeScannerTrade(
       pass1_confidence: idea.pass1_confidence,
       entry_trigger_type: 'bracket_limit',
       market_condition: idea.market_condition,
+      ...(candlePatternLog.length > 0 && {
+        metadata: { candle_patterns: candlePatternLog },
+      }),
     });
 
     recordPendingOrder(sizing.dollarSize);
@@ -1902,8 +1942,9 @@ async function executeScannerTrade(
     }
     persistEvent(ticker, 'success', `Order placed: ${signal} ${sizing.quantity} @ $${entryPrice}`, {
       action: 'executed', source: 'scanner', mode,
-      scanner_signal: signal, scanner_confidence: scannerConf,
+      scanner_signal: signal, scanner_confidence: effectiveScannerConf,
       fa_recommendation: faRec, fa_confidence: faConf,
+      ...(candlePatternLog.length > 0 && { candle_patterns: candlePatternLog }),
     });
     return 'executed';
   } catch (err) {
