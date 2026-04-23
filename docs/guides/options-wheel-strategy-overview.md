@@ -1,7 +1,7 @@
 # Options Wheel Strategy — How We Make Money with Options
 
 **Prepared by:** Keerti  
-**Last updated:** April 22, 2026  
+**Last updated:** April 23, 2026  
 **Account:** Paper trading (simulated) — $1,000,000 portfolio  
 **Options budget:** $500,000 allocated to this strategy  
 **Monthly income target:** $5,000+
@@ -24,21 +24,77 @@ Think of it like being a landlord for stocks.
 - **The stock stays above our agreed price** → Our promise expires, we keep all the cash, and we start the cycle again. This happens most of the time (~75–80% of trades).
 - **The stock drops below our agreed price** → We buy the shares (called *assignment*). But because we already collected cash upfront, our real cost is lower than what we paid.
 
-**Step 3 — If we get the shares.** We immediately start collecting rent on those shares by selling a *covered call* — someone pays us to agree to sell our shares at a higher price. More cash collected.
+**Step 3 — If we get the shares.** We immediately start collecting rent on those shares by selling a *covered call* — someone pays us to agree to sell our shares at a higher price. More cash collected. The covered call is always set at least 10% above the current stock price, so the stock has room to recover.
 
 **Step 4 — Repeat.** The cycle keeps going — Put → (hold or assign) → Covered Call → repeat. This is the "wheel."
 
 ---
 
-## Why This Strategy Works
+## The Approved Stock List — Now Organized by Tier
 
-| Factor | What It Means |
-|---|---|
-| We only sell puts on quality stocks | NVDA, AAPL, MSFT, META — companies we'd be comfortable owning |
-| We set the price conservatively | Our target strike is ~30% below the current price (30-delta), meaning the stock has to fall significantly before we're affected |
-| We only sell when "rent" is high | We require IV Rank > 50, meaning the option premium is elevated — we're getting paid well for the risk |
-| We exit at 50% profit | When we've captured half our potential gain, we close and redeploy. No need to hold until expiry. |
-| We have automated stop-losses | If a trade goes 3× against us, the system closes automatically to protect capital |
+We now categorize all approved stocks into three tiers, each with its own rules. This is the biggest upgrade to the strategy: **we no longer treat all stocks the same.**
+
+### 🟢 STABLE Tier — Blue-chip / Dividend stocks
+*Lower volatility, we're very comfortable owning these, sell even at moderate premium*
+
+| Stocks | Why |
+|--------|-----|
+| JPM, KO, HD, COST, MA, V, UNH | Dividend leaders, liquid, steady |
+| AAPL, GOOGL, MSFT, AMZN, ORCL | Mega-cap tech, very liquid chains |
+
+**Rules for STABLE stocks:**
+- Beta (volatility) cap: **1.2×** the market *(most forgiving)*
+- Minimum IV rank: **35** *(we sell premium even at lower volatility — these names rarely spike)*
+- Target strike: **25-delta** *(25% chance of assignment — further out for more cushion)*
+- Minimum probability of profit: **70%** *(slightly relaxed — stable stocks move less)*
+- Max contracts per trade: **2** *(we're comfortable with double exposure on quality names)*
+
+---
+
+### 🔵 GROWTH Tier — Quality large-cap tech
+*Moderate volatility, strong fundamentals, standard rules*
+
+| Stocks | Why |
+|--------|-----|
+| META, NVDA, AVGO, NOW, SNOW | Quality tech growth, high institutional ownership |
+| PANW, DDOG, NFLX | Cloud/streaming leaders, liquid options |
+
+**Rules for GROWTH stocks:**
+- Beta cap: **1.8×** the market
+- Minimum IV rank: **50** *(auto-adjusted by the system over time)*
+- Target strike: **30-delta** *(standard rule — 30% chance of assignment)*
+- Minimum probability of profit: **72%**
+- Max contracts per trade: **1**
+
+---
+
+### 🟡 HIGH VOL Tier — High-beta / Momentum stocks
+*More volatile, higher premiums, tighter rules to compensate*
+
+| Stocks | Why |
+|--------|-----|
+| AMD, TSLA, PLTR, APP | High-beta tech/momentum |
+| ALAB, CRDO, RDDT | Smaller/newer growth names |
+| SOXL, TQQQ, NVDL, TSLL | Leveraged ETFs *(highest premium, highest risk)* |
+
+**Rules for HIGH VOL stocks:**
+- Beta cap: **2.5×** the market
+- Minimum IV rank: **60** *(only sell when premium is genuinely elevated)*
+- Target strike: **20-delta** *(further OTM — more cushion because these move fast)*
+- Minimum probability of profit: **75%** *(strictest floor)*
+- Max contracts per trade: **1** *(no doubling up on volatile names)*
+
+---
+
+## The Weekly Screener — How We Find New Stocks
+
+Every Monday morning, the system automatically screens 100+ S&P 500 and Nasdaq 100 stocks to suggest new additions to our watchlist. It filters by:
+- Market cap ≥ $5 billion (ensures liquid options chain)
+- Price between $15 and $2,000
+- Beta between 0.3 and 2.8
+- Not already on our watchlist
+
+The top 20 candidates appear in the app's Watchlist tab as "Weekly Suggestions." We can review each one, add it with a single click, or dismiss it. New tickers are auto-assigned to the right tier based on their beta.
 
 ---
 
@@ -47,44 +103,57 @@ Think of it like being a landlord for stocks.
 This is fully automated. There is no manual trading happening. The system runs 24/7 and makes decisions based on rules we set.
 
 ### Morning (10:00–11:30 AM ET) — The Scanner
-The system scans our 20+ approved stocks and checks 14 conditions before opening any position:
+The system scans all approved stocks and checks **14+ conditions** before opening any position:
 
 1. Is the overall stock market healthy? (SPY above 200-day average)
-2. Is there an earnings announcement coming up? (Skip if within 7 days — too risky)
-3. Is the news for this stock clean? (No fraud, lawsuits, SEC investigations)
-4. Is the option premium high enough to be worth our time? (≥1.5% monthly)
-5. Is the stock in an uptrend? (Must be above its 50-day moving average)
-6. Is the stock at or near a technical buying zone? (Bollinger Band lower band — oversold signal)
-7. Is there enough capital to cover the trade? (Always cash-secured — no margin)
-8. ...and 7 more checks.
+2. Is the stock's beta within the tier's limit? (Different per tier — see above)
+3. Is the stock near its 52-week high? *(Skip if within 5% — near all-time highs = thin safety margin)*
+4. Is there an earnings announcement coming up? (Skip if within 7 days — too risky)
+5. Is the news for this stock clean? (No fraud, lawsuits, SEC investigations)
+6. Is the option premium high enough for this tier? (≥1.5% monthly for STABLE/GROWTH; ≥5% for leveraged ETFs)
+7. Is the stock in an uptrend? (Must be above its 50-day moving average)
+8. Is the stock at or near a technical buying zone? (Bollinger Band lower band)
+9. Is the IV rank above the tier's floor? (Different minimum per tier)
+10. Is there enough capital to cover the trade? (Always cash-secured — no margin)
+11. Are we at the position limit? (Max 12 positions total; max 6 when market is stressed)
+12. Do we already have a position in this stock? (No stacking)
+13. Are we over-concentrated in one industry? (Max 2 positions per sector)
+14. Is the bid-ask spread reasonable? (Must be < 30% of mid — ensures liquid options)
 
 If all checks pass → the system automatically opens a paper trade.
 
 ### Every 30 Minutes — The Manager
 The system monitors all open positions and:
 - Closes any position that has reached **50% profit** (locks in gains early)
-- Alerts if a position needs attention (stock dropped near our strike price)
-- Automatically queues a **covered call** if a stock gets assigned to us
-- Hard-closes any position where losses exceed **3× the premium collected** (stop-loss protection)
+- Closes any position with **21 days left** (time decay math changes after this point)
+- Alerts if a position needs attention (stock near our strike price)
+- Hard-closes any position where losses exceed **3× the premium collected** *(AND the stock is actually below our strike — prevents false triggers from pure IV spikes)*
+- Automatically queues a **covered call** if a stock gets assigned to us *(always 10%+ above current price)*
+- Monitors covered calls and closes them at 50% profit, manages expiry, and rolls if needed
 
-### 1:30 PM ET — The Redeployment Scan *(new)*
-If any positions closed at 50% profit this morning, the system runs a second scan to redeploy that freed-up capital the same day — so cash isn't sitting idle.
+### 1:30 PM ET — The Afternoon Redeployment Scan
+If any positions closed at 50% profit this morning, the system runs a second scan to redeploy freed capital the same day — so cash isn't sitting idle.
+
+### Monday 10:30 AM ET — Weekly Screener
+Screens 100+ stocks to surface new watchlist candidates (see above).
 
 ---
 
-## Our Approved Stock List (Watchlist)
+## When the Strategy Extends Time (High IV Rule)
 
-We only sell options on stocks we have researched and would genuinely be comfortable owning:
+When market fear is very high (IV Rank ≥ 70 for a stock), the system extends the option's time to expiry from the usual 30–45 days to **60 days**. This lets us collect roughly 1.8× the premium while only tying up 1.4× the capital — a better ratio. As fear subsides and the premium falls, we close at 50% profit as usual.
 
-| Category | Stocks |
-|---|---|
-| Big Tech | NVDA, AMD, AAPL, MSFT, META, GOOGL |
-| Software/Cloud | CRM, SNOW, NOW, PLTR |
-| Semiconductors | CRDO, AVGO, ALAB |
-| Consumer Tech | APP |
-| Leveraged ETFs (higher yield, higher risk) | SOXL, TQQQ, NVDL, TSLL |
+---
 
-Leveraged ETFs are treated more conservatively — we require a 5% monthly premium (vs 1.5% for regular stocks) and use a smaller position delta (18 vs 30) because they are more volatile.
+## The Roll Strategy — What Happens When a Stock Drops
+
+If a stock drops below our strike price AND there is still 7+ days until expiry AND the premium has only grown to 1.2× what we collected (not yet a full stop-loss), the system flags the position for a **roll**:
+
+- We close the current put (taking a small loss on premium)
+- We re-open a new put at a lower strike price and further-out expiry
+- This collects new premium that helps offset the loss and gives the stock time to recover
+
+We do **not** roll if: the stock has truly broken down (would require assignment), or if losses have already hit the 3× stop-loss.
 
 ---
 
@@ -95,35 +164,51 @@ We have multiple layers protecting the capital:
 | Protection Layer | How It Works |
 |---|---|
 | **Cash-secured only** | Every put is fully backed by cash — if we had to buy 100 shares, we have the cash. No borrowed money, no margin. |
+| **Per-tier rules** | Stricter rules for volatile stocks (HIGH VOL tier), more relaxed for blue-chips (STABLE tier). Not one-size-fits-all. |
+| **Market discount gate** | We skip selling puts if a stock is within 5% of its 52-week high. Near all-time highs = little margin of safety. We wait for a pullback. |
 | **Sector concentration cap** | Maximum 2 open positions in any single industry. No over-concentration in tech. |
 | **Bear market mode** | If the S&P 500 drops below its 200-day average, the system automatically switches to defensive mode: smaller positions, lower-risk sectors only (Consumer Staples, Utilities, Healthcare), shorter expiry dates. |
-| **50% profit exit** | We don't wait for full expiry. Capturing 50% of the premium in half the time is a better risk/reward than holding for the last 50%. |
-| **21-day hard close** | Regardless of profit/loss, positions are closed when 21 days remain. After that point, the math changes — risk goes up faster than reward. |
-| **3× stop-loss** | If the option premium triples (we're down 2× what we collected), the position is closed immediately. |
-| **Monthly loss circuit-breaker** | If total options losses in a calendar month exceed 5% of the $500k budget ($25,000), no new positions are opened until the following month. |
+| **50% profit exit** | We don't wait for full expiry. Capturing 50% of the premium in half the time is better risk/reward than holding for the last 50%. |
+| **21-day hard close** | Positions are closed when 21 days remain. After that point, risk goes up faster than reward. |
+| **Smart stop-loss** | If the option premium triples (3× what we collected) AND the stock is actually below our strike price — the position is closed immediately. The stock must be genuinely moving against us, not just an IV spike. |
+| **10% covered call floor** | When we're assigned shares, we sell a covered call at least 10% above the current price — giving the stock room to recover before we'd have to sell it. |
+| **Monthly loss circuit-breaker** | If total options losses in a calendar month exceed 5% of the $500k ($25,000), no new positions open until the following month. |
 | **No earnings risk** | We never hold an options position through an earnings announcement — results are too unpredictable. |
+| **Auto-tuner conservatism** | The system auto-adjusts parameters based on performance, but has hard caps: max 3 contracts per trade, delta never goes above 0.30, IV floor never drops below 50. It can tighten rules easily but loosens them only after 20+ trades of sustained success. |
+
+---
+
+## What "Honest P&L" Means in the Dashboard
+
+The dashboard shows three income numbers for complete transparency:
+
+| Line | What It Means |
+|---|---|
+| ✅ **Realized (closed)** | Premium from positions already closed with profit. This is real, locked-in income. |
+| **Mark-to-market** | For open positions, whether they're currently worth more or less than when we sold them. Negative = the option is now more expensive (bad scenario). Positive = premium is decaying (good). |
+| 💰 **Cash collected (open, unearned)** | Cash already received from open positions that hasn't been "earned" yet. If the position closes profitably, this becomes Realized income. If it hits a stop-loss, part of it is lost. |
+
+The dashboard also shows a **Crash Scenario card** estimating estimated losses if the market drops 30% or 50% — so we always have visibility into our worst-case exposure.
 
 ---
 
 ## The Income Math
 
-### Conservative scenario (75% win rate)
+### Current watchlist capacity
+| Tier | Stocks | Avg Premium/Month | Contracts |
+|------|--------|-------------------|-----------|
+| STABLE (12 stocks) | JPM, HD, AAPL, GOOGL, MSFT, COST, etc. | $200–400/contract | Up to 2 |
+| GROWTH (8 stocks) | META, NVDA, AVGO, PANW, NFLX, etc. | $300–600/contract | 1 |
+| HIGH VOL (10 stocks) | AMD, TSLA, PLTR, RDDT, SOXL, etc. | $400–800/contract | 1 |
 
-| Metric | Value |
-|---|---|
-| Capital deployed | $500,000 |
-| Average position size | ~$42,000 (12 positions) |
-| Average monthly premium per position | ~$420–840 (1–2% of position) |
-| Typical cycle time | 12–15 days (close at 50% profit early) |
-| Cycles per month per slot | ~2 (positions recycle) |
-| Theoretical gross monthly | ~$10,000 |
-| After losses (~25% of trades) | ~$6,500–7,000/month |
-| **Realistic target** | **$5,000–6,000/month** |
+### Path to $5,000/month
+| Phase | Positions Open | Estimated Monthly Income |
+|-------|---------------|--------------------------|
+| Now (April) | 2–3 | $500–$800 |
+| May | 5–8 | $1,500–$2,500 |
+| June+ (fully ramped) | 12–18 | $3,500–$6,000 |
 
-### How the $5,000 target is met
-- 12 open positions × $500 average premium collected = $6,000/month if all expire worthless
-- With stop-losses and losses: ~$5,000 net realistic
-- Capital redeployment (afternoon re-scan) pushes this closer to $6,000–7,000 when fully operational
+**Why the ramp-up?** The scanner only opens positions when all 14+ conditions align. In low-IV markets (like the current April rally), many stocks don't have enough premium to pass the checks. As the market normalizes, more opportunities open up and capital recycles faster. Patience here is a feature, not a bug — forcing trades in bad conditions would be worse.
 
 ---
 
@@ -133,7 +218,7 @@ We are currently in **paper trading mode** — all trades are simulated with rea
 
 **Go-live criteria:** Two consecutive months of annualized return above 60%.
 
-Once that's achieved, we'll switch to the live IB (Interactive Brokers) account with real capital.
+Once achieved, we'll switch to the live IB (Interactive Brokers) account with real capital.
 
 | What | Status |
 |---|---|
@@ -148,11 +233,13 @@ Once that's achieved, we'll switch to the live IB (Interactive Brokers) account 
 
 The portfolio assistant app shows:
 
-- **Income progress bar** — "$X collected this month / $5,000 target" with projected income if all open positions expire
-- **Budget meter** — How much of the $500k is currently deployed vs available
-- **Position health split** — "⚠️ Needs Attention" (near strike) vs "✅ Healthy" positions
-- **Today's Activity** — Every options event (opened, closed at 50%, assigned, covered call placed) with timestamps
-- **History tab** — All closed trades with reason codes (expired, 50% close, stop-loss, assigned)
+- **Income progress bar** — "Realized: $X | Mark-to-market: ±$Y | Cash at risk: $Z" vs $5,000 target
+- **Crash scenario card** — estimated loss at -30% and -50% market drop across all open puts
+- **Budget meter** — how much of the $500k is currently deployed vs available
+- **Position health** — "⚠️ Needs Attention" (near strike or roll needed) vs "✅ Healthy"
+- **Watchlist tab** — all approved stocks with tier badge, live price, and weekly suggestions
+- **Today's Activity** — every options event (opened, closed at 50%, assigned, covered call placed)
+- **History tab** — all closed trades with plain-English explanation of why each was closed
 
 ---
 
@@ -161,11 +248,13 @@ The portfolio assistant app shows:
 This is **not** day trading. We are not trying to predict stock movements.
 
 We are:
-1. Choosing quality stocks we'd be comfortable owning long-term
-2. Getting paid upfront to agree to buy them at a discount
-3. Exiting early when we've made good profit
-4. Letting automation enforce discipline (no emotional decisions)
-5. Running with multiple hard safety limits that protect the $500k
+1. Choosing quality stocks in three tiers based on their volatility profile
+2. Applying stricter rules to riskier stocks, relaxed rules to stable blue-chips
+3. Getting paid upfront to agree to buy stocks we like at a discount
+4. Exiting early when we've made good profit (50% capture rule)
+5. Letting automation enforce discipline — no emotional decisions
+6. Waiting for the right conditions; sitting on cash is better than forcing bad trades
+7. Running with multiple hard safety limits that protect the $500k
 
 The goal is **steady, boring income** — not home runs. $5,000/month from $500,000 is a 12% annualized return, which is achievable and sustainable through this strategy when run consistently.
 
