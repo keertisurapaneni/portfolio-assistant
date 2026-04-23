@@ -2,18 +2,31 @@
  * Options Wheel Scanner
  *
  * Runs the morning options scan against the watchlist.
- * Applies all 8 entry checks and generates trade tickets
+ * Applies 14 entry gates and generates trade tickets
  * for qualifying put-selling opportunities.
  *
- * Entry checks:
- *   1. Bear market gate (SPY above SMA200)
- *   2. Earnings blackout (>14 days to next earnings)
- *   3. IV spike filter (no sudden >20pt IV jump = news event)
- *   4. IV Rank > 50 (premium is elevated)
- *   5. RSI oversold + recovering (< 38, turning up)
- *   6. Stock price > $20 and options are liquid
- *   7. Free capital sufficient to cover assignment
- *   8. Sector concentration cap (max 2 per sector)
+ * Entry gates (in order):
+ *   0.  Time-of-day — skip first 30 min after open (wide spreads)
+ *   1.  Bear market gate — SPY vs SMA200; applies conservative params in bear mode
+ *   1.5 Duplicate ticker guard — no stacking puts on the same ticker
+ *   2.  Position limit — max 12 open puts (6 in high-VIX)
+ *   3.  Min stock price (default $20)
+ *   3.2 Dip detection + Bollinger Bands — dip ≥5% from 20d high; SMA20 ± 2σ
+ *   3.5 Stock trend — must be above 50-day SMA and not down >20% in 3 months
+ *   3.6 Beta filter — skip high-beta (>1.5) stocks
+ *   4.  Earnings blackout — skip if earnings within 7 days
+ *   4.5 News sentiment — block on red-flag headlines or score < -0.3
+ *   4.6 Sector concentration — max 2 open put positions per sector
+ *   4.7 Bear mode sector filter — only defensive sectors in bear mode
+ *   5.  RSI oversold + recovering (< 38, turning up) — soft signal, affects conviction
+ *   6.  Options chain — fetches best put at target delta
+ *   6a. SMA20 strike floor — strike must be at/below 20-day SMA
+ *   6b. Probability of profit — must be ≥ 75% OTM
+ *   6.5 Liquidity — bid-ask spread < 30% of mid; must have a real bid
+ *   7.  Premium yield — ≥1.5%/month regular; ≥5% leveraged ETFs
+ *   8.  Capital sufficiency — must cover full strike × 100 in cash
+ *   9.  IV Rank ≥ 50 (range-bound stocks allowed at ≥25)
+ *   9.5 IV spike filter — sudden >20pt IV jump = news event, skip
  */
 
 import { getSupabase, createAutoTradeEvent } from './supabase.js';
@@ -155,10 +168,6 @@ async function getStockQuote(ticker: string): Promise<{ price: number; change: n
 }
 
 async function getRSI(ticker: string): Promise<{ rsi: number; prevRsi: number } | null> {
-  const data = await fetchJson<{ technicalAnalysis?: { count?: { buy?: number; sell?: number }; signal?: string }; trend?: { adx?: number }; indicators?: { rsi?: unknown[] } }>(
-    `https://finnhub.io/api/v1/scan/technical-indicator?symbol=${ticker}&resolution=D&from=${Math.floor(Date.now() / 1000) - 86400 * 60}&to=${Math.floor(Date.now() / 1000)}&indicator=rsi&indicatorFields=%7B%22timeperiod%22:14%7D&token=${FINNHUB_KEY}`
-  );
-  // Alternative: use basic indicators endpoint
   const basic = await fetchJson<{ rsi?: number[] }>(
     `https://finnhub.io/api/v1/indicator?symbol=${ticker}&resolution=D&from=${Math.floor(Date.now() / 1000) - 86400 * 60}&to=${Math.floor(Date.now() / 1000)}&indicator=rsi&timeperiod=14&token=${FINNHUB_KEY}`
   );
@@ -418,9 +427,12 @@ async function buildScanContext(
   const [spyData, vix, openPositions] = await Promise.all([
     getSpySma200(),
     getVix(),
+    // Only count PUT positions for sector concentration and open-position limits.
+    // Covered calls (OPTIONS_CALL) are assigned-stock management — they don't consume
+    // new capital and shouldn't block fresh put entries in the same sector.
     sb.from('paper_trades')
       .select('ticker, mode, position_size')
-      .in('mode', ['OPTIONS_PUT', 'OPTIONS_CALL'])
+      .eq('mode', 'OPTIONS_PUT')
       .in('status', ['PENDING', 'SUBMITTED', 'FILLED', 'PARTIAL']),
   ]);
 

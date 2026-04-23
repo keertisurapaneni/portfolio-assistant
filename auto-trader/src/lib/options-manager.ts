@@ -262,8 +262,13 @@ export async function runOptionsManageCycle(): Promise<ManageCycleResult> {
     await sb.from('paper_trades').update({ pnl }).eq('id', pos.id);
 
     // ── Check 3: Hard stop-loss — close when premium exceeds stopLossMultiplier × original ──
-    // stopLossMultiplier is auto-tuned by Rule G (default 3.0×).
-    if (currentPremium > premiumCollected * stopLossMultiplier) {
+    // IMPORTANT: We require the stock to ALSO be below strike before triggering.
+    // A put premium can triple purely from an IV spike (market fear) while the stock is still
+    // safely above strike — that is NOT a real loss. Closing there crystallizes a loss for nothing.
+    // Only close when both conditions are true: premium blew up AND the stock is under the strike.
+    const stopLossMultiplierBreached = currentPremium > premiumCollected * stopLossMultiplier;
+    const stockBelowStrike = stockPrice < pos.option_strike;
+    if (stopLossMultiplierBreached && stockBelowStrike) {
       const lossAmount = Math.abs(pnl);
       await sb.from('paper_trades').update({
         status: 'CLOSED',
@@ -275,10 +280,10 @@ export async function runOptionsManageCycle(): Promise<ManageCycleResult> {
         option_close_pct: profitCapturePct,
       }).eq('id', pos.id);
 
-      console.log(`[Options Manager] STOP-LOSS: ${pos.ticker} $${pos.option_strike}P — premium ${stopLossMultiplier}×+ original, closing for -$${lossAmount.toFixed(0)}`);
+      console.log(`[Options Manager] STOP-LOSS: ${pos.ticker} $${pos.option_strike}P — stock $${stockPrice.toFixed(2)} below strike + premium ${stopLossMultiplier}×+ original, closing for -$${lossAmount.toFixed(0)}`);
       persistEvent(pos.ticker, 'error',
-        `🛑 ${pos.ticker} $${pos.option_strike} put stopped — premium blew past ${stopLossMultiplier}× ($${currentPremium.toFixed(2)} vs collected $${premiumCollected.toFixed(2)}), taking -$${lossAmount.toFixed(0)} loss`,
-        { action: 'closed', source: 'options', metadata: { reason: 'stop_loss', pnl, currentPremium, premiumCollected, stopLossMultiplier } }
+        `🛑 ${pos.ticker} $${pos.option_strike} put stopped — stock at $${stockPrice.toFixed(2)} (below strike) and premium blew past ${stopLossMultiplier}× ($${currentPremium.toFixed(2)} vs collected $${premiumCollected.toFixed(2)}), taking -$${lossAmount.toFixed(0)} loss`,
+        { action: 'closed', source: 'options', metadata: { reason: 'stop_loss', pnl, currentPremium, premiumCollected, stopLossMultiplier, stockPrice } }
       );
       result.stopLossAlerts.push(pos.ticker);
       continue;
@@ -324,10 +329,12 @@ export async function runOptionsManageCycle(): Promise<ManageCycleResult> {
     // ── Check 4: 21 DTE hard close (tastytrade rule) ──
     // At 21 DTE the remaining theta decay curve flattens — risk/reward no longer favors holding.
     // Close regardless of P&L: lock in any profit, or cut exposure before gamma risk accelerates.
+    // Guard: only execute once — the status update to CLOSED removes this position from the
+    // FILLED/PARTIAL query on the next cycle, so repeated fires are a DB-failure edge case only.
     if (dte <= 21 && dte > 0) {
       const isWinner = pnl >= 0;
       const closeReason = isWinner ? '21dte_profit' : '21dte_close';
-      await sb.from('paper_trades').update({
+      const { error: closeError } = await sb.from('paper_trades').update({
         status: 'CLOSED',
         close_price: currentPremium,
         pnl,
@@ -335,7 +342,12 @@ export async function runOptionsManageCycle(): Promise<ManageCycleResult> {
         closed_at: new Date().toISOString(),
         close_reason: closeReason,
         option_close_pct: profitCapturePct,
-      }).eq('id', pos.id);
+      }).eq('id', pos.id).eq('status', 'FILLED'); // extra guard: only close if still FILLED
+
+      if (closeError) {
+        console.error(`[Options Manager] 21 DTE close failed for ${pos.ticker} ${pos.id}:`, closeError.message);
+        continue;
+      }
 
       result.rollAlerts.push(pos.ticker);
       console.log(`[Options Manager] 21 DTE CLOSE: ${pos.ticker} $${pos.option_strike}P — ${isWinner ? `profit +$${pnl.toFixed(0)}` : `loss -$${Math.abs(pnl).toFixed(0)}`} (${dte}d left)`);
@@ -346,8 +358,13 @@ export async function runOptionsManageCycle(): Promise<ManageCycleResult> {
       continue;
     }
 
-    // ── Check 5: Assignment detection (stock price below strike) ──
-    if (stockPrice < pos.option_strike * 0.98 && !pos.option_assigned) {
+    // ── Check 5: Assignment detection (stock price below strike at/near expiry) ──
+    // Real assignment happens at expiry (or early exercise). We approximate by requiring:
+    //   - stock is below strike (not just near it)
+    //   - DTE ≤ 5 (within expiry week — early exercise risk is real here)
+    //   - not already flagged as assigned (prevents repeated phantom covered call creation)
+    // A stock below strike with 20 DTE remaining is NOT an assignment — it's a roll candidate.
+    if (stockPrice < pos.option_strike && dte <= 5 && !pos.option_assigned) {
       result.assignmentAlerts.push(pos.ticker);
 
       // Mark the put as assigned so subsequent cycles don't re-trigger
@@ -545,8 +562,11 @@ export async function getOptionsMonthlyStats(): Promise<{
   // premiumCollected = total net P&L across all trades (wins minus losses)
   const premiumCollected = realTrades.reduce((s, t) => s + (t.pnl ?? 0), 0);
   const totalCapital = trades.reduce((s, t) => s + (t.option_capital_req ?? 0), 0);
-  const daysInMonth = new Date().getDate();
-  const annualizedReturn = totalCapital > 0 ? (premiumCollected / totalCapital) * (365 / daysInMonth) * 100 : 0;
+  // Use actual days elapsed since month start, not getDate() which gives today's date number.
+  // On Apr 5, getDate()=5 would annualize as if only 5 days of data exist — wildly overstated.
+  const msElapsed = Date.now() - monthStart.getTime();
+  const daysElapsed = Math.max(1, msElapsed / (1000 * 60 * 60 * 24));
+  const annualizedReturn = totalCapital > 0 ? (premiumCollected / totalCapital) * (365 / daysElapsed) * 100 : 0;
 
   return {
     premiumCollected,
