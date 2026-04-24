@@ -71,6 +71,7 @@ import { runWatchlistScreener } from './lib/watchlist-screener.js';
 import { runOptionsManageCycle } from './lib/options-manager.js';
 import { runDipWatcher } from './lib/dip-watcher.js';
 import { warmPositionPriceCache } from './routes/positions.js';
+import { generateMorningBrief } from './lib/morning-brief.js';
 
 // ── Types ────────────────────────────────────────────────
 
@@ -289,6 +290,18 @@ export function startScheduler(): void {
   }, { timezone: 'America/New_York' });
 
   console.log('[Scheduler] Started — every 15 min + 9:36 ET first-candle pass + 9:45 earnings exit + 14:30 earnings entry + 15:55 EOD close (weekdays)');
+
+  // Morning brief — runs 8:00 AM ET weekdays, before market open
+  // Fetches Finnhub news + earnings + economic calendar, synthesizes via Llama 70B
+  cron.schedule('0 8 * * 1-5', async () => {
+    try {
+      log('[Scheduler] Running morning brief generation...');
+      await generateMorningBrief();
+    } catch (err) {
+      console.error('[Scheduler] Morning brief failed:', err instanceof Error ? err.message : err);
+    }
+  }, { timezone: 'America/New_York' });
+  log('Morning brief: weekdays 8:00 AM ET');
 
   // Weekly watchlist screener — runs Monday 10:30 AM ET to surface new ticker candidates
   cron.schedule('30 10 * * 1', async () => {
