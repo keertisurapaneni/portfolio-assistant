@@ -952,17 +952,23 @@ export async function runOptionsScan(freeCapital = 100_000): Promise<OptionsScan
   const opportunities: OptionsTradeTicket[] = [];
   const skipped: Array<{ ticker: string; reason: string }> = [];
 
+  const total = watchlist.length;
+  console.log(`\n[Options Scanner] ━━━ Starting scan — ${total} tickers | VIX ${ctx.vix.toFixed(1)} | ${ctx.spyAboveSma200 ? 'Bull' : 'Bear'} mode | δ target ${ctx.deltaTarget} | free capital $${(freeCapital / 1000).toFixed(0)}k ━━━`);
+
   // Scan each ticker (sequential to avoid IB request flooding)
-  for (const entry of watchlist as WatchlistEntry[]) {
+  for (const [i, entry] of (watchlist as WatchlistEntry[]).entries()) {
     const leverageFactor = parseLeverageFactor(entry.notes);
     const tier: WatchlistTier = (entry.tier as WatchlistTier) ?? 'GROWTH';
+    const num = `[${String(i + 1).padStart(2, '0')}/${total}]`;
 
     try {
       const result = await checkStock(entry.ticker, entry.min_price, ctx, leverageFactor, tier, entry.is_index_etf ?? false);
 
       if ('skipped' in result) {
+        console.log(`[Options Scanner] ${num} ${entry.ticker.padEnd(5)} ✗  ${result.reason}`);
         skipped.push({ ticker: result.ticker, reason: result.reason });
       } else {
+        console.log(`[Options Scanner] ${num} ${entry.ticker.padEnd(5)} ✅ QUALIFIED — $${result.strike} put | δ${result.delta.toFixed(2)} | ${result.annualYield.toFixed(0)}% ann. yield`);
         opportunities.push(result);
 
         // Increment open count and decrement free capital to respect limits within this scan
@@ -972,13 +978,15 @@ export async function runOptionsScan(freeCapital = 100_000): Promise<OptionsScan
     } catch (err) {
       // Don't let one bad ticker crash the entire scan — record the error and continue
       const msg = err instanceof Error ? err.message : String(err);
-      console.error(`[Options Scanner] checkStock threw for ${entry.ticker}:`, msg);
+      console.error(`[Options Scanner] ${num} ${entry.ticker.padEnd(5)} 💥 ERROR: ${msg}`);
       skipped.push({ ticker: entry.ticker, reason: `scanner_error:${msg.slice(0, 60)}` });
     }
 
     // Small delay between IB requests to avoid throttling
     await new Promise(r => setTimeout(r, 500));
   }
+
+  console.log(`[Options Scanner] ━━━ Done — ${opportunities.length} qualified, ${skipped.length} skipped ━━━\n`);
 
   // Sort by annual yield descending
   opportunities.sort((a, b) => b.annualYield - a.annualYield);
