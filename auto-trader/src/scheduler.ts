@@ -424,6 +424,7 @@ export function getSchedulerStatus() {
 /** Trigger a manual run outside the cron schedule */
 export async function triggerManualRun(): Promise<string> {
   if (_running) return 'already executing';
+  if (!isMarketHoursET()) return 'skipped: outside market hours (9:30 AM – 4:30 PM ET)';
   try {
     await runSchedulerCycle();
     return 'completed';
@@ -3846,7 +3847,7 @@ async function preGenerateSuggestedFinds(
 ): Promise<void> {
   const today = getETDateString();
   if (_lastSuggestedFindsDate === today) return;
-  if (getETMinutes() < 9 * 60 + 30) return; // wait for market open (9:30 AM ET)
+  if (!isMarketHoursET()) return; // outside market hours — never place LT orders outside 9:30 AM–4:00 PM ET
 
   try {
     log('Fetching today\'s Suggested Finds...');

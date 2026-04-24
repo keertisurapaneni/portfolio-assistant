@@ -130,8 +130,8 @@ async function preGenerateSuggestedFinds() {
   const todayEt = getSuggestionDateEt();
   if (_lastSuggestedFindsDate === todayEt) return;
 
-  // Only run at/after 9:30 AM ET (market open) and we haven't run today yet.
-  // Server-side preGenerateSuggestedFinds also gates at 9:30 AM — keep in sync.
+  // Discovery (page population) runs any time after 9:30 AM so the /finds page is
+  // always populated after login. Trading execution inside is further gated by isMarketHoursET().
   const now = new Date();
   const et = new Date(now.toLocaleString('en-US', { timeZone: 'America/New_York' }));
   const mins = et.getHours() * 60 + et.getMinutes();
@@ -146,9 +146,9 @@ async function preGenerateSuggestedFinds() {
       `[AutoTradeScheduler] Suggested Finds ready: ${result.compounders.length} compounders, ${result.goldMines.length} gold mines`
     );
 
-    // Auto-trade qualifying Suggested Finds
+    // Auto-trade qualifying Suggested Finds — only during market hours
     const config = await loadAutoTraderConfig();
-    if (config.enabled && config.accountId) {
+    if (config.enabled && config.accountId && isMarketHoursET()) {
       const allStocks = [...result.compounders, ...result.goldMines];
 
       // Identify top picks (first in each list that meets minSuggestedFindsConviction).
