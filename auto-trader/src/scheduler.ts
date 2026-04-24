@@ -693,6 +693,12 @@ async function autoQueueDailySignalsFromTrackedVideos(): Promise<void> {
       const ticker = String(setup.ticker ?? '').trim().toUpperCase();
       if (!ticker) continue;
 
+      // Minimum stop distance: 0.3% of entry. Prevents zero-width brackets when the
+      // influencer gives the same price for both long and short trigger (e.g. SPY 704.7
+      // is both the breakout level AND the breakdown level). In that case stop_loss would
+      // equal entry_price — the bracket stops out instantly on fill.
+      const MIN_STOP_PCT = 0.003;
+
       if (setup.longTriggerAbove && Array.isArray(setup.longTargets) && setup.longTargets[0]) {
         const exists = await findExternalStrategySignal({
           sourceName,
@@ -703,6 +709,15 @@ async function autoQueueDailySignalsFromTrackedVideos(): Promise<void> {
           strategyVideoId: video.videoId,
         });
         if (!exists) {
+          const rawStop = setup.shortTriggerBelow ?? null;
+          // Stop must be strictly below entry for a long. If equal or above, fall back to
+          // MIN_STOP_PCT below entry so the bracket has meaningful room.
+          const longStop = rawStop != null && rawStop < setup.longTriggerAbove
+            ? rawStop
+            : parseFloat((setup.longTriggerAbove * (1 - MIN_STOP_PCT)).toFixed(2));
+          const stopNote = rawStop != null && rawStop >= setup.longTriggerAbove
+            ? ` | stop adjusted: ${rawStop} >= entry ${setup.longTriggerAbove} → fallback ${longStop}`
+            : '';
           await createExternalStrategySignal({
             source_name: sourceName,
             source_url: sourceUrl,
@@ -713,10 +728,10 @@ async function autoQueueDailySignalsFromTrackedVideos(): Promise<void> {
             mode,
             confidence: 8,
             entry_price: setup.longTriggerAbove,
-            stop_loss: setup.shortTriggerBelow ?? null,
+            stop_loss: longStop,
             target_price: setup.longTargets[0],
             execute_on_date: todayET,
-            notes: `Auto from video ${video.videoId} | ${heading} | long breakout`,
+            notes: `Auto from video ${video.videoId} | ${heading} | long breakout${stopNote}`,
           });
           created += 1;
         } else {
@@ -734,6 +749,15 @@ async function autoQueueDailySignalsFromTrackedVideos(): Promise<void> {
           strategyVideoId: video.videoId,
         });
         if (!exists) {
+          const rawStop = setup.longTriggerAbove ?? null;
+          // Stop must be strictly above entry for a short. If equal or below, fall back to
+          // MIN_STOP_PCT above entry.
+          const shortStop = rawStop != null && rawStop > setup.shortTriggerBelow
+            ? rawStop
+            : parseFloat((setup.shortTriggerBelow * (1 + MIN_STOP_PCT)).toFixed(2));
+          const stopNote = rawStop != null && rawStop <= setup.shortTriggerBelow
+            ? ` | stop adjusted: ${rawStop} <= entry ${setup.shortTriggerBelow} → fallback ${shortStop}`
+            : '';
           await createExternalStrategySignal({
             source_name: sourceName,
             source_url: sourceUrl,
@@ -744,10 +768,10 @@ async function autoQueueDailySignalsFromTrackedVideos(): Promise<void> {
             mode,
             confidence: 8,
             entry_price: setup.shortTriggerBelow,
-            stop_loss: setup.longTriggerAbove ?? null,
+            stop_loss: shortStop,
             target_price: setup.shortTargets[0],
             execute_on_date: todayET,
-            notes: `Auto from video ${video.videoId} | ${heading} | short breakdown`,
+            notes: `Auto from video ${video.videoId} | ${heading} | short breakdown${stopNote}`,
           });
           created += 1;
         } else {
