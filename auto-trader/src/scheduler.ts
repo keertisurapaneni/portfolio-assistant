@@ -125,6 +125,7 @@ interface SuggestedStock {
   valuationTag: string;
   tag: string;
   reason: string;
+  archetype?: string; // Gold Mine archetype: 'Tech/Semi' | 'Defense' | 'Energy' | 'Financials'
 }
 
 interface DailyVideoSignal {
@@ -286,6 +287,19 @@ export function startScheduler(): void {
       console.error('[Scheduler] Watchlist screener error:', err);
     }
   }, { timezone: 'America/New_York' });
+
+  // Weekly Compounder health check — runs Friday 3:30 PM ET (after most price action is done).
+  // Reviews every active Steady Compounder: positive-close ratio, zombie flag, profit-trim hints.
+  // Results are logged and persisted as auto_trade_events so the dashboard can surface them.
+  cron.schedule('30 15 * * 5', async () => {
+    try {
+      log('[Scheduler] Running weekly Compounder health check...');
+      await runCompoundersHealthCheck();
+    } catch (err) {
+      console.error('[Scheduler] Compounder health check failed:', err instanceof Error ? err.message : err);
+    }
+  }, { timezone: 'America/New_York' });
+  log('Compounder health check: every Friday 3:30 PM ET');
 
   // Dead man's switch — alerts if no successful cycle in 2+ hours during market hours
   cron.schedule('*/30 * * * 1-5', async () => {
@@ -1174,6 +1188,22 @@ async function fetchSpyChangePct(): Promise<number | null> {
 }
 
 /**
+ * Fetch SPY's 5-trading-day rolling change using daily close data.
+ * Used to detect broad market selloffs that should pause Compounder stop-losses
+ * (thesis-based holds shouldn't be stopped out by macro turbulence alone).
+ * Returns null when data is unavailable — callers should proceed, not block.
+ */
+async function fetchSpy5DayChangePct(): Promise<number | null> {
+  const bars = await fetchYahooDailyBars('SPY');
+  if (!bars || bars.closes.length < 6) return null;
+  const closes = bars.closes;
+  const now = closes[closes.length - 1];
+  const fiveDaysAgo = closes[closes.length - 6];
+  if (!fiveDaysAgo || fiveDaysAgo <= 0) return null;
+  return parseFloat((((now - fiveDaysAgo) / fiveDaysAgo) * 100).toFixed(2));
+}
+
+/**
  * Compute intraday volume pace vs 10-day average daily volume.
  * Returns the ratio of (current volume-per-minute) / (avg daily volume / 390 trading minutes).
  * Returns null when data is unavailable or fewer than 3 bars have printed (< 15 min elapsed).
@@ -1437,7 +1467,7 @@ function calculatePositionSize(
   if (mode === 'LONG_TERM' && conviction != null) {
     const base = alloc * (config.baseAllocationPct / 100);
     dollarSize = base * convictionMultiplier(conviction, suggestedFindTag);
-    if (suggestedFindTag === 'Gold Mine') dollarSize *= 0.75;
+    if (suggestedFindTag === 'Gold Mine') dollarSize *= 0.75 * 0.33; // 0.75 = Gold Mine tag discount; 0.33 = risk mgmt until Kelly > 0
   } else if (stopLoss && entryPrice && Math.abs(entryPrice - stopLoss) > 0) {
     const riskBudget = alloc * (config.riskPerTradePct / 100);
     const riskPerShare = Math.abs(entryPrice - stopLoss);
@@ -1991,6 +2021,10 @@ async function executeScannerTrade(
   }
 }
 
+// In-memory set to prevent same-session duplicate SF orders (guards against race conditions
+// where two scheduler cycles overlap before the first DB write commits).
+const _sfInFlight = new Set<string>();
+
 async function executeSuggestedFindTrade(
   stock: SuggestedStock,
   config: AutoTraderConfig,
@@ -1998,7 +2032,42 @@ async function executeSuggestedFindTrade(
 ): Promise<string> {
   const { ticker, conviction } = stock;
 
+  // Race-condition guard: claim the ticker before any await so a concurrent call sees it.
+  if (_sfInFlight.has(ticker)) return 'skipped:in_flight';
+  _sfInFlight.add(ticker);
+
+  try {
+    return await _executeSuggestedFindTradeInner(stock, config, positions);
+  } finally {
+    // Release after a short window — same ticker can be re-evaluated next scheduler cycle.
+    setTimeout(() => _sfInFlight.delete(ticker), 5 * 60 * 1000);
+  }
+}
+
+async function _executeSuggestedFindTradeInner(
+  stock: SuggestedStock,
+  config: AutoTraderConfig,
+  positions: EnrichedPosition[],
+): Promise<string> {
+  const { ticker, conviction } = stock;
+
   if (await hasActiveTrade(ticker)) return 'skipped:duplicate';
+
+  // Same-day guard: block a second entry for the same ticker on the same ET calendar day.
+  // Protects against TEN-style duplicate orders that slip through hasActiveTrade due to
+  // a narrow race between two scheduler cycles.
+  {
+    const todayEt = getETDateString();
+    const sb = getSupabase();
+    const { data: todayTrades } = await sb
+      .from('paper_trades')
+      .select('id')
+      .eq('ticker', ticker)
+      .eq('mode', 'LONG_TERM')
+      .gte('opened_at', `${todayEt}T00:00:00Z`)
+      .limit(1);
+    if (todayTrades && todayTrades.length > 0) return 'skipped:same_day_duplicate';
+  }
 
   // Regime gate — Steady Compounders: SKIP entirely in a bear market (SPY < SMA200).
   // Buying long-term holds into a downtrend catches falling knives and produces the
@@ -2093,7 +2162,13 @@ async function executeSuggestedFindTrade(
       ib_order_id: String(result.orderId),
       status: 'SUBMITTED',
       scanner_reason: `${stock.tag}: ${stock.reason}`,
-      notes: `Long-term hold | ${stock.tag} | Conviction: ${conviction}/10 | ${stock.valuationTag}`,
+      notes: [
+        'Long-term hold',
+        stock.tag,
+        stock.archetype ? `Archetype: ${stock.archetype}` : null,
+        `Conviction: ${conviction}/10`,
+        stock.valuationTag,
+      ].filter(Boolean).join(' | '),
       entry_trigger_type: 'market',
     });
 
@@ -2935,6 +3010,103 @@ async function syncPositions(
   }
 }
 
+// ── Compounder Health Check ───────────────────────────────────────────────────
+
+/**
+ * Weekly health review for all active Steady Compounder positions.
+ *
+ * For each position this computes:
+ *   - positiveDayRatio  : fraction of trading days since entry that closed above fill price
+ *   - healthScore       : 0–10 (10 = always green, 0 = never above entry)
+ *   - status            : 'strong' | 'healthy' | 'watch' | 'zombie'
+ *
+ * Status rules:
+ *   zombie  — 0 positive closes after 20+ days held → flag for manual review, dip buys blocked
+ *   watch   — positiveDayRatio < 0.30 after 20+ days → accumulate cautiously
+ *   healthy — positiveDayRatio ≥ 0.30 OR held < 20 days
+ *   strong  — current gain ≥ +5% OR positiveDayRatio ≥ 0.60
+ *
+ * Results are logged and persisted as an auto_trade_event for the dashboard.
+ * Profit-trim recommendations are surfaced for positions at +5% or +10%.
+ */
+async function runCompoundersHealthCheck(): Promise<void> {
+  const activeTrades = await getActiveTrades();
+  const compounders = activeTrades.filter(t =>
+    t.mode === 'LONG_TERM' &&
+    t.status === 'FILLED' &&
+    !(/Gold Mine/i.test(`${t.notes ?? ''} ${t.scanner_reason ?? ''}`))
+  );
+
+  if (compounders.length === 0) return;
+  log(`[HealthCheck] Running weekly Compounder review — ${compounders.length} positions`);
+
+  const lines: string[] = [];
+
+  for (const trade of compounders) {
+    const entryPrice = trade.fill_price ?? 0;
+    if (entryPrice <= 0) continue;
+
+    const daysHeld = trade.filled_at
+      ? (Date.now() - new Date(trade.filled_at).getTime()) / 86400000
+      : 0;
+
+    // Fetch recent daily closes via Yahoo Finance
+    const bars = await fetchYahooDailyBars(trade.ticker);
+    if (!bars) {
+      log(`[HealthCheck] ${trade.ticker}: no price data — skipping`);
+      continue;
+    }
+
+    // Slice to the trading days since fill (cap at available data)
+    const daysWindow = Math.min(Math.ceil(daysHeld) + 2, bars.closes.length);
+    const closes = bars.closes.slice(-daysWindow);
+    const positiveDays = closes.filter(c => c > entryPrice).length;
+    const ratio = closes.length > 0 ? positiveDays / closes.length : 0;
+    const currentPrice = closes[closes.length - 1] ?? entryPrice;
+    const gainPct = ((currentPrice - entryPrice) / entryPrice) * 100;
+    const score = Math.round(ratio * 10); // 0–10
+
+    let status: 'strong' | 'healthy' | 'watch' | 'zombie';
+    if (positiveDays === 0 && daysHeld >= 20) {
+      status = 'zombie';
+    } else if (gainPct >= 5 || ratio >= 0.60) {
+      status = 'strong';
+    } else if (ratio < 0.30 && daysHeld >= 20) {
+      status = 'watch';
+    } else {
+      status = 'healthy';
+    }
+
+    // Profit-trim recommendation
+    let trimHint = '';
+    if (gainPct >= 10) trimHint = ' → TRIM: consider selling 25% (Tier 2 at +10%)';
+    else if (gainPct >= 5) trimHint = ' → TRIM: consider selling 25% (Tier 1 at +5%)';
+
+    const line = `${trade.ticker.padEnd(6)} | ${status.padEnd(7)} | ${gainPct >= 0 ? '+' : ''}${gainPct.toFixed(1)}% | score ${score}/10 | ${positiveDays}/${closes.length} pos-days | held ${Math.round(daysHeld)}d${trimHint}`;
+    lines.push(line);
+    log(`[HealthCheck] ${line}`);
+
+    persistEvent(trade.ticker,
+      status === 'zombie' ? 'warning' : status === 'strong' ? 'success' : 'info',
+      `[HealthCheck] ${status}: ${gainPct >= 0 ? '+' : ''}${gainPct.toFixed(1)}% | ${positiveDays}/${closes.length} positive days | score ${score}/10`,
+      {
+        action: 'health_check',
+        source: 'compounder_health',
+        mode: 'LONG_TERM',
+        metadata: {
+          status, gainPct, positiveDays, totalDays: closes.length,
+          ratio, score, daysHeld: Math.round(daysHeld),
+          entryPrice, currentPrice, trimHint: trimHint || null,
+        },
+      }
+    );
+  }
+
+  if (lines.length > 0) {
+    log(`[HealthCheck] Summary:\n${lines.map(l => `  ${l}`).join('\n')}`);
+  }
+}
+
 async function checkDipBuyOpportunities(
   config: AutoTraderConfig,
   positions: EnrichedPosition[],
@@ -2943,8 +3115,13 @@ async function checkDipBuyOpportunities(
   const activeTrades = await getActiveTrades();
   const longTermFilled = activeTrades.filter(t => t.mode === 'LONG_TERM' && t.status === 'FILLED');
 
+  // Build primary (non-dip-buy) entry map and cross-channel entry count per ticker.
+  // The entry count includes ALL open LONG_TERM positions (SC + dip buys) for the ticker.
   const initialByTicker = new Map<string, { trade: PaperTrade; isGoldMine: boolean }>();
+  const openEntriesByTicker = new Map<string, number>();
   for (const t of longTermFilled) {
+    const tk = t.ticker.toUpperCase();
+    openEntriesByTicker.set(tk, (openEntriesByTicker.get(tk) ?? 0) + 1);
     if ((t.notes ?? '').startsWith('Dip buy')) continue;
     if (!initialByTicker.has(t.ticker)) {
       const isGoldMine = /Gold Mine/i.test((t.notes ?? '') + (t.scanner_reason ?? ''));
@@ -2958,6 +3135,10 @@ async function checkDipBuyOpportunities(
     { pct: config.dipBuyTier1Pct, sizePct: config.dipBuyTier1SizePct, label: 'Tier 1' },
   ];
 
+  // Max 3 open entries per ticker across all channels (SC + dip buys combined).
+  // Prevents the POOL trap: 8 entries while the stock kept falling.
+  const MAX_ENTRIES_PER_TICKER = 3;
+
   for (const [ticker, { trade, isGoldMine }] of initialByTicker) {
     const ibPos = positions.find(p => p.symbol.toUpperCase() === ticker.toUpperCase());
     if (!ibPos || ibPos.mktPrice <= 0 || ibPos.avgCost <= 0) continue;
@@ -2969,6 +3150,31 @@ async function checkDipBuyOpportunities(
     let triggered = tiers.find(t => absDip >= t.pct);
     if (!triggered) continue;
     if (isGoldMine && triggered.label === 'Tier 3') continue;
+
+    // ── Cross-channel entry cap ────────────────────────────────────────────
+    const totalEntries = openEntriesByTicker.get(ticker.toUpperCase()) ?? 1;
+    if (totalEntries >= MAX_ENTRIES_PER_TICKER) {
+      log(`${ticker}: Dip buy blocked — ${totalEntries} open entries already (max ${MAX_ENTRIES_PER_TICKER} per ticker)`);
+      continue;
+    }
+
+    // ── Thesis gate (for Compounders only) ────────────────────────────────
+    // Only dip-buy if the stock has shown it CAN go up: at least 1 positive close
+    // since original entry after the 20-day grace window. Stocks that never close
+    // above their entry price after 20 days are "zombies" — adding more capital
+    // into them compounds losses rather than averaging into a quality dip.
+    if (!isGoldMine) {
+      const daysHeld = trade.filled_at
+        ? (Date.now() - new Date(trade.filled_at).getTime()) / 86400000
+        : 0;
+      const pricePeak = trade.price_peak ?? 0;
+      const entryFill = trade.fill_price ?? ibPos.avgCost;
+      const everAboveEntry = pricePeak > entryFill * 1.001; // >0.1% buffer
+      if (daysHeld >= 20 && !everAboveEntry) {
+        log(`${ticker}: Dip buy blocked — thesis gate: 0 positive closes in ${daysHeld.toFixed(0)} days (zombie check). Review fundamentals before adding.`);
+        continue;
+      }
+    }
 
     // Cooldown
     const recentEvents = await getRecentDipBuyEvents(ticker);
@@ -3092,14 +3298,65 @@ async function checkSwingHoldExpiry(
  *
  * Also updates price_peak on every cycle so the trailing stop tracks correctly.
  */
+// ── Gold Mine Archetype Exit Rules ────────────────────────────────────────────
+// Gold Mines are discovered from current headlines → macro is already partially
+// priced in. Exit rules are archetype-specific because theme duration differs.
+// Calendar-day thresholds approximate trading days (×7/5 conversion).
+// See .cursor/rules/long-term-sizing.mdc for full rationale.
+
+type GoldMineArchetype = 'Tech/Semi' | 'Defense' | 'Energy' | 'Financials' | 'Unknown';
+
+interface GoldMineArchetypeRules {
+  maxHoldCalDays: number;   // max hold in calendar days before forced exit
+  hardStopCalDays: number;  // calendar days: exit if stock never closed above entry
+  profitTakePct: number;    // sell when gain >= this %
+  entryLockPct: number;     // once peak >= entry + this %, stop moves to entry price
+  noBounceExceptionCalDays: number; // Tech/Semi only: if no bounce after N cal days → apply Defense rules
+}
+
+const GM_ARCHETYPE_RULES: Record<GoldMineArchetype, GoldMineArchetypeRules> = {
+  // Fundamentally backed — AI capex is multi-year. But winners must be captured.
+  // Evidence: ASML peaked +9% Day 8, MU +13.8% Day 29, AMAT +10.6% Day 8.
+  'Tech/Semi':  { maxHoldCalDays: 84, hardStopCalDays: 7,  profitTakePct: 10,  entryLockPct: 5,   noBounceExceptionCalDays: 16 },
+  // Pure news-cycle — conflict peaks, then mean-reverts fast. LMT/RTX never recovered.
+  'Defense':    { maxHoldCalDays: 10, hardStopCalDays: 4,  profitTakePct: 0.5, entryLockPct: 0.1, noBounceExceptionCalDays: 0 },
+  // Supply shock / transition themes: 3–6 week window, volatile.
+  'Energy':     { maxHoldCalDays: 28, hardStopCalDays: 7,  profitTakePct: 2,   entryLockPct: 2,   noBounceExceptionCalDays: 0 },
+  // Macro regime plays: gradual moves, limit exposure time.
+  'Financials': { maxHoldCalDays: 21, hardStopCalDays: 6,  profitTakePct: 1.5, entryLockPct: 1.5, noBounceExceptionCalDays: 0 },
+  // Unknown: conservative defaults — treat like Defense until classified
+  'Unknown':    { maxHoldCalDays: 14, hardStopCalDays: 4,  profitTakePct: 2,   entryLockPct: 1,   noBounceExceptionCalDays: 0 },
+};
+
+function detectGoldMineArchetype(notes: string | null, scannerReason: string | null): GoldMineArchetype {
+  const text = `${notes ?? ''} ${scannerReason ?? ''}`;
+
+  // Explicit archetype tag wins (written by AI prompt going forward)
+  if (/Archetype:\s*Tech\/Semi/i.test(text)) return 'Tech/Semi';
+  if (/Archetype:\s*Defense/i.test(text)) return 'Defense';
+  if (/Archetype:\s*Energy/i.test(text)) return 'Energy';
+  if (/Archetype:\s*Financials/i.test(text)) return 'Financials';
+
+  // Keyword fallback for existing trades without explicit tag
+  if (/defense|military|geopolit|\bwar\b|conflict|Iran.*conflict|missile|lockheed|raytheon|\bRTX\b|\bLMT\b|\bNOC\b|\bGD\b|\bBA\b/i.test(text)) return 'Defense';
+  if (/semiconductor|chip|wafer|lithography|ASML|AMAT|applied.material|micron|\bMU\b|HBM|foundry|fab\b|AI.infra|AI infrastructure/i.test(text)) return 'Tech/Semi';
+  if (/\bAI\b|cloud|software|cyber|network|data.center|infrastructure.spending|FTNT|fortinet/i.test(text)) return 'Tech/Semi';
+  if (/\boil\b|energy|solar|renewable|fossil|natural.gas|FSLR|first.solar|ENPH|enphase|EOG/i.test(text)) return 'Energy';
+  if (/bank|financial|\brate\b|\bdollar\b|JPMorgan|\bJPM\b|Ally|\bALLY\b|lending|credit|normali/i.test(text)) return 'Financials';
+
+  return 'Unknown';
+}
+
 async function checkLongTermAutoSell(
   config: AutoTraderConfig,
   positions: EnrichedPosition[],
 ): Promise<void> {
-  const stopLossPct = config.ltStopLossPct ?? 0;       // 0 = disabled
-  const profitTakePct = config.ltProfitTakePct ?? 15;
-  const maxHoldDays = config.ltMaxHoldDays ?? 0;        // 0 = disabled
-  const trailingStopPct = config.ltTrailingStopPct ?? 10;
+  // Compounder fallback rules (unchanged from original)
+  const compounderProfitTakePct = config.ltProfitTakePct ?? 15;
+  const compounderMaxHoldDays   = config.ltMaxHoldDays ?? 0;
+  const compounderTrailingStop  = config.ltTrailingStopPct ?? 10;
+  const compounderStopLossPct   = config.ltStopLossPct ?? 0;
+
   if (!config.accountId) return;
 
   const activeTrades = await getActiveTrades();
@@ -3111,52 +3368,89 @@ async function checkLongTermAutoSell(
     if (!ibPos || ibPos.position === 0) continue;
 
     const currentPrice = ibPos.mktPrice;
-    const entryPrice = ibPos.avgCost;
-    const gainPct = entryPrice > 0 ? (currentPrice - entryPrice) / entryPrice * 100 : 0;
-    const daysHeld = trade.filled_at
+    const entryPrice   = ibPos.avgCost;
+    const gainPct      = entryPrice > 0 ? (currentPrice - entryPrice) / entryPrice * 100 : 0;
+    const daysHeld     = trade.filled_at
       ? (Date.now() - new Date(trade.filled_at).getTime()) / 86400000
       : 0;
 
-    // Update price_peak if today's price is a new high (or first time tracking)
+    // Track price peak across cycles
     const storedPeak = trade.price_peak ?? 0;
-    const peakDate = trade.price_peak_date ?? null;
-    if (currentPrice > storedPeak || !peakDate) {
-      await updatePaperTrade(trade.id, {
-        price_peak: currentPrice,
-        price_peak_date: today,
-      });
+    if (currentPrice > storedPeak || !trade.price_peak_date) {
+      await updatePaperTrade(trade.id, { price_peak: currentPrice, price_peak_date: today });
     }
     const effectivePeak = Math.max(storedPeak, currentPrice);
+    // Was this position ever meaningfully above entry (>0.1% buffer for noise)?
+    const everAboveEntry = effectivePeak > entryPrice * 1.001;
 
-    // Evaluate exit conditions
     let reason: string | null = null;
+    const isGoldMine = /Gold Mine/i.test(`${trade.notes ?? ''} ${trade.scanner_reason ?? ''}`);
 
-    // Profit-take: up enough, lock it in
-    if (gainPct >= profitTakePct) {
-      reason = `profit_take:+${gainPct.toFixed(1)}%>=${profitTakePct}%`;
-    }
-    // Trailing stop: only fires if the stock was ever in profit (peak > entry)
-    // Prevents selling never-recovered losers — just take profits on winners that turn down
-    else if (
-      trailingStopPct > 0 &&
-      effectivePeak > entryPrice &&
-      currentPrice < effectivePeak * (1 - trailingStopPct / 100)
-    ) {
-      const dropFromPeak = ((effectivePeak - currentPrice) / effectivePeak * 100).toFixed(1);
-      reason = `trailing_stop:${dropFromPeak}%_from_peak($${effectivePeak.toFixed(2)})`;
-    }
-    // Fixed stop-loss (disabled by default — backup for catastrophic drops)
-    else if (stopLossPct < 0 && gainPct <= stopLossPct) {
-      reason = `stop_loss:${gainPct.toFixed(1)}%<=${stopLossPct}%`;
-    }
-    // Max hold (disabled by default)
-    else if (maxHoldDays > 0 && daysHeld >= maxHoldDays) {
-      reason = `max_hold:${daysHeld.toFixed(0)}d>=${maxHoldDays}d`;
+    if (isGoldMine) {
+      // ── Gold Mine: archetype-specific exit rules ──────────────────────────
+      const archetype = detectGoldMineArchetype(trade.notes ?? null, trade.scanner_reason ?? null);
+      let rules = GM_ARCHETYPE_RULES[archetype];
+
+      // ADBE-class exception: Tech/Semi that never bounced after 11 trading days (~16 cal days)
+      // → treat it as Defense (apply its hard stop immediately going forward).
+      if (
+        archetype === 'Tech/Semi' &&
+        rules.noBounceExceptionCalDays > 0 &&
+        daysHeld >= rules.noBounceExceptionCalDays &&
+        !everAboveEntry
+      ) {
+        log(`${trade.ticker}: Tech/Semi Gold Mine — no bounce in ${daysHeld.toFixed(0)} cal days, applying Defense rules (ADBE-class exception)`);
+        rules = GM_ARCHETYPE_RULES['Defense'];
+      }
+
+      const peakGainPct = entryPrice > 0 ? (effectivePeak - entryPrice) / entryPrice * 100 : 0;
+
+      // 1. Entry price lock: once peak >= entryLockPct, stop is at entry — never let winner go negative
+      if (rules.entryLockPct > 0 && peakGainPct >= rules.entryLockPct && gainPct <= 0) {
+        reason = `gm_entry_lock:peak_was_+${peakGainPct.toFixed(1)}%_now_${gainPct.toFixed(1)}% (${archetype})`;
+      }
+      // 2. Profit take
+      else if (gainPct >= rules.profitTakePct) {
+        reason = `gm_profit_take:+${gainPct.toFixed(1)}%>=${rules.profitTakePct}% (${archetype})`;
+      }
+      // 3. Hard stop: never went above entry after N calendar days
+      else if (daysHeld >= rules.hardStopCalDays && !everAboveEntry) {
+        reason = `gm_hard_stop:no_bounce_${daysHeld.toFixed(0)}d (${archetype})`;
+      }
+      // 4. Max hold
+      else if (daysHeld >= rules.maxHoldCalDays) {
+        reason = `gm_max_hold:${daysHeld.toFixed(0)}d>=${rules.maxHoldCalDays}d (${archetype})`;
+      }
+    } else {
+      // ── Steady Compounder ──────────────────────────────────────────────────
+      if (gainPct >= compounderProfitTakePct) {
+        // Profit target always fires — macro circuit breaker does not suppress gains.
+        reason = `profit_take:+${gainPct.toFixed(1)}%>=${compounderProfitTakePct}%`;
+      } else if (
+        compounderTrailingStop > 0 &&
+        effectivePeak > entryPrice &&
+        currentPrice < effectivePeak * (1 - compounderTrailingStop / 100)
+      ) {
+        const dropFromPeak = ((effectivePeak - currentPrice) / effectivePeak * 100).toFixed(1);
+        reason = `trailing_stop:${dropFromPeak}%_from_peak($${effectivePeak.toFixed(2)})`;
+      } else if (compounderStopLossPct < 0 && gainPct <= compounderStopLossPct) {
+        // Macro circuit breaker: if SPY has dropped >5% in the last 5 trading days,
+        // this is broad-market turbulence, not a broken business thesis. Suspend the
+        // stop-loss for one cycle and re-evaluate next run.
+        const spy5d = await fetchSpy5DayChangePct();
+        if (spy5d !== null && spy5d <= -5) {
+          log(`${trade.ticker}: Compounder stop-loss suppressed — SPY 5d = ${spy5d.toFixed(1)}% (macro selloff circuit breaker)`);
+        } else {
+          reason = `stop_loss:${gainPct.toFixed(1)}%<=${compounderStopLossPct}%`;
+        }
+      } else if (compounderMaxHoldDays > 0 && daysHeld >= compounderMaxHoldDays) {
+        reason = `max_hold:${daysHeld.toFixed(0)}d>=${compounderMaxHoldDays}d`;
+      }
     }
 
     if (!reason) continue;
 
-    const qty = Math.abs(ibPos.position);
+    const qty  = Math.abs(ibPos.position);
     const side: 'BUY' | 'SELL' = ibPos.position > 0 ? 'SELL' : 'BUY';
 
     try {
@@ -3171,15 +3465,19 @@ async function checkLongTermAutoSell(
       });
 
       const emoji = gainPct >= 0 ? '✅' : '🛑';
-      const label = reason.startsWith('profit_take') ? 'profit-take'
-        : reason.startsWith('trailing_stop') ? 'trailing stop'
-        : reason.startsWith('stop_loss') ? 'stop-loss'
+      const label = reason.startsWith('gm_profit_take') ? 'GM profit-take'
+        : reason.startsWith('gm_entry_lock')   ? 'GM entry-lock exit'
+        : reason.startsWith('gm_hard_stop')    ? 'GM hard stop (no bounce)'
+        : reason.startsWith('gm_max_hold')     ? 'GM max-hold exit'
+        : reason.startsWith('profit_take')     ? 'profit-take'
+        : reason.startsWith('trailing_stop')   ? 'trailing stop'
+        : reason.startsWith('stop_loss')       ? 'stop-loss'
         : 'max-hold exit';
       log(`${trade.ticker}: LT AUTO-SELL (${label}) — ${gainPct.toFixed(1)}% P&L, peak $${effectivePeak.toFixed(2)}, held ${daysHeld.toFixed(0)}d`);
       persistEvent(trade.ticker, 'success',
         `${emoji} ${trade.ticker} long-term auto-closed (${label}) — ${gainPct.toFixed(1)}% P&L — capital freed`,
         { action: 'closed', source: 'lt_auto_sell', mode: 'LONG_TERM',
-          metadata: { reason, gainPct, daysHeld, qty, effectivePeak, entryPrice, trailingStopPct, profitTakePct } }
+          metadata: { reason, gainPct, daysHeld, qty, effectivePeak, entryPrice } }
       );
     } catch (err) {
       log(`${trade.ticker}: Long-term auto-sell failed — ${err instanceof Error ? err.message : 'unknown'}`);
@@ -3331,12 +3629,29 @@ async function checkLossCutOpportunities(
     { pct: config.lossCutTier1Pct, sellPct: config.lossCutTier1SellPct, label: 'Tier 1' },
   ];
 
+  // Macro circuit breaker for LONG_TERM positions: if SPY has dropped >5% in the last
+  // 5 trading days, this is broad-market turbulence, not individual business failure.
+  // Suspend LONG_TERM loss cuts for one cycle — the thesis re-check happens on next run.
+  // SWING_TRADE loss cuts are NOT suppressed (different time horizon, thesis is price-based).
+  let spyMacroSelloff = false;
+  const eligibleLongTerm = eligible.filter(t => t.mode === 'LONG_TERM');
+  if (eligibleLongTerm.length > 0) {
+    const spy5d = await fetchSpy5DayChangePct();
+    if (spy5d !== null && spy5d <= -5) {
+      spyMacroSelloff = true;
+      log(`[LossCut] SPY 5d = ${spy5d.toFixed(1)}% — macro selloff circuit breaker active: LONG_TERM loss cuts suppressed this cycle`);
+    }
+  }
+
   for (const trade of eligible) {
     const ibPos = positions.find(p => p.symbol.toUpperCase() === trade.ticker.toUpperCase());
     if (!ibPos || ibPos.mktPrice <= 0 || ibPos.avgCost <= 0) continue;
 
     const lossPct = ((ibPos.avgCost - ibPos.mktPrice) / ibPos.avgCost) * 100;
     if (lossPct <= 0) continue;
+
+    // Suppress LONG_TERM loss cuts during broad market selloffs (see circuit breaker above).
+    if (trade.mode === 'LONG_TERM' && spyMacroSelloff) continue;
 
     // Min hold period
     if (trade.created_at) {

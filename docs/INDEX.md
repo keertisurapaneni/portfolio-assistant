@@ -10,6 +10,8 @@ Current implementation docs for each major feature.
 | [Trade Scanner](./features/trade-scanner.md) | Two-pass day/swing scanner — InPlayScore, Gemini AI, pre-market gaps |
 | [Trading Signals Indicators](./features/trading-signals-indicators.md) | Indicator engine — RSI, MACD, EMA, ATR, ADX fed to AI prompts |
 | [Suggested Finds](./features/suggested-finds.md) | Daily stock discovery — Quiet Compounders + Gold Mines pipeline |
+| [Gold Mines](./features/gold-mines.md) | Gold Mine archetype rules — exit logic, sizing, empirical evidence, simulation |
+| [Steady Compounders](./features/steady-compounders.md) | Compounder rules — macro circuit breaker, thesis gate, entry cap, health check, profit trim |
 | [Strategy Video Ingestion](./features/strategy-video-ingestion.md) | YouTube/Instagram strategy import → external signals flow |
 | [Strategy Video Architecture](./features/strategy-video-architecture.md) | Architecture for ingesting trading strategies from videos |
 | [AI Buy Priority System](./features/ai-buy-priority.md) | Conviction scoring rules (Quality, Earnings, Analyst, Momentum) |

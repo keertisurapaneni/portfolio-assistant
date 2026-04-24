@@ -927,7 +927,7 @@ export function calculatePositionSize(
       // Dynamic: Base * conviction (Gold Mine capped at 1.25x; Steady Compounder up to 1.5x), then tag multiplier: Gold Mine → 0.75x final
       const base = alloc * (config.baseAllocationPct / 100);
       dollarSize = base * convictionMultiplier(conviction, suggestedFindTag);
-      if (suggestedFindTag === 'Gold Mine') dollarSize *= 0.75;
+      if (suggestedFindTag === 'Gold Mine') dollarSize *= 0.75 * 0.33; // 0.75 = Gold Mine tag discount; 0.33 = risk mgmt until Kelly > 0
     }
   } else if (stopLoss && entryPrice && Math.abs(entryPrice - stopLoss) > 0) {
     // Risk-based: risk budget / risk per share
@@ -2286,7 +2286,13 @@ async function processSuggestedFind(
       status: 'SUBMITTED',
       scanner_reason: `${source}: ${stock.reason}`,
       fa_rationale: null,
-      notes: `Long-term hold | ${source} | Conviction: ${conviction}/10 | ${stock.valuationTag ?? ''}`,
+      notes: [
+        'Long-term hold',
+        source,
+        stock.archetype ? `Archetype: ${stock.archetype}` : null,
+        `Conviction: ${conviction}/10`,
+        stock.valuationTag ?? '',
+      ].filter(Boolean).join(' | '),
     });
 
     // Track pending order for allocation cap enforcement

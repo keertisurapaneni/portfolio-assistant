@@ -130,12 +130,12 @@ async function preGenerateSuggestedFinds() {
   const todayEt = getSuggestionDateEt();
   if (_lastSuggestedFindsDate === todayEt) return;
 
-  // Only run around 9 AM ET (between 8:55 and 9:30 AM ET, or later if first check of the day)
+  // Only run at/after 9:30 AM ET (market open) and we haven't run today yet.
+  // Server-side preGenerateSuggestedFinds also gates at 9:30 AM — keep in sync.
   const now = new Date();
   const et = new Date(now.toLocaleString('en-US', { timeZone: 'America/New_York' }));
   const mins = et.getHours() * 60 + et.getMinutes();
-  // Run if it's 9 AM+ ET and we haven't run today yet
-  if (mins < 9 * 60) return;
+  if (mins < 9 * 60 + 30) return;
 
   try {
     console.log('[AutoTradeScheduler] Pre-generating Suggested Finds for today...');

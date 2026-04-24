@@ -83,6 +83,8 @@ export interface SuggestedStock {
   name: string;
   tag: 'Steady Compounder' | 'Gold Mine';
   reason: string;
+  /** Gold Mine only — macro theme category driving exit rule selection */
+  archetype?: 'Tech/Semi' | 'Defense' | 'Energy' | 'Financials';
 }
 
 export type RiskProfile = 'aggressive' | 'moderate' | 'conservative';

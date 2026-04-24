@@ -32,6 +32,7 @@ different rules from day/swing trades. When editing sizing logic, check ALL of t
 base = maxTotalAllocation * baseAllocationPct%        // e.g. $500K * 2% = $10K
 dollarSize = base * convictionMultiplier(conviction, tag)
            * (0.75 if Gold Mine)                      // Gold Mine tag multiplier
+           * goldMineArchetypeMultiplier               // see Gold Mine Archetype Rules below
            * sma200Multiplier                          // 0.5 if SPY < SMA200, else 1.0
            * regime.multiplier                         // market regime (NOT drawdown)
            * 1.0                                       // drawdown always 1.0
@@ -49,3 +50,120 @@ dollarSize = base * convictionMultiplier(conviction, tag)
 - `app/src/lib/autoTrader.ts` → `processSuggestedFindStock()`
 
 They are separate implementations of the same logic. A fix in one must be applied to both.
+
+## Steady Compounder guardrails (do not remove):
+
+Four guards protect Compounders from the structural bugs found in the Feb–Mar 2026 data.
+Full rationale: `docs/features/steady-compounders.md`
+
+1. **Macro circuit breaker** — `checkLossCutOpportunities()` AND `checkLongTermAutoSell()` both call
+   `fetchSpy5DayChangePct()` and suppress LONG_TERM loss cuts when SPY 5d ≤ -5%.
+   Must remain in **both** functions — removing either half re-creates the Mar 30 mass stop-out.
+
+2. **Thesis gate** — `checkDipBuyOpportunities()` blocks dip buys on tickers where
+   `price_peak <= fill_price * 1.001` after 20+ days held. Depends on `price_peak` being
+   kept current by `checkLongTermAutoSell()`. Do not remove the `price_peak` update loop.
+
+3. **Cross-channel entry cap** — `checkDipBuyOpportunities()` counts ALL open LONG_TERM
+   positions per ticker (not just dip buys). Cap is `MAX_ENTRIES_PER_TICKER = 3`.
+
+4. **Same-day duplicate guard** — lives in `_executeSuggestedFindTradeInner()`. The outer
+   `executeSuggestedFindTrade()` wrapper holds the in-memory `_sfInFlight` set for race
+   conditions. Both layers are required.
+
+---
+
+# Gold Mine Archetype Rules
+
+Gold Mines are discovered from current market headlines — meaning the macro theme is
+already partially priced in at entry. History (13 trades, Kelly = -9.26) shows that
+holding them for months is capital-destructive. Exit rules must be archetype-specific
+because the theme duration and fundamental backing differ by sector.
+
+## Required: Archetype tag on every Gold Mine
+
+The Gold Mine AI prompt MUST classify each pick into one of the four archetypes below.
+A Gold Mine with no archetype tag should not be auto-traded.
+
+The `scanner_reason` or `notes` field should contain one of:
+`Gold Mine | Archetype: Tech/Semi`, `Gold Mine | Archetype: Defense`,
+`Gold Mine | Archetype: Energy`, `Gold Mine | Archetype: Financials`
+
+## Archetype 1 — Tech / Semiconductors / Software (AI, infrastructure, cloud)
+
+These have genuine fundamental backing beyond the news cycle. AI capex is a multi-year
+structural trend. Historical data (ASML, MU, AMAT Feb 2026) shows these stocks DO move
+in the expected direction — the problem was no exit discipline, not wrong thesis:
+- ASML peaked at +9% close on Day 8 → stopped out at -10% on Day 41
+- MU peaked at +13.76% close on Day 29 → stopped out at -18.7% on Day 41
+- AMAT peaked at +10.64% close on Day 8 → stopped out at -9.6% on Day 45
+
+| Rule | Value |
+|------|-------|
+| `goldMineArchetypeMultiplier` | 0.33 (33% of base) |
+| Max hold | 60 trading days |
+| Profit lock | Once close is ≥+5% above entry: set trailing stop AT entry price (never let winner go negative) |
+| Profit take | If close reaches ≥+10%: sell next open |
+| Hard stop (no bounce) | If position never closes above entry after Day 5 → exit at Day 5 close |
+| Hard stop (trailing) | If close drops back to within 1% of entry after being ≥+5% up → exit next open |
+| Dip buys | Allowed if original thesis still active and stock is still in positive-close territory |
+
+## Archetype 2 — Defense / Aerospace (geopolitical / war themes)
+
+Pure news-cycle trade. The catalyst is conflict escalation. Once the cycle peaks
+(ceasefire talks, diplomatic resolution, risk-on rotation), the stock mean-reverts hard
+and fast. No fundamental floor catches you. LMT/RTX evidence:
+- LMT: max intraday +0.58% on Day 1, then straight down -13.44% over 7 days
+- RTX: max intraday +0.83% on Day 2, then straight down -11.97% over 12 days
+- Neither ever closed above entry price
+
+| Rule | Value |
+|------|-------|
+| `goldMineArchetypeMultiplier` | 0.33 (33% of base) |
+| Max hold | 7 trading days — hard cap, no exceptions |
+| Profit take | Sell at market open the next morning after ANY positive close |
+| Hard stop | If below entry at close of Day 3 → exit at Day 3 close. Theme has moved on. |
+| Dip buys | NEVER. A defense dip during geopolitical cooling is an exit signal, not an entry. |
+
+## Archetype 3 — Energy / Commodities / Renewables (supply shock, transition)
+
+Medium-duration plays. Oil supply shocks and energy transition themes play out over
+3–6 weeks but are volatile. FSLR had a +7.24% intraday peak on Day 8, +3.41% close
+on Day 5. EOG has trended up continuously since entry (+2.68% after 3 days).
+
+| Rule | Value |
+|------|-------|
+| `goldMineArchetypeMultiplier` | 0.33 (33% of base) |
+| Max hold | 20 trading days |
+| Profit take | Sell at first positive close ≥+2% |
+| Hard stop | If below entry at close of Day 5 → exit |
+| Extension | If underlying commodity price (oil, nat gas) still rising at Day 10, hold extends to Day 20 |
+| Dip buys | Not allowed |
+
+## Archetype 4 — Financials / Macro Recovery (rates, dollar, post-conflict normalization)
+
+Tied to economic regime, not a single event. Moves are gradual (JPM floated ±1.6% for
+5 days). These need patience but must not outlast the regime shift.
+
+| Rule | Value |
+|------|-------|
+| `goldMineArchetypeMultiplier` | 0.33 (33% of base) |
+| Max hold | 15 trading days |
+| Profit take | Sell at first positive close ≥+1.5% |
+| Hard stop | If below entry at close of Day 4 → exit |
+| Dip buys | Not allowed |
+
+## Universal Gold Mine rules (all archetypes)
+
+1. **Entry price lock**: The moment a Gold Mine closes above entry price, immediately
+   record a hard stop AT entry price. You never let a Gold Mine winner become a loser.
+
+2. **Position sizing**: `goldMineArchetypeMultiplier = 0.33` for all archetypes until
+   20+ closed Gold Mine trades show positive expected value. Current Kelly = -9.26.
+
+3. **No dip buys on Defense archetype**: Hard block. Defense dips are exit signals.
+
+4. **ADBE-class exception** (AI-adjacent software, not pure infrastructure): If a
+   Tech/Semi pick has no positive close in its first 11 trading days, treat it as
+   having failed the "fundamentally backed" test → apply Archetype 2 (Defense) hard
+   stop rules immediately. The AI tailwind didn't materialize at the price level paid.

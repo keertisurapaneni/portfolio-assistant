@@ -530,6 +530,11 @@ TASK: Analyze each stock. For each, explain WHY it's interesting using BOTH the 
 For each stock, assign:
 - "conviction" (1-10): How strongly you'd recommend buying NOW, considering both the catalyst AND financial quality
 - "valuationTag": One of "Deep Value", "Undervalued", "Fair Value", "Fully Valued" — based on P/E relative to growth (PEG concept) and sector norms
+- "archetype": Classify the macro theme driving this pick into ONE of these four categories:
+  - "Tech/Semi" — AI infrastructure, semiconductors, cloud, software, cybersecurity
+  - "Defense" — defense spending, military, geopolitical conflict, aerospace
+  - "Energy" — oil, natural gas, solar, renewables, energy transition, supply shocks
+  - "Financials" — banks, interest rates, dollar strength, economic normalization
 
 Return ONLY valid JSON:
 {
@@ -540,6 +545,7 @@ Return ONLY valid JSON:
       "tag": "Gold Mine",
       "reason": "One sentence combining the headline catalyst with a key financial metric",
       "category": "Value chain category",
+      "archetype": "Tech/Semi",
       "conviction": 8,
       "valuationTag": "Undervalued",
       "whyGreat": [
@@ -556,7 +562,7 @@ Return ONLY valid JSON:
   ]
 }
 
-Analyze all stocks provided. Each must have conviction (1-10), valuationTag, 3 whyGreat points, and 3 metrics — all from the Finnhub data above.`;
+Analyze all stocks provided. Each must have conviction (1-10), valuationTag, archetype, 3 whyGreat points, and 3 metrics — all from the Finnhub data above.`;
 }
 
 // ──────────────────────────────────────────────────────────
@@ -722,12 +728,16 @@ function parseGoldMineAnalysis(raw: string): EnhancedSuggestedStock[] {
   const stocks = parsed.stocks || parsed;
   if (!Array.isArray(stocks)) throw new Error('Expected stocks array');
 
+  const validArchetypes = ['Tech/Semi', 'Defense', 'Energy', 'Financials'] as const;
   const results = stocks.map((s: Record<string, unknown>) => ({
     ticker: String(s.ticker || '').toUpperCase(),
     name: String(s.name || ''),
     tag: 'Gold Mine' as const,
     reason: String(s.reason || ''),
     category: String(s.category || ''),
+    archetype: validArchetypes.includes(s.archetype as typeof validArchetypes[number])
+      ? (s.archetype as typeof validArchetypes[number])
+      : undefined,
     conviction: typeof s.conviction === 'number' ? s.conviction : undefined,
     valuationTag: s.valuationTag ? String(s.valuationTag) : undefined,
     whyGreat: Array.isArray(s.whyGreat) ? s.whyGreat.map(String) : [],
