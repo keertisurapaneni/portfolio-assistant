@@ -564,23 +564,29 @@ export async function runOptionsManageCycle(): Promise<ManageCycleResult> {
       // Mark the put as assigned so subsequent cycles don't re-trigger
       await sb.from('paper_trades').update({ option_assigned: true }).eq('id', pos.id);
 
-      // Open a covered call at least 10% OTM above current price.
-      // This preserves upside participation in the recovery — a key risk the
-      // "picking up pennies" critique highlights: don't sell the big rebound cheaply.
-      // 10% floor means stock must rally ≥10% before shares are called away.
-      const ccExpiry = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+      // Open a covered call targeting 20-delta (~80% probability of expiring OTM).
+      // Following the covered-calls video strategy: 15-25 delta, 30-45 DTE is the sweet spot —
+      // enough premium to be worth collecting, enough OTM room to not cap the recovery.
+      // The 10% OTM floor is kept as an additional guard: whichever gives a HIGHER strike wins,
+      // ensuring we never sell the rebound cheaply on a freshly-assigned position.
+      const ccExpiry = new Date(Date.now() + 45 * 24 * 60 * 60 * 1000); // 45 DTE
       const ccExpiryISO = ccExpiry.toISOString().slice(0, 10);
-      const minCcStrike = stockPrice * 1.10; // hard floor: at least 10% OTM
-      const ccStrike = Math.round(minCcStrike * 4) / 4;  // round to nearest $0.25
+      const minCcStrikeFloor = stockPrice * 1.10; // hard floor: at least 10% OTM
 
-      // Fetch covered call premium from IB options chain
+      // Fetch covered call from chain at 20-delta; fall back to floor if chain unavailable
       let ccPremium = 0;
+      let ccStrikeFromChain: number | null = null;
       try {
-        const ccChain = await getOptionsChain(pos.ticker, stockPrice, null, 0.30); // ~30-delta call
+        const ccChain = await getOptionsChain(pos.ticker, stockPrice, null, 0.20, 45); // 20-delta, ~45 DTE
         if (ccChain?.bestCall) {
+          ccStrikeFromChain = ccChain.bestCall.strike;
           ccPremium = ccChain.bestCall.bid; // conservative: use bid price
         }
       } catch { /* non-blocking — insert with 0 if chain unavailable */ }
+
+      // Use the higher of: 10% OTM floor OR the 20-delta strike from chain
+      const rawCcStrike = Math.max(minCcStrikeFloor, ccStrikeFromChain ?? minCcStrikeFloor);
+      const ccStrike = Math.round(rawCcStrike * 4) / 4; // round to nearest $0.25
 
       await sb.from('paper_trades').insert({
         ticker: pos.ticker,
@@ -614,7 +620,7 @@ export async function runOptionsManageCycle(): Promise<ManageCycleResult> {
   // ── Process Covered Calls ─────────────────────────────────
   const { data: callData } = await sb
     .from('paper_trades')
-    .select('id, ticker, mode, option_strike, option_expiry, option_premium, option_capital_req, option_assigned, fill_price, status, ib_order_id')
+    .select('id, ticker, mode, option_strike, option_expiry, option_premium, option_capital_req, option_assigned, fill_price, status, ib_order_id, roll_count, rolled_from_id')
     .eq('mode', 'OPTIONS_CALL')
     .in('status', ['FILLED', 'PARTIAL']);
 
@@ -679,17 +685,184 @@ export async function runOptionsManageCycle(): Promise<ManageCycleResult> {
       continue;
     }
 
-    // Check C: Roll alert — stock within 2% of call strike (at risk of being called away)
+    // Check C: Roll UP and out when stock threatens call strike (within 2%, DTE > 5).
+    // Strategy (covered-calls video): instead of alerting and waiting, attempt an automated
+    // "roll up and out" to a higher strike at ~45 DTE for a credit or acceptable small debit.
+    // This preserves more upside on recovery while continuing to collect premium.
+    // Falls back to a human-review warning if the roll math doesn't work.
     if (stockPrice >= pos.option_strike * 0.98 && dte > 5) {
-      result.rollAlerts.push(pos.ticker);
-      persistEvent(pos.ticker, 'warning',
-        `↩️ ${pos.ticker} covered call at risk — stock $${stockPrice.toFixed(2)} near call strike $${pos.option_strike} (${dte}d left). Consider rolling up.`,
-        { action: 'flagged', source: 'options', metadata: { reason: 'call_roll_needed', stockPrice, strike: pos.option_strike, dte } }
-      );
+      console.log(`[Options Manager] CALL ROLL CHECK: ${pos.ticker} $${pos.option_strike}C — stock $${stockPrice.toFixed(2)}, ${dte}d left`);
+      const rollResult = await evaluateAndRollCall(pos, stockPrice, currentCallPremium);
+      console.log(`[Options Manager] Call roll eval: ${rollResult.logLine}`);
+
+      if (rollResult.rolled) {
+        result.rollAlerts.push(pos.ticker);
+        persistEvent(pos.ticker, 'info',
+          `↩️ ${pos.ticker} $${pos.option_strike} covered call rolled UP — ${rollResult.logLine.split(': ')[1]}`,
+          { action: 'rolled', source: 'options', metadata: { reason: 'call_roll_' + rollResult.reason, dte, stockPrice } }
+        );
+      } else {
+        result.rollAlerts.push(pos.ticker);
+        persistEvent(pos.ticker, 'warning',
+          `↩️ ${pos.ticker} covered call at risk — stock $${stockPrice.toFixed(2)} within 2% of call strike $${pos.option_strike} (${dte}d left). Auto-roll declined (${rollResult.reason}) — manual review needed.`,
+          { action: 'flagged', source: 'options', metadata: { reason: 'call_roll_needed', rollDeclineReason: rollResult.reason, stockPrice, strike: pos.option_strike, dte } }
+        );
+      }
     }
   }
 
   return result;
+}
+
+/**
+ * Evaluate and execute a "roll up and out" for a covered call position.
+ *
+ * Strategy (from covered-calls video + tastytrade roll playbook):
+ *   1. Buy back the current call at current market price
+ *   2. Sell a new call at a HIGHER strike (~20-delta), ~45 DTE
+ *   3. Only proceed if net result is a credit OR small debit (≤25% of original premium)
+ *   4. Respect max-debit-roll limit (3 debit rolls per position chain)
+ *
+ * The "up" in "up and out" is critical: rolling to a higher strike gives the
+ * stock MORE room to rally before being called away — preserving recovery upside.
+ *
+ * Returns true if the roll was executed, false if we should fall back to alerting.
+ */
+async function evaluateAndRollCall(
+  pos: PositionRow,
+  stockPrice: number,
+  currentCallPremium: number,
+): Promise<{ rolled: boolean; reason: string; logLine: string }> {
+  const sb = getSupabase();
+  const premiumCollected = pos.option_premium ?? 0;
+  const rollCount = pos.roll_count ?? 0;
+
+  // Fetch next month's chain at 20-delta call — must be ABOVE current call strike
+  // (rolling up, not sideways) to give the stock room to recover
+  const chain = await getOptionsChain(pos.ticker, stockPrice, null, 0.20, 45).catch(() => null);
+  if (!chain?.bestCall) {
+    return { rolled: false, reason: 'no_chain', logLine: `${pos.ticker}: no call chain available for roll` };
+  }
+
+  const newCall = chain.bestCall;
+  const newStrike = newCall.strike;
+  const newExpiry = newCall.expiry;       // YYYYMMDD
+  const newPremium = newCall.bid;         // conservative: bid price
+  const newDte = daysToExpiryStr(newExpiry);
+
+  // Must roll UP — new strike must be higher than current (otherwise it's not a roll up, it's doubling down)
+  if (newStrike <= pos.option_strike) {
+    return {
+      rolled: false,
+      reason: 'no_higher_strike',
+      logLine: `${pos.ticker}: chain didn't return a strike above current $${pos.option_strike} — alerting instead`,
+    };
+  }
+
+  const netCredit = newPremium - currentCallPremium;
+  const isCredit = netCredit >= 0;
+  const isAcceptableDebit = netCredit < 0 && Math.abs(netCredit) <= premiumCollected * ROLL_MAX_DEBIT_PCT;
+
+  if (!isCredit && !isAcceptableDebit) {
+    return {
+      rolled: false,
+      reason: 'debit_too_large',
+      logLine: `${pos.ticker}: call roll debit $${Math.abs(netCredit).toFixed(2)} exceeds 25% limit — alerting instead`,
+    };
+  }
+
+  if (!isCredit && rollCount >= MAX_DEBIT_ROLLS) {
+    return {
+      rolled: false,
+      reason: 'max_debit_rolls',
+      logLine: `${pos.ticker}: already rolled call ${rollCount}× for debit — alerting instead`,
+    };
+  }
+
+  // Roll math: (strike improvement + credit) / capital, annualized
+  const strikeImprovement = newStrike - pos.option_strike; // going UP is good — more room
+  const totalBenefit = strikeImprovement + Math.max(0, netCredit);
+  const capital = pos.option_capital_req ?? stockPrice * 100;
+  const annualizedReturn = newDte > 0 ? (totalBenefit / capital) * (365 / newDte) * 100 : 0;
+
+  if (annualizedReturn < 2) {
+    return {
+      rolled: false,
+      reason: 'low_return',
+      logLine: `${pos.ticker}: call roll ann. return ${annualizedReturn.toFixed(1)}% < 2% — not worth it, alerting instead`,
+    };
+  }
+
+  // ── Execute the roll ─────────────────────────────────────
+  const pnl = (premiumCollected - currentCallPremium) * 100;
+
+  // 1. Close current call leg
+  await sb.from('paper_trades').update({
+    status: 'CLOSED',
+    close_price: currentCallPremium,
+    pnl,
+    pnl_percent: (pnl / capital) * 100,
+    closed_at: new Date().toISOString(),
+    close_reason: 'rolled',
+    option_close_pct: Math.max(0, (1 - currentCallPremium / premiumCollected) * 100),
+  }).eq('id', pos.id);
+
+  // 2. Open new call leg
+  const newExpiryISO = `${newExpiry.slice(0, 4)}-${newExpiry.slice(4, 6)}-${newExpiry.slice(6, 8)}`;
+  let ibOrderId: number | null = null;
+  if (isConnected()) {
+    try {
+      const r = await placeOptionsOrder({
+        symbol: pos.ticker,
+        right: 'C',
+        strike: newStrike,
+        expiry: newExpiry,
+        contracts: 1,
+        limitPrice: newPremium,
+        account: getDefaultAccount() ?? undefined,
+      });
+      ibOrderId = r.orderId;
+    } catch (err) {
+      console.warn(`[Roll Call] IB order failed for ${pos.ticker} — paper-recording: ${err}`);
+    }
+  }
+
+  await sb.from('paper_trades').insert({
+    ticker: pos.ticker,
+    mode: 'OPTIONS_CALL',
+    signal: 'SELL',
+    entry_price: stockPrice,
+    fill_price: ibOrderId ? null : stockPrice,
+    quantity: 1,
+    position_size: stockPrice * 100,
+    status: ibOrderId ? 'SUBMITTED' : 'FILLED',
+    filled_at: ibOrderId ? null : new Date().toISOString(),
+    opened_at: new Date().toISOString(),
+    option_strike: newStrike,
+    option_expiry: newExpiryISO,
+    option_premium: newPremium,
+    option_contracts: 1,
+    option_delta: newCall.delta,
+    option_prob_profit: newCall.probProfit,
+    option_capital_req: capital,
+    option_annual_yield: newCall.annualYield,
+    ib_order_id: ibOrderId,
+    roll_count: rollCount + 1,
+    rolled_from_id: pos.id,
+    notes: `[CALL ROLL ${rollCount + 1}] ${isCredit ? `+$${(netCredit * 100).toFixed(0)} credit` : `-$${(Math.abs(netCredit) * 100).toFixed(0)} debit`} — rolled UP from $${pos.option_strike}→$${newStrike} strike, ${newDte}d DTE`,
+    scanner_reason: `Call Roll ${rollCount + 1}: ann. ${annualizedReturn.toFixed(1)}%, ${isCredit ? 'credit' : 'debit'} $${Math.abs(netCredit * 100).toFixed(0)}, strike ${pos.option_strike}→${newStrike}`,
+  });
+
+  const creditTag = isCredit
+    ? `+$${(netCredit * 100).toFixed(0)} credit`
+    : `-$${(Math.abs(netCredit) * 100).toFixed(0)} debit`;
+  const ibTag = ibOrderId ? ` IB#${ibOrderId}` : ' (paper)';
+
+  return {
+    rolled: true,
+    reason: isCredit ? 'credit_roll' : 'debit_roll',
+    logLine: `${pos.ticker}: call rolled UP $${pos.option_strike}→$${newStrike}C ${newExpiryISO} (${creditTag}, ${annualizedReturn.toFixed(1)}% ann.)${ibTag}`,
+  };
 }
 
 /**
