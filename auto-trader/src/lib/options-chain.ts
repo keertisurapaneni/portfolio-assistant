@@ -13,6 +13,7 @@
 
 import { EventName, SecType, OptionType, type Contract } from '@stoqey/ib';
 import { getIBApi, getNextOrderId, isConnected, searchContract } from '../ib-connection.js';
+import { estimateHistoricalVol } from './yahoo-finance.js';
 
 // ── Types ────────────────────────────────────────────────
 
@@ -111,35 +112,16 @@ function generateStrikes(price: number): number[] {
 }
 
 /**
- * Estimate annualized IV from 30-day realized volatility via Finnhub candles.
- * Applies a 1.2× vol-risk-premium scalar and clamps to [15%, 150%].
+ * Estimate annualised IV from 30-day realised volatility via Yahoo Finance.
+ * Delegates to the shared yahoo-finance module (no Finnhub dependency).
  */
 async function estimateIV(symbol: string): Promise<number> {
-  const key = process.env.FINNHUB_API_KEY ?? '';
-  try {
-    const to   = Math.floor(Date.now() / 1000);
-    const from = to - 86_400 * 60;
-    const res  = await fetch(
-      `https://finnhub.io/api/v1/stock/candle?symbol=${symbol}&resolution=D&from=${from}&to=${to}&token=${key}`
-    );
-    if (!res.ok) return 0.30;
-    const data = await res.json() as { c?: number[] };
-    const closes = data.c ?? [];
-    if (closes.length < 20) return 0.30;
-    const sample = closes.slice(-31);
-    const returns = sample.slice(1).map((c, i) => Math.log(c / sample[i]));
-    const mean = returns.reduce((a, b) => a + b, 0) / returns.length;
-    const variance = returns.reduce((s, r) => s + (r - mean) ** 2, 0) / (returns.length - 1);
-    const hv = Math.sqrt(variance * 252);
-    return Math.min(Math.max(hv * 1.2, 0.15), 1.50); // IV premium over HV
-  } catch {
-    return 0.30;
-  }
+  return estimateHistoricalVol(symbol);
 }
 
 /**
  * Build a synthetic options chain using Black-Scholes when IB is unavailable.
- * IV is estimated from 30-day realized volatility via Finnhub.
+ * IV is estimated from 30-day realised volatility via Yahoo Finance.
  */
 async function getSyntheticOptionsChain(
   symbol: string,

@@ -35,6 +35,7 @@
 import { getSupabase, createAutoTradeEvent } from './supabase.js';
 import { getOptionsChain, type OptionGreeks } from './options-chain.js';
 import { isConnected, placeOptionsOrder, getDefaultAccount } from '../ib-connection.js';
+import { fetchDailyBars, fetchQuote, sma as calcSma, estimateHistoricalVol } from './yahoo-finance.js';
 
 // ── Constants ────────────────────────────────────────────
 
@@ -255,14 +256,11 @@ async function getVix(): Promise<number> {
 }
 
 async function getSpySma200(): Promise<{ price: number; sma200: number } | null> {
-  const to = Math.floor(Date.now() / 1000);
-  const from = to - 86400 * 220; // 220 days
-  const data = await fetchJson<{ c?: number[]; t?: number[] }>(
-    `https://finnhub.io/api/v1/stock/candle?symbol=SPY&resolution=D&from=${from}&to=${to}&token=${FINNHUB_KEY}`
-  );
-  if (!data?.c || data.c.length < 200) return null;
-  const closes = data.c;
-  const sma200 = closes.slice(-200).reduce((a, b) => a + b, 0) / 200;
+  const bars = await fetchDailyBars('SPY', '1y');
+  if (!bars || bars.length < 200) return null;
+  const closes = bars.map(b => b.close);
+  const sma200 = calcSma(closes, 200);
+  if (sma200 === null) return null;
   return { price: closes[closes.length - 1], sma200 };
 }
 
@@ -294,15 +292,12 @@ interface StockTrendResult {
 }
 
 async function getStockTrend(ticker: string): Promise<StockTrendResult | null> {
-  const to = Math.floor(Date.now() / 1000);
-  const from = to - 86400 * 70; // ~70 trading days covers 50-day SMA + 3m change
-  const data = await fetchJson<{ c?: number[] }>(
-    `https://finnhub.io/api/v1/stock/candle?symbol=${ticker}&resolution=D&from=${from}&to=${to}&token=${FINNHUB_KEY}`
-  );
-  if (!data?.c || data.c.length < 50) return null;
-  const closes = data.c;
+  const bars = await fetchDailyBars(ticker, '6mo');
+  if (!bars || bars.length < 50) return null;
+  const closes = bars.map(b => b.close);
   const price = closes[closes.length - 1];
-  const sma50 = closes.slice(-50).reduce((a, b) => a + b, 0) / 50;
+  const sma50 = calcSma(closes, 50);
+  if (sma50 === null) return null;
   const price3mAgo = closes[Math.max(0, closes.length - 63)]; // ~63 trading days = 3 months
   const change3m = price3mAgo > 0 ? ((price - price3mAgo) / price3mAgo) * 100 : 0;
   return { aboveSma50: price > sma50, sma50, price, change3m };
@@ -313,19 +308,14 @@ async function getStockTrend(ticker: string): Promise<StockTrendResult | null> {
 // even when IV rank is below our normal threshold.
 
 async function isRangeBound(ticker: string): Promise<{ rangeBound: boolean; bandPct: number }> {
-  const to = Math.floor(Date.now() / 1000);
-  const from = to - 86400 * 252; // ~1 year of trading days
-  const data = await fetchJson<{ c?: number[]; h?: number[]; l?: number[] }>(
-    `https://finnhub.io/api/v1/stock/candle?symbol=${ticker}&resolution=D&from=${from}&to=${to}&token=${FINNHUB_KEY}`
-  );
-  if (!data?.h || !data.l || data.h.length < 100) return { rangeBound: false, bandPct: 0 };
+  const bars = await fetchDailyBars(ticker, '1y');
+  if (!bars || bars.length < 100) return { rangeBound: false, bandPct: 0 };
 
-  const yearHigh = Math.max(...data.h);
-  const yearLow = Math.min(...data.l);
+  const yearHigh = Math.max(...bars.map(b => b.high));
+  const yearLow  = Math.min(...bars.map(b => b.low));
   const midpoint = (yearHigh + yearLow) / 2;
   if (midpoint === 0) return { rangeBound: false, bandPct: 0 };
 
-  // Band = how wide the range is as % of midpoint
   const bandPct = ((yearHigh - yearLow) / midpoint) * 100;
   return { rangeBound: bandPct <= RANGE_BOUND_BAND_PCT, bandPct };
 }
@@ -333,12 +323,10 @@ async function isRangeBound(ticker: string): Promise<{ rangeBound: boolean; band
 // ── Beta ──────────────────────────────────────────────────
 
 async function getStockMetrics(ticker: string): Promise<{ beta: number | null; high52w: number | null }> {
-  const data = await fetchJson<{ metric?: { beta?: number; '52WeekHigh'?: number } }>(
-    `https://finnhub.io/api/v1/stock/metric?symbol=${ticker}&metric=all&token=${FINNHUB_KEY}`
-  );
+  const q = await fetchQuote(ticker);
   return {
-    beta: data?.metric?.beta ?? null,
-    high52w: data?.metric?.['52WeekHigh'] ?? null,
+    beta:    q?.beta    ?? null,
+    high52w: q?.high52w ?? null,
   };
 }
 
@@ -602,33 +590,27 @@ async function checkStock(
   let bbUpper: number | null = null;
   let bbSignal: 'at_lower' | 'near_lower' | null = null;
   try {
-    const to = Math.floor(Date.now() / 1000);
-    const from = to - 86400 * 30; // extra buffer so we reliably get 20 trading days
-    const dipData = await fetchJson<{ c?: number[]; h?: number[] }>(
-      `https://finnhub.io/api/v1/stock/candle?symbol=${ticker}&resolution=D&from=${from}&to=${to}&token=${FINNHUB_KEY}`
-    );
-    if (dipData?.h && dipData.h.length >= 5) {
-      const recentHigh = Math.max(...dipData.h.slice(-20));
+    const dipBars = await fetchDailyBars(ticker, '2mo');
+    if (dipBars && dipBars.length >= 5) {
+      const recentHigh = Math.max(...dipBars.slice(-20).map(b => b.high));
       const dipPct = ((recentHigh - price) / recentHigh) * 100;
       dipEntry = dipPct >= DIP_ENTRY_BONUS_THRESHOLD;
       checks.dipEntry = `${dipPct.toFixed(1)}%_from_20d_high${dipEntry ? '_DIP' : ''}`;
     }
     // SMA20 + Bollinger Bands (needs ≥ 20 closes)
-    if (dipData?.c && dipData.c.length >= 20) {
-      const closes20 = dipData.c.slice(-20);
+    if (dipBars && dipBars.length >= 20) {
+      const closes20 = dipBars.slice(-20).map(b => b.close);
       const mean = closes20.reduce((a, b) => a + b, 0) / 20;
       const variance = closes20.reduce((sum, v) => sum + (v - mean) ** 2, 0) / 20;
       const stdDev = Math.sqrt(variance);
       sma20 = mean;
       bbLower = mean - 2 * stdDev;
       bbUpper = mean + 2 * stdDev;
-      // Timing signal: at/near lower band = oversold, best premium entry window
       if (price <= bbLower) bbSignal = 'at_lower';
       else if (price <= bbLower * 1.05) bbSignal = 'near_lower';
       checks.bollingerBand = `lower:${bbLower.toFixed(2)}_upper:${bbUpper.toFixed(2)}_signal:${bbSignal ?? 'none'}`;
-    } else if (dipData?.c && dipData.c.length >= 5) {
-      // Fallback: fewer candles, compute SMA20 from whatever we have
-      const closes = dipData.c.slice(-20);
+    } else if (dipBars && dipBars.length >= 5) {
+      const closes = dipBars.slice(-20).map(b => b.close);
       sma20 = closes.reduce((a, b) => a + b, 0) / closes.length;
     }
   } catch { /* non-blocking */ }
@@ -736,17 +718,11 @@ async function checkStock(
   //    Leveraged ETF → 0.18 | Tier override | RSI high-conviction → 0.35 | auto-tuned default
 
   // Compute stock's own 200-day SMA for the 200 DMA proximity check.
-  // We extend the candle window from 30d→220d when needed. Rate-limit via the global
-  // Finnhub throttle — this adds ~1 API call per stock but only on the first scan cycle.
   let stockSma200: number | null = null;
   try {
-    const to = Math.floor(Date.now() / 1000);
-    const from = to - 86400 * 220; // 220 calendar days ~ 200+ trading days
-    const sma200Data = await fetchJson<{ c?: number[] }>(
-      `https://finnhub.io/api/v1/stock/candle?symbol=${ticker}&resolution=D&from=${from}&to=${to}&token=${FINNHUB_KEY}`
-    );
-    if (sma200Data?.c && sma200Data.c.length >= 200) {
-      stockSma200 = sma200Data.c.slice(-200).reduce((a, b) => a + b, 0) / 200;
+    const sma200Bars = await fetchDailyBars(ticker, '1y');
+    if (sma200Bars && sma200Bars.length >= 200) {
+      stockSma200 = calcSma(sma200Bars.map(b => b.close), 200);
     }
   } catch { /* non-blocking */ }
 
