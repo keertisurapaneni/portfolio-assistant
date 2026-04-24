@@ -29,13 +29,12 @@ router.post('/scheduler/run', async (_req, res) => {
   res.json({ result });
 });
 
-router.post('/scheduler/options-scan', async (_req, res) => {
-  try {
-    const result = await triggerOptionsScan();
-    res.json(result);
-  } catch (err) {
-    res.status(500).json({ ok: false, message: err instanceof Error ? err.message : 'unknown error' });
-  }
+router.post('/scheduler/options-scan', (_req, res) => {
+  // Respond immediately — scan runs in background (takes 1-2 min for full watchlist)
+  res.json({ ok: true, message: 'Scan started' });
+  triggerOptionsScan().catch(err =>
+    console.error('[Manual Scan] Background scan failed:', err instanceof Error ? err.message : err)
+  );
 });
 
 router.post('/scheduler/execute-signal', async (req, res) => {

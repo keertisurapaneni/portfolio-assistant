@@ -496,17 +496,43 @@ export function OptionsTab() {
 
   useEffect(() => { load(); }, [load]);
 
-  // Trigger a live options scan on the auto-trader, then reload data
+  // Trigger a live options scan on the auto-trader, then poll for results.
+  // The backend responds immediately (fire-and-forget); scan takes ~90s for full watchlist.
   const handleRefresh = useCallback(async () => {
     setScanning(true);
     try {
-      await fetch('http://localhost:3001/api/scheduler/options-scan', { method: 'POST' });
+      await fetch('http://localhost:3001/api/scheduler/options-scan', {
+        method: 'POST',
+        signal: AbortSignal.timeout(5_000),
+      });
     } catch {
-      // auto-trader may be offline — fall through to data reload
-    } finally {
+      // auto-trader offline or timed out — still reload data
       setScanning(false);
+      await load();
+      return;
     }
-    await load();
+
+    // Poll every 15s for up to 3 minutes, reloading data as results come in
+    let elapsed = 0;
+    const poll = setInterval(async () => {
+      await load();
+      elapsed += 15;
+      if (elapsed >= 180) {
+        clearInterval(poll);
+        setScanning(false);
+      }
+    }, 15_000);
+
+    // Also do an immediate reload after 20s (first results arrive)
+    setTimeout(async () => {
+      await load();
+    }, 20_000);
+
+    // Stop scanning indicator after 3 min regardless
+    setTimeout(() => {
+      clearInterval(poll);
+      setScanning(false);
+    }, 180_000);
   }, [load]);
 
   // Fetch max allocation from config once
