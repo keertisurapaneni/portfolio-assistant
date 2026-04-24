@@ -1,7 +1,7 @@
 # Options Wheel Strategy — How We Make Money with Options
 
 **Prepared by:** Keerti  
-**Last updated:** April 24, 2026  
+**Last updated:** April 24, 2026 (end of day — defensive ETF tier added)  
 **Account:** Paper trading (simulated) — $1,000,000 portfolio  
 **Options budget:** $500,000 allocated to this strategy  
 **Monthly income target:** $5,000+
@@ -41,13 +41,34 @@ We now categorize all approved stocks into three tiers, each with its own rules.
 |--------|-----|
 | JPM, KO, HD, COST, MA, V, UNH | Dividend leaders, liquid, steady |
 | AAPL, GOOGL, MSFT, AMZN, ORCL | Mega-cap tech, very liquid chains |
+| JNJ, ABBV, PFE, MRK, CVS | Healthcare defensives |
+| BAC, WFC, C, GS | Large-cap financials |
+| PG, WMT, MO | Consumer staples |
+| NEE, DUK | Utilities |
+| **VPU, VYM, VIG** ⭐ | Vanguard defensive ETFs — see Index ETF section below |
 
 **Rules for STABLE stocks:**
-- Beta (volatility) cap: **1.2×** the market *(most forgiving)*
+- Beta (volatility) cap: **1.2×** the market *(relaxes to 1.5× when VIX > 30 — betas inflate during panic)*
 - Minimum IV rank: **35** *(we sell premium even at lower volatility — these names rarely spike)*
 - Target strike: **25-delta** *(25% chance of assignment — further out for more cushion)*
 - Minimum probability of profit: **70%** *(slightly relaxed — stable stocks move less)*
 - Max contracts per trade: **2** *(we're comfortable with double exposure on quality names)*
+
+#### ⭐ Index ETF Sub-Group (VPU, VYM, VIG)
+
+These are Vanguard defensive ETFs — the best risk/reward candidates in the STABLE tier. Instead of owning a single company, assignment means owning a diversified basket of dividend-payers. This is deliberately desirable.
+
+| ETF | What it holds | Beta | Why it's ideal |
+|-----|--------------|------|----------------|
+| **VPU** | 65+ US utility companies | ~0.5 | Ultra-defensive, low correlation to tech sell-offs |
+| **VYM** | 400+ high-dividend US stocks | ~0.8 | Broad diversification, naturally range-bound |
+| **VIG** | Companies with 10+ years of dividend growth | ~0.85 | Quality compounders, steady price action |
+
+**Special rule for Index ETFs:**
+- Minimum monthly premium yield: **1.2%** (vs 1.5% for individual stocks) — justified because assignment risk is minimal
+- Assignment is a *feature* — you're dollar-cost averaging into a diversified portfolio at a lower price
+
+**Future: Covered Strangle on these ETFs** — Once VIX normalizes below 25 and we have 2+ successful fills, we'll activate the covered strangle: sell a call *above* and a put *below* the current price simultaneously. This nearly doubles the income per cycle on the same capital. Currently on the backlog.
 
 ---
 

@@ -1,6 +1,6 @@
 # Options Wheel Engine
 
-**Last updated:** 2026-04-24  
+**Last updated:** 2026-04-24 (end of day — ETF tier + scanner reliability)  
 **Status:** Live — paper trading mode (IB paper account DUP876374)  
 **Auto-trade:** ENABLED — `auto_trader_config.options_auto_trade_enabled = true`  
 **Real orders:** Placed via IB Gateway (paper account); falls back to paper-only if IB offline
@@ -51,7 +51,7 @@ Runs sequentially for each watchlist ticker. First failing check skips the ticke
 | 3 | Min price | Stock ≥ $20 (or watchlist override) | `price_too_low_X` |
 | 3.2 | Dip detection + Bollinger Bands | Fetches 30-day candles. ≥5% drop = dip entry bonus. SMA20 ± 2σ → BB lower/upper + `bb_signal`. | informational |
 | 3.5 | Stock trend | Must be above 50-day SMA; not down >20% in 3 months | `below_sma50:X` / `down_Xpct_3m` |
-| 3.6 | Beta filter | Skip if beta > 1.5 (leveraged ETFs exempt) | `high_beta:X.XX` |
+| 3.6 | Beta filter | Per-tier cap: STABLE 1.2×, GROWTH 1.8×, HIGH_VOL 2.5×. In VIX-spike mode (VIX > 30) STABLE cap relaxes to 1.5× — realized betas inflate during panic but underlying quality is unchanged. Leveraged ETFs exempt. | `high_beta:X.XX` |
 | 4 | Earnings blackout | No earnings within 7 days | `earnings_in_Xd` |
 | 4.5 | News sentiment | No red-flag headlines; Finnhub score ≥ -0.3 | `news_red_flag:X` |
 | 4.6 | Sector concentration | Max 2 open positions per sector | `sector_limit:X` |
@@ -59,9 +59,9 @@ Runs sequentially for each watchlist ticker. First failing check skips the ticke
 | 5 | RSI | RSI < 38 and rising = high conviction bonus (soft signal, not a hard block) | informational only |
 | 6 | Options chain | Fetch via IB Gateway; Black-Scholes synthetic fallback if IB unavailable | `no_options_chain` |
 | 6a | SMA20 strike floor | Put strike must be ≤ 20-day SMA. Dip entries exempt. | `strike_above_sma20:X` |
-| 6b | Prob profit floor | Strike OTM probability ≥ tier minimum (70–75%) | `low_prob_profit:XXpct` |
+| 6b | Prob profit floor | Strike OTM probability ≥ tier minimum (70–75%). In VIX-spike+200DMA mode, floor drops to **60%** — 0.35 delta is intentionally accepted at institutional support levels; the higher delta is the strategy, not an error. | `low_prob_profit:XXpct` |
 | 6.5 | Liquidity | Bid-ask spread < 30% of mid; bid > 0 | `wide_spread:XXpct` |
-| 7 | Premium yield | ≥ 1.5%/month regular; ≥ 5% leveraged ETFs; −0.5% grace for dip entries | `low_premium_X.XXpct` |
+| 7 | Premium yield | ≥ 1.5%/month regular; **≥ 1.2%/month index ETFs** (`is_index_etf=true`); ≥ 5% leveraged ETFs; −0.5% grace for dip entries | `low_premium_X.XXpct` |
 | 8 | Capital sufficiency | Free capital ≥ strike × 100 (50% size in bear mode) | `insufficient_capital` |
 | 9 | IV rank | IV rank ≥ 50 (≥ 25 range-bound). New tickers pass while history builds. | `iv_rank_low` (soft) |
 | 9.5 | IV spike | No sudden >20pt IV jump in last 24h | `iv_spike:+Xpts` |
@@ -189,11 +189,24 @@ Current leveraged ETFs on watchlist: SOXL, TQQQ, NVDL, AAPU, TSLL
 
 | Tier | Beta Cap | Min IV Rank | Delta Target | Min Prob Profit | Max Contracts |
 |------|---------|-------------|-------------|-----------------|---------------|
-| STABLE (blue-chip) | 1.2× | 35 | 0.25 | 70% | 2 |
+| STABLE (blue-chip) | 1.2× (1.5× in VIX spike) | 35 | 0.25 | 70% | 2 |
 | GROWTH (quality tech) | 1.8× | 50 | 0.30 | 72% | 1 |
 | HIGH VOL (momentum/leveraged) | 2.5× | 60 | 0.20 | 75% | 1 |
 
-Watchlist now includes `sector` column for concentration tracking and UI filtering. 42 tickers across Healthcare, Financials, Consumer Staples, Technology, Utilities, and more.
+Watchlist includes `sector` column (concentration tracking) and `is_index_etf` boolean flag. 51 tickers across Healthcare, Financials, Consumer Staples, Technology, Utilities, and more.
+
+### Index ETF Flag (`is_index_etf = true`)
+
+Applies to broad-market and dividend-focused ETFs where assignment is a *feature* — you own a diversified basket, not a single-company risk. Current index ETFs: **VPU, VYM, VIG**.
+
+| Parameter | Regular Stock | Index ETF | Leveraged ETF |
+|---|---|---|---|
+| Min monthly yield | 1.5% | **1.2%** | 5.0% |
+| Beta exemption | No | No (still checked) | Yes |
+| Assignment risk | Manage carefully | Desirable (DCA into diversified ETF) | High — exit quickly |
+| Covered strangle eligible | No | **Yes (backlog)** | No |
+
+**Covered strangle backlog:** VPU/VYM/VIG are the primary candidates for the future covered strangle strategy (sell CC above + CSP below simultaneously). Activates when: VIX < 25, ≥2 clean fills, post-assignment CC logic confirmed. Requires `strangle_partner_id` schema addition.
 
 ---
 
@@ -250,6 +263,19 @@ If options P&L for the calendar month falls below **−5% of options budget** (�
 | `app/src/lib/optionsApi.ts` | Frontend Supabase queries, live price fetch, projected income |
 | `supabase/migrations/20260424000003_options_roll_tracking.sql` | Adds `roll_count`, `rolled_from_id` to `paper_trades` |
 | `supabase/migrations/20260424000002_options_watchlist_sector_source.sql` | Adds `sector` column to `options_watchlist` |
+| `supabase/migrations/20260424000006_options_watchlist_index_etf.sql` | Adds `is_index_etf` column; inserts VPU, VYM, VIG as STABLE tier |
+
+---
+
+## Scanner Reliability Notes
+
+Three bugs were discovered and fixed on 2026-04-24 that were silently blocking all options entries:
+
+1. **`fetchJson` unhandled rejection** — `return res.json()` (without `await`) meant non-JSON Finnhub responses (e.g. under rate-limit) produced rejected promises that escaped the try/catch and crashed the entire scan loop mid-run. Tickers processed after the crash were never evaluated or persisted. Fix: `return await res.json()`.
+
+2. **No per-ticker error isolation** — The `for` loop over the watchlist had no try/catch, so one exception from any ticker aborted all remaining tickers. 16 defensive STABLE tickers (JNJ, BAC, WFC, etc.) were silently dropped every run. Fix: each `checkStock` call is now individually guarded; errors are recorded as `scanner_error` skip reasons.
+
+3. **VIX-spike delta conflicts with prob_profit floor** — Targeting 0.35 delta produces ~65% OTM probability. But the STABLE tier floor was 70% and GROWTH was 72%. Every entry generated in VIX-spike mode was immediately blocked by its own check. Fix: `VIX_SPIKE_MIN_PROB_PROFIT = 60%` applied when `vixSpike && nearSma200`.
 
 ---
 
