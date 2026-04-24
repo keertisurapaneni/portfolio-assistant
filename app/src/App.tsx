@@ -863,18 +863,6 @@ function AppContent() {
               Suggested Finds
             </NavLink>
             <NavLink
-              to="/options"
-              className={({ isActive }) => cn(
-                'flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all',
-                isActive
-                  ? 'bg-gradient-to-r from-violet-600 to-purple-600 text-white shadow-md shadow-violet-500/25'
-                  : 'text-slate-500 hover:text-slate-700 hover:bg-white/80'
-              )}
-            >
-              <CircleDollarSign className="w-4 h-4" />
-              Options Wheel
-            </NavLink>
-            <NavLink
               to="/morning-brief"
               className={({ isActive }) => cn(
                 'flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all',
@@ -885,6 +873,18 @@ function AppContent() {
             >
               <Newspaper className="w-4 h-4" />
               Morning Brief
+            </NavLink>
+            <NavLink
+              to="/options"
+              className={({ isActive }) => cn(
+                'flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all',
+                isActive
+                  ? 'bg-gradient-to-r from-violet-600 to-purple-600 text-white shadow-md shadow-violet-500/25'
+                  : 'text-slate-500 hover:text-slate-700 hover:bg-white/80'
+              )}
+            >
+              <CircleDollarSign className="w-4 h-4" />
+              Options Wheel
             </NavLink>
             {isAuthed && (
               <NavLink

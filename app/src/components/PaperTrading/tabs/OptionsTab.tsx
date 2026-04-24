@@ -467,7 +467,6 @@ export function OptionsTab() {
   const [maxAllocation, setMaxAllocation] = useState<number>(500_000);
   const [activeSection, setActiveSection] = useState<'positions' | 'history' | 'watchlist' | 'log'>('positions');
   const [tierFilter, setTierFilter]     = useState<'ALL' | 'STABLE' | 'GROWTH' | 'HIGH_VOL'>('ALL');
-  const [sourceFilter, setSourceFilter] = useState<'ALL' | 'user' | 'system'>('ALL');
   const [sectorFilter, setSectorFilter] = useState<string>('ALL');
 
   const load = useCallback(async () => {
@@ -863,8 +862,7 @@ export function OptionsTab() {
 
             const filtered = active.filter(w => {
               if (tierFilter !== 'ALL' && w.tier !== tierFilter) return false;
-              if (sourceFilter === 'user' && w.added_by !== 'user') return false;
-              if (sourceFilter === 'system' && w.added_by === 'user') return false;
+
               if (sectorFilter !== 'ALL' && w.sector !== sectorFilter) return false;
               return true;
             });
@@ -895,13 +893,6 @@ export function OptionsTab() {
                       <Pill key={t} label={t === 'ALL' ? 'All' : t === 'HIGH_VOL' ? 'High Vol' : t === 'STABLE' ? 'Stable' : 'Growth'} active={tierFilter === t} onClick={() => setTierFilter(t)} />
                     ))}
                   </div>
-                  {/* Source filter */}
-                  <div className="flex items-center gap-1.5 flex-wrap">
-                    <span className="text-[10px] text-[hsl(var(--muted-foreground))] font-medium w-10 shrink-0">Source</span>
-                    <Pill label="All" active={sourceFilter === 'ALL'} onClick={() => setSourceFilter('ALL')} />
-                    <Pill label="⭐ Your picks" active={sourceFilter === 'user'} onClick={() => setSourceFilter('user')} />
-                    <Pill label="Analyst picks" active={sourceFilter === 'system'} onClick={() => setSourceFilter('system')} />
-                  </div>
                   {/* Sector filter */}
                   <div className="flex items-center gap-1.5 flex-wrap">
                     <span className="text-[10px] text-[hsl(var(--muted-foreground))] font-medium w-10 shrink-0">Sector</span>
@@ -920,12 +911,8 @@ export function OptionsTab() {
                 <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
                   {filtered.map(w => {
                     const quote = prices.get(w.ticker);
-                    const isUserPick = w.added_by === 'user';
                     return (
-                      <div key={w.id} className={cn(
-                        'flex flex-col rounded-xl border px-3 py-2 gap-1',
-                        isUserPick ? 'border-teal-200 bg-teal-50/40' : 'border-[hsl(var(--border))] bg-[hsl(var(--card))]'
-                      )}>
+                      <div key={w.id} className="flex flex-col rounded-xl border px-3 py-2 gap-1 border-[hsl(var(--border))] bg-[hsl(var(--card))]">
                         <div className="flex items-start justify-between gap-1">
                           <div className="flex flex-col min-w-0">
                             <div className="flex items-center gap-1 flex-wrap">
@@ -939,11 +926,6 @@ export function OptionsTab() {
                               )}>
                                 {w.tier === 'STABLE' ? 'Stable' : w.tier === 'HIGH_VOL' ? 'High Vol' : 'Growth'}
                               </span>
-                              {isUserPick && (
-                                <span className="text-[9px] font-semibold px-1 py-0.5 rounded bg-teal-100 text-teal-700 uppercase tracking-wide">
-                                  ⭐ Your pick
-                                </span>
-                              )}
                             </div>
                             {w.sector && (
                               <span className="text-[9px] text-[hsl(var(--muted-foreground))] mt-0.5">{w.sector}</span>

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { TrendingUp, TrendingDown, Minus, Calendar, BarChart2, Newspaper, Star, ChevronRight, RefreshCw, Clock, AlertCircle } from 'lucide-react';
+import { TrendingUp, TrendingDown, Minus, Calendar, BarChart2, Newspaper, Star, ChevronRight, RefreshCw, Clock, AlertCircle, Zap } from 'lucide-react';
 import { createClient } from '@supabase/supabase-js';
 
 const supabase = createClient(
@@ -62,24 +62,24 @@ interface MorningBrief {
 // ── Helpers ──────────────────────────────────────────────
 
 function directionIcon(d: string) {
-  if (d === 'bullish') return <TrendingUp className="w-4 h-4 text-emerald-400" />;
-  if (d === 'bearish') return <TrendingDown className="w-4 h-4 text-red-400" />;
-  if (d === 'volatile') return <BarChart2 className="w-4 h-4 text-amber-400" />;
+  if (d === 'bullish') return <TrendingUp className="w-4 h-4 text-emerald-500" />;
+  if (d === 'bearish') return <TrendingDown className="w-4 h-4 text-red-500" />;
+  if (d === 'volatile') return <BarChart2 className="w-4 h-4 text-amber-500" />;
   return <Minus className="w-4 h-4 text-slate-400" />;
 }
 
 function directionBadge(d: string) {
   const base = 'px-2 py-0.5 rounded-full text-xs font-semibold';
-  if (d === 'bullish') return <span className={cn(base, 'bg-emerald-500/20 text-emerald-300')}>Bullish</span>;
-  if (d === 'bearish') return <span className={cn(base, 'bg-red-500/20 text-red-300')}>Bearish</span>;
-  if (d === 'volatile') return <span className={cn(base, 'bg-amber-500/20 text-amber-300')}>Volatile</span>;
-  return <span className={cn(base, 'bg-slate-500/20 text-slate-300')}>Neutral</span>;
+  if (d === 'bullish') return <span className={cn(base, 'bg-emerald-100 text-emerald-700')}>Bullish</span>;
+  if (d === 'bearish') return <span className={cn(base, 'bg-red-100 text-red-700')}>Bearish</span>;
+  if (d === 'volatile') return <span className={cn(base, 'bg-amber-100 text-amber-700')}>Volatile</span>;
+  return <span className={cn(base, 'bg-slate-100 text-slate-600')}>Neutral</span>;
 }
 
 function importanceDot(imp: string) {
-  if (imp === 'high') return <span className="w-2 h-2 rounded-full bg-red-400 shrink-0 mt-1.5" />;
+  if (imp === 'high') return <span className="w-2 h-2 rounded-full bg-red-500 shrink-0 mt-1.5" />;
   if (imp === 'medium') return <span className="w-2 h-2 rounded-full bg-amber-400 shrink-0 mt-1.5" />;
-  return <span className="w-2 h-2 rounded-full bg-slate-500 shrink-0 mt-1.5" />;
+  return <span className="w-2 h-2 rounded-full bg-slate-300 shrink-0 mt-1.5" />;
 }
 
 function formatDate(d: string) {
@@ -97,10 +97,10 @@ function timeAgo(iso: string) {
 
 function Section({ icon, title, children, className }: { icon: React.ReactNode; title: string; children: React.ReactNode; className?: string }) {
   return (
-    <div className={cn('bg-slate-800/60 rounded-xl border border-slate-700/50 p-4', className)}>
+    <div className={cn('bg-white rounded-xl border border-slate-200 p-4 shadow-sm', className)}>
       <div className="flex items-center gap-2 mb-3">
         <span className="text-slate-400">{icon}</span>
-        <h3 className="text-sm font-semibold text-slate-200 uppercase tracking-wide">{title}</h3>
+        <h3 className="text-sm font-semibold text-slate-600 uppercase tracking-wide">{title}</h3>
       </div>
       {children}
     </div>
@@ -109,20 +109,30 @@ function Section({ icon, title, children, className }: { icon: React.ReactNode; 
 
 // ── Empty State ───────────────────────────────────────────
 
-function EmptyState({ isToday }: { isToday: boolean }) {
+function EmptyState({ isToday, onGenerate, generating }: { isToday: boolean; onGenerate: () => void; generating: boolean }) {
   return (
     <div className="flex flex-col items-center justify-center py-20 text-center">
-      <div className="w-16 h-16 rounded-full bg-slate-800 flex items-center justify-center mb-4">
-        <Newspaper className="w-8 h-8 text-slate-500" />
+      <div className="w-16 h-16 rounded-full bg-slate-100 flex items-center justify-center mb-4">
+        <Newspaper className="w-8 h-8 text-slate-400" />
       </div>
-      <h3 className="text-slate-300 font-semibold mb-2">
+      <h3 className="text-slate-700 font-semibold mb-2">
         {isToday ? "Today's brief hasn't been generated yet" : 'No brief for this date'}
       </h3>
-      <p className="text-slate-500 text-sm max-w-sm">
+      <p className="text-slate-500 text-sm max-w-sm mb-5">
         {isToday
-          ? 'The morning brief runs automatically at 8:00 AM ET on weekdays. Check back after 8 AM, or trigger a manual run from the auto-trader.'
+          ? 'The morning brief runs automatically at 8:00 AM ET on weekdays.'
           : 'No morning brief was generated for this date.'}
       </p>
+      {isToday && (
+        <button
+          onClick={onGenerate}
+          disabled={generating}
+          className="flex items-center gap-2 px-4 py-2 bg-amber-500 hover:bg-amber-600 disabled:bg-amber-300 text-white rounded-lg text-sm font-medium transition-colors"
+        >
+          {generating ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Zap className="w-4 h-4" />}
+          {generating ? 'Generating...' : 'Generate Now'}
+        </button>
+      )}
     </div>
   );
 }
@@ -132,6 +142,7 @@ function EmptyState({ isToday }: { isToday: boolean }) {
 export function MorningBrief() {
   const [brief, setBrief] = useState<MorningBrief | null>(null);
   const [loading, setLoading] = useState(true);
+  const [generating, setGenerating] = useState(false);
   const [selectedDate, setSelectedDate] = useState<string>('');
   const [availableDates, setAvailableDates] = useState<string[]>([]);
 
@@ -158,6 +169,21 @@ export function MorningBrief() {
     setLoading(false);
   }
 
+  async function handleGenerate() {
+    setGenerating(true);
+    try {
+      await supabase.functions.invoke('generate-morning-brief', { body: {} });
+      // Brief takes ~10-15s to generate; poll after a short wait
+      await new Promise(r => setTimeout(r, 12000));
+      await fetchBriefs();
+    } catch {
+      // silently fall through — fetchBriefs will show empty state if it failed
+      await fetchBriefs();
+    } finally {
+      setGenerating(false);
+    }
+  }
+
   useEffect(() => { fetchBriefs(); }, []);
 
   useEffect(() => {
@@ -171,11 +197,11 @@ export function MorningBrief() {
     }
   }, [selectedDate]);
 
-  const isToday = selectedDate === todayStr;
+  const isToday = selectedDate === todayStr || availableDates.length === 0;
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-slate-900 flex items-center justify-center">
+      <div className="flex items-center justify-center py-24">
         <div className="flex items-center gap-3 text-slate-400">
           <RefreshCw className="w-5 h-5 animate-spin" />
           <span>Loading morning brief...</span>
@@ -185,12 +211,12 @@ export function MorningBrief() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-900 text-slate-100 p-4 md:p-6">
+    <div className="p-4 md:p-6">
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-6">
         <div>
-          <h1 className="text-2xl font-bold text-white flex items-center gap-2">
-            <Newspaper className="w-6 h-6 text-blue-400" />
+          <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
+            <Newspaper className="w-6 h-6 text-amber-500" />
             Morning Brief
           </h1>
           {brief && (
@@ -205,7 +231,7 @@ export function MorningBrief() {
             <select
               value={selectedDate}
               onChange={e => setSelectedDate(e.target.value)}
-              className="bg-slate-800 border border-slate-700 text-slate-200 text-sm rounded-lg px-3 py-1.5"
+              className="bg-white border border-slate-200 text-slate-700 text-sm rounded-lg px-3 py-1.5"
             >
               {availableDates.map(d => (
                 <option key={d} value={d}>
@@ -215,8 +241,16 @@ export function MorningBrief() {
             </select>
           )}
           <button
+            onClick={handleGenerate}
+            disabled={generating}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-500 hover:bg-amber-600 disabled:bg-amber-300 text-white rounded-lg text-sm font-medium transition-colors"
+          >
+            {generating ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Zap className="w-3.5 h-3.5" />}
+            {generating ? 'Generating...' : 'Generate Now'}
+          </button>
+          <button
             onClick={fetchBriefs}
-            className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-lg text-sm text-slate-300 transition-colors"
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-white hover:bg-slate-50 border border-slate-200 rounded-lg text-sm text-slate-600 transition-colors"
           >
             <RefreshCw className="w-3.5 h-3.5" />
             Refresh
@@ -225,21 +259,21 @@ export function MorningBrief() {
       </div>
 
       {!brief ? (
-        <EmptyState isToday={isToday} />
+        <EmptyState isToday={isToday} onGenerate={handleGenerate} generating={generating} />
       ) : (
         <>
           {/* Date heading */}
           <div className="mb-4">
-            <h2 className="text-lg font-semibold text-slate-100">{formatDate(brief.brief_date)}</h2>
+            <h2 className="text-lg font-semibold text-slate-700">{formatDate(brief.brief_date)}</h2>
           </div>
 
           {/* Macro snapshot — hero card */}
           {brief.macro_snapshot && (
-            <div className="bg-gradient-to-br from-blue-900/40 to-indigo-900/30 border border-blue-700/40 rounded-xl p-5 mb-4">
-              <p className="text-sm font-medium text-blue-300 mb-1 uppercase tracking-wide">Market Snapshot</p>
-              <p className="text-slate-100 leading-relaxed">{brief.macro_snapshot}</p>
+            <div className="bg-gradient-to-br from-blue-50 to-indigo-50 border border-blue-200 rounded-xl p-5 mb-4">
+              <p className="text-sm font-medium text-blue-600 mb-1 uppercase tracking-wide">Market Snapshot</p>
+              <p className="text-slate-800 leading-relaxed">{brief.macro_snapshot}</p>
               {brief.macro_tone && (
-                <p className="text-slate-400 text-sm mt-3 leading-relaxed border-t border-blue-700/30 pt-3">
+                <p className="text-slate-500 text-sm mt-3 leading-relaxed border-t border-blue-200 pt-3">
                   {brief.macro_tone}
                 </p>
               )}
@@ -252,16 +286,16 @@ export function MorningBrief() {
               <Section icon={<Star className="w-4 h-4" />} title="Top Movers" className="lg:col-span-2">
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   {brief.top_movers.map((m, i) => (
-                    <div key={i} className="bg-slate-900/60 rounded-lg p-3 border border-slate-700/40">
+                    <div key={i} className="bg-slate-50 rounded-lg p-3 border border-slate-200">
                       <div className="flex items-center justify-between mb-1.5">
                         <div className="flex items-center gap-2">
                           {directionIcon(m.direction)}
-                          <span className="font-bold text-white">{m.ticker}</span>
+                          <span className="font-bold text-slate-800">{m.ticker}</span>
                           {directionBadge(m.direction)}
                         </div>
                       </div>
-                      <p className="text-xs text-blue-300 font-medium mb-1">{m.catalyst}</p>
-                      <p className="text-xs text-slate-400 leading-relaxed">{m.why}</p>
+                      <p className="text-xs text-blue-600 font-medium mb-1">{m.catalyst}</p>
+                      <p className="text-xs text-slate-500 leading-relaxed">{m.why}</p>
                     </div>
                   ))}
                 </div>
@@ -278,10 +312,10 @@ export function MorningBrief() {
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 flex-wrap">
                           <span className="text-xs font-mono text-slate-400 shrink-0">{e.time_et}</span>
-                          <span className="text-sm text-slate-200 font-medium">{e.event}</span>
+                          <span className="text-sm text-slate-700 font-medium">{e.event}</span>
                         </div>
                         {(e.estimate || e.prior) && (
-                          <p className="text-xs text-slate-500 mt-0.5">
+                          <p className="text-xs text-slate-400 mt-0.5">
                             {e.estimate && `Est: ${e.estimate}`}
                             {e.estimate && e.prior && ' · '}
                             {e.prior && `Prior: ${e.prior}`}
@@ -303,13 +337,13 @@ export function MorningBrief() {
                       {directionIcon(e.direction)}
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 flex-wrap">
-                          <span className="font-bold text-white text-sm">{e.ticker}</span>
-                          <span className="text-xs text-slate-500">
+                          <span className="font-bold text-slate-800 text-sm">{e.ticker}</span>
+                          <span className="text-xs text-slate-400">
                             {e.when === 'before_open' ? 'Pre-market' : e.when === 'after_close' ? 'After close' : e.when}
                           </span>
                           {directionBadge(e.direction)}
                         </div>
-                        <p className="text-xs text-slate-400 mt-0.5 leading-relaxed">{e.note}</p>
+                        <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">{e.note}</p>
                       </div>
                     </div>
                   ))}
@@ -326,14 +360,14 @@ export function MorningBrief() {
                   {brief.research_themes.map((t, i) => (
                     <div key={i}>
                       <div className="flex items-center gap-2 mb-1">
-                        <span className="text-sm font-semibold text-slate-200">{t.theme}</span>
+                        <span className="text-sm font-semibold text-slate-700">{t.theme}</span>
                         <div className="flex gap-1 flex-wrap">
                           {t.tickers?.map(tk => (
-                            <span key={tk} className="px-1.5 py-0.5 bg-slate-700 rounded text-xs text-slate-300 font-mono">{tk}</span>
+                            <span key={tk} className="px-1.5 py-0.5 bg-slate-100 border border-slate-200 rounded text-xs text-slate-600 font-mono">{tk}</span>
                           ))}
                         </div>
                       </div>
-                      <p className="text-xs text-slate-400 leading-relaxed">{t.note}</p>
+                      <p className="text-xs text-slate-500 leading-relaxed">{t.note}</p>
                     </div>
                   ))}
                 </div>
@@ -348,8 +382,8 @@ export function MorningBrief() {
                     <div key={i} className="flex items-start gap-2">
                       {directionIcon(s.direction)}
                       <div>
-                        <span className="font-bold text-white text-sm mr-2">{s.ticker}</span>
-                        <span className="text-xs text-slate-400">{s.note}</span>
+                        <span className="font-bold text-slate-800 text-sm mr-2">{s.ticker}</span>
+                        <span className="text-xs text-slate-500">{s.note}</span>
                       </div>
                     </div>
                   ))}
@@ -360,12 +394,12 @@ export function MorningBrief() {
 
           {/* Week Ahead */}
           {brief.week_ahead && (
-            <div className="bg-slate-800/40 border border-slate-700/40 rounded-xl p-4">
+            <div className="bg-amber-50 border border-amber-200 rounded-xl p-4">
               <div className="flex items-center gap-2 mb-2">
-                <AlertCircle className="w-4 h-4 text-amber-400" />
-                <h3 className="text-sm font-semibold text-slate-200 uppercase tracking-wide">Week Ahead</h3>
+                <AlertCircle className="w-4 h-4 text-amber-500" />
+                <h3 className="text-sm font-semibold text-amber-700 uppercase tracking-wide">Week Ahead</h3>
               </div>
-              <p className="text-slate-400 text-sm leading-relaxed">{brief.week_ahead}</p>
+              <p className="text-slate-600 text-sm leading-relaxed">{brief.week_ahead}</p>
             </div>
           )}
         </>

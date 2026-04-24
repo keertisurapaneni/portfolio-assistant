@@ -19,7 +19,10 @@
  *   4.6 Sector concentration — max 2 open put positions per sector
  *   4.7 Bear mode sector filter — only defensive sectors in bear mode
  *   5.  RSI oversold + recovering (< 38, turning up) — soft signal, affects conviction
- *   6.  Options chain — fetches best put at target delta
+ *   6.  Options chain — fetches best put at VIX-tiered delta target:
+ *       • VIX>30 + stock near 200 DMA (within 5%): 0.35 delta (max aggression on quality names)
+ *       • VIX 25-30 or bear mode: 0.20 delta (STABLE) / 0.15 delta (others)
+ *       • Normal market: tier override / RSI conviction / auto-tuned default
  *   6a. SMA20 strike floor — strike must be at/below 20-day SMA
  *   6b. Probability of profit — must be ≥ 75% OTM
  *   6.5 Liquidity — bid-ask spread < 30% of mid; must have a real bid
@@ -71,9 +74,12 @@ const MAX_PCT_FROM_52W_HIGH = 5; // block if within 5% of 52-week high
 const HIGH_IV_RANK_DTE = 60;       // target DTE when IV rank is very elevated
 const HIGH_IV_RANK_DTE_THRESHOLD = 70; // IV rank floor for extended DTE
 
-// Bear market mode — more conservative params applied when SPY < SMA200
-const BEAR_DELTA_TARGET = 0.15;            // 15-delta puts (vs normal 20-25)
-const BEAR_DTE_TARGET = 21;                // shorter expiry
+// Bear/elevated-VIX mode — conservative params when SPY < SMA200 or VIX 25-30
+const BEAR_DELTA_TARGET = 0.15;            // 15-delta puts — used in bear mode for non-STABLE names
+// VIX-spike + 200 DMA proximity → override to 0.35 delta (quality names at support = aggressive entry)
+const VIX_SPIKE_THRESHOLD = 30;           // VIX > 30 = spike; trigger max aggression on quality names
+const VIX_ELEVATED_THRESHOLD = 25;        // VIX 25-30 = elevated; use bear-mode conservative deltas
+const BEAR_DTE_TARGET = 21;               // shorter expiry
 const BEAR_POSITION_SIZE_FACTOR = 0.5;     // half size
 const BEAR_DEFENSIVE_SECTORS = [           // only these sectors in bear mode
   'Consumer Staples', 'Utilities', 'Health Care', 'Financials',
@@ -568,7 +574,7 @@ async function checkStock(
   }
 
   // Check 2: Position limit
-  const maxPositions = ctx.vix > 25 ? MAX_POSITIONS_HIGH_VIX : MAX_POSITIONS_NORMAL;
+  const maxPositions = ctx.vix >= VIX_ELEVATED_THRESHOLD ? MAX_POSITIONS_HIGH_VIX : MAX_POSITIONS_NORMAL;
   checks.positionLimit = ctx.openPutCount < maxPositions;
   if (ctx.openPutCount >= maxPositions) return { ticker, skipped: true, reason: 'max_positions' };
 
@@ -701,15 +707,76 @@ async function checkStock(
   const rsiBonus = rsiOk;
 
   // Check 6: Options chain — uses IB when connected, Black-Scholes synthetic fallback otherwise
-  // Delta priority:
-  //   bear mode STABLE (0.20) > bear mode other (0.15) > leveraged ETF (0.18) > tier override > high-conviction RSI (0.35) > auto-tuned default
-  // STABLE-tier names (KO, JNJ, PG, BAC…) have beta <1.2 and rarely move >10% on macro news,
-  // so 0.20 is still very safe (80% OTM) while collecting ~50% more premium than 0.15.
+  //
+  // ── VIX-Tiered Delta (confirmed by three independent video strategies) ──────────────────
+  //
+  // Delta priority (highest specificity wins):
+  //
+  //  Tier 1 — VIX Spike Mode (VIX > 30) + stock near its own 200 DMA (within 5%):
+  //    STABLE/GROWTH → 0.35 delta (sell close to ATM, high premium, want assignment)
+  //    HIGH_VOL → 0.20 delta (still cautious on volatile names even in spike)
+  //    Logic: high VIX = inflated premiums; 200 DMA support = institutional buying zone;
+  //           we WANT to get assigned on quality names at this price level.
+  //           Video reference: "The reason you want to be selling at [200 DMA] is because
+  //           there's a lot of volatility... This is how impactful it is... In one month I made 6%."
+  //
+  //  Tier 2 — VIX Elevated (VIX 25-30) OR bear mode:
+  //    STABLE → 0.20 delta (more aggressive than standard bear mode 0.15)
+  //    others → 0.15 delta (BEAR_DELTA_TARGET — conservative)
+  //
+  //  Tier 3 — Normal market (VIX < 25, SPY above SMA200):
+  //    Leveraged ETF → 0.18 | Tier override | RSI high-conviction → 0.35 | auto-tuned default
+
+  // Compute stock's own 200-day SMA for the 200 DMA proximity check.
+  // We extend the candle window from 30d→220d when needed. Rate-limit via the global
+  // Finnhub throttle — this adds ~1 API call per stock but only on the first scan cycle.
+  let stockSma200: number | null = null;
+  try {
+    const to = Math.floor(Date.now() / 1000);
+    const from = to - 86400 * 220; // 220 calendar days ~ 200+ trading days
+    const sma200Data = await fetchJson<{ c?: number[] }>(
+      `https://finnhub.io/api/v1/stock/candle?symbol=${ticker}&resolution=D&from=${from}&to=${to}&token=${FINNHUB_KEY}`
+    );
+    if (sma200Data?.c && sma200Data.c.length >= 200) {
+      stockSma200 = sma200Data.c.slice(-200).reduce((a, b) => a + b, 0) / 200;
+    }
+  } catch { /* non-blocking */ }
+
+  const nearSma200 = stockSma200 !== null && price <= stockSma200 * 1.05; // within 5% of 200 DMA
+  const vixSpike = ctx.vix > VIX_SPIKE_THRESHOLD;
+  const vixElevated = ctx.vix >= VIX_ELEVATED_THRESHOLD;
+
+  checks.vixTier = vixSpike
+    ? `SPIKE:${ctx.vix.toFixed(1)}`
+    : vixElevated
+      ? `ELEVATED:${ctx.vix.toFixed(1)}`
+      : `NORMAL:${ctx.vix.toFixed(1)}`;
+  checks.sma200Proximity = stockSma200 !== null
+    ? `price:${price.toFixed(0)}_sma200:${stockSma200.toFixed(0)}_near:${nearSma200}`
+    : 'sma200_no_data';
+
   let deltaTarget = ctx.deltaTarget;
-  if (ctx.bearMode) deltaTarget = tier === 'STABLE' ? 0.20 : BEAR_DELTA_TARGET;
-  else if (leverageFactor > 1) deltaTarget = DELTA_TARGET_LEVERAGED;
-  else if (tierCfg.deltaTarget !== null) deltaTarget = tierCfg.deltaTarget;
-  else if (rsiBonus) deltaTarget = DELTA_TARGET_HIGH_CONVICTION;
+
+  if (vixSpike && nearSma200) {
+    // Maximum aggression: VIX spike + stock at 200 DMA support = ideal assignment entry
+    deltaTarget = tier === 'HIGH_VOL' ? 0.20 : 0.35;
+    checks.deltaLogic = `vix_spike_near_200dma:${deltaTarget}`;
+  } else if (ctx.bearMode || vixElevated) {
+    // Conservative bear/elevated mode — STABLE gets slightly more room than others
+    deltaTarget = tier === 'STABLE' ? 0.20 : BEAR_DELTA_TARGET;
+    checks.deltaLogic = `bear_or_elevated_vix:${deltaTarget}`;
+  } else if (leverageFactor > 1) {
+    deltaTarget = DELTA_TARGET_LEVERAGED;
+    checks.deltaLogic = `leveraged_etf:${deltaTarget}`;
+  } else if (tierCfg.deltaTarget !== null) {
+    deltaTarget = tierCfg.deltaTarget;
+    checks.deltaLogic = `tier_override:${deltaTarget}`;
+  } else if (rsiBonus) {
+    deltaTarget = DELTA_TARGET_HIGH_CONVICTION;
+    checks.deltaLogic = `rsi_high_conviction:${deltaTarget}`;
+  } else {
+    checks.deltaLogic = `auto_tuned:${deltaTarget}`;
+  }
 
   // Extended DTE when IV rank is very elevated — collect more premium during fear spikes.
   // Bear mode always uses its shorter 21 DTE (fast recovery expected).
