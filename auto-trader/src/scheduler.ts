@@ -3637,6 +3637,100 @@ async function checkProfitTakeOpportunities(
   }
 }
 
+// ── Day-Trade Software Trailing Stop ──────────────────────────────────────────
+//
+// Activates once a day trade has moved +1R in your favour (i.e. you've "earned"
+// as much as you risked). From that point it trails: if the position pulls back
+// more than 50% of the peak gain from entry, a market-close order fires.
+//
+// This runs every scheduler cycle (every ~15 min) ON TOP of the existing IB
+// bracket — it doesn't cancel bracket orders, it's just an extra software layer
+// that catches large reversals the fixed bracket stop can't adjust for.
+//
+// Config:
+//   TRAIL_ACTIVATION_R  — gain multiple of initial risk before trail kicks in (1.0 = 1R)
+//   TRAIL_RETRACE_PCT   — fraction of peak gain that can retrace before close (0.50 = 50%)
+
+const TRAIL_ACTIVATION_R  = 1.0;  // activate at +1R
+const TRAIL_RETRACE_PCT   = 0.50; // close if 50% of peak gain evaporates
+
+async function checkDayTradeTrailingStops(
+  positions: EnrichedPosition[],
+): Promise<void> {
+  const activeTrades = await getActiveTrades();
+  const dayTrades = activeTrades.filter(
+    t => t.mode === 'DAY_TRADE' && (t.status === 'FILLED' || t.status === 'PARTIAL'),
+  );
+  if (dayTrades.length === 0) return;
+
+  for (const trade of dayTrades) {
+    const ibPos = positions.find(p => p.symbol.toUpperCase() === trade.ticker.toUpperCase());
+    if (!ibPos || ibPos.mktPrice <= 0) continue;
+
+    const fillPrice  = trade.fill_price ?? trade.entry_price ?? 0;
+    const stopPrice  = trade.stop_loss ?? 0;
+    if (!fillPrice || !stopPrice) continue;
+
+    const risk = Math.abs(fillPrice - stopPrice);
+    if (risk <= 0) continue;
+
+    const currentPrice = ibPos.mktPrice;
+    const isBuy = trade.signal === 'BUY';
+
+    // Gain in multiples of initial risk (positive = in profit)
+    const gainInR = isBuy
+      ? (currentPrice - fillPrice) / risk
+      : (fillPrice - currentPrice) / risk;
+
+    if (gainInR < TRAIL_ACTIVATION_R) continue; // not yet in profit enough to trail
+
+    // Track peak price (persist to DB when it moves)
+    const storedPeak = trade.price_peak ?? 0;
+    const newPeak = isBuy
+      ? Math.max(storedPeak, currentPrice)
+      : (storedPeak <= 0 ? currentPrice : Math.min(storedPeak, currentPrice));
+
+    if (newPeak !== storedPeak) {
+      await updatePaperTrade(trade.id, { price_peak: newPeak });
+    }
+
+    // Trail stop = peak minus TRAIL_RETRACE_PCT of the peak gain
+    const peakGain    = Math.abs(newPeak - fillPrice);
+    const trailDist   = peakGain * TRAIL_RETRACE_PCT;
+    const trailStop   = isBuy ? newPeak - trailDist : newPeak + trailDist;
+    const violated    = isBuy ? currentPrice <= trailStop : currentPrice >= trailStop;
+
+    log(
+      `${trade.ticker}: trail check — fill ${fillPrice} peak ${newPeak.toFixed(2)} ` +
+      `current ${currentPrice.toFixed(2)} trailStop ${trailStop.toFixed(2)} ` +
+      `(+${gainInR.toFixed(1)}R) ${violated ? '→ TRIGGERED' : 'ok'}`,
+    );
+
+    if (!violated) continue;
+
+    // Close the position at market
+    const closeSide = isBuy ? 'SELL' : 'BUY';
+    const qty       = trade.quantity ?? 0;
+    if (qty <= 0) continue;
+
+    try {
+      await placeMarketOrder({ symbol: trade.ticker, side: closeSide, quantity: qty });
+      await updatePaperTrade(trade.id, {
+        status:       'CLOSED',
+        close_reason: 'trailing_stop',
+        closed_at:    new Date().toISOString(),
+      });
+      log(
+        `${trade.ticker}: DAY_TRADE trailing stop closed — peak ${newPeak.toFixed(2)}, ` +
+        `current ${currentPrice.toFixed(2)}, trail stop ${trailStop.toFixed(2)}, ` +
+        `locked in ~${((newPeak - fillPrice) * (TRAIL_RETRACE_PCT)).toFixed(2)} of peak gain`,
+      );
+    } catch (err) {
+      log(`${trade.ticker}: trailing stop close failed — ${err instanceof Error ? err.message : 'unknown'}`);
+    }
+  }
+}
+
 async function checkLossCutOpportunities(
   config: AutoTraderConfig,
   positions: EnrichedPosition[],
@@ -4165,6 +4259,7 @@ async function runSchedulerCycle(): Promise<void> {
     }
 
     // 6. Position management: dip buy, profit take, loss cut, swing expiry
+    await checkDayTradeTrailingStops(positions);       // software trailing stop for day trades in profit (+1R)
     await checkDipBuyOpportunities(config, positions);
     await checkProfitTakeOpportunities(config, positions);
     await checkLossCutOpportunities(config, positions);
