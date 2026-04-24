@@ -9,9 +9,9 @@
  */
 
 import { getSupabase, createAutoTradeEvent } from './supabase.js';
-import { getOptionsAutoTradeConfig } from './options-scanner.js';
+import { getOptionsAutoTradeConfig, autoTradeOption, type OptionsTradeTicket } from './options-scanner.js';
 import { getOptionsChain } from './options-chain.js';
-import { isConnected, requestOpenOrders } from '../ib-connection.js';
+import { isConnected, requestOpenOrders, placeOptionsOrder, getDefaultAccount } from '../ib-connection.js';
 
 function persistEvent(ticker: string, eventType: string, message: string, extra?: Record<string, unknown>): void {
   createAutoTradeEvent({ ticker, event_type: eventType, message, ...extra });
@@ -49,6 +49,170 @@ interface PositionRow {
   status: string;
   pnl: number | null;
   ib_order_id: number | null;
+  roll_count: number;
+  rolled_from_id: string | null;
+}
+
+// ── Roll Constants (from rolling-options video strategy) ──
+
+/** Max debit rolls per position — "three strikes and you're out" */
+const MAX_DEBIT_ROLLS = 3;
+/** Max debit accepted on a roll = 25% of original premium collected */
+const ROLL_MAX_DEBIT_PCT = 0.25;
+/** Target DTE for the new leg when rolling */
+const ROLL_TARGET_DTE = 45;
+/** Target delta for the new put leg when rolling down */
+const ROLL_PUT_DELTA = 0.20;
+
+function daysToExpiryStr(yyyymmdd: string): number {
+  const y = parseInt(yyyymmdd.slice(0, 4), 10);
+  const m = parseInt(yyyymmdd.slice(4, 6), 10) - 1;
+  const d = parseInt(yyyymmdd.slice(6, 8), 10);
+  return Math.ceil((new Date(y, m, d).getTime() - Date.now()) / 86_400_000);
+}
+
+/**
+ * Evaluate and execute a "roll down and out" for a sell-put position.
+ *
+ * Strategy (from rolling-options video):
+ *   1. Buy back the current put at current market price
+ *   2. Sell a new put at or below current stock price, ~45 DTE
+ *   3. Only proceed if net result is a credit OR small debit (≤25% of original premium)
+ *   4. Respect max-debit-roll limit (3 debit rolls per position chain)
+ *
+ * Returns true if the roll was executed, false if we should fall back to closing.
+ */
+async function evaluateAndRollPut(
+  pos: PositionRow,
+  stockPrice: number,
+  currentPremium: number,
+): Promise<{ rolled: boolean; reason: string; logLine: string }> {
+  const sb = getSupabase();
+  const premiumCollected = pos.option_premium ?? 0;
+  const rollCount = pos.roll_count ?? 0;
+
+  // Gate: never roll more than MAX_DEBIT_ROLLS times for a debit
+  // (credit rolls are unlimited — that's the "infinite rolling" strategy)
+
+  // Fetch next-month chain at a 20-delta strike at/below current price
+  const chain = await getOptionsChain(pos.ticker, stockPrice, null, ROLL_PUT_DELTA, ROLL_TARGET_DTE).catch(() => null);
+  if (!chain?.bestPut) {
+    return { rolled: false, reason: 'no_chain', logLine: `${pos.ticker}: no options chain available for roll` };
+  }
+
+  const newPut = chain.bestPut;
+  const newStrike = newPut.strike;
+  const newExpiry = newPut.expiry;         // YYYYMMDD
+  const newPremium = newPut.bid;           // conservative: bid price
+  const newDte = daysToExpiryStr(newExpiry);
+
+  // Net credit = new premium collected − cost to buy back current
+  const netCredit = newPremium - currentPremium;
+  const isCredit = netCredit >= 0;
+  const isAcceptableDebit = netCredit < 0 && Math.abs(netCredit) <= premiumCollected * ROLL_MAX_DEBIT_PCT;
+
+  if (!isCredit && !isAcceptableDebit) {
+    return {
+      rolled: false,
+      reason: `debit_too_large`,
+      logLine: `${pos.ticker}: roll debit $${Math.abs(netCredit).toFixed(2)} exceeds 25% limit ($${(premiumCollected * ROLL_MAX_DEBIT_PCT).toFixed(2)}) — closing instead`,
+    };
+  }
+
+  if (!isCredit && rollCount >= MAX_DEBIT_ROLLS) {
+    return {
+      rolled: false,
+      reason: `max_debit_rolls`,
+      logLine: `${pos.ticker}: already rolled ${rollCount}× for debit — three strikes, closing instead`,
+    };
+  }
+
+  // Roll math sanity check (video's annualized return test):
+  // (strike improvement + net credit) / capital × (365 / newDte) must be meaningful
+  const strikeImprovement = Math.max(0, pos.option_strike - newStrike); // going down
+  const totalBenefit = strikeImprovement + Math.max(0, netCredit);      // credit adds; debit subtracts
+  const capital = pos.option_capital_req ?? pos.option_strike * 100;
+  const annualizedRollReturn = newDte > 0 ? (totalBenefit / capital) * (365 / newDte) * 100 : 0;
+
+  if (annualizedRollReturn < 2) {
+    return {
+      rolled: false,
+      reason: `low_return`,
+      logLine: `${pos.ticker}: roll annualized return ${annualizedRollReturn.toFixed(1)}% < 2% threshold — not worth it, closing instead`,
+    };
+  }
+
+  // ── Execute the roll ─────────────────────────────────────
+  const pnl = (premiumCollected - currentPremium) * 100;
+
+  // 1. Close the current leg
+  await sb.from('paper_trades').update({
+    status: 'CLOSED',
+    close_price: currentPremium,
+    pnl,
+    pnl_percent: (pnl / capital) * 100,
+    closed_at: new Date().toISOString(),
+    close_reason: 'rolled',
+    option_close_pct: Math.max(0, (1 - currentPremium / premiumCollected) * 100),
+  }).eq('id', pos.id);
+
+  // 2. Open the new leg — record in DB (+ IB order if connected)
+  const newExpiryISO = `${newExpiry.slice(0, 4)}-${newExpiry.slice(4, 6)}-${newExpiry.slice(6, 8)}`;
+  let ibOrderId: number | null = null;
+  if (isConnected()) {
+    try {
+      const r = await placeOptionsOrder({
+        symbol: pos.ticker,
+        right: 'P',
+        strike: newStrike,
+        expiry: newExpiry,
+        contracts: 1,
+        limitPrice: newPremium,
+        account: getDefaultAccount() ?? undefined,
+      });
+      ibOrderId = r.orderId;
+    } catch (err) {
+      console.warn(`[Roll] IB order failed for ${pos.ticker} — paper-recording roll: ${err}`);
+    }
+  }
+
+  await sb.from('paper_trades').insert({
+    ticker: pos.ticker,
+    mode: 'OPTIONS_PUT',
+    signal: 'SELL',
+    entry_price: stockPrice,
+    fill_price: ibOrderId ? null : stockPrice,
+    quantity: 1,
+    position_size: newStrike * 100,
+    status: ibOrderId ? 'SUBMITTED' : 'FILLED',
+    filled_at: ibOrderId ? null : new Date().toISOString(),
+    opened_at: new Date().toISOString(),
+    option_strike: newStrike,
+    option_expiry: newExpiryISO,
+    option_premium: newPremium,
+    option_contracts: 1,
+    option_delta: newPut.delta,
+    option_prob_profit: newPut.probProfit,
+    option_capital_req: newStrike * 100,
+    option_annual_yield: newPut.annualYield,
+    option_net_price: newStrike - newPremium,
+    ib_order_id: ibOrderId,
+    roll_count: rollCount + 1,
+    rolled_from_id: pos.id,
+    notes: `[ROLL ${rollCount + 1}] ${isCredit ? `+$${(netCredit * 100).toFixed(0)} credit` : `-$${(Math.abs(netCredit) * 100).toFixed(0)} debit`} — rolled from $${pos.option_strike} → $${newStrike} strike, ${newDte}d DTE`,
+    scanner_reason: `Roll ${rollCount + 1}: ann. return ${annualizedRollReturn.toFixed(1)}%, ${isCredit ? 'credit' : 'debit'} $${Math.abs(netCredit * 100).toFixed(0)}, strike ${pos.option_strike}→${newStrike}`,
+  });
+
+  const creditTag = isCredit
+    ? `+$${(netCredit * 100).toFixed(0)} credit`
+    : `-$${(Math.abs(netCredit) * 100).toFixed(0)} debit`;
+  const ibTag = ibOrderId ? ` IB#${ibOrderId}` : ' (paper)';
+
+  return {
+    rolled: true,
+    reason: isCredit ? 'credit_roll' : 'debit_roll',
+    logLine: `${pos.ticker}: rolled $${pos.option_strike}→$${newStrike}P ${newExpiryISO} (${creditTag}, ${annualizedRollReturn.toFixed(1)}% ann.)${ibTag}`,
+  };
 }
 
 // ── Helpers ──────────────────────────────────────────────
@@ -204,7 +368,7 @@ export async function runOptionsManageCycle(): Promise<ManageCycleResult> {
 
   const { data, error } = await sb
     .from('paper_trades')
-    .select('id, ticker, mode, option_strike, option_expiry, option_premium, option_capital_req, option_assigned, fill_price, status, ib_order_id')
+    .select('id, ticker, mode, option_strike, option_expiry, option_premium, option_capital_req, option_assigned, fill_price, status, ib_order_id, roll_count, rolled_from_id')
     .in('mode', ['OPTIONS_PUT', 'OPTIONS_CALL'])
     .in('status', ['FILLED', 'PARTIAL']);
 
@@ -311,27 +475,57 @@ export async function runOptionsManageCycle(): Promise<ManageCycleResult> {
       continue;
     }
 
-    // ── Check 3c: Roll alert when stock threatens strike ──
-    // Trigger: stock dropped 3%+ below strike AND premium grown 1.2× — catches threat earlier
-    // when there's still more credit available on the roll. DTE > 7 to avoid last-week noise.
-    // We no longer auto-execute the roll with fabricated credits — instead we fire a prominent
-    // alert so the position owner can evaluate the real chain and decide whether to roll or close.
-    if (stockPrice < pos.option_strike * 0.97 && currentPremium > premiumCollected * 1.2 && dte > 7) {
-      result.rollAlerts.push(pos.ticker);
-      console.log(`[Options Manager] ROLL ALERT: ${pos.ticker} $${pos.option_strike}P — stock at $${stockPrice.toFixed(2)}, ${dte}d left, premium at ${(currentPremium / premiumCollected * 100).toFixed(0)}% of collected`);
-      persistEvent(pos.ticker, 'warning',
-        `↩️ ${pos.ticker} $${pos.option_strike} put needs attention — stock at $${stockPrice.toFixed(2)} (${(((pos.option_strike - stockPrice) / pos.option_strike) * 100).toFixed(1)}% below strike), ${dte}d left. Consider rolling down and out to collect fresh premium.`,
-        { action: 'flagged', source: 'options', metadata: { reason: 'roll_needed', stockPrice, strike: pos.option_strike, dte, currentPremium, premiumCollected } }
-      );
+    // ── Check 3c: Early roll when stock threatens strike ──
+    // Trigger: stock 3%+ below strike AND premium grown 1.2× AND ≥22 DTE.
+    // At this point there's still enough time value on a new leg to collect a good credit.
+    // Try to roll; if not viable, fire a warning alert for manual review.
+    if (stockPrice < pos.option_strike * 0.97 && currentPremium > premiumCollected * 1.2 && dte > 21) {
+      console.log(`[Options Manager] EARLY ROLL CHECK: ${pos.ticker} $${pos.option_strike}P — stock $${stockPrice.toFixed(2)}, premium ${(currentPremium / premiumCollected * 100).toFixed(0)}% of collected, ${dte}d left`);
+      const rollResult = await evaluateAndRollPut(pos, stockPrice, currentPremium);
+      console.log(`[Options Manager] Early roll eval: ${rollResult.logLine}`);
+
+      if (rollResult.rolled) {
+        result.rollAlerts.push(pos.ticker);
+        persistEvent(pos.ticker, 'info',
+          `↩️ ${pos.ticker} $${pos.option_strike} put rolled early (stock threatened strike) — ${rollResult.logLine.split(': ')[1]}`,
+          { action: 'rolled', source: 'options', metadata: { reason: 'early_roll_' + rollResult.reason, dte, stockPrice } }
+        );
+      } else {
+        result.rollAlerts.push(pos.ticker);
+        persistEvent(pos.ticker, 'warning',
+          `↩️ ${pos.ticker} $${pos.option_strike} put needs attention — stock at $${stockPrice.toFixed(2)} (${(((pos.option_strike - stockPrice) / pos.option_strike) * 100).toFixed(1)}% below strike), ${dte}d left. Roll not viable (${rollResult.reason}) — manual review recommended.`,
+          { action: 'flagged', source: 'options', metadata: { reason: 'roll_needed', rollDeclineReason: rollResult.reason, stockPrice, strike: pos.option_strike, dte, currentPremium, premiumCollected } }
+        );
+      }
       continue;
     }
 
-    // ── Check 4: 21 DTE hard close (tastytrade rule) ──
-    // At 21 DTE the remaining theta decay curve flattens — risk/reward no longer favors holding.
-    // Close regardless of P&L: lock in any profit, or cut exposure before gamma risk accelerates.
-    // Guard: only execute once — the status update to CLOSED removes this position from the
-    // FILLED/PARTIAL query on the next cycle, so repeated fires are a DB-failure edge case only.
+    // ── Check 4: 21 DTE — roll down-and-out, or close if roll isn't worth it ──
+    // At 21 DTE gamma risk accelerates; risk/reward of holding degrades sharply.
+    // Strategy (from rolling-options video):
+    //   - Try to roll down and out to ~45 DTE for a credit (or acceptable small debit)
+    //   - If the roll math doesn't work, close to lock in P&L / cut exposure
+    // Winners with profit ≥50% already closed above (Check 3b) so positions reaching
+    // here are typically at-risk or just time-expired.
     if (dte <= 21 && dte > 0) {
+      // Attempt to roll — only if IB is connected and stock price is available
+      if (isConnected() && stockPrice) {
+        const rollResult = await evaluateAndRollPut(pos, stockPrice, currentPremium);
+        console.log(`[Options Manager] 21 DTE roll eval: ${rollResult.logLine}`);
+
+        if (rollResult.rolled) {
+          result.rollAlerts.push(pos.ticker);
+          persistEvent(pos.ticker, 'info',
+            `↩️ ${pos.ticker} $${pos.option_strike} put rolled at 21 DTE — ${rollResult.logLine.split(': ')[1]}`,
+            { action: 'rolled', source: 'options', metadata: { reason: rollResult.reason, dte } }
+          );
+          continue;
+        }
+        // Roll not viable — fall through to hard close
+        console.log(`[Options Manager] 21 DTE roll declined (${rollResult.reason}) — closing ${pos.ticker}`);
+      }
+
+      // Hard close fallback (roll declined or IB offline)
       const isWinner = pnl >= 0;
       const closeReason = isWinner ? '21dte_profit' : '21dte_close';
       const { error: closeError } = await sb.from('paper_trades').update({
@@ -342,7 +536,7 @@ export async function runOptionsManageCycle(): Promise<ManageCycleResult> {
         closed_at: new Date().toISOString(),
         close_reason: closeReason,
         option_close_pct: profitCapturePct,
-      }).eq('id', pos.id).eq('status', 'FILLED'); // extra guard: only close if still FILLED
+      }).eq('id', pos.id).eq('status', 'FILLED');
 
       if (closeError) {
         console.error(`[Options Manager] 21 DTE close failed for ${pos.ticker} ${pos.id}:`, closeError.message);
