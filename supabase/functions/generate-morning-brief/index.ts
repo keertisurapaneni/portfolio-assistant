@@ -1,13 +1,13 @@
 /**
  * Generate a structured pre-market trading briefing from raw market data.
  *
- * Input (POST body):
- *   {
- *     brief_date: string;          // YYYY-MM-DD
- *     news: NewsItem[];            // Finnhub general market news (last 12h)
- *     earnings: EarningsItem[];    // today's earnings reporters
- *     economic_events: EconItem[]; // scheduled economic releases
- *   }
+ * Can be called two ways:
+ *
+ * 1. Self-sufficient (from UI "Generate Now" or pg_cron directly):
+ *    POST {} — edge function fetches Finnhub data itself using FINNHUB_API_KEY secret.
+ *
+ * 2. Pre-fetched (from auto-trader morning-brief.ts):
+ *    POST { brief_date, news, earnings, economic_events } — uses provided data directly.
  *
  * Output: upserts to morning_briefs table and returns the structured brief.
  */
@@ -58,31 +58,76 @@ Rules:
 - If no data for a section, use empty array [] or empty string ""
 - Be specific, concise, and trader-focused — avoid generic statements`;
 
+// ── Finnhub helpers ──────────────────────────────────────────────────────────
+
+async function fetchFinnhub<T>(path: string, finnhubKey: string): Promise<T | null> {
+  try {
+    const res = await fetch(`https://finnhub.io/api/v1${path}&token=${finnhubKey}`);
+    if (!res.ok) return null;
+    return await res.json() as T;
+  } catch {
+    return null;
+  }
+}
+
+function todayEt(): string {
+  return new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' }); // YYYY-MM-DD
+}
+
+// ── Main handler ─────────────────────────────────────────────────────────────
+
 Deno.serve(async (req: Request) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
 
   try {
-    const body = await req.json() as {
-      brief_date: string;
-      news: Array<{ headline: string; summary: string; related: string; datetime: number; source: string }>;
-      earnings: Array<{ symbol: string; date: string; epsEstimate?: number; hour?: string }>;
-      economic_events: Array<{ event: string; time: string; prior?: string; estimate?: string; importance?: string }>;
+    const body = await req.json().catch(() => ({})) as {
+      brief_date?: string;
+      news?: Array<{ headline: string; summary: string; related: string; datetime: number; source: string }>;
+      earnings?: Array<{ symbol: string; date: string; epsEstimate?: number; hour?: string }>;
+      economic_events?: Array<{ event: string; time: string; prior?: string; estimate?: string; importance?: string }>;
     };
 
-    const { brief_date, news, earnings, economic_events } = body;
-    if (!brief_date) throw new Error('brief_date required');
+    const brief_date = body.brief_date ?? todayEt();
+    const finnhubKey = Deno.env.get('FINNHUB_API_KEY') ?? '';
 
-    // Build compact raw data summary for the LLM
-    const newsSummary = (news ?? []).slice(0, 40).map(n =>
+    // ── Fetch Finnhub data if not pre-provided ───────────────────────────────
+    let news = body.news;
+    let earnings = body.earnings;
+    let economic_events = body.economic_events;
+
+    if (!news) {
+      const twelveHoursAgo = Math.floor(Date.now() / 1000) - 12 * 3600;
+      const raw = await fetchFinnhub<{ id: number; headline: string; summary: string; related: string; datetime: number; source: string }[]>(
+        `/news?category=general&minId=${twelveHoursAgo}`, finnhubKey
+      );
+      news = raw ?? [];
+    }
+
+    if (!earnings) {
+      const raw = await fetchFinnhub<{ earningsCalendar: Array<{ symbol: string; date: string; epsEstimate?: number; hour?: string }> }>(
+        `/calendar/earnings?from=${brief_date}&to=${brief_date}`, finnhubKey
+      );
+      earnings = raw?.earningsCalendar ?? [];
+    }
+
+    if (!economic_events) {
+      const raw = await fetchFinnhub<{ economicCalendar: Array<{ event: string; time: string; prior?: string; estimate?: string; importance?: string }> }>(
+        `/calendar/economic?from=${brief_date}&to=${brief_date}`, finnhubKey
+      );
+      economic_events = raw?.economicCalendar ?? [];
+    }
+
+    // ── Build prompt ─────────────────────────────────────────────────────────
+    const newsSummary = news.slice(0, 40).map(n =>
       `[${n.related || 'MACRO'}] ${n.headline}${n.summary ? ': ' + n.summary.slice(0, 200) : ''}`
     ).join('\n');
 
-    const earningsSummary = (earnings ?? []).map(e =>
+    const earningsSummary = earnings.map(e =>
       `${e.symbol} — ${e.hour === 'bmo' ? 'Before Open' : e.hour === 'amc' ? 'After Close' : 'TBD'}${e.epsEstimate ? `, EPS est: $${e.epsEstimate}` : ''}`
     ).join('\n');
 
-    const econSummary = (economic_events ?? []).map(e =>
-      `${e.time} ET — ${e.event}${e.estimate ? ` (est: ${e.estimate}` : ''}${e.prior ? `, prior: ${e.prior})` : ')'}`
+    const econSummary = economic_events.map(e =>
+      `${e.time} ET — ${e.event}${e.estimate ? ` (est: ${e.estimate}` : ''}${e.prior ? `, prior: ${e.prior})` : e.estimate ? ')' : ''}`
     ).join('\n');
 
     const userPrompt = `Date: ${brief_date}
@@ -98,10 +143,14 @@ ${econSummary || 'No major economic releases scheduled.'}
 
 Generate the structured daily market briefing JSON for this trading day.`;
 
+    // ── Call Groq / Llama ────────────────────────────────────────────────────
+    const groqKey = Deno.env.get('GROQ_API_KEY') ?? '';
+    if (!groqKey) throw new Error('GROQ_API_KEY secret not set in Supabase Edge Function secrets');
+
     const groqRes = await fetch(GROQ_URL, {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${Deno.env.get('GROQ_API_KEY')}`,
+        'Authorization': `Bearer ${groqKey}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
@@ -119,20 +168,15 @@ Generate the structured daily market briefing JSON for this trading day.`;
     const groqData = await groqRes.json() as { choices: [{ message: { content: string } }] };
     const raw = groqData.choices[0].message.content.trim();
 
-    // Strip any accidental markdown fences
     const jsonStr = raw.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```\s*$/i, '').trim();
     const brief = JSON.parse(jsonStr) as {
-      macro_snapshot: string;
-      macro_tone: string;
-      economic_events: unknown[];
-      earnings: unknown[];
-      top_movers: unknown[];
-      research_themes: unknown[];
-      secondary_names: unknown[];
-      week_ahead: string;
+      macro_snapshot: string; macro_tone: string;
+      economic_events: unknown[]; earnings: unknown[];
+      top_movers: unknown[]; research_themes: unknown[];
+      secondary_names: unknown[]; week_ahead: string;
     };
 
-    // Upsert into morning_briefs
+    // ── Upsert to DB ─────────────────────────────────────────────────────────
     const sb = createClient(
       Deno.env.get('SUPABASE_URL')!,
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
@@ -140,16 +184,16 @@ Generate the structured daily market briefing JSON for this trading day.`;
 
     const { error: upsertErr } = await sb.from('morning_briefs').upsert({
       brief_date,
-      macro_snapshot: brief.macro_snapshot ?? '',
-      macro_tone: brief.macro_tone ?? '',
-      economic_events: brief.economic_events ?? [],
-      earnings: brief.earnings ?? [],
-      top_movers: brief.top_movers ?? [],
-      research_themes: brief.research_themes ?? [],
-      secondary_names: brief.secondary_names ?? [],
-      week_ahead: brief.week_ahead ?? '',
-      raw_news_count: (news ?? []).length,
-      generated_at: new Date().toISOString(),
+      macro_snapshot:   brief.macro_snapshot ?? '',
+      macro_tone:       brief.macro_tone ?? '',
+      economic_events:  brief.economic_events ?? [],
+      earnings:         brief.earnings ?? [],
+      top_movers:       brief.top_movers ?? [],
+      research_themes:  brief.research_themes ?? [],
+      secondary_names:  brief.secondary_names ?? [],
+      week_ahead:       brief.week_ahead ?? '',
+      raw_news_count:   news.length,
+      generated_at:     new Date().toISOString(),
     }, { onConflict: 'brief_date' });
 
     if (upsertErr) throw new Error(`DB upsert failed: ${upsertErr.message}`);
