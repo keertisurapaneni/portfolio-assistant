@@ -21,7 +21,10 @@ const corsHeaders = {
 };
 
 const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions';
-const GROQ_MODEL = 'llama-3.3-70b-versatile';
+// Use 8B model (~6x fewer tokens/call vs 70B). Plenty capable for structured JSON briefs.
+const GROQ_MODEL = 'llama-3.1-8b-instant';
+// Gemini Flash fallback — free tier, 1M tokens/min, no daily cap.
+const GEMINI_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent';
 
 const BRIEF_SYSTEM = `You are a professional pre-market trading analyst. You synthesize raw market data into a concise, actionable daily briefing for a retail options and equity trader.
 
@@ -118,8 +121,9 @@ Deno.serve(async (req: Request) => {
     }
 
     // ── Build prompt ─────────────────────────────────────────────────────────
-    const newsSummary = news.slice(0, 40).map(n =>
-      `[${n.related || 'MACRO'}] ${n.headline}${n.summary ? ': ' + n.summary.slice(0, 200) : ''}`
+    // Headlines only — no summaries. Keeps prompt compact (~1500 tokens vs ~4000).
+    const newsSummary = news.slice(0, 15).map(n =>
+      `[${n.related || 'MACRO'}] ${n.headline}`
     ).join('\n');
 
     const earningsSummary = earnings.map(e =>
@@ -143,30 +147,80 @@ ${econSummary || 'No major economic releases scheduled.'}
 
 Generate the structured daily market briefing JSON for this trading day.`;
 
-    // ── Call Groq / Llama ────────────────────────────────────────────────────
+    // ── Call LLM: Groq first, Gemini Flash fallback ──────────────────────────
+    // Groq free tier: 100K tokens/day. Gemini Flash: 1M tokens/min, no daily cap.
+    // If Groq hits rate limit (429) or is unavailable, we fall through to Gemini.
+    let raw = '';
+
     const groqKey = Deno.env.get('GROQ_API_KEY') ?? '';
-    if (!groqKey) throw new Error('GROQ_API_KEY secret not set in Supabase Edge Function secrets');
+    let groqFailed = false;
 
-    const groqRes = await fetch(GROQ_URL, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${groqKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: GROQ_MODEL,
-        messages: [
-          { role: 'system', content: BRIEF_SYSTEM },
-          { role: 'user', content: userPrompt },
-        ],
-        temperature: 0.3,
-        max_tokens: 2048,
-      }),
-    });
+    if (groqKey) {
+      const groqRes = await fetch(GROQ_URL, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${groqKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: GROQ_MODEL,
+          messages: [
+            { role: 'system', content: BRIEF_SYSTEM },
+            { role: 'user', content: userPrompt },
+          ],
+          temperature: 0.3,
+          max_tokens: 1500,
+        }),
+      });
 
-    if (!groqRes.ok) throw new Error(`Groq error: ${groqRes.status} ${await groqRes.text()}`);
-    const groqData = await groqRes.json() as { choices: [{ message: { content: string } }] };
-    const raw = groqData.choices[0].message.content.trim();
+      if (groqRes.ok) {
+        const groqData = await groqRes.json() as { choices: [{ message: { content: string } }] };
+        raw = groqData.choices[0].message.content.trim();
+      } else {
+        const errText = await groqRes.text();
+        console.warn(`[morning-brief] Groq failed (${groqRes.status}), falling back to Gemini. Error: ${errText.slice(0, 200)}`);
+        groqFailed = true;
+      }
+    } else {
+      groqFailed = true;
+    }
+
+    if (groqFailed || !raw) {
+      // Rotate through all available Gemini keys until one succeeds (quota rotation pattern)
+      const geminiKeyNames = [
+        'GEMINI_API_KEY', 'GEMINI_API_KEY_2', 'GEMINI_API_KEY_3', 'GEMINI_API_KEY_4',
+        'GEMINI_API_KEY_5', 'GEMINI_API_KEY_6', 'GEMINI_API_KEY_7', 'GEMINI_API_KEY_8',
+        'GEMINI_API_KEY_9', 'GEMINI_API_KEY_10', 'GEMINI_API_KEY_11', 'GEMINI_API_KEY_12',
+        'GEMINI_API_KEY_13',
+      ];
+
+      let geminiSucceeded = false;
+      for (const keyName of geminiKeyNames) {
+        const geminiKey = Deno.env.get(keyName) ?? '';
+        if (!geminiKey) continue;
+
+        const geminiRes = await fetch(`${GEMINI_URL}?key=${geminiKey}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: `${BRIEF_SYSTEM}\n\n---\n\n${userPrompt}` }] }],
+            generationConfig: { temperature: 0.3, maxOutputTokens: 4096 },
+          }),
+        });
+
+        if (geminiRes.ok) {
+          const geminiData = await geminiRes.json() as { candidates: [{ content: { parts: [{ text: string }] } }] };
+          raw = geminiData.candidates[0].content.parts[0].text.trim();
+          geminiSucceeded = true;
+          console.log(`[morning-brief] Used Gemini fallback (${keyName})`);
+          break;
+        } else {
+          const errText = await geminiRes.text();
+          console.warn(`[morning-brief] ${keyName} failed (${geminiRes.status}): ${errText.slice(0, 100)}`);
+        }
+      }
+
+      if (!geminiSucceeded || !raw) {
+        throw new Error('All LLM providers exhausted (Groq rate-limited + all Gemini keys quota-exceeded). Try again in a few minutes.');
+      }
+    }
 
     const jsonStr = raw.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```\s*$/i, '').trim();
     const brief = JSON.parse(jsonStr) as {
