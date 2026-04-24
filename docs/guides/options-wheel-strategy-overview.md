@@ -1,7 +1,7 @@
 # Options Wheel Strategy — How We Make Money with Options
 
 **Prepared by:** Keerti  
-**Last updated:** April 23, 2026  
+**Last updated:** April 24, 2026  
 **Account:** Paper trading (simulated) — $1,000,000 portfolio  
 **Options budget:** $500,000 allocated to this strategy  
 **Monthly income target:** $5,000+
@@ -102,37 +102,61 @@ The top 20 candidates appear in the app's Watchlist tab as "Weekly Suggestions."
 
 This is fully automated. There is no manual trading happening. The system runs 24/7 and makes decisions based on rules we set.
 
-### Morning (10:00–11:30 AM ET) — The Scanner
-The system scans all approved stocks and checks **14+ conditions** before opening any position:
+### All Day (10:00 AM – 3:30 PM ET) — The Scanner
+
+The system scans all approved stocks throughout the entire trading session — not just the morning. Opportunities can appear at any time: a quality stock hitting its 200-day moving average at 1 PM is just as valid an entry as one at 10 AM.
+
+**Scan cadence:**
+- **10:00–11:30 AM** — every 15 minutes (highest IV, earnings reactions, gap fills)
+- **11:30 AM–2:00 PM** — every 30 minutes (news-driven drops, sector rotations)
+- **2:00–3:30 PM** — every 30 minutes (late-session dislocations, pre-close IV)
+
+**Daily cap:** Maximum 3 new puts opened per day across all sessions. Prevents over-deploying on a single volatile day.
+
+The system checks **14+ conditions** before opening any position:
 
 1. Is the overall stock market healthy? (SPY above 200-day average)
 2. Is the stock's beta within the tier's limit? (Different per tier — see above)
-3. Is the stock near its 52-week high? *(Skip if within 5% — near all-time highs = thin safety margin)*
-4. Is there an earnings announcement coming up? (Skip if within 7 days — too risky)
-5. Is the news for this stock clean? (No fraud, lawsuits, SEC investigations)
-6. Is the option premium high enough for this tier? (≥1.5% monthly for STABLE/GROWTH; ≥5% for leveraged ETFs)
-7. Is the stock in an uptrend? (Must be above its 50-day moving average)
-8. Is the stock at or near a technical buying zone? (Bollinger Band lower band)
-9. Is the IV rank above the tier's floor? (Different minimum per tier)
-10. Is there enough capital to cover the trade? (Always cash-secured — no margin)
-11. Are we at the position limit? (Max 12 positions total; max 6 when market is stressed)
-12. Do we already have a position in this stock? (No stacking)
-13. Are we over-concentrated in one industry? (Max 2 positions per sector)
-14. Is the bid-ask spread reasonable? (Must be < 30% of mid — ensures liquid options)
+3. Is there an earnings announcement coming up? (Skip if within 7 days — too risky)
+4. Is the news for this stock clean? (No fraud, lawsuits, SEC investigations)
+5. Is the option premium high enough for this tier? (≥1.5% monthly for STABLE/GROWTH; ≥5% for leveraged ETFs)
+6. Is the stock in an uptrend? (Must be above its 50-day moving average)
+7. Is the stock at or near a technical buying zone? (Bollinger Band lower band)
+8. Is the IV rank above the tier's floor? (Different minimum per tier)
+9. Is there enough capital to cover the trade? (Always cash-secured — no margin)
+10. Are we at the position limit? (Max 12 positions total; max 6 when market is stressed)
+11. Do we already have a position in this stock? (No stacking)
+12. Are we over-concentrated in one industry? (Max 2 positions per sector)
+13. Is the bid-ask spread reasonable? (Must be < 30% of mid — ensures liquid options)
+14. Is the stock near its own 200-day moving average? (Triggers more aggressive strike when combined with high VIX)
 
-If all checks pass → the system automatically opens a paper trade.
+If all checks pass → the system automatically opens a trade.
 
-### Every 30 Minutes — The Manager
+### How We Choose the Strike Price (VIX-Tiered Delta)
+
+The distance of our put strike from the current stock price depends on market conditions — we get more aggressive when conditions are best:
+
+| Market Condition | How Far OTM Our Strike Is | Why |
+|---|---|---|
+| VIX > 30 **AND** stock near its 200-day average | Close to current price (~35% chance of assignment) | Best of all worlds: premiums are huge AND the stock is at strong support. We're happy to own it at these levels. |
+| VIX 25–30 OR market downtrend | Far OTM (15–20% chance) | More cushion when things are shaky |
+| Normal calm market | Standard distance (20–25% chance) | Business as usual |
+
+### Every 15 Minutes — The Manager
 The system monitors all open positions and:
 - Closes any position that has reached **50% profit** (locks in gains early)
-- Closes any position with **21 days left** (time decay math changes after this point)
-- Alerts if a position needs attention (stock near our strike price)
-- Hard-closes any position where losses exceed **3× the premium collected** *(AND the stock is actually below our strike — prevents false triggers from pure IV spikes)*
-- Automatically queues a **covered call** if a stock gets assigned to us *(always 10%+ above current price)*
-- Monitors covered calls and closes them at 50% profit, manages expiry, and rolls if needed
+- At **21 days left**: first tries to *roll* the put to a lower strike and later date (collecting new premium); only hard-closes if no good roll exists
+- **Proactive roll**: if a stock drops near our strike early, the system rolls before losses worsen — doesn't wait until 21 DTE
+- Hard-closes any position where losses exceed **3× the premium collected** *(AND the stock is below our strike — prevents false triggers from pure IV spikes)*
+- Automatically places a **covered call** if a stock gets assigned to us
 
-### 1:30 PM ET — The Afternoon Redeployment Scan
-If any positions closed at 50% profit this morning, the system runs a second scan to redeploy freed capital the same day — so cash isn't sitting idle.
+### Covered Calls After Assignment
+
+When we're assigned shares, the system immediately sells a covered call with these rules:
+- **Strike:** At least 10% above current stock price — gives the stock room to recover
+- **Expiry:** 45 days out (longer than before — more premium per cycle)
+- **Cost basis protection:** The call strike is *never* set below the price we paid for the shares. This prevents locking in a guaranteed loss. If the stock hasn't recovered enough, we sell at minimal premium and wait.
+- **Auto-roll:** If the stock rallies toward our call strike, the system automatically rolls the call higher and further out — collecting more premium and giving the stock more room.
 
 ### Monday 10:30 AM ET — Weekly Screener
 Screens 100+ stocks to surface new watchlist candidates (see above).
@@ -147,13 +171,22 @@ When market fear is very high (IV Rank ≥ 70 for a stock), the system extends t
 
 ## The Roll Strategy — What Happens When a Stock Drops
 
-If a stock drops below our strike price AND there is still 7+ days until expiry AND the premium has only grown to 1.2× what we collected (not yet a full stop-loss), the system flags the position for a **roll**:
+Rolling is our primary defense tool. Instead of taking a loss when a stock moves against us, we restructure the trade — moving to a lower strike and a later date, collecting new premium that offsets the paper loss.
 
-- We close the current put (taking a small loss on premium)
-- We re-open a new put at a lower strike price and further-out expiry
-- This collects new premium that helps offset the loss and gives the stock time to recover
+**Two triggers for a roll:**
 
-We do **not** roll if: the stock has truly broken down (would require assignment), or if losses have already hit the 3× stop-loss.
+1. **Early roll (proactive):** If a stock drops and the premium has grown to 1.2–1.5× what we collected but there are still 14+ days to expiry — the system rolls before the loss worsens. We don't wait for things to get worse.
+
+2. **21-day roll (routine):** At 21 days to expiry, the system always tries to roll first. Only if no good roll exists (the chain is thin, or a roll would cost more than it's worth) does it hard-close.
+
+**What "a good roll" means:**
+- New put strike is 5–10% lower (more OTM = more cushion)
+- New expiry is 4–6 weeks further out
+- Net credit ≥ $0 (we collect more from the new put than we pay to close the old one)
+
+**Tracking:** Each rolled position records how many times it's been rolled (`roll_count`) and links back to the original position (`rolled_from_id`). This lets us see the full history of a trade in one view.
+
+We do **not** roll if: losses have already hit the 3× stop-loss, or the chain is too thin to find a qualifying strike.
 
 ---
 
@@ -169,9 +202,10 @@ We have multiple layers protecting the capital:
 | **Sector concentration cap** | Maximum 2 open positions in any single industry. No over-concentration in tech. |
 | **Bear market mode** | If the S&P 500 drops below its 200-day average, the system automatically switches to defensive mode: smaller positions, lower-risk sectors only (Consumer Staples, Utilities, Healthcare), shorter expiry dates. |
 | **50% profit exit** | We don't wait for full expiry. Capturing 50% of the premium in half the time is better risk/reward than holding for the last 50%. |
-| **21-day hard close** | Positions are closed when 21 days remain. After that point, risk goes up faster than reward. |
+| **21-day roll-or-close** | At 21 days remaining, the system first tries to roll the put to a lower strike and later date. Only hard-closes if no good roll exists. Early rolls also fire if the stock moves against us before 21 DTE. |
 | **Smart stop-loss** | If the option premium triples (3× what we collected) AND the stock is actually below our strike price — the position is closed immediately. The stock must be genuinely moving against us, not just an IV spike. |
-| **10% covered call floor** | When we're assigned shares, we sell a covered call at least 10% above the current price — giving the stock room to recover before we'd have to sell it. |
+| **10% + cost-basis covered call floor** | When assigned shares, we sell a covered call at least 10% above current price AND never below what we paid for the shares — can't lock in a guaranteed loss on the underlying. |
+| **Daily new-position cap** | Maximum 3 new puts opened per calendar day across all scan sessions. Prevents over-deploying capital on a single volatile day. |
 | **Monthly loss circuit-breaker** | If total options losses in a calendar month exceed 5% of the $500k ($25,000), no new positions open until the following month. |
 | **No earnings risk** | We never hold an options position through an earnings announcement — results are too unpredictable. |
 | **Auto-tuner conservatism** | The system auto-adjusts parameters based on performance, but has hard caps: max 3 contracts per trade, delta never goes above 0.30, IV floor never drops below 50. It can tighten rules easily but loosens them only after 20+ trades of sustained success. |

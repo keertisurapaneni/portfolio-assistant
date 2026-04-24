@@ -5,7 +5,8 @@ Current implementation docs for each major feature.
 
 | Doc | Description |
 |-----|-------------|
-| [Options Wheel Engine](./features/options-wheel-engine.md) | Complete reference: 21 entry checks, delta targets, position manager lifecycle, close reasons, go-live gate |
+| [Options Wheel Engine](./features/options-wheel-engine.md) | Complete reference: VIX-tiered delta, 200 DMA entry, full-day scan schedule, rolling logic, CC cost-basis guard |
+| [Morning Brief](./features/morning-brief.md) | AI pre-market research dashboard — architecture, cloud schedule, data schema, on-demand generation |
 | [Auto-Trader Execution Paths](./features/auto-trader-execution-paths.md) | Three trade sources (Scanner, Influencer, Suggested Finds) — gate logic, FA checks, position sizing |
 | [Trade Scanner](./features/trade-scanner.md) | Two-pass day/swing scanner — InPlayScore, Gemini AI, pre-market gaps |
 | [Trading Signals Indicators](./features/trading-signals-indicators.md) | Indicator engine — RSI, MACD, EMA, ATR, ADX fed to AI prompts |
@@ -63,6 +64,7 @@ Design sessions and multi-step implementation plans.
 |-----|-------------|
 | [Options Wheel Engine — Design (2026-04-20)](./cursor/2026-04-20-options-wheel-engine.md) | Initial brainstorming, signal library (46 ideas), decision tree, UI spec |
 | [Options Wheel Strategy Upgrades (2026-04-21)](./cursor/2026-04-21-options-wheel-strategy-upgrades.md) | Video-analysis-driven upgrades: prob-profit floor, break-even display, ROC, stop-loss, auto-roll, 21 DTE hard close |
+| [Advanced Options + Morning Brief (2026-04-24)](./cursor/2026-04-24-advanced-options-morning-brief.md) | VIX-tiered delta, 200 DMA gate, rolling strategy, CC cost-basis guard, morning brief, full-day scanning |
 | [Trade Scanner — Key Levels (2026-04-20)](./cursor/2026-04-20-trade-scanner-track1-key-levels.md) | Track 1 key levels enhancement design |
 
 ## Archive
