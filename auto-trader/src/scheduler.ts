@@ -245,7 +245,19 @@ export function startScheduler(): void {
   }, { timezone: 'America/New_York' });
   log('Dip watcher: every 5 min 10:00–15:55 ET (detects ≥5% pullbacks in uptrends)');
 
-  // EOD day-trade auto-close: 3:55 PM ET on weekdays.
+  // 3:45 PM soft close — close losing day trades and near-target winners before power-hour chaos.
+  // Runs 10 min before the hard EOD sweep (3:55 PM) so there's a fallback if soft close misses any.
+  cron.schedule('45 15 * * 1-5', async () => {
+    try {
+      const positions = await getEnrichedPositions();
+      await softCloseDayTrades(positions);
+    } catch (err) {
+      console.error('[SoftClose] Failed:', err instanceof Error ? err.message : err);
+    }
+  }, { timezone: 'America/New_York' });
+  log('Day-trade soft close: 3:45 PM ET (losing + near-target positions)');
+
+  // EOD day-trade auto-close: 3:55 PM ET on weekdays — hard backstop after soft close.
   // Mirrors browser scheduleDayTradeAutoClose — ensures positions close even when browser is shut.
   cron.schedule('55 15 * * 1-5', async () => {
     const config = await loadConfig();
@@ -402,6 +414,174 @@ async function closeAllDayTrades(config: AutoTraderConfig): Promise<void> {
       log(`EOD sweep: ${trade.ticker} — close failed: ${err instanceof Error ? err.message : 'unknown'}`);
     }
   }
+}
+
+// ── 3:45 PM Soft Close — close losing day trades before power-hour chaos ──────
+//
+// Runs 10 min before the hard EOD sweep (3:55 PM). Closes day trades that are:
+//   a) losing (unrealizedPnl < 0) — lock the loss before spreads widen further
+//   b) near target (≥75% of full-target gain) — take the money, don't gamble the last 25%
+//
+// Winning trades with room to run are left for the trailing stop or bracket.
+
+async function softCloseDayTrades(positions: EnrichedPosition[]): Promise<void> {
+  const activeTrades = await getActiveTrades();
+  const dayTrades = activeTrades.filter(t => t.mode === 'DAY_TRADE' && t.status === 'FILLED');
+  if (dayTrades.length === 0) return;
+
+  log(`[SoftClose] Checking ${dayTrades.length} open day trade(s) before power hour`);
+  let closed = 0;
+
+  for (const trade of dayTrades) {
+    const ibPos = positions.find(p => p.symbol.toUpperCase() === trade.ticker.toUpperCase());
+    if (!ibPos || ibPos.mktPrice <= 0) continue;
+
+    const fillPrice    = trade.fill_price ?? trade.entry_price ?? 0;
+    const targetPrice  = trade.target_price ?? 0;
+    const currentPrice = ibPos.mktPrice;
+    const isBuy        = trade.signal === 'BUY';
+
+    const unrealizedPnl = isBuy
+      ? (currentPrice - fillPrice) * (trade.quantity ?? 0)
+      : (fillPrice - currentPrice) * (trade.quantity ?? 0);
+
+    // Determine whether near-target (75% of full gain achieved)
+    let nearTarget = false;
+    if (fillPrice > 0 && targetPrice > 0) {
+      const fullGain   = Math.abs(targetPrice - fillPrice);
+      const actualGain = Math.abs(currentPrice - fillPrice);
+      nearTarget = fullGain > 0 && actualGain / fullGain >= 0.75;
+    }
+
+    const shouldClose = unrealizedPnl < 0 || nearTarget;
+    const reason      = unrealizedPnl < 0 ? `losing (${unrealizedPnl.toFixed(0)})` : `near target (75%+)`;
+
+    if (!shouldClose) {
+      log(`${trade.ticker}: [SoftClose] skip — P&L ${unrealizedPnl.toFixed(0)}, not near target`);
+      continue;
+    }
+
+    const closeSide = isBuy ? 'SELL' : 'BUY';
+    const qty       = trade.quantity ?? 0;
+    if (qty <= 0) continue;
+
+    try {
+      await placeMarketOrder({ symbol: trade.ticker, side: closeSide, quantity: qty });
+      await updatePaperTrade(trade.id, {
+        status:       'CLOSED',
+        close_reason: 'soft_eod_close',
+        closed_at:    new Date().toISOString(),
+      });
+      log(`${trade.ticker}: [SoftClose] closed at 3:45 PM — ${reason}`);
+      closed++;
+    } catch (err) {
+      log(`${trade.ticker}: [SoftClose] close failed — ${err instanceof Error ? err.message : 'unknown'}`);
+    }
+  }
+  log(`[SoftClose] Done — ${closed} position(s) closed`);
+}
+
+// ── Stale Day-Trade Detector ───────────────────────────────────────────────────
+//
+// Catches day trades that are still FILLED from a prior trading day — meaning the
+// EOD sweep failed (IB disconnected, server was off). Logs a warning alert so it
+// shows up in the activity feed, then attempts a market-close.
+
+async function checkStaleDayTrades(positions: EnrichedPosition[]): Promise<void> {
+  const activeTrades = await getActiveTrades();
+  const todayEt = getETDateString();
+
+  const stale = activeTrades.filter(t => {
+    if (t.mode !== 'DAY_TRADE' || t.status !== 'FILLED') return false;
+    const tradeDate = t.filled_at
+      ? new Date(t.filled_at).toLocaleDateString('en-CA', { timeZone: 'America/New_York' })
+      : null;
+    return tradeDate !== null && tradeDate < todayEt;
+  });
+
+  if (stale.length === 0) return;
+
+  log(`⚠️  [StaleCheck] ${stale.length} day trade(s) still FILLED from a prior day — EOD sweep likely failed`);
+
+  for (const trade of stale) {
+    const ibPos = positions.find(p => p.symbol.toUpperCase() === trade.ticker.toUpperCase());
+    const tradeDate = trade.filled_at
+      ? new Date(trade.filled_at).toLocaleDateString('en-CA', { timeZone: 'America/New_York' })
+      : 'unknown';
+
+    log(`  ${trade.ticker}: stale DAY_TRADE from ${tradeDate} — attempting close`);
+
+    // If IB position no longer exists, just mark closed in DB (position already gone)
+    if (!ibPos || Math.abs(ibPos.position) === 0) {
+      await updatePaperTrade(trade.id, {
+        status:       'CLOSED',
+        close_reason: 'stale_eod_reconcile',
+        closed_at:    new Date().toISOString(),
+      });
+      log(`  ${trade.ticker}: no IB position found — marked CLOSED (reconciled)`);
+      continue;
+    }
+
+    const closeSide = trade.signal === 'BUY' ? 'SELL' : 'BUY';
+    const qty = trade.quantity ?? 0;
+    if (qty <= 0) continue;
+
+    try {
+      await placeMarketOrder({ symbol: trade.ticker, side: closeSide, quantity: qty });
+      await updatePaperTrade(trade.id, {
+        status:       'CLOSED',
+        close_reason: 'stale_eod_close',
+        closed_at:    new Date().toISOString(),
+      });
+      log(`  ${trade.ticker}: stale position closed via market order`);
+    } catch (err) {
+      log(`  ${trade.ticker}: stale close failed — ${err instanceof Error ? err.message : 'unknown'}`);
+    }
+  }
+}
+
+// ── Daily Max-Loss Gate ────────────────────────────────────────────────────────
+//
+// Returns true if new day-trade entries should be blocked for the rest of the session.
+// Compares today's realized P&L from closed day trades against dayTradeMaxDailyLoss.
+// 0 = gate disabled.
+
+let _dayTradeGateActive  = false;
+let _dayTradeGateChecked = ''; // ET date of last check — reset daily
+
+async function isDayTradeLossGateActive(config: AutoTraderConfig): Promise<boolean> {
+  if (!config.dayTradeMaxDailyLoss || config.dayTradeMaxDailyLoss <= 0) return false;
+
+  const todayEt = getETDateString();
+
+  // Reset flag on new day
+  if (_dayTradeGateChecked !== todayEt) {
+    _dayTradeGateActive  = false;
+    _dayTradeGateChecked = todayEt;
+  }
+
+  if (_dayTradeGateActive) return true; // already tripped today
+
+  const sb       = getSupabase();
+  const { data } = await sb
+    .from('paper_trades')
+    .select('pnl')
+    .eq('mode', 'DAY_TRADE')
+    .eq('status', 'CLOSED')
+    .gte('closed_at', `${todayEt}T00:00:00Z`);
+
+  const sessionPnl = (data ?? []).reduce((s, t) => s + (t.pnl ?? 0), 0);
+
+  if (sessionPnl < -config.dayTradeMaxDailyLoss) {
+    _dayTradeGateActive = true;
+    log(
+      `🛑 [DailyLossGate] Session P&L $${sessionPnl.toFixed(0)} < -$${config.dayTradeMaxDailyLoss} ` +
+      `— no new day-trade entries for the rest of today`,
+    );
+    return true;
+  }
+
+  return false;
 }
 
 export function isSchedulerRunning(): boolean {
@@ -1838,6 +2018,12 @@ async function executeScannerTrade(
 
   if (await hasActiveTrade(ticker)) return 'skipped:duplicate';
 
+  // ── Daily max-loss gate ───────────────────────────────────────────────
+  if (mode === 'DAY_TRADE' && await isDayTradeLossGateActive(config)) {
+    log(`${ticker}: day-trade skipped — daily loss gate active`);
+    return 'skipped:daily_loss_gate';
+  }
+
   // ── Candlestick pattern confidence modifier ───────────────────────────
   // Applies to scanner-generated day/swing ideas only (not influencer signals,
   // not Suggested Finds, not options). Uses daily bars — no new API calls.
@@ -2239,6 +2425,13 @@ async function executeExternalStrategySignal(
   },
 ): Promise<'executed' | 'skipped' | 'failed' | 'waiting'> {
   const ticker = signal.ticker.toUpperCase();
+
+  // ── Daily max-loss gate ───────────────────────────────────────────────
+  if (signal.mode === 'DAY_TRADE' && await isDayTradeLossGateActive(config)) {
+    log(`${ticker}: external signal skipped — daily loss gate active`);
+    return 'skipped';
+  }
+
   // If the ticker was also identified by our trade scanner today, attribute the event
   // to 'scanner' so the activity log shows "Trade signal" rather than "External signal".
   // The strategy_source badge will still display the influencer name.
@@ -4259,6 +4452,7 @@ async function runSchedulerCycle(): Promise<void> {
     }
 
     // 6. Position management: dip buy, profit take, loss cut, swing expiry
+    await checkStaleDayTrades(positions);              // flag/close day trades stuck FILLED from a prior day
     await checkDayTradeTrailingStops(positions);       // software trailing stop for day trades in profit (+1R)
     await checkDipBuyOpportunities(config, positions);
     await checkProfitTakeOpportunities(config, positions);
