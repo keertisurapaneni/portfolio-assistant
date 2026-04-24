@@ -65,7 +65,7 @@ import { logLongTermPerformance } from './lib/performanceLog.js';
 import { logClosedTradePerformance } from './lib/tradePerformanceLog.js';
 import { generateSuggestedFinds } from './lib/discovery.js';
 import { fetchRecentDailyCandles, detectCandlePatterns } from './lib/candle-patterns.js';
-import { runOptionsScan, autoTradeOption } from './lib/options-scanner.js';
+import { runOptionsScan, autoTradeOption, getOptionsAutoTradeConfig } from './lib/options-scanner.js';
 import { runEarningsScan, closeExpiredEarningsPositions } from './lib/earnings-scanner.js';
 import { runWatchlistScreener } from './lib/watchlist-screener.js';
 import { runOptionsManageCycle } from './lib/options-manager.js';
@@ -623,6 +623,38 @@ export async function triggerManualRun(): Promise<string> {
     return 'completed';
   } catch (err) {
     return `error: ${err instanceof Error ? err.message : 'unknown'}`;
+  }
+}
+
+/**
+ * Trigger just the options scan — lighter than a full scheduler cycle.
+ * Called by the Options Wheel UI "refresh" button.
+ * Runs outside market hours too so the user can test / verify the scan anytime.
+ */
+export async function triggerOptionsScan(): Promise<{ ok: boolean; opportunities: number; skipped: number; message: string }> {
+  try {
+    const config = await loadConfig();
+    const optionsCapitalBudget = config.maxTotalAllocation ?? 550_000;
+    const scanResult = await runOptionsScan(optionsCapitalBudget);
+
+    const optsCfg = await getOptionsAutoTradeConfig();
+    if (optsCfg.enabled) {
+      const { maxContracts } = optsCfg;
+      for (const opp of scanResult.opportunities.slice(0, maxContracts)) {
+        await autoTradeOption(opp);
+      }
+    }
+
+    return {
+      ok: true,
+      opportunities: scanResult.opportunities.length,
+      skipped: scanResult.skipped.length,
+      message: `Scan complete — ${scanResult.opportunities.length} qualified, ${scanResult.skipped.length} skipped`,
+    };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'unknown error';
+    log(`[Manual Scan] Error: ${msg}`);
+    return { ok: false, opportunities: 0, skipped: 0, message: msg };
   }
 }
 

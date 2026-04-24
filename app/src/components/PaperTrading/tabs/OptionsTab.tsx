@@ -457,6 +457,7 @@ export function OptionsTab() {
   const [stats, setStats] = useState<OptionsMonthlyStats | null>(null);
   const [activityLog, setActivityLog] = useState<OptionsActivityEvent[]>([]);
   const [loading, setLoading] = useState(true);
+  const [scanning, setScanning] = useState(false);
   const [addTicker, setAddTicker] = useState('');
   const [addNotes, setAddNotes] = useState('');
   const [addingTicker, setAddingTicker] = useState(false);
@@ -494,6 +495,19 @@ export function OptionsTab() {
   }, []);
 
   useEffect(() => { load(); }, [load]);
+
+  // Trigger a live options scan on the auto-trader, then reload data
+  const handleRefresh = useCallback(async () => {
+    setScanning(true);
+    try {
+      await fetch('http://localhost:3001/api/scheduler/options-scan', { method: 'POST' });
+    } catch {
+      // auto-trader may be offline — fall through to data reload
+    } finally {
+      setScanning(false);
+    }
+    await load();
+  }, [load]);
 
   // Fetch max allocation from config once
   useEffect(() => {
@@ -590,10 +604,18 @@ export function OptionsTab() {
 
   return (
     <div className="space-y-4">
-      {/* Refresh */}
-      <div className="flex items-center justify-end">
-        <button onClick={load} disabled={loading} className="p-1.5 rounded-lg hover:bg-[hsl(var(--muted))] transition-colors">
-          <RefreshCw className={cn('w-4 h-4 text-[hsl(var(--muted-foreground))]', loading && 'animate-spin')} />
+      {/* Refresh / Trigger Scan */}
+      <div className="flex items-center justify-end gap-2">
+        {scanning && (
+          <span className="text-[10px] text-amber-600 font-medium animate-pulse">Scanning…</span>
+        )}
+        <button
+          onClick={handleRefresh}
+          disabled={loading || scanning}
+          title="Run options scan now"
+          className="p-1.5 rounded-lg hover:bg-[hsl(var(--muted))] transition-colors"
+        >
+          <RefreshCw className={cn('w-4 h-4 text-[hsl(var(--muted-foreground))]', (loading || scanning) && 'animate-spin')} />
         </button>
       </div>
 

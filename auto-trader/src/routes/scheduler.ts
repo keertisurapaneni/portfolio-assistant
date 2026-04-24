@@ -1,16 +1,18 @@
 /**
  * Scheduler REST API — status, control, and manual trigger.
  *
- * GET  /api/scheduler/status — current scheduler state
- * POST /api/scheduler/run    — trigger manual cycle
- * POST /api/scheduler/stop   — stop the cron scheduler
- * POST /api/scheduler/start  — start the cron scheduler
+ * GET  /api/scheduler/status       — current scheduler state
+ * POST /api/scheduler/run          — trigger manual cycle
+ * POST /api/scheduler/options-scan — run just the options scan (UI refresh button)
+ * POST /api/scheduler/stop         — stop the cron scheduler
+ * POST /api/scheduler/start        — start the cron scheduler
  */
 
 import { Router } from 'express';
 import {
   getSchedulerStatus,
   triggerManualRun,
+  triggerOptionsScan,
   forceExecuteSignal,
   startScheduler,
   stopScheduler,
@@ -25,6 +27,15 @@ router.get('/scheduler/status', (_req, res) => {
 router.post('/scheduler/run', async (_req, res) => {
   const result = await triggerManualRun();
   res.json({ result });
+});
+
+router.post('/scheduler/options-scan', async (_req, res) => {
+  try {
+    const result = await triggerOptionsScan();
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ ok: false, message: err instanceof Error ? err.message : 'unknown error' });
+  }
 });
 
 router.post('/scheduler/execute-signal', async (req, res) => {
