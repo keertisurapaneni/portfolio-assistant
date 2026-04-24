@@ -65,7 +65,7 @@ import { logLongTermPerformance } from './lib/performanceLog.js';
 import { logClosedTradePerformance } from './lib/tradePerformanceLog.js';
 import { generateSuggestedFinds } from './lib/discovery.js';
 import { fetchRecentDailyCandles, detectCandlePatterns } from './lib/candle-patterns.js';
-import { runOptionsScan, paperTradeOption } from './lib/options-scanner.js';
+import { runOptionsScan, autoTradeOption } from './lib/options-scanner.js';
 import { runEarningsScan, closeExpiredEarningsPositions } from './lib/earnings-scanner.js';
 import { runWatchlistScreener } from './lib/watchlist-screener.js';
 import { runOptionsManageCycle } from './lib/options-manager.js';
@@ -4600,8 +4600,9 @@ No new options positions will be opened until next month. Existing positions con
             if (scanResult.opportunities.length > 0) {
               log(`Options scan: ${scanResult.opportunities.length} opps (budget: $${optionsCapitalBudget.toLocaleString()}, monthly P&L: $${monthlyPnl.toFixed(0)}, cap: $${monthlyLossCap.toFixed(0)})`);
               for (const opp of scanResult.opportunities.slice(0, maxNewPerScan)) {
-                const id = await paperTradeOption(opp);
-                if (id) log(`  → Paper traded ${opp.ticker} $${opp.strike}P @ $${opp.premium.toFixed(2)} (${opp.annualYield.toFixed(1)}% ann.)`);
+                const result = await autoTradeOption(opp);
+                const tag = result.isLive ? `IB order #${result.ibOrderId}` : 'paper fallback (IB offline)';
+                if (result.tradeId) log(`  → ${opp.ticker} $${opp.strike}P @ $${opp.premium.toFixed(2)} (${opp.annualYield.toFixed(1)}% ann.) — ${tag}`);
               }
             } else {
               log(`Options scan: no opportunities (${scanResult.skipped.length} checked, monthly P&L: $${monthlyPnl.toFixed(0)})`);
@@ -4656,8 +4657,9 @@ No new options positions will be opened until next month. Existing positions con
               if (scanResult.opportunities.length > 0) {
                 log(`Options afternoon: ${scanResult.opportunities.length} opp(s) found — redeploying up to ${freedSlots} slot(s)`);
                 for (const opp of scanResult.opportunities.slice(0, freedSlots)) {
-                  const id = await paperTradeOption(opp);
-                  if (id) log(`  → Redeployed: ${opp.ticker} $${opp.strike}P @ $${opp.premium.toFixed(2)} (${opp.annualYield.toFixed(1)}% ann.)`);
+                  const result = await autoTradeOption(opp);
+                  const tag = result.isLive ? `IB order #${result.ibOrderId}` : 'paper fallback (IB offline)';
+                  if (result.tradeId) log(`  → Redeployed: ${opp.ticker} $${opp.strike}P @ $${opp.premium.toFixed(2)} (${opp.annualYield.toFixed(1)}% ann.) — ${tag}`);
                 }
               } else {
                 log(`Options afternoon: no redeployment opportunities found`);
