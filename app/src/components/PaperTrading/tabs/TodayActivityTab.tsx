@@ -113,7 +113,9 @@ function OptionsWheelSection({ todayStart }: { todayStart: Date }) {
             const premium = (trade.option_premium ?? 0) * (trade.option_contracts ?? 1) * 100;
             // Prefer filled_at (IB execution time) for active trades so the time shown
             // reflects when the order actually filled, not when the DB record was created.
-            const timeStr = new Date(trade.closed_at ?? trade.filled_at ?? trade.opened_at ?? '').toLocaleTimeString(
+            // OptionsTrade does not have filled_at, so cast via unknown to avoid TS error.
+            const filledAt = (trade as unknown as { filled_at?: string }).filled_at;
+            const timeStr = new Date(trade.closed_at ?? filledAt ?? trade.opened_at ?? '').toLocaleTimeString(
               undefined,
               { hour: '2-digit', minute: '2-digit' }
             );
