@@ -529,7 +529,7 @@ export interface AutoTradeEventRecord {
   ticker: string;
   event_type: 'info' | 'success' | 'warning' | 'error';
   action: 'executed' | 'skipped' | 'failed' | null;
-  source: 'scanner' | 'suggested_finds' | 'manual' | 'system' | 'dip_buy' | 'profit_take' | 'loss_cut' | 'external_signal' | null;
+  source: 'scanner' | 'suggested_finds' | 'manual' | 'system' | 'dip_buy' | 'profit_take' | 'loss_cut' | 'lt_auto_sell' | 'external_signal' | null;
   mode: 'DAY_TRADE' | 'SWING_TRADE' | 'LONG_TERM' | 'OPTIONS_PUT' | 'OPTIONS_CALL' | null;
   message: string;
   strategy_source: string | null;

@@ -47,7 +47,8 @@ function FeatureCard({ label, enabled, detail }: { label: string; enabled: boole
 export function SmartTradingTab({ config, regime, kellyMultiplier, totalDeployed, events, positions, lastCycleSummary = [] }: SmartTradingTabProps) {
   const smartEvents = events.filter(e =>
     e.source === 'dip_buy' || e.source === 'profit_take' || e.source === 'loss_cut' ||
-    e.source === 'system' ||  // IB watchdog events (disconnect / reconnect)
+    e.source === 'lt_auto_sell' ||  // Gold Mine + Steady Compounder auto-exits
+    e.source === 'system' ||        // IB watchdog events (disconnect / reconnect)
     (e.skip_reason && (
       e.skip_reason.toLowerCase().includes('sector') ||
       e.skip_reason.toLowerCase().includes('earnings') ||
@@ -296,14 +297,17 @@ export function SmartTradingTab({ config, regime, kellyMultiplier, totalDeployed
                 ? meta.realizedPnl
                 : event.source === 'loss_cut' && typeof meta.realizedLoss === 'number'
                   ? -meta.realizedLoss
-                  : null;
+                  : event.source === 'lt_auto_sell' && typeof meta.gainPct === 'number'
+                    ? null  // gainPct shown inline in the message; no separate dollar shown
+                    : null;
               const addOnDollar = event.source === 'dip_buy' && typeof meta.addOnDollar === 'number' ? meta.addOnDollar : null;
               return (
                 <div key={event.id} className="flex items-start gap-2 px-4 py-2 text-xs">
                   {event.source === 'dip_buy' && <TrendingDown className="w-3.5 h-3.5 text-blue-500 mt-0.5 flex-shrink-0" />}
                   {event.source === 'profit_take' && <TrendingUp className="w-3.5 h-3.5 text-emerald-500 mt-0.5 flex-shrink-0" />}
+                  {event.source === 'lt_auto_sell' && <TrendingUp className="w-3.5 h-3.5 text-violet-500 mt-0.5 flex-shrink-0" />}
                   {event.source === 'system' && <ShieldAlert className="w-3.5 h-3.5 text-red-500 mt-0.5 flex-shrink-0" />}
-                  {event.source !== 'dip_buy' && event.source !== 'profit_take' && event.source !== 'system' && (
+                  {event.source !== 'dip_buy' && event.source !== 'profit_take' && event.source !== 'lt_auto_sell' && event.source !== 'system' && (
                     <Shield className="w-3.5 h-3.5 text-amber-500 mt-0.5 flex-shrink-0" />
                   )}
                   <div className="flex-1 min-w-0">
@@ -313,7 +317,14 @@ export function SmartTradingTab({ config, regime, kellyMultiplier, totalDeployed
                         'bg-emerald-100 text-emerald-700': event.action === 'executed',
                         'bg-amber-100 text-amber-700': event.action === 'skipped',
                         'bg-red-100 text-red-700': event.action === 'failed',
-                      })}>{event.source === 'dip_buy' ? 'dip buy' : event.source === 'profit_take' ? 'profit take' : event.source === 'loss_cut' ? 'loss cut' : 'blocked'}</span>
+                        'bg-violet-100 text-violet-700': event.source === 'lt_auto_sell',
+                      })}>
+                        {event.source === 'dip_buy' ? 'dip buy'
+                          : event.source === 'profit_take' ? 'profit take'
+                          : event.source === 'loss_cut' ? 'loss cut'
+                          : event.source === 'lt_auto_sell' ? 'long-term exit'
+                          : 'blocked'}
+                      </span>
                     )}
                     <span className="text-[hsl(var(--muted-foreground))] ml-1.5">{event.message}</span>
                     {pnl != null && (
@@ -342,7 +353,7 @@ export function SmartTradingTab({ config, regime, kellyMultiplier, totalDeployed
           <Brain className="w-10 h-10 text-[hsl(var(--muted-foreground))] opacity-40 mx-auto" />
           <p className="mt-3 text-sm text-[hsl(var(--muted-foreground))]">No smart trading actions yet</p>
           <p className="text-xs text-[hsl(var(--muted-foreground))] opacity-70 mt-1">
-            Dip buys, profit takes, and risk blocks will appear here
+            Dip buys, profit takes, long-term exits, and risk blocks will appear here
           </p>
         </div>
       )}
