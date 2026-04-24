@@ -79,12 +79,13 @@ export interface WatchlistCandidate {
 export interface WatchlistTicker {
   id: string;
   ticker: string;
-  added_by: string;
+  added_by: string;   // 'user' | 'manual' | 'system' | 'steady_compounders'
   min_price: number | null;
   notes: string | null;
   active: boolean;
   created_at: string;
   tier: WatchlistTierType;
+  sector: string | null;
 }
 
 export interface OptionsScanOpportunity {
@@ -161,7 +162,7 @@ export async function getOptionsWatchlist(): Promise<WatchlistTicker[]> {
 export async function addToOptionsWatchlist(ticker: string, notes?: string): Promise<void> {
   const { error } = await supabase.from('options_watchlist').insert({
     ticker: ticker.toUpperCase(),
-    added_by: 'manual',
+    added_by: 'user',
     notes: notes ?? null,
     active: true,
   });

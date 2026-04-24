@@ -466,6 +466,9 @@ export function OptionsTab() {
   const [openPrices, setOpenPrices] = useState<Map<string, TickerQuote>>(new Map());
   const [maxAllocation, setMaxAllocation] = useState<number>(500_000);
   const [activeSection, setActiveSection] = useState<'positions' | 'history' | 'watchlist' | 'log'>('positions');
+  const [tierFilter, setTierFilter]     = useState<'ALL' | 'STABLE' | 'GROWTH' | 'HIGH_VOL'>('ALL');
+  const [sourceFilter, setSourceFilter] = useState<'ALL' | 'user' | 'system'>('ALL');
+  const [sectorFilter, setSectorFilter] = useState<string>('ALL');
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -853,94 +856,167 @@ export function OptionsTab() {
             </div>
           </div>
 
-          {/* Watchlist items */}
-          <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-            {watchlist.filter(w => w.active).map(w => {
-              const quote = prices.get(w.ticker);
+          {/* ── Filters ────────────────────────────────── */}
+          {(() => {
+            const active = watchlist.filter(w => w.active);
+            const sectors = ['ALL', ...Array.from(new Set(active.map(w => w.sector).filter(Boolean) as string[])).sort()];
+
+            const filtered = active.filter(w => {
+              if (tierFilter !== 'ALL' && w.tier !== tierFilter) return false;
+              if (sourceFilter === 'user' && w.added_by !== 'user') return false;
+              if (sourceFilter === 'system' && w.added_by === 'user') return false;
+              if (sectorFilter !== 'ALL' && w.sector !== sectorFilter) return false;
+              return true;
+            });
+
+            function Pill({ label, active: isActive, onClick }: { label: string; active: boolean; onClick: () => void }) {
               return (
-              <div key={w.id} className="flex flex-col rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] px-3 py-2 gap-1">
-                <div className="flex items-start justify-between gap-1">
-                  <div className="flex flex-col min-w-0">
-                    <div className="flex items-center gap-1.5">
-                      <p className="text-sm font-bold text-[hsl(var(--foreground))]">{w.ticker}</p>
-                      <span className={cn(
-                        'text-[9px] font-semibold px-1 py-0.5 rounded uppercase tracking-wide',
-                        w.tier === 'STABLE'   && 'bg-emerald-100 text-emerald-700',
-                        w.tier === 'GROWTH'   && 'bg-blue-100 text-blue-700',
-                        w.tier === 'HIGH_VOL' && 'bg-amber-100 text-amber-700',
-                        !w.tier              && 'bg-gray-100 text-gray-500',
-                      )}>
-                        {w.tier === 'STABLE' ? 'Stable' : w.tier === 'HIGH_VOL' ? 'High Vol' : 'Growth'}
-                      </span>
-                    </div>
-                    {quote && (
-                      <div className="flex items-baseline gap-1.5 mt-0.5">
-                        <span className="text-xs font-semibold tabular-nums text-[hsl(var(--foreground))]">
-                          ${quote.price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                        </span>
-                        <span className={cn(
-                          'text-[10px] font-medium tabular-nums',
-                          quote.changePercent >= 0 ? 'text-emerald-600' : 'text-red-500'
-                        )}>
-                          {quote.changePercent >= 0 ? '+' : ''}{quote.changePercent.toFixed(2)}%
-                        </span>
-                      </div>
-                    )}
-                    {!quote && <span className="text-[10px] text-[hsl(var(--muted-foreground))]/40 tabular-nums">—</span>}
+                <button
+                  onClick={onClick}
+                  className={cn(
+                    'text-[10px] font-semibold px-2 py-1 rounded-full border transition-colors whitespace-nowrap',
+                    isActive
+                      ? 'bg-violet-600 text-white border-violet-600'
+                      : 'bg-[hsl(var(--card))] text-[hsl(var(--muted-foreground))] border-[hsl(var(--border))] hover:border-violet-400 hover:text-violet-600'
+                  )}
+                >
+                  {label}
+                </button>
+              );
+            }
+
+            return (
+              <>
+                <div className="space-y-1.5">
+                  {/* Type filter */}
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <span className="text-[10px] text-[hsl(var(--muted-foreground))] font-medium w-10 shrink-0">Type</span>
+                    {(['ALL', 'STABLE', 'GROWTH', 'HIGH_VOL'] as const).map(t => (
+                      <Pill key={t} label={t === 'ALL' ? 'All' : t === 'HIGH_VOL' ? 'High Vol' : t === 'STABLE' ? 'Stable' : 'Growth'} active={tierFilter === t} onClick={() => setTierFilter(t)} />
+                    ))}
                   </div>
-                  <div className="flex items-center gap-0.5 shrink-0">
-                    <button
-                      title="Edit description"
-                      onClick={() => {
-                        setEditingNotes(w.ticker);
-                        setEditNotesValue(w.notes ?? '');
-                      }}
-                      className="p-1 rounded hover:bg-[hsl(var(--muted))] transition-colors"
-                    >
-                      <Pencil className="w-3 h-3 text-[hsl(var(--muted-foreground))]" />
-                    </button>
-                    <button
-                      onClick={() => handleRemoveTicker(w.ticker)}
-                      className="p-1 rounded hover:bg-[hsl(var(--muted))] transition-colors"
-                    >
-                      <X className="w-3 h-3 text-[hsl(var(--muted-foreground))]" />
-                    </button>
+                  {/* Source filter */}
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <span className="text-[10px] text-[hsl(var(--muted-foreground))] font-medium w-10 shrink-0">Source</span>
+                    <Pill label="All" active={sourceFilter === 'ALL'} onClick={() => setSourceFilter('ALL')} />
+                    <Pill label="⭐ Your picks" active={sourceFilter === 'user'} onClick={() => setSourceFilter('user')} />
+                    <Pill label="Analyst picks" active={sourceFilter === 'system'} onClick={() => setSourceFilter('system')} />
+                  </div>
+                  {/* Sector filter */}
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <span className="text-[10px] text-[hsl(var(--muted-foreground))] font-medium w-10 shrink-0">Sector</span>
+                    {sectors.map(s => (
+                      <Pill key={s} label={s === 'ALL' ? 'All' : s} active={sectorFilter === s} onClick={() => setSectorFilter(s)} />
+                    ))}
                   </div>
                 </div>
 
-                {editingNotes === w.ticker ? (
-                  <div className="flex gap-1">
-                    <input
-                      autoFocus
-                      type="text"
-                      value={editNotesValue}
-                      onChange={e => setEditNotesValue(e.target.value)}
-                      onKeyDown={e => {
-                        if (e.key === 'Enter') handleSaveNotes(w.ticker);
-                        if (e.key === 'Escape') setEditingNotes(null);
-                      }}
-                      placeholder="Add description..."
-                      className="flex-1 text-[11px] px-2 py-1 rounded border border-violet-300 bg-[hsl(var(--background))] focus:outline-none focus:ring-1 focus:ring-violet-500"
-                    />
-                    <button
-                      onClick={() => handleSaveNotes(w.ticker)}
-                      className="p-1 rounded bg-violet-100 hover:bg-violet-200 transition-colors"
-                    >
-                      <Check className="w-3 h-3 text-violet-700" />
-                    </button>
-                  </div>
-                ) : (
-                  <p className={cn(
-                    'text-[10px] leading-snug',
-                    w.notes ? 'text-[hsl(var(--muted-foreground))]' : 'text-[hsl(var(--muted-foreground))]/40 italic'
-                  )}>
-                    {w.notes ?? 'no description'}
-                  </p>
-                )}
-              </div>
-              );
-            })}
-          </div>
+                {/* Count */}
+                <p className="text-[10px] text-[hsl(var(--muted-foreground))]">
+                  Showing {filtered.length} of {active.length} tickers
+                </p>
+
+                {/* Watchlist items */}
+                <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+                  {filtered.map(w => {
+                    const quote = prices.get(w.ticker);
+                    const isUserPick = w.added_by === 'user';
+                    return (
+                      <div key={w.id} className={cn(
+                        'flex flex-col rounded-xl border px-3 py-2 gap-1',
+                        isUserPick ? 'border-teal-200 bg-teal-50/40' : 'border-[hsl(var(--border))] bg-[hsl(var(--card))]'
+                      )}>
+                        <div className="flex items-start justify-between gap-1">
+                          <div className="flex flex-col min-w-0">
+                            <div className="flex items-center gap-1 flex-wrap">
+                              <p className="text-sm font-bold text-[hsl(var(--foreground))]">{w.ticker}</p>
+                              <span className={cn(
+                                'text-[9px] font-semibold px-1 py-0.5 rounded uppercase tracking-wide',
+                                w.tier === 'STABLE'   && 'bg-emerald-100 text-emerald-700',
+                                w.tier === 'GROWTH'   && 'bg-blue-100 text-blue-700',
+                                w.tier === 'HIGH_VOL' && 'bg-amber-100 text-amber-700',
+                                !w.tier               && 'bg-gray-100 text-gray-500',
+                              )}>
+                                {w.tier === 'STABLE' ? 'Stable' : w.tier === 'HIGH_VOL' ? 'High Vol' : 'Growth'}
+                              </span>
+                              {isUserPick && (
+                                <span className="text-[9px] font-semibold px-1 py-0.5 rounded bg-teal-100 text-teal-700 uppercase tracking-wide">
+                                  ⭐ Your pick
+                                </span>
+                              )}
+                            </div>
+                            {w.sector && (
+                              <span className="text-[9px] text-[hsl(var(--muted-foreground))] mt-0.5">{w.sector}</span>
+                            )}
+                            {quote ? (
+                              <div className="flex items-baseline gap-1.5 mt-0.5">
+                                <span className="text-xs font-semibold tabular-nums text-[hsl(var(--foreground))]">
+                                  ${quote.price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                </span>
+                                <span className={cn(
+                                  'text-[10px] font-medium tabular-nums',
+                                  quote.changePercent >= 0 ? 'text-emerald-600' : 'text-red-500'
+                                )}>
+                                  {quote.changePercent >= 0 ? '+' : ''}{quote.changePercent.toFixed(2)}%
+                                </span>
+                              </div>
+                            ) : (
+                              <span className="text-[10px] text-[hsl(var(--muted-foreground))]/40 tabular-nums">—</span>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-0.5 shrink-0">
+                            <button
+                              title="Edit description"
+                              onClick={() => { setEditingNotes(w.ticker); setEditNotesValue(w.notes ?? ''); }}
+                              className="p-1 rounded hover:bg-[hsl(var(--muted))] transition-colors"
+                            >
+                              <Pencil className="w-3 h-3 text-[hsl(var(--muted-foreground))]" />
+                            </button>
+                            <button
+                              onClick={() => handleRemoveTicker(w.ticker)}
+                              className="p-1 rounded hover:bg-[hsl(var(--muted))] transition-colors"
+                            >
+                              <X className="w-3 h-3 text-[hsl(var(--muted-foreground))]" />
+                            </button>
+                          </div>
+                        </div>
+
+                        {editingNotes === w.ticker ? (
+                          <div className="flex gap-1">
+                            <input
+                              autoFocus
+                              type="text"
+                              value={editNotesValue}
+                              onChange={e => setEditNotesValue(e.target.value)}
+                              onKeyDown={e => {
+                                if (e.key === 'Enter') handleSaveNotes(w.ticker);
+                                if (e.key === 'Escape') setEditingNotes(null);
+                              }}
+                              placeholder="Add description..."
+                              className="flex-1 text-[11px] px-2 py-1 rounded border border-violet-300 bg-[hsl(var(--background))] focus:outline-none focus:ring-1 focus:ring-violet-500"
+                            />
+                            <button
+                              onClick={() => handleSaveNotes(w.ticker)}
+                              className="p-1 rounded bg-violet-100 hover:bg-violet-200 transition-colors"
+                            >
+                              <Check className="w-3 h-3 text-violet-700" />
+                            </button>
+                          </div>
+                        ) : (
+                          <p className={cn(
+                            'text-[10px] leading-snug',
+                            w.notes ? 'text-[hsl(var(--muted-foreground))]' : 'text-[hsl(var(--muted-foreground))]/40 italic'
+                          )}>
+                            {w.notes ?? 'no description'}
+                          </p>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
+            );
+          })()}
 
           {/* Weekly screener suggestions */}
         {candidates.length > 0 && (
