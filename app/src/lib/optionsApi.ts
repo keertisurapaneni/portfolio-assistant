@@ -312,7 +312,9 @@ export async function getOptionsMonthlyStats(): Promise<OptionsMonthlyStats> {
   const trades = (closed ?? []).filter(t => Math.abs(t.pnl ?? 0) > 1);
   const wins = trades.filter(t => (t.pnl ?? 0) > 0);
   const losses = trades.filter(t => (t.pnl ?? 0) < 0);
-  const premiumCollected = wins.reduce((s: number, t: { pnl: number | null }) => s + (t.pnl ?? 0), 0);
+  // Net realized P&L across ALL closed trades (wins + losses) — the true closed income figure.
+  // Previously only summed wins, causing losses like JPM -$105 to be silently excluded.
+  const premiumCollected = trades.reduce((s: number, t: { pnl: number | null }) => s + (t.pnl ?? 0), 0);
   const totalCapital = trades.reduce((s: number, t: { option_capital_req: number | null }) => s + (t.option_capital_req ?? 0), 0);
   const daysInMonth = new Date().getDate();
   const annualizedReturn = totalCapital > 0 ? (premiumCollected / totalCapital) * (365 / daysInMonth) * 100 : 0;
