@@ -4563,94 +4563,61 @@ Check the Options Wheel → Open tab to review the covered call position.`,
       log(`Options manager error: ${err instanceof Error ? err.message : 'unknown'}`);
     }
 
-    // 12. Options wheel — morning scan (10:00–11:30 AM ET only)
+    // 12. Options wheel — full-day scan (10:00 AM – 3:30 PM ET)
+    //
+    // Expanded from morning-only to catch dislocations throughout the entire session.
+    // The VIX-spike + 200 DMA signal we target can trigger at ANY time, not just at open.
+    //
+    // Cadence (to avoid hammering Finnhub unnecessarily):
+    //   Morning   10:00 – 11:30 AM  → every 15 min (high IV, earnings reactions, gap fills)
+    //   Midday    11:30 AM – 2:00 PM → every 30 min (news-driven drops, sector rotations)
+    //   Afternoon  2:00 – 3:30 PM  → every 30 min (late-session dislocations, pre-close IV)
+    //
+    // Daily new-position cap: max OPTIONS_MAX_NEW_PER_DAY new puts per calendar day.
+    // Prevents over-deploying capital on a single down-day even across multiple scan windows.
+    // Existing positions continue to be managed regardless of this cap.
+    const OPTIONS_MAX_NEW_PER_DAY = 3;
+
     const nowET = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }));
-    const issMorningScanWindow = (nowET.getHours() === 10) || (nowET.getHours() === 11 && nowET.getMinutes() < 30);
-    if (issMorningScanWindow) {
+    const etHour = nowET.getHours();
+    const etMin  = nowET.getMinutes();
+
+    // Determine which cadence applies for this cycle
+    const isMorningSession  = etHour === 10 || (etHour === 11 && etMin < 30);
+    const isMiddaySession   = (etHour === 11 && etMin >= 30) || etHour === 12 || (etHour === 13 && etMin < 60);
+    const isAfternoonSession = etHour === 14 || (etHour === 15 && etMin < 30);
+
+    // 30-min cadence: fire only on the :00 or :30 passes within the 15-min main cycle
+    const isOnThirtyMinMark = etMin < 15 || (etMin >= 30 && etMin < 45);
+
+    const shouldScan = isMorningSession || ((isMiddaySession || isAfternoonSession) && isOnThirtyMinMark);
+
+    if (shouldScan) {
       try {
-        // Options capital budget = maxTotalAllocation (stored as dollar cap, e.g. $500,000).
-        // Separate pool from the day-trade/swing budget; remaining $500k reserved for future.
+        const sb = getSupabase();
         const optionsCapitalBudget = (config.maxTotalAllocation != null && config.maxTotalAllocation >= 1000)
           ? config.maxTotalAllocation
           : config.portfolioValue * 0.5;
 
-        // ── Monthly loss circuit-breaker ──────────────────────────────────────
-        // If options P&L for the current calendar month is below -5% of the options budget,
-        // pause all new positions until the next month. Protects capital from runaway losses.
-        const MONTHLY_LOSS_CAP_PCT = 0.05; // 5% of options budget = $25k on $500k
-        const monthStart = new Date(nowET.getFullYear(), nowET.getMonth(), 1).toISOString();
-        const sb = getSupabase();
-        const { data: monthlyPnlRows } = await sb
-          .from('paper_trades')
-          .select('pnl')
-          .in('mode', ['OPTIONS_PUT', 'OPTIONS_CALL'])
-          .not('pnl', 'is', null)
-          .gte('closed_at', monthStart);
-        const monthlyPnl = (monthlyPnlRows ?? []).reduce((s: number, r: { pnl: number | null }) => s + (r.pnl ?? 0), 0);
-        const monthlyLossCap = -(optionsCapitalBudget * MONTHLY_LOSS_CAP_PCT);
-        if (monthlyPnl < monthlyLossCap) {
-          log(`⚠️  Options: monthly loss circuit-breaker triggered — P&L $${monthlyPnl.toFixed(0)} below cap $${monthlyLossCap.toFixed(0)}. No new positions until next month.`);
-          await sendAlert(
-            'circuit_breaker',
-            '🚨 Options Monthly Loss Circuit-Breaker Triggered',
-            `The options wheel monthly loss circuit-breaker has been triggered.
-
-Monthly P&L: $${monthlyPnl.toFixed(0)}
-Loss cap: $${monthlyLossCap.toFixed(0)}
-
-No new options positions will be opened until next month. Existing positions continue to be managed.`,
-          );
-        } else {
-          // ── Gradual ramp: limit new positions per day so capital deploys slowly ──
-          // Caps how many NEW puts we open per morning scan. Increases as system proves itself:
-          //   Month 1: max 2 new per day → fills ~10 slots over 2 weeks (conservative)
-          //   After track record: increase options_max_contracts_per_scan to 5 in DB
-          const { enabled: autoEnabled, maxContracts: maxNewPerScan } = await import('./lib/options-scanner.js').then(m => m.getOptionsAutoTradeConfig());
-          if (!autoEnabled) {
-            log('Options auto-trade disabled — skipping scan');
-          } else {
-            const scanResult = await runOptionsScan(optionsCapitalBudget);
-            if (scanResult.opportunities.length > 0) {
-              log(`Options scan: ${scanResult.opportunities.length} opps (budget: $${optionsCapitalBudget.toLocaleString()}, monthly P&L: $${monthlyPnl.toFixed(0)}, cap: $${monthlyLossCap.toFixed(0)})`);
-              for (const opp of scanResult.opportunities.slice(0, maxNewPerScan)) {
-                const result = await autoTradeOption(opp);
-                const tag = result.isLive ? `IB order #${result.ibOrderId}` : 'paper fallback (IB offline)';
-                if (result.tradeId) log(`  → ${opp.ticker} $${opp.strike}P @ $${opp.premium.toFixed(2)} (${opp.annualYield.toFixed(1)}% ann.) — ${tag}`);
-              }
-            } else {
-              log(`Options scan: no opportunities (${scanResult.skipped.length} checked, monthly P&L: $${monthlyPnl.toFixed(0)})`);
-              for (const s of scanResult.skipped) log(`  ✗ ${s.ticker}: ${s.reason}`);
-            }
-          }
-        }
-      } catch (err) {
-        log(`Options scan error: ${err instanceof Error ? err.message : 'unknown'}`);
-      }
-    }
-
-    // 12b. Options wheel — afternoon redeployment scan (1:30–2:00 PM ET)
-    // Fires only when capital was freed by today's 50%-profit closes — redeploys idle cash.
-    const isAfternoonScanWindow = nowET.getHours() === 13 && nowET.getMinutes() >= 30 && nowET.getMinutes() < 60;
-    if (isAfternoonScanWindow) {
-      try {
-        const sb = getSupabase();
+        // ── Daily new-position cap ────────────────────────────────────────────
+        // Count puts opened since midnight ET today (any status — even PENDING counts
+        // to prevent queuing duplicates if IB is slow to confirm).
         const todayStart = new Date(nowET.getFullYear(), nowET.getMonth(), nowET.getDate()).toISOString();
-        const { data: closedToday } = await sb
+        const { data: openedToday } = await sb
           .from('paper_trades')
           .select('id')
-          .in('mode', ['OPTIONS_PUT', 'OPTIONS_CALL'])
-          .eq('close_reason', '50pct_profit')
-          .gte('closed_at', todayStart);
+          .eq('mode', 'OPTIONS_PUT')
+          .gte('created_at', todayStart)
+          .in('status', ['PENDING', 'SUBMITTED', 'FILLED', 'PARTIAL']);
+        const newPositionsToday = (openedToday ?? []).length;
 
-        const freedSlots = (closedToday ?? []).length;
-        if (freedSlots > 0) {
-          log(`Options afternoon re-scan: ${freedSlots} slot(s) freed today — checking for redeployment opportunities`);
-
-          const optionsCapitalBudget = (config.maxTotalAllocation != null && config.maxTotalAllocation >= 1000)
-            ? config.maxTotalAllocation
-            : config.portfolioValue * 0.5;
-
-          // Re-check monthly loss circuit breaker
+        if (newPositionsToday >= OPTIONS_MAX_NEW_PER_DAY) {
+          log(`Options scan: daily cap reached (${newPositionsToday}/${OPTIONS_MAX_NEW_PER_DAY} new puts today) — skipping new entries`);
+        } else {
+          // ── Monthly loss circuit-breaker ──────────────────────────────────
+          // If options P&L for the current calendar month is below -5% of the options budget,
+          // pause all new positions until the next month.
+          const MONTHLY_LOSS_CAP_PCT = 0.05;
           const monthStart = new Date(nowET.getFullYear(), nowET.getMonth(), 1).toISOString();
           const { data: monthlyPnlRows } = await sb
             .from('paper_trades')
@@ -4659,31 +4626,46 @@ No new options positions will be opened until next month. Existing positions con
             .not('pnl', 'is', null)
             .gte('closed_at', monthStart);
           const monthlyPnl = (monthlyPnlRows ?? []).reduce((s: number, r: { pnl: number | null }) => s + (r.pnl ?? 0), 0);
-          const monthlyLossCap = -(optionsCapitalBudget * 0.05);
+          const monthlyLossCap = -(optionsCapitalBudget * MONTHLY_LOSS_CAP_PCT);
 
           if (monthlyPnl < monthlyLossCap) {
-            log(`Options afternoon: circuit breaker active — skipping redeployment`);
+            log(`⚠️  Options: monthly loss circuit-breaker triggered — P&L $${monthlyPnl.toFixed(0)} below cap $${monthlyLossCap.toFixed(0)}. No new positions until next month.`);
+            await sendAlert(
+              'circuit_breaker',
+              '🚨 Options Monthly Loss Circuit-Breaker Triggered',
+              `The options wheel monthly loss circuit-breaker has been triggered.
+
+Monthly P&L: $${monthlyPnl.toFixed(0)}
+Loss cap: $${monthlyLossCap.toFixed(0)}
+
+No new options positions will be opened until next month. Existing positions continue to be managed.`,
+            );
           } else {
-            const { enabled: autoEnabled } = await import('./lib/options-scanner.js').then(m => m.getOptionsAutoTradeConfig());
-            if (autoEnabled) {
+            const { enabled: autoEnabled, maxContracts: maxNewPerScan } = await import('./lib/options-scanner.js').then(m => m.getOptionsAutoTradeConfig());
+            if (!autoEnabled) {
+              log('Options auto-trade disabled — skipping scan');
+            } else {
+              const slotsRemaining = OPTIONS_MAX_NEW_PER_DAY - newPositionsToday;
+              const sessionTag = isMorningSession ? 'morning' : isMiddaySession ? 'midday' : 'afternoon';
               const scanResult = await runOptionsScan(optionsCapitalBudget);
+
               if (scanResult.opportunities.length > 0) {
-                log(`Options afternoon: ${scanResult.opportunities.length} opp(s) found — redeploying up to ${freedSlots} slot(s)`);
-                for (const opp of scanResult.opportunities.slice(0, freedSlots)) {
+                const toPlace = Math.min(maxNewPerScan, slotsRemaining);
+                log(`Options ${sessionTag} scan: ${scanResult.opportunities.length} opps — placing up to ${toPlace} (${newPositionsToday}/${OPTIONS_MAX_NEW_PER_DAY} today, monthly P&L: $${monthlyPnl.toFixed(0)})`);
+                for (const opp of scanResult.opportunities.slice(0, toPlace)) {
                   const result = await autoTradeOption(opp);
                   const tag = result.isLive ? `IB order #${result.ibOrderId}` : 'paper fallback (IB offline)';
-                  if (result.tradeId) log(`  → Redeployed: ${opp.ticker} $${opp.strike}P @ $${opp.premium.toFixed(2)} (${opp.annualYield.toFixed(1)}% ann.) — ${tag}`);
+                  if (result.tradeId) log(`  → ${opp.ticker} $${opp.strike}P @ $${opp.premium.toFixed(2)} (${opp.annualYield.toFixed(1)}% ann.) — ${tag}`);
                 }
               } else {
-                log(`Options afternoon: no redeployment opportunities found`);
+                log(`Options ${sessionTag} scan: no opportunities (${scanResult.skipped.length} checked, ${newPositionsToday}/${OPTIONS_MAX_NEW_PER_DAY} today)`);
+                for (const s of scanResult.skipped) log(`  ✗ ${s.ticker}: ${s.reason}`);
               }
             }
           }
-        } else {
-          // No positions closed today — skip silently (don't spam logs)
         }
       } catch (err) {
-        log(`Options afternoon scan error: ${err instanceof Error ? err.message : 'unknown'}`);
+        log(`Options scan error: ${err instanceof Error ? err.message : 'unknown'}`);
       }
     }
 
