@@ -79,6 +79,7 @@ export interface AutoTraderConfig {
   ltProfitTakePct: number;         // long-term profit-take: close if PnL% > this (e.g. 15)
   ltMaxHoldDays: number;           // long-term max hold days (0 = disabled)
   ltTrailingStopPct: number;       // trailing stop: sell if price falls this % from peak (only after being in profit)
+  dayTradeMaxDailyLoss: number;    // stop new day-trade entries when session realized P&L < -$X (0 = disabled)
 }
 
 const DEFAULT_CONFIG: AutoTraderConfig = {
@@ -114,6 +115,7 @@ const DEFAULT_CONFIG: AutoTraderConfig = {
   ltProfitTakePct: 15,
   ltMaxHoldDays: 0,
   ltTrailingStopPct: 10,
+  dayTradeMaxDailyLoss: 500,
 };
 
 export async function loadConfig(): Promise<AutoTraderConfig> {
@@ -179,6 +181,7 @@ export async function loadConfig(): Promise<AutoTraderConfig> {
     ltProfitTakePct: Number(data.lt_profit_take_pct ?? DEFAULT_CONFIG.ltProfitTakePct),
     ltMaxHoldDays: Number(data.lt_max_hold_days ?? DEFAULT_CONFIG.ltMaxHoldDays),
     ltTrailingStopPct: Number(data.lt_trailing_stop_pct ?? DEFAULT_CONFIG.ltTrailingStopPct),
+    dayTradeMaxDailyLoss: Number(data.day_trade_max_daily_loss ?? DEFAULT_CONFIG.dayTradeMaxDailyLoss),
   };
 }
 
