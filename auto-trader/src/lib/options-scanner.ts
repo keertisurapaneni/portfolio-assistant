@@ -701,9 +701,12 @@ async function checkStock(
   const rsiBonus = rsiOk;
 
   // Check 6: Options chain — uses IB when connected, Black-Scholes synthetic fallback otherwise
-  // Priority: bear mode (15Δ) > leveraged ETF (18Δ) > tier override > high-conviction RSI (35Δ) > auto-tuned default
+  // Delta priority:
+  //   bear mode STABLE (0.20) > bear mode other (0.15) > leveraged ETF (0.18) > tier override > high-conviction RSI (0.35) > auto-tuned default
+  // STABLE-tier names (KO, JNJ, PG, BAC…) have beta <1.2 and rarely move >10% on macro news,
+  // so 0.20 is still very safe (80% OTM) while collecting ~50% more premium than 0.15.
   let deltaTarget = ctx.deltaTarget;
-  if (ctx.bearMode) deltaTarget = BEAR_DELTA_TARGET;
+  if (ctx.bearMode) deltaTarget = tier === 'STABLE' ? 0.20 : BEAR_DELTA_TARGET;
   else if (leverageFactor > 1) deltaTarget = DELTA_TARGET_LEVERAGED;
   else if (tierCfg.deltaTarget !== null) deltaTarget = tierCfg.deltaTarget;
   else if (rsiBonus) deltaTarget = DELTA_TARGET_HIGH_CONVICTION;
