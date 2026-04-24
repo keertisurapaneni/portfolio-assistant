@@ -16,7 +16,8 @@ create extension if not exists pg_cron  with schema pg_catalog;
 create extension if not exists pg_net   with schema extensions;
 
 -- Wrapper function — keeps the URL/key in one easy-to-find place.
-create or replace function private.trigger_morning_brief()
+-- Note: uses public schema (Supabase hosted instances don't have a private schema).
+create or replace function public.trigger_morning_brief()
 returns void
 language plpgsql
 security definer
@@ -56,5 +57,5 @@ $$;
 select cron.schedule(
   'morning-brief-daily',
   '0 12 * * 1-5',
-  'select private.trigger_morning_brief()'
+  'select public.trigger_morning_brief()'
 );

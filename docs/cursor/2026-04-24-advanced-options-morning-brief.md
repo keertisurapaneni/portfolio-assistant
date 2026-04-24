@@ -87,3 +87,39 @@ Implement a set of confirmed strategies from three independent put-selling video
 | CC DTE target | 45 | After assignment (was 30) |
 | 200 DMA proximity | 5% | Stock within 5% of SMA200 |
 | Morning brief time | 8:00 AM ET | pg_cron at 12:00 UTC |
+
+---
+
+## End-of-Day Additions (Party Mode Decision)
+
+### Scanner Bug Fixes (3 compounding bugs blocking all entries)
+
+1. **`fetchJson` unhandled rejection** — `return res.json()` without `await` caused non-JSON Finnhub responses to escape the try/catch and crash the scan loop. 16 defensive tickers were silently dropped every run. Fix: `return await res.json()`.
+2. **No try/catch in scan loop** — one bad ticker aborted the full scan. Fix: wrap each `checkStock` call individually.
+3. **VIX-spike delta conflicts with prob_profit floor** — 0.35 delta → ~65% OTM, but STABLE requires ≥70%. Fix: `VIX_SPIKE_MIN_PROB_PROFIT = 60` when `vixSpike && nearSma200`.
+4. **STABLE beta cap too tight during sell-offs** — JNJ/BAC/WFC show realized beta >1.2 during panic. Fix: relax STABLE cap 1.2→1.5 when VIX > 30.
+
+### Defensive Index ETF Tier (VPU / VYM / VIG)
+
+**Decision (party mode — Mary, Winston, Amelia, John):** Add Vanguard defensive ETFs to the STABLE tier. These are the best current scanner candidates: low beta (~0.5–0.85), naturally range-bound, no earnings risk, and assignment is desirable (you own a diversified ETF, not a single company).
+
+| Constant | Value |
+|---|---|
+| `MIN_PREMIUM_YIELD_INDEX_ETF` | 1.2%/month |
+| `is_index_etf` DB column | `BOOLEAN DEFAULT false` |
+| New tickers | VPU (Utilities), VYM (Hi-Div), VIG (Div Appreciation) |
+
+**Migration:** `20260424000006_options_watchlist_index_etf.sql`
+
+### Covered Strangle — Backlog (Not Yet Built)
+
+**Decision:** Park until three conditions are met:
+1. At least 2 clean fills on VPU/VYM/VIG from the wheel
+2. VIX drops below 25 (strangle-unfriendly in directional markets)
+3. Post-assignment CC logic confirmed working
+
+**When built, required schema:** `strangle_partner_id UUID REFERENCES paper_trades(id)` — nullable FK linking both legs of a strangle so the manager tracks them as a unit.
+
+**Activation gates (future):** `is_index_etf=true` AND `rangeBound=true` AND `freeCapital >= put_strike × 100` AND `daysToEarnings > 35` AND `vix < 25` AND tier = `STABLE`.
+
+**Video source:** "Covered Strangle" + "VOO Wheel Strategy" (same creator, analyzed 2026-04-24).

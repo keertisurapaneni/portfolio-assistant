@@ -41,6 +41,7 @@ import { isConnected, placeOptionsOrder, getDefaultAccount } from '../ib-connect
 const FINNHUB_KEY = process.env.FINNHUB_API_KEY ?? '';
 const MIN_STOCK_PRICE = 20;
 const MIN_PREMIUM_YIELD_PCT = 1.5;        // at least 1.5% of strike per 30 days (regular stocks)
+const MIN_PREMIUM_YIELD_INDEX_ETF = 1.2;  // index ETFs (VPU/VYM/VIG): lower floor — assignment is a feature
 const MIN_PREMIUM_YIELD_LEVERAGED = 5.0;  // leveraged ETFs must hit 5% monthly (their whole point)
 const DIP_ENTRY_BONUS_THRESHOLD = 5;      // stock dropped ≥5% from recent high = premium entry
 const MIN_IV_RANK = 50;                    // only sell when premium is elevated
@@ -135,6 +136,7 @@ interface WatchlistEntry {
   min_price: number | null;
   notes: string | null;
   tier: WatchlistTier;
+  is_index_etf: boolean;
 }
 
 /**
@@ -556,6 +558,7 @@ async function checkStock(
   ctx: ScanContext,
   leverageFactor = 1,
   tier: WatchlistTier = 'GROWTH',
+  isIndexEtf = false,
 ): Promise<OptionsTradeTicket | { ticker: string; skipped: true; reason: string }> {
   const tierCfg = TIER_CONFIG[tier];
   const checks: Record<string, boolean | string> = {};
@@ -840,8 +843,9 @@ async function checkStock(
   }
 
   // Check 7: Premium yield threshold (use bid price for conservative estimate)
-  // Leveraged ETFs must hit 5% monthly — that's their whole purpose.
-  // Regular stocks need ≥1.5% monthly. Dip entries get a 0.5% grace (IV is elevated).
+  // Leveraged ETFs: 5% monthly (their whole purpose is premium capture)
+  // Index ETFs (VPU/VYM/VIG): 1.2% monthly — assignment is desirable, lower bar justified
+  // Regular stocks: 1.5% monthly. Dip entries get a 0.5% grace (IV elevated).
   // monthlyYield normalizes by DTE so a 10-DTE and 45-DTE option at the same premium
   // are evaluated correctly — yield = (premium / strike) * (30 / dte).
   const dte = daysToExpiryFromStr(put.expiry);
@@ -850,8 +854,10 @@ async function checkStock(
   const monthlyYield = (conservativePremium / put.strike) * (30 / effectiveDte);
   const yieldFloor = leverageFactor > 1
     ? MIN_PREMIUM_YIELD_LEVERAGED / 100
-    : (MIN_PREMIUM_YIELD_PCT - (dipEntry ? 0.5 : 0)) / 100;
-  checks.premiumYield = `${(monthlyYield * 100).toFixed(2)}%_need_${(yieldFloor * 100).toFixed(1)}%`;
+    : isIndexEtf
+      ? MIN_PREMIUM_YIELD_INDEX_ETF / 100
+      : (MIN_PREMIUM_YIELD_PCT - (dipEntry ? 0.5 : 0)) / 100;
+  checks.premiumYield = `${(monthlyYield * 100).toFixed(2)}%_need_${(yieldFloor * 100).toFixed(1)}%${isIndexEtf ? '_index_etf' : ''}`;
   if (monthlyYield < yieldFloor) return { ticker, skipped: true, reason: `low_premium_${(monthlyYield * 100).toFixed(2)}pct` };
 
   // Check 8: Capital sufficiency (bear mode uses 50% position size)
@@ -956,7 +962,7 @@ export async function runOptionsScan(freeCapital = 100_000): Promise<OptionsScan
   // Load active watchlist
   const { data: watchlist } = await sb
     .from('options_watchlist')
-    .select('ticker, min_price, notes, tier')
+    .select('ticker, min_price, notes, tier, is_index_etf')
     .eq('active', true)
     .order('ticker');
 
@@ -976,7 +982,7 @@ export async function runOptionsScan(freeCapital = 100_000): Promise<OptionsScan
     const tier: WatchlistTier = (entry.tier as WatchlistTier) ?? 'GROWTH';
 
     try {
-      const result = await checkStock(entry.ticker, entry.min_price, ctx, leverageFactor, tier);
+      const result = await checkStock(entry.ticker, entry.min_price, ctx, leverageFactor, tier, entry.is_index_etf ?? false);
 
       if ('skipped' in result) {
         skipped.push({ ticker: result.ticker, reason: result.reason });
