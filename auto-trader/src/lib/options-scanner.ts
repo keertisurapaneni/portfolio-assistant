@@ -916,20 +916,6 @@ export async function runOptionsScan(freeCapital = 100_000): Promise<OptionsScan
   // Sort by annual yield descending
   opportunities.sort((a, b) => b.annualYield - a.annualYield);
 
-  // Auto-trade top opportunities if enabled
-  const { enabled: autoEnabled, maxContracts } = autoConfig;
-  if (autoEnabled && opportunities.length > 0) {
-    const toTrade = opportunities.slice(0, maxContracts);
-    for (const opp of toTrade) {
-      const result = await autoTradeOption(opp);
-      if (result.isLive) {
-        console.log(`[Options Scan] Auto-traded ${opp.ticker}: IB order ${result.ibOrderId}`);
-      } else {
-        console.log(`[Options Scan] Paper-traded ${opp.ticker} (auto-trade off or IB unavailable)`);
-      }
-    }
-  }
-
   // Persist opportunities
   for (const opp of opportunities) {
     await sb.from('options_scan_results').upsert({
