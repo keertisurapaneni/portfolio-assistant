@@ -584,9 +584,21 @@ export async function runOptionsManageCycle(): Promise<ManageCycleResult> {
         }
       } catch { /* non-blocking — insert with 0 if chain unavailable */ }
 
-      // Use the higher of: 10% OTM floor OR the 20-delta strike from chain
-      const rawCcStrike = Math.max(minCcStrikeFloor, ccStrikeFromChain ?? minCcStrikeFloor);
+      // Three-guard rule (from SMB Capital covered-calls video — "the deadly mistake"):
+      // NEVER locate the short call below the share acquisition price (the put strike).
+      // If stock drops after assignment and we sell a call below cost basis, any bounce
+      // that triggers assignment locks in a guaranteed realized loss on the shares —
+      // wiping out all premium collected across the entire wheel cycle.
+      //
+      // Guard 1: acquisition price (put strike = cost basis of the assigned shares)
+      // Guard 2: 10% OTM floor above current stock price  (recovery room)
+      // Guard 3: 20-delta strike from chain               (video's probability target)
+      // Final strike = highest of all three — even if premium collected is tiny.
+      const acquisitionPrice = pos.option_strike; // the put strike that was assigned
+      const rawCcStrike = Math.max(acquisitionPrice, minCcStrikeFloor, ccStrikeFromChain ?? minCcStrikeFloor);
       const ccStrike = Math.round(rawCcStrike * 4) / 4; // round to nearest $0.25
+
+      const inCostBasisProtectionMode = rawCcStrike <= acquisitionPrice * 1.005; // within 0.5% of cost basis
 
       await sb.from('paper_trades').insert({
         ticker: pos.ticker,
@@ -609,10 +621,13 @@ export async function runOptionsManageCycle(): Promise<ManageCycleResult> {
         notes: `Covered call after assignment on ${pos.ticker} put at $${pos.option_strike} — collected $${(ccPremium * 100).toFixed(0)} premium`,
       });
 
-      console.log(`[Options Manager] Assignment detected — covered call queued: ${pos.ticker} $${ccStrike}C exp ${ccExpiryISO}`);
+      const modeTag = inCostBasisProtectionMode
+        ? ' [COST BASIS PROTECTION — premium may be minimal]'
+        : '';
+      console.log(`[Options Manager] Assignment detected — covered call queued: ${pos.ticker} $${ccStrike}C exp ${ccExpiryISO}${modeTag}`);
       persistEvent(pos.ticker, 'warning',
-        `📌 ${pos.ticker} assignment → covered call queued: $${ccStrike}C exp ${ccExpiryISO}, premium $${(ccPremium * 100).toFixed(0)}`,
-        { action: 'flagged', source: 'options', metadata: { reason: 'assignment_detected_covered_call_queued', stockPrice, strike: pos.option_strike, ccStrike, ccExpiry: ccExpiryISO, ccPremium } }
+        `📌 ${pos.ticker} assignment → covered call queued: $${ccStrike}C exp ${ccExpiryISO}, premium $${(ccPremium * 100).toFixed(0)}${modeTag}`,
+        { action: 'flagged', source: 'options', metadata: { reason: 'assignment_detected_covered_call_queued', stockPrice, acquisitionPrice, strike: pos.option_strike, ccStrike, ccExpiry: ccExpiryISO, ccPremium, inCostBasisProtectionMode } }
       );
     }
   }
