@@ -55,6 +55,7 @@ const MAX_POSITIONS_HIGH_VIX = 6;          // VIX > 25 — half positions in str
 const EARNINGS_BLACKOUT_DAYS = 7;
 const IV_SPIKE_THRESHOLD = 20;             // points — sudden IV jump = news event
 const MIN_PROB_PROFIT = 75;                // minimum 75% OTM probability (video: 80-90%, we set 75 as floor)
+const VIX_SPIKE_MIN_PROB_PROFIT = 60;      // VIX-spike + 200 DMA mode: accept higher assignment risk (0.35δ → ~65% OTM)
 const MAX_SPREAD_PCT = 0.30;               // bid-ask spread must be < 30% of mid
 const MIN_SENTIMENT_SCORE = -0.3;          // block if Finnhub bearish score < this
 const NEWS_LOOKBACK_DAYS = 7;              // check news from last N days
@@ -208,7 +209,7 @@ async function fetchJson<T>(url: string): Promise<T | null> {
     _lastFinnhubCall = Date.now();
     const res = await fetch(url);
     if (!res.ok) return null;
-    return res.json() as Promise<T>;
+    return await res.json() as T;
   } catch {
     return null;
   }
@@ -642,11 +643,15 @@ async function checkStock(
   }
 
   // Check 3.6: Beta filter — threshold is per-tier (STABLE=1.2, GROWTH=1.8, HIGH_VOL=2.5).
+  // In VIX-spike mode (VIX > 30), realized betas inflate market-wide due to panic selling.
+  // Relax STABLE cap from 1.2→1.5 so quality defensive names (JNJ, BAC, etc.) still qualify.
   // Leveraged ETFs are intentionally high-beta; they have dedicated delta/yield gates instead.
   const metrics = await getStockMetrics(ticker);
   const { beta, high52w } = metrics;
-  checks.beta = beta !== null ? `${beta.toFixed(2)} (${tier} cap: ${tierCfg.maxBeta})` : 'unknown';
-  if (beta !== null && beta > tierCfg.maxBeta && leverageFactor === 1) {
+  const vixSpikeNow = ctx.vix > VIX_SPIKE_THRESHOLD;
+  const effectiveMaxBeta = (vixSpikeNow && tier === 'STABLE') ? 1.5 : tierCfg.maxBeta;
+  checks.beta = beta !== null ? `${beta.toFixed(2)} (${tier} cap: ${effectiveMaxBeta}${vixSpikeNow && tier === 'STABLE' ? '_relaxed' : ''})` : 'unknown';
+  if (beta !== null && beta > effectiveMaxBeta && leverageFactor === 1) {
     return { ticker, skipped: true, reason: `high_beta:${beta.toFixed(2)}` };
   }
 
@@ -813,9 +818,11 @@ async function checkStock(
     ? `strike:${put.strike}_sma20:${sma20.toFixed(1)}_ok`
     : 'sma20_no_data';
 
-  // Check 6b: Probability of profit floor — per-tier (STABLE=70%, GROWTH=72%, HIGH_VOL=75%)
-  const minProbProfit = tierCfg.minProbProfit;
-  checks.probProfit = `${put.probProfit.toFixed(0)}%_need_${minProbProfit}% (${tier})`;
+  // Check 6b: Probability of profit floor — per-tier, but relaxed in VIX-spike+200DMA mode.
+  // In VIX-spike mode we intentionally target 0.35 delta → ~65% OTM. Applying the normal
+  // 70-75% floor would always block these entries, defeating the strategy. Use 60% instead.
+  const minProbProfit = (vixSpike && nearSma200) ? VIX_SPIKE_MIN_PROB_PROFIT : tierCfg.minProbProfit;
+  checks.probProfit = `${put.probProfit.toFixed(0)}%_need_${minProbProfit}%${vixSpike && nearSma200 ? '_vix_spike_mode' : ''} (${tier})`;
   if (put.probProfit < minProbProfit) {
     return { ticker, skipped: true, reason: `low_prob_profit:${put.probProfit.toFixed(0)}pct` };
   }
@@ -967,16 +974,24 @@ export async function runOptionsScan(freeCapital = 100_000): Promise<OptionsScan
   for (const entry of watchlist as WatchlistEntry[]) {
     const leverageFactor = parseLeverageFactor(entry.notes);
     const tier: WatchlistTier = (entry.tier as WatchlistTier) ?? 'GROWTH';
-    const result = await checkStock(entry.ticker, entry.min_price, ctx, leverageFactor, tier);
 
-    if ('skipped' in result) {
-      skipped.push({ ticker: result.ticker, reason: result.reason });
-    } else {
-      opportunities.push(result);
+    try {
+      const result = await checkStock(entry.ticker, entry.min_price, ctx, leverageFactor, tier);
 
-      // Increment open count and decrement free capital to respect limits within this scan
-      ctx.openPutCount += 1;
-      ctx.freeCapital = Math.max(0, ctx.freeCapital - result.capitalRequired);
+      if ('skipped' in result) {
+        skipped.push({ ticker: result.ticker, reason: result.reason });
+      } else {
+        opportunities.push(result);
+
+        // Increment open count and decrement free capital to respect limits within this scan
+        ctx.openPutCount += 1;
+        ctx.freeCapital = Math.max(0, ctx.freeCapital - result.capitalRequired);
+      }
+    } catch (err) {
+      // Don't let one bad ticker crash the entire scan — record the error and continue
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`[Options Scanner] checkStock threw for ${entry.ticker}:`, msg);
+      skipped.push({ ticker: entry.ticker, reason: `scanner_error:${msg.slice(0, 60)}` });
     }
 
     // Small delay between IB requests to avoid throttling
