@@ -84,7 +84,7 @@ export interface AutoTraderConfig {
 
 const DEFAULT_CONFIG: AutoTraderConfig = {
   enabled: false, maxPositions: 3, positionSize: 1000,
-  minScannerConfidence: 7, minFAConfidence: 7, minSuggestedFindsConviction: 9,
+  minScannerConfidence: 7, minFAConfidence: 7, minSuggestedFindsConviction: 8,
   accountId: null, dayTradeAutoClose: true,
   maxTotalAllocation: 500_000, maxDailyDeployment: 50_000,
   useDynamicSizing: true, portfolioValue: 1_000_000,
