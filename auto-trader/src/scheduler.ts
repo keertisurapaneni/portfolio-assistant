@@ -272,6 +272,17 @@ export function startScheduler(): void {
     }
   }, { timezone: 'America/New_York' });
 
+  // 4:05 PM safety sweep — catches day trades placed in the 3:55–4:00 PM window
+  // that the primary EOD sweep missed (e.g. scanner fired at exactly 3:55 PM).
+  // Market is closed; any remaining FILLED/SUBMITTED day trades must be marked closed.
+  cron.schedule('5 16 * * 1-5', async () => {
+    const config = await loadConfig();
+    if (config.dayTradeAutoClose) {
+      log('[EOD Safety] 4:05 PM sweep — catching any trades placed after 3:55 PM EOD run');
+      await closeAllDayTrades(config);
+    }
+  }, { timezone: 'America/New_York' });
+
   // Earnings IV-crush scanner — 2:30 PM ET, enter calendar spreads for tonight's AMC
   // and tomorrow morning's BMO earnings announcements.
   cron.schedule('30 14 * * 1-5', async () => {
