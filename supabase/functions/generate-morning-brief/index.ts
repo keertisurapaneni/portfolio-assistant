@@ -99,11 +99,14 @@ Deno.serve(async (req: Request) => {
     let economic_events = body.economic_events;
 
     if (!news) {
-      const twelveHoursAgo = Math.floor(Date.now() / 1000) - 12 * 3600;
       const raw = await fetchFinnhub<{ id: number; headline: string; summary: string; related: string; datetime: number; source: string }[]>(
-        `/news?category=general&minId=${twelveHoursAgo}`, finnhubKey
+        `/news?category=general`, finnhubKey
       );
-      news = raw ?? [];
+      // Filter to last 12 hours by datetime (Unix timestamp)
+      const twelveHoursAgo = Math.floor(Date.now() / 1000) - 12 * 3600;
+      news = (raw ?? []).filter(n => n.datetime >= twelveHoursAgo);
+      // Fall back to all available news if nothing recent
+      if (news.length === 0) news = raw ?? [];
     }
 
     if (!earnings) {
@@ -166,7 +169,7 @@ Generate the structured daily market briefing JSON for this trading day.`;
             { role: 'user', content: userPrompt },
           ],
           temperature: 0.3,
-          max_tokens: 1500,
+          max_tokens: 3000,
         }),
       });
 
@@ -222,7 +225,18 @@ Generate the structured daily market briefing JSON for this trading day.`;
       }
     }
 
-    const jsonStr = raw.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```\s*$/i, '').trim();
+    // Strip markdown fences and any leading/trailing non-JSON text
+    let jsonStr = raw
+      .replace(/^```json\s*/im, '')
+      .replace(/^```\s*/im, '')
+      .replace(/```\s*$/im, '')
+      .trim();
+    // Extract first {...} block in case model adds preamble text
+    const braceStart = jsonStr.indexOf('{');
+    const braceEnd = jsonStr.lastIndexOf('}');
+    if (braceStart !== -1 && braceEnd !== -1 && braceEnd > braceStart) {
+      jsonStr = jsonStr.slice(braceStart, braceEnd + 1);
+    }
     const brief = JSON.parse(jsonStr) as {
       macro_snapshot: string; macro_tone: string;
       economic_events: unknown[]; earnings: unknown[];
