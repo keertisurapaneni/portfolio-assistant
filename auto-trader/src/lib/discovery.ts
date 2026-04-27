@@ -552,7 +552,7 @@ export async function generateSuggestedFinds(): Promise<DiscoveryResult> {
   await sleep(2000);
 
   console.log('[Discovery] Step 3: HuggingFace analyzing compounders...');
-  const compounderRaw = await callHuggingFace(buildCompounderAnalysisPrompt(validMetrics), 'discover_compounders', 0.3, 4000);
+  const compounderRaw = await callHuggingFace(buildCompounderAnalysisPrompt(validMetrics), 'discover_compounders', 0.3, 8000);
   const compounders = parseStocksResponse(compounderRaw, 'Steady Compounder');
 
   // ── GOLD MINES PIPELINE ──
@@ -577,7 +577,7 @@ export async function generateSuggestedFinds(): Promise<DiscoveryResult> {
   console.log('[Discovery] Step 5c: HuggingFace analyzing Gold Mines...');
   const goldMineRaw = await callHuggingFace(
     buildGoldMineAnalysisPrompt(validGoldMineMetrics, marketNews, goldMineCandidates, currentTheme),
-    'discover_goldmines', 0.3, 4000,
+    'discover_goldmines', 0.3, 8000,
   );
   const goldMines = parseStocksResponse(goldMineRaw, 'Gold Mine');
 
