@@ -4597,9 +4597,12 @@ async function runSchedulerCycle(): Promise<void> {
     try {
       const spxSetups = await checkSpxLevelSetups();
       for (const setup of spxSetups) {
-        // Build a TradeIdea so it flows through the same pre-trade checks + order placement
-        // as other scanner ideas.  Confidence is fixed at 9 — this is a mechanical,
-        // rule-based setup with a pre-defined entry, stop, and target.
+        // Confidence: 9 base. Bump to 9.5 when QQQ confluence is detected
+        // (Somesh: multi-instrument confluence raises win probability 58%→92%).
+        const hasConfluence = !!setup.confluenceNote;
+        const spxConfidence = hasConfluence ? 9.5 : 9;
+        if (hasConfluence) log(`[SpxScanner] Confluence boost → confidence ${spxConfidence}: ${setup.confluenceNote}`);
+
         const idea: TradeIdea = {
           ticker: 'SPY',
           name: 'SPDR S&P 500 ETF Trust',
@@ -4607,9 +4610,11 @@ async function runSchedulerCycle(): Promise<void> {
           change: 0,
           changePercent: 0,
           signal: setup.signal,
-          confidence: 9,
+          confidence: spxConfidence,
           reason: setup.description,
-          tags: ['spx_key_level', 'breakout_retest'],
+          tags: hasConfluence
+            ? ['spx_key_level', 'breakout_retest', 'qqq_confluence']
+            : ['spx_key_level', 'breakout_retest'],
           mode: 'DAY_TRADE',
           entryPrice: setup.spyEntry,
           stopLoss: setup.spyStop,
@@ -4634,6 +4639,7 @@ async function runSchedulerCycle(): Promise<void> {
             source: 'spx_level_scanner',
             spx_level: setup.spxLevel,
             direction: setup.direction,
+            ...(setup.confluenceNote && { confluence: setup.confluenceNote }),
           });
       }
     } catch (err) {

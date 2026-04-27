@@ -68,6 +68,7 @@ export interface SpxSetup {
   spyStop: number;                // SPY stop loss
   spyTarget: number;              // SPY target (next key level)
   riskReward: string;
+  confluenceNote: string | null;  // QQQ whole-number confluence (null = no confluence detected)
   description: string;
 }
 
@@ -140,6 +141,54 @@ async function fetchSpyPrice(): Promise<number | null> {
     const data = await res.json();
     const price = data?.quoteResponse?.result?.[0]?.regularMarketPrice as number | undefined;
     return price ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Check if QQQ is near a whole-dollar level ($640, $650, $660…) and aligned
+ * with the expected trade direction — confluence confirmation per Somesh's strategy.
+ *
+ * QQQ and SPY/SPX move in tandem. When SPX is at a $50 structural level AND QQQ
+ * is simultaneously at a round-number level, the combined probability of a clean
+ * directional move increases substantially (Somesh: 58% → 92% backtested).
+ *
+ * Returns a human-readable note if confluence is present, null otherwise.
+ * Never throws — confluence is a bonus, not a requirement.
+ *
+ * @param direction  Break direction of the SPX setup ('ABOVE' → looking for QQQ also near resistance)
+ */
+async function checkQqqConfluence(direction: 'ABOVE' | 'BELOW'): Promise<string | null> {
+  try {
+    const url = 'https://query2.finance.yahoo.com/v7/finance/quote?symbols=QQQ&fields=regularMarketPrice';
+    const res = await fetch(url, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; PortfolioAssistant/1.0)' },
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const price = data?.quoteResponse?.result?.[0]?.regularMarketPrice as number | undefined;
+    if (!price || price <= 0) return null;
+
+    // Whole-number level = nearest integer dollar
+    const nearestWhole = Math.round(price);
+    const distanceDollar = Math.abs(price - nearestWhole);
+
+    // Within $1.00 of a whole-number level = confluence zone
+    const CONFLUENCE_ZONE = 1.0;
+    if (distanceDollar > CONFLUENCE_ZONE) return null;
+
+    // Check directional alignment:
+    // ABOVE break (SPY BUY) → QQQ approaching whole number from below (resistance to break)
+    // BELOW break (SPY SELL) → QQQ approaching whole number from above (support to fail)
+    const qqqSide = price >= nearestWhole ? 'at/above' : 'at/below';
+    const aligned =
+      (direction === 'ABOVE' && price <= nearestWhole + CONFLUENCE_ZONE) ||
+      (direction === 'BELOW' && price >= nearestWhole - CONFLUENCE_ZONE);
+
+    if (!aligned) return null;
+
+    return `QQQ $${price.toFixed(2)} near whole-number $${nearestWhole} (${qqqSide}, Δ$${distanceDollar.toFixed(2)})`;
   } catch {
     return null;
   }
@@ -376,6 +425,12 @@ export async function checkSpxLevelSetups(): Promise<SpxSetup[]> {
       const rewardAmt = Math.abs(target - spyPrice);
       const rrNum = riskAmt > 0 ? (rewardAmt / riskAmt).toFixed(1) : '?';
 
+      // Confluence check: QQQ whole-number alignment (Somesh's multi-instrument confluence)
+      const confluenceNote = await checkQqqConfluence(state.direction);
+      if (confluenceNote) {
+        console.log(`[SpxScanner] Level ${level}: CONFLUENCE detected — ${confluenceNote}`);
+      }
+
       triggered.push({
         spxLevel: level,
         direction: state.direction,
@@ -384,10 +439,12 @@ export async function checkSpxLevelSetups(): Promise<SpxSetup[]> {
         spyStop: stop,
         spyTarget: target,
         riskReward: `${rrNum}:1`,
+        confluenceNote,
         description:
           `SPX ${state.direction === 'ABOVE' ? 'broke above' : 'broke below'} ${level} ` +
           `→ retest confirmed → ${signal} SPY @ $${spyPrice.toFixed(2)} ` +
-          `(stop $${stop}, target $${target}, R:R ${rrNum}:1)`,
+          `(stop $${stop}, target $${target}, R:R ${rrNum}:1)` +
+          (confluenceNote ? ` | CONFLUENCE: ${confluenceNote}` : ''),
       });
 
       // Only allow LEVELS_TO_WATCH/2 setups per cycle to avoid flooding

@@ -45,6 +45,7 @@ Operational how-tos and deployment references.
 
 | Doc | Description |
 |-----|-------------|
+| [Somesh's Trading Strategies](./guides/somesh-strategies.md) | Complete reference: SPX key levels, ORB filter, VWAP anchor, confluence — how all four stack |
 | [Daily Trading Routine](./guides/daily-trading-routine.md) | Morning checklist, schedule, signal pipeline, troubleshooting |
 | [Deploy Market Movers](./guides/deploy-market-movers.md) | Market movers scraper deployment |
 | [Deploy Yahoo News](./guides/deploy-yahoo-news.md) | Yahoo Finance news integration setup |
