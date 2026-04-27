@@ -1,11 +1,12 @@
 /**
  * Scheduler REST API — status, control, and manual trigger.
  *
- * GET  /api/scheduler/status       — current scheduler state
- * POST /api/scheduler/run          — trigger manual cycle
- * POST /api/scheduler/options-scan — run just the options scan (UI refresh button)
- * POST /api/scheduler/stop         — stop the cron scheduler
- * POST /api/scheduler/start        — start the cron scheduler
+ * GET  /api/scheduler/status        — current scheduler state
+ * POST /api/scheduler/run           — trigger manual cycle
+ * POST /api/scheduler/options-scan  — run just the options scan (UI refresh button)
+ * POST /api/scheduler/reconcile-ib  — BUY to cover any orphaned IB short positions
+ * POST /api/scheduler/stop          — stop the cron scheduler
+ * POST /api/scheduler/start         — start the cron scheduler
  */
 
 import { Router } from 'express';
@@ -14,6 +15,7 @@ import {
   triggerManualRun,
   triggerOptionsScan,
   forceExecuteSignal,
+  reconcileIBShorts,
   startScheduler,
   stopScheduler,
 } from '../scheduler.js';
@@ -46,6 +48,15 @@ router.post('/scheduler/execute-signal', async (req, res) => {
     const out = await forceExecuteSignal(signal_id);
     if (!out.ok) return res.status(400).json(out);
     res.json(out);
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err instanceof Error ? err.message : 'Unknown error' });
+  }
+});
+
+router.post('/scheduler/reconcile-ib', async (_req, res) => {
+  try {
+    const result = await reconcileIBShorts();
+    res.json({ ok: true, ...result });
   } catch (err) {
     res.status(500).json({ ok: false, error: err instanceof Error ? err.message : 'Unknown error' });
   }

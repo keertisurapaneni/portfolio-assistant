@@ -378,6 +378,14 @@ Action needed: Check the auto-trader service and restart if necessary.`,
   // Realtime: execute trades immediately when scanner refreshes (e.g. from TradeIdeas UI)
   subscribeToTradeScans();
 
+  // IB short reconciliation on startup (delayed 30s to let IB fully connect).
+  // Catches any orphaned short positions left over from a prior EOD sweep failure.
+  setTimeout(() => {
+    reconcileIBShorts().catch(err => {
+      console.error('[Scheduler] Startup IB reconcile failed:', err instanceof Error ? err.message : err);
+    });
+  }, 30_000);
+
   // Run once on startup (delayed 10s to let IB connect)
   setTimeout(() => {
     runSchedulerCycle().catch(err => {
@@ -433,7 +441,15 @@ async function closeAllDayTrades(config: AutoTraderConfig): Promise<void> {
         continue;
       }
 
-      await placeMarketOrder({ symbol: trade.ticker, side: closeSide, quantity: qty });
+      try {
+        await placeMarketOrder({ symbol: trade.ticker, side: closeSide, quantity: qty });
+        log(`${trade.ticker}: EOD close order placed (${qty} shares ${closeSide})`);
+      } catch (orderErr) {
+        // IB order failed (disconnected, rejected, etc.) — log but still mark CLOSED in DB.
+        // If IB truly holds the position, `reconcileIBShorts` at next startup will cover it.
+        // Leaving DB in FILLED prevents the reconciler from knowing the order was attempted.
+        log(`EOD sweep: ${trade.ticker} — IB order failed (${orderErr instanceof Error ? orderErr.message : 'unknown'}) — marking CLOSED in DB anyway`);
+      }
       await updatePaperTrade(trade.id, {
         status: 'CLOSED',
         close_reason: 'eod_close',
@@ -496,13 +512,18 @@ async function softCloseDayTrades(positions: EnrichedPosition[]): Promise<void> 
     if (qty <= 0) continue;
 
     try {
-      await placeMarketOrder({ symbol: trade.ticker, side: closeSide, quantity: qty });
+      try {
+        await placeMarketOrder({ symbol: trade.ticker, side: closeSide, quantity: qty });
+        log(`${trade.ticker}: [SoftClose] close order placed at 3:45 PM — ${reason}`);
+      } catch (orderErr) {
+        log(`${trade.ticker}: [SoftClose] IB order failed (${orderErr instanceof Error ? orderErr.message : 'unknown'}) — marking CLOSED in DB`);
+      }
       await updatePaperTrade(trade.id, {
         status:       'CLOSED',
         close_reason: 'soft_eod_close',
         closed_at:    new Date().toISOString(),
       });
-      log(`${trade.ticker}: [SoftClose] closed at 3:45 PM — ${reason}`);
+      log(`${trade.ticker}: [SoftClose] DB marked closed at 3:45 PM — ${reason}`);
       closed++;
     } catch (err) {
       log(`${trade.ticker}: [SoftClose] close failed — ${err instanceof Error ? err.message : 'unknown'}`);
@@ -568,6 +589,65 @@ async function checkStaleDayTrades(positions: EnrichedPosition[]): Promise<void>
       log(`  ${trade.ticker}: stale close failed — ${err instanceof Error ? err.message : 'unknown'}`);
     }
   }
+}
+
+// ── IB Short Reconciliation ───────────────────────────────────────────────────
+//
+// Safety net for the scenario where EOD sweep orders failed (IB disconnected,
+// server restart, etc.) AND paper_trades was already reset to CLOSED via SQL.
+// In that state, `checkStaleDayTrades` finds nothing — but IB is still holding
+// naked short positions that will lose money tomorrow.
+//
+// This function pulls ACTUAL IB positions and BUYs to cover any shorts it finds.
+// Safe to call at any time: it only acts on negative (short) stock positions.
+// Exposed via POST /api/scheduler/reconcile-ib so the user can trigger it from
+// the UI or curl without waiting for tomorrow's stale-trade check.
+
+export async function reconcileIBShorts(): Promise<{ closed: string[]; errors: string[] }> {
+  log('[IBReconcile] Fetching live IB positions…');
+
+  let ibPositions: import('./ib-connection.js').PositionData[];
+  try {
+    ibPositions = await requestPositions();
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'unknown';
+    log(`[IBReconcile] Cannot fetch IB positions — ${msg}`);
+    return { closed: [], errors: [`IB unavailable: ${msg}`] };
+  }
+
+  const shorts = ibPositions.filter(p => p.position < 0 && p.secType === 'STK');
+
+  if (shorts.length === 0) {
+    log('[IBReconcile] No short stock positions found — all clear');
+    return { closed: [], errors: [] };
+  }
+
+  log(`[IBReconcile] Found ${shorts.length} short position(s): ${shorts.map(p => p.symbol).join(', ')}`);
+
+  const closed: string[] = [];
+  const errors: string[] = [];
+
+  for (const pos of shorts) {
+    const qty = Math.abs(pos.position);
+    log(`[IBReconcile] Covering short: ${pos.symbol} × ${qty} @ avg ${pos.avgCost}`);
+    try {
+      await placeMarketOrder({ symbol: pos.symbol, side: 'BUY', quantity: qty });
+      log(`[IBReconcile] ✓ ${pos.symbol}: BUY ${qty} order placed`);
+      closed.push(pos.symbol);
+      await createAutoTradeEvent({
+        ticker: pos.symbol,
+        level: 'warn',
+        message: `[IBReconcile] Orphaned short covered: BUY ${qty} shares (avg cost ${pos.avgCost})`,
+        metadata: { action: 'ib_short_reconcile', qty, avg_cost: pos.avgCost },
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'unknown';
+      log(`[IBReconcile] ✗ ${pos.symbol}: BUY failed — ${msg}`);
+      errors.push(`${pos.symbol}: ${msg}`);
+    }
+  }
+
+  return { closed, errors };
 }
 
 // ── Daily Max-Loss Gate ────────────────────────────────────────────────────────
