@@ -130,7 +130,18 @@ export function TradeIdeas({ onSelectTicker }: TradeIdeasProps) {
   const [, setAutoTradeResults] = useState<ProcessResult[]>([]);
   const [tradedTickers, setTradedTickers] = useState<Set<string>>(new Set());
   const [marketOpen, setMarketOpen] = useState(() => isMarketHoursWindow());
-  const processedRef = useRef<Set<string>>(new Set()); // track already-processed tickers
+  // Track already-processed tickers — persisted to sessionStorage keyed by date so
+  // revisiting the page on the same day doesn't re-trigger processTradeIdeas (which
+  // would otherwise burn AI quota on every navigation to /signals).
+  const _today = new Date().toISOString().slice(0, 10);
+  const _processedKey = `auto-trade-processed-${_today}`;
+  const _storedProcessed = (() => {
+    try {
+      const raw = sessionStorage.getItem(_processedKey);
+      return raw ? new Set<string>(JSON.parse(raw) as string[]) : new Set<string>();
+    } catch { return new Set<string>(); }
+  })();
+  const processedRef = useRef<Set<string>>(_storedProcessed);
 
   // Re-check market hours every minute so the badge updates as windows open/close.
   useEffect(() => {
@@ -222,8 +233,12 @@ export function TradeIdeas({ onSelectTicker }: TradeIdeasProps) {
     const newIdeas = allIdeas.filter(i => !processedRef.current.has(i.ticker));
     if (newIdeas.length === 0) return;
 
-    // Mark as processing so we don't re-trigger
+    // Mark as processing so we don't re-trigger — persist to sessionStorage so
+    // navigating away and back doesn't reprocess the same tickers today.
     newIdeas.forEach(i => processedRef.current.add(i.ticker));
+    try {
+      sessionStorage.setItem(_processedKey, JSON.stringify([...processedRef.current]));
+    } catch { /* storage quota exceeded — non-fatal */ }
 
     setAutoTrading(true);
     processTradeIdeas(newIdeas, config)

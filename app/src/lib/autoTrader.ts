@@ -1776,19 +1776,16 @@ async function processSingleIdea(
     logEvent(ticker, 'info', `Using pre-computed levels — skipping FA API call`);
     fa = { trade: { recommendation: signal, confidence: scannerConf, entryPrice: idea.entryPrice!, stopLoss: idea.stopLoss!, targetPrice: idea.targetPrice!, targetPrice2: null, riskReward: idea.riskReward ?? null, rationale: null } } as unknown as TradingSignalsResponse;
   } else {
-    logEvent(ticker, 'info', `Running full analysis (${mode})...`);
-    try {
-      const faMode: SignalsMode = mode === 'DAY_TRADE' ? 'DAY_TRADE' : 'SWING_TRADE';
-      fa = await fetchTradingSignal(ticker, faMode);
-    } catch (err) {
-      const msg = `FA failed: ${err instanceof Error ? err.message : 'Unknown'}`;
-      logEvent(ticker, 'error', msg);
-      persistEvent(ticker, 'error', msg, {
-        action: 'failed', source: 'scanner', mode, scanner_signal: signal,
-        scanner_confidence: scannerConf, skip_reason: 'Full analysis failed',
-      });
-      return { ticker, action: 'failed', reason: 'Full analysis failed' };
-    }
+    // No pre-computed entry/stop/target levels — the server-side scheduler is responsible for
+    // running FA and computing these. Calling fetchTradingSignal from the browser on every page
+    // visit exhausts Gemini quota. Skip and let the scheduler handle it.
+    const msg = `No pre-computed levels — skipping (server-side scheduler handles FA analysis)`;
+    logEvent(ticker, 'info', msg);
+    persistEvent(ticker, 'info', msg, {
+      action: 'skipped', source: 'scanner', mode, scanner_signal: signal,
+      scanner_confidence: scannerConf, skip_reason: 'No pre-computed levels',
+    });
+    return { ticker, action: 'skipped', reason: 'No pre-computed levels' };
   }
 
   const faConf = fa.trade.confidence;
