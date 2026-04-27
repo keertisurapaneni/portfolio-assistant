@@ -1420,6 +1420,7 @@ export async function checkDipBuyOpportunities(
         position_size: addOnDollar,
         ib_order_id: orderId,
         status: 'SUBMITTED',
+        entry_trigger_type: 'dip_buy',
         notes: `Dip buy ${triggered.label} at -${absDip.toFixed(1)}% | Added ${addOnQty} shares`,
       });
 
@@ -1545,6 +1546,7 @@ export async function checkProfitTakeOpportunities(
         position_size: trimDollar,
         ib_order_id: orderId,
         status: 'SUBMITTED',
+        entry_trigger_type: 'profit_take',
         notes: `Profit take ${triggered.label} at +${gainPct.toFixed(1)}% | Sold ${actualTrimQty} of ${currentQty} shares`,
       });
 
@@ -1670,6 +1672,7 @@ export async function checkLossCutOpportunities(
         position_size: sellDollar,
         ib_order_id: orderId,
         status: 'SUBMITTED',
+        entry_trigger_type: 'loss_cut',
         notes: `Loss cut ${triggered.label} at -${lossPct.toFixed(1)}% | Sold ${sellQty} of ${currentQty} shares`,
       });
 
@@ -1952,7 +1955,7 @@ async function processSingleIdea(
       fa_rationale: faRationale,
       in_play_score: idea.in_play_score,
       pass1_confidence: idea.pass1_confidence,
-      entry_trigger_type: 'bracket_limit',
+      entry_trigger_type: idea.tags?.includes('spx_key_level') ? 'spx_key_level' : 'bracket_limit',
       market_condition: idea.market_condition,
     });
 
@@ -1977,7 +1980,7 @@ async function processSingleIdea(
       skip_reason: 'Order rejected by IB',
     });
 
-    // Still log the attempt
+    // Still log the attempt — include feature columns so System Learning diagnostics are populated
     await createPaperTrade({
       ticker,
       mode,
@@ -1991,6 +1994,12 @@ async function processSingleIdea(
       quantity,
       position_size: quantity * entryPrice,
       status: 'REJECTED',
+      scanner_reason: idea.reason,
+      fa_rationale: faRationale,
+      in_play_score: idea.in_play_score,
+      pass1_confidence: idea.pass1_confidence,
+      entry_trigger_type: idea.tags?.includes('spx_key_level') ? 'spx_key_level' : 'bracket_limit',
+      market_condition: idea.market_condition,
       notes: `Order rejected: ${err instanceof Error ? err.message : 'Unknown error'}`,
     });
 
@@ -2283,6 +2292,7 @@ async function processSuggestedFind(
       status: 'SUBMITTED',
       scanner_reason: `${source}: ${stock.reason}`,
       fa_rationale: null,
+      entry_trigger_type: 'suggested_finds',
       notes: [
         'Long-term hold',
         source,
@@ -2326,6 +2336,7 @@ async function processSuggestedFind(
       quantity,
       position_size: quantity * currentPrice,
       status: 'REJECTED',
+      entry_trigger_type: 'suggested_finds',
       notes: `${source} order rejected: ${err instanceof Error ? err.message : 'Unknown error'}`,
     });
 

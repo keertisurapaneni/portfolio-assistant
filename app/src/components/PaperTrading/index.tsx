@@ -112,7 +112,7 @@ export function PaperTrading() {
     setLoading(true);
     try {
       const [all, perf, savedEvents, todayEvents, catPerf, srcPerf, vidPerf, signalStatuses, pending, todayForExecute, deployed, regime, kelly, validation, swingValidation] = await Promise.all([
-        getAllTrades(50),
+        getAllTrades(500),
         getPerformance(),
         getAutoTradeEvents(100),
         getTodaysExecutedEvents(),
