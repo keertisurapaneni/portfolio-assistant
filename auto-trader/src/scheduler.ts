@@ -1383,6 +1383,43 @@ interface SwingEntryLog {
 
 const SPY_REGIME_CACHE_MS = 15 * 60 * 1000;
 let _spyBelowSma200Cache: { value: boolean; ts: number } | null = null;
+let _vixCache: { value: number; ts: number } | null = null;
+
+/**
+ * Fetch VIX from Yahoo Finance (^VIX daily quote).
+ * Returns 20 on failure (neutral — fail open).
+ */
+async function fetchVixLevel(): Promise<number> {
+  if (_vixCache && Date.now() - _vixCache.ts < SPY_REGIME_CACHE_MS) {
+    return _vixCache.value;
+  }
+  try {
+    const url = 'https://query1.finance.yahoo.com/v8/finance/chart/%5EVIX?range=5d&interval=1d&includePrePost=false';
+    const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; PortfolioAssistant/1.0)' } });
+    if (!res.ok) return 20;
+    const data = await res.json();
+    const closes: number[] = data?.chart?.result?.[0]?.indicators?.quote?.[0]?.close ?? [];
+    const vix = closes.filter((c: number | null) => c != null).pop() ?? 20;
+    _vixCache = { value: vix, ts: Date.now() };
+    return vix;
+  } catch { return 20; }
+}
+
+/**
+ * Return a position-size multiplier based on current VIX level.
+ * Mirrors the browser's getMarketRegime() logic so server sizing is regime-aware.
+ *   VIX > 30 → 0.50 (panic   — halve size, limit damage)
+ *   VIX > 25 → 0.65 (fear    — meaningfully reduced)
+ *   VIX < 15 → 1.05 (calm    — slight boost, capped conservatively)
+ *   otherwise → 1.00 (normal)
+ */
+async function getVixRegimeMultiplier(): Promise<number> {
+  const vix = await fetchVixLevel();
+  if (vix > 30) { log(`[Regime] VIX ${vix.toFixed(1)} — PANIC: sizing ×0.50`); return 0.50; }
+  if (vix > 25) { log(`[Regime] VIX ${vix.toFixed(1)} — FEAR: sizing ×0.65`);  return 0.65; }
+  if (vix < 15) return 1.05;
+  return 1.0;
+}
 
 async function isSpyBelowSma200(): Promise<boolean> {
   if (_spyBelowSma200Cache && Date.now() - _spyBelowSma200Cache.ts < SPY_REGIME_CACHE_MS) {
@@ -2221,9 +2258,10 @@ async function executeScannerTrade(
 
   const dd = assessDrawdownMultiplier(positions);
   const kellyMult = await calculateKellyMultiplier(config);
+  const vixMult = await getVixRegimeMultiplier();
   const sizingRaw = calculatePositionSize(config, {
     price: entryPrice, mode, entryPrice, stopLoss,
-    drawdownMultiplier: dd.multiplier * kellyMult,
+    drawdownMultiplier: dd.multiplier * kellyMult * vixMult,
   });
   // Scanner trades (AI-generated, not expert-vetted) must be capped at positionSize.
   // Dynamic sizing can produce 200-400 share positions when the stop is very tight —

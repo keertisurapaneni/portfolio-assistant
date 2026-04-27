@@ -700,7 +700,45 @@ export async function runOptionsManageCycle(): Promise<ManageCycleResult> {
       continue;
     }
 
-    // Check C: Roll UP and out when stock threatens call strike (within 2%, DTE > 5).
+    // Check C: 21 DTE — buy back if stock is safely below strike (≥10% OTM).
+    // Mirrors the put 21 DTE rule: free up capital once theta has done most of its work
+    // and the remaining time value isn't worth the assignment risk into expiry.
+    if (dte <= 21 && stockPrice < pos.option_strike * 0.90) {
+      await sb.from('paper_trades').update({
+        status: 'CLOSED',
+        close_price: currentCallPremium,
+        pnl,
+        closed_at: new Date().toISOString(),
+        close_reason: '21dte_close',
+        option_close_pct: profitCapturePct,
+      }).eq('id', pos.id);
+      persistEvent(pos.ticker, 'success',
+        `📅 ${pos.ticker} $${pos.option_strike} covered call closed at 21 DTE — captured $${pnl.toFixed(0)} (${profitCapturePct.toFixed(0)}% of premium)`,
+        { action: 'closed', source: 'options', metadata: { reason: '21dte_close', pnl, dte, profitCapturePct } }
+      );
+      continue;
+    }
+
+    // Check D: Stop — call premium exceeded 2× collected (stock deep ITM, call is a loser).
+    // At 2× collected we've lost as much in the buyback as we originally collected — cut it.
+    const callStopMultiplier = 2.0;
+    if (currentCallPremium > premiumCollected * callStopMultiplier && stockPrice > pos.option_strike) {
+      await sb.from('paper_trades').update({
+        status: 'CLOSED',
+        close_price: currentCallPremium,
+        pnl,
+        closed_at: new Date().toISOString(),
+        close_reason: 'stop_loss',
+        option_close_pct: profitCapturePct,
+      }).eq('id', pos.id);
+      persistEvent(pos.ticker, 'warning',
+        `🛑 ${pos.ticker} $${pos.option_strike} covered call stopped — buyback $${currentCallPremium.toFixed(2)} > ${callStopMultiplier}× collected $${premiumCollected.toFixed(2)}, P&L $${pnl.toFixed(0)}`,
+        { action: 'closed', source: 'options', metadata: { reason: 'call_stop', pnl, dte, currentCallPremium, premiumCollected } }
+      );
+      continue;
+    }
+
+    // Check F: Roll UP and out when stock threatens call strike (within 2%, DTE > 5).
     // Strategy (covered-calls video): instead of alerting and waiting, attempt an automated
     // "roll up and out" to a higher strike at ~45 DTE for a credit or acceptable small debit.
     // This preserves more upside on recovery while continuing to collect premium.
