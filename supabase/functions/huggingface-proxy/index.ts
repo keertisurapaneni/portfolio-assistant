@@ -1,7 +1,8 @@
 // Portfolio Assistant - Suggested Finds Proxy Edge Function
-// Dedicated to Suggested Finds stock discovery (HuggingFace Inference API)
+// Dedicated to Suggested Finds stock discovery (Groq API)
 // Keeps API keys server-side, never exposed to the browser
-// LLM split: Groq = Portfolio AI | HuggingFace = Suggested Finds | Gemini = Trading Signals
+// LLM split: Groq = Portfolio AI + Suggested Finds | Gemini = Trading Signals
+// Note: Migrated from HuggingFace router (dropped large LLM support July 2025)
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -9,13 +10,12 @@ const corsHeaders = {
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 };
 
-// HuggingFace Inference API (OpenAI-compatible endpoint)
-const HF_BASE = 'https://router.huggingface.co/v1/chat/completions';
+const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions';
 // Model fallback: try best quality first, fall back on rate limits
-const HF_MODELS = [
-  'Qwen/Qwen2.5-72B-Instruct',
-  'mistralai/Mixtral-8x7B-Instruct-v0.1',
-  'meta-llama/Meta-Llama-3.1-8B-Instruct',
+const GROQ_MODELS = [
+  'llama-3.3-70b-versatile',   // Best reasoning for stock discovery
+  'qwen/qwen3-32b',            // Smart fallback with higher limits
+  'llama3-8b-8192',            // Last resort
 ];
 
 interface RequestPayload {
@@ -31,11 +31,11 @@ Deno.serve(async (req) => {
   }
 
   try {
-    const HF_API_KEY = Deno.env.get('HUGGINGFACE_API_KEY');
+    const GROQ_API_KEY = Deno.env.get('GROQ_API_KEY');
 
-    if (!HF_API_KEY) {
+    if (!GROQ_API_KEY) {
       return new Response(
-        JSON.stringify({ error: 'No HUGGINGFACE_API_KEY configured on server' }),
+        JSON.stringify({ error: 'No GROQ_API_KEY configured on server' }),
         { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
@@ -61,15 +61,15 @@ Deno.serve(async (req) => {
     console.log(`[Suggested Finds] ${type} request (${prompt.length} chars)`);
 
     let response: Response | null = null;
-    let usedModel = HF_MODELS[0];
+    let usedModel = GROQ_MODELS[0];
 
-    for (const model of HF_MODELS) {
+    for (const model of GROQ_MODELS) {
       console.log(`[Suggested Finds] Trying ${model}...`);
-      response = await fetch(HF_BASE, {
+      response = await fetch(GROQ_URL, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${HF_API_KEY}`,
+          Authorization: `Bearer ${GROQ_API_KEY}`,
         },
         body: JSON.stringify({
           model,
@@ -86,7 +86,7 @@ Deno.serve(async (req) => {
       }
 
       if (response.status === 429 || response.status === 503) {
-        console.warn(`[Suggested Finds] ${model} unavailable (${response.status}), trying next...`);
+        console.warn(`[Suggested Finds] ${model} rate-limited (${response.status}), trying next...`);
         await new Promise(r => setTimeout(r, 2000));
         continue;
       }
@@ -107,7 +107,9 @@ Deno.serve(async (req) => {
     }
 
     const data = await response.json();
-    const text = data?.choices?.[0]?.message?.content ?? '';
+    const rawText = data?.choices?.[0]?.message?.content ?? '';
+    // Strip <think>...</think> tags emitted by reasoning models (e.g. Qwen3)
+    const text = rawText.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
 
     if (!text) {
       console.error(`[Suggested Finds] Empty response from ${usedModel}`);
