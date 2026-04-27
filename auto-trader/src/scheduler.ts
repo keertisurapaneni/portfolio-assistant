@@ -397,7 +397,10 @@ export function stopScheduler(): void {
 async function closeAllDayTrades(config: AutoTraderConfig): Promise<void> {
   log('EOD day-trade sweep: closing all open day trade positions…');
   const activeTrades = await getActiveTrades();
-  const dayTrades = activeTrades.filter(t => t.mode === 'DAY_TRADE' && t.status === 'FILLED');
+  // Include SUBMITTED + PARTIAL — IB fill confirmations sometimes don't write back before
+  // the EOD sweep fires, leaving orders in SUBMITTED state. At 3:55 PM ET the position is
+  // effectively closed by IB regardless; mark them closed in paper_trades too.
+  const dayTrades = activeTrades.filter(t => t.mode === 'DAY_TRADE' && ['FILLED', 'SUBMITTED', 'PARTIAL'].includes(t.status));
 
   if (dayTrades.length === 0) {
     log('EOD sweep: no open day trades');
@@ -442,7 +445,7 @@ async function closeAllDayTrades(config: AutoTraderConfig): Promise<void> {
 
 async function softCloseDayTrades(positions: EnrichedPosition[]): Promise<void> {
   const activeTrades = await getActiveTrades();
-  const dayTrades = activeTrades.filter(t => t.mode === 'DAY_TRADE' && t.status === 'FILLED');
+  const dayTrades = activeTrades.filter(t => t.mode === 'DAY_TRADE' && ['FILLED', 'SUBMITTED', 'PARTIAL'].includes(t.status));
   if (dayTrades.length === 0) return;
 
   log(`[SoftClose] Checking ${dayTrades.length} open day trade(s) before power hour`);
