@@ -500,13 +500,16 @@ export function OptionsTab() {
   // The backend responds immediately (fire-and-forget); scan takes ~90s for full watchlist.
   const handleRefresh = useCallback(async () => {
     setScanning(true);
+    console.log('[Options Scan] Requesting scan from auto-trader...');
     try {
-      await fetch('http://localhost:3001/api/scheduler/options-scan', {
+      const res = await fetch('http://localhost:3001/api/scheduler/options-scan', {
         method: 'POST',
         signal: AbortSignal.timeout(5_000),
       });
-    } catch {
-      // auto-trader offline or timed out — still reload data
+      const body = await res.json().catch(() => ({}));
+      console.log('[Options Scan] Scan started:', body);
+    } catch (err) {
+      console.warn('[Options Scan] Auto-trader offline — refreshing data only.', err);
       setScanning(false);
       await load();
       return;
@@ -515,16 +518,19 @@ export function OptionsTab() {
     // Poll every 15s for up to 3 minutes, reloading data as results come in
     let elapsed = 0;
     const poll = setInterval(async () => {
-      await load();
       elapsed += 15;
+      console.log(`[Options Scan] Polling for results... (${elapsed}s elapsed)`);
+      await load();
       if (elapsed >= 180) {
         clearInterval(poll);
         setScanning(false);
+        console.log('[Options Scan] Scan polling complete.');
       }
     }, 15_000);
 
     // Also do an immediate reload after 20s (first results arrive)
     setTimeout(async () => {
+      console.log('[Options Scan] First-results reload (20s)');
       await load();
     }, 20_000);
 
