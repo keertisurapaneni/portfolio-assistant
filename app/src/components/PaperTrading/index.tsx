@@ -284,8 +284,20 @@ export function PaperTrading() {
   const pricedEquityPositions = equityPositions.filter(p => p.mktPrice > 0);
   const unpricedCount = equityPositions.length - pricedEquityPositions.length;
 
-  const totalCostBasis = pricedEquityPositions.reduce((sum, p) => sum + Math.abs(p.position) * p.avgCost, 0);
-  const totalMktValue = pricedEquityPositions.reduce((sum, p) => sum + p.mktValue, 0);
+  const longPositions = pricedEquityPositions.filter(p => p.position > 0);
+  const shortPositions = pricedEquityPositions.filter(p => p.position < 0);
+
+  // Gross values for display (face value of each position, regardless of direction)
+  const longCostBasis  = longPositions.reduce((sum, p)  => sum + Math.abs(p.position) * p.avgCost, 0);
+  const shortCostBasis = shortPositions.reduce((sum, p) => sum + Math.abs(p.position) * p.avgCost, 0);
+  const longMktValue   = longPositions.reduce((sum, p)  => sum + p.mktValue, 0);
+  const shortMktValue  = shortPositions.reduce((sum, p) => sum + p.mktValue, 0);
+
+  // Shown in header cards — gross exposure (both sides positive, for size context)
+  const totalCostBasis = longCostBasis + shortCostBasis;
+  const totalMktValue  = longMktValue  + shortMktValue;
+
+  // Correct P&L: long gains (MV-CB) + short gains (CB-MV). This is the source of truth.
   const totalUnrealizedPnl = pricedEquityPositions.reduce((sum, p) => sum + p.unrealizedPnl, 0);
   const uniqueOrderTickers = new Set(ibOrders.map(o => o.ticker)).size;
 
@@ -385,13 +397,15 @@ export function PaperTrading() {
           icon={<DollarSign className="w-4 h-4" />}
           label="Cost Basis"
           value={connected && totalCostBasis > 0 ? `$${totalCostBasis.toLocaleString(undefined, { maximumFractionDigits: 0 })}` : '—'}
+          subtitle={shortPositions.length > 0 ? `Longs $${Math.round(longCostBasis / 1000)}k · Shorts $${Math.round(shortCostBasis / 1000)}k` : undefined}
           color="blue"
         />
         <StatCard
           icon={<BarChart3 className="w-4 h-4" />}
           label="Market Value"
           value={connected && totalMktValue > 0 ? `$${totalMktValue.toLocaleString(undefined, { maximumFractionDigits: 0 })}` : '—'}
-          color={totalMktValue >= totalCostBasis ? 'green' : 'red'}
+          subtitle={shortPositions.length > 0 ? `Longs $${Math.round(longMktValue / 1000)}k · Shorts $${Math.round(shortMktValue / 1000)}k` : undefined}
+          color={totalUnrealizedPnl >= 0 ? 'green' : 'red'}
         />
         <StatCard
           icon={<TrendingUp className="w-4 h-4" />}
