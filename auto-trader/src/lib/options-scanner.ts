@@ -64,7 +64,7 @@ const NEWS_LOOKBACK_DAYS = 7;              // check news from last N days
 const MAX_SECTOR_POSITIONS = 2;            // max concurrent positions in same sector
 const MAX_BETA = 1.5;                      // skip high-beta stocks for put selling
 const STOCK_TREND_SMA_DAYS = 50;           // stock must be above its own 50-day SMA
-const MAX_STOCK_DECLINE_3M_PCT = 20;       // skip if stock down >20% in 3 months
+const MAX_STOCK_DECLINE_3M_PCT = 12;       // skip if stock down >12% in 3 months
 const MARKET_OPEN_BUFFER_MS = 30 * 60_000; // don't trade in first 30 min after open
 
 // Market discount gate — skip if stock is within this % of its 52-week high.
@@ -98,6 +98,7 @@ const RED_FLAG_HARD = [
 // Soft stops — require 2+ headlines to avoid incidental mentions on large caps
 const RED_FLAG_SOFT = [
   'bankruptcy', 'class action', 'recall', 'ceo resign', 'cfo resign',
+  'tariff', 'trade war', 'import duty', 'trade dispute',
 ];
 
 // ── Types ────────────────────────────────────────────────
