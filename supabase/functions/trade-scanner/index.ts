@@ -1528,7 +1528,16 @@ function preSwingFilter(q: YahooQuote): boolean {
   return true;
 }
 
-/** Compute SwingSetupScore and attach debug metrics. Uses daily data already fetched. */
+/**
+ * Compute SwingSetupScore and attach debug metrics. Uses daily data already fetched.
+ *
+ * Previously bullish-only: a stock below SMA50/SMA200 with bearish MACD scored 0/10
+ * and was filtered out before the AI ever saw it — killing all SELL candidates in bear markets.
+ *
+ * Now bidirectional: independently scores BUY setup quality and SELL setup quality,
+ * takes the max, and records which direction earned the higher score (_swingBias).
+ * The top-30 selection in the caller uses balanced BUY/SELL buckets (see below).
+ */
 function computeSwingSetupScore(q: YahooQuote): number {
   const price = rawVal(q.regularMarketPrice);
   const sma20 = q._pass1Indicators?.sma20 ?? null;
@@ -1538,7 +1547,6 @@ function computeSwingSetupScore(q: YahooQuote): number {
   const macd = q._pass1Indicators?.macdHistogram ?? null;
   const bars = q._ohlcvBars ?? [];
 
-  // Recent bar moves (newest-first: bars[0]=today, bars[4]=5 bars ago)
   const recent5BarMove = bars.length >= 5 && bars[4].c > 0
     ? Math.abs((bars[0].c - bars[4].c) / bars[4].c) * 100
     : 0;
@@ -1546,30 +1554,48 @@ function computeSwingSetupScore(q: YahooQuote): number {
     ? Math.abs((bars[0].c - bars[9].c) / bars[9].c) * 100
     : 0;
 
-  // trendScore (0-10)
-  let trendScore = 0;
-  if (sma50 > 0 && price > sma50) trendScore += 3;
-  if (sma200 > 0 && price > sma200) trendScore += 3;
-  if (sma50 > 0 && sma200 > 0 && sma50 > sma200) trendScore += 2;
-  if (macd != null && macd > 0) trendScore += 2;
-  trendScore = Math.min(10, trendScore);
+  // ── BUY setup quality ──────────────────────────────────────────────────
+  // Rewards: uptrend (above SMAs), bullish MACD, pullback to SMA20, RSI in dip zone
+  const buyTrendScore = Math.min(10,
+    (sma50 > 0 && price > sma50 ? 3 : 0) +
+    (sma200 > 0 && price > sma200 ? 3 : 0) +
+    (sma50 > 0 && sma200 > 0 && sma50 > sma200 ? 2 : 0) +
+    (macd != null && macd > 0 ? 2 : 0)
+  );
+  const buySetupScore = Math.min(10,
+    (sma20 != null && sma20 > 0 && Math.abs((price - sma20) / sma20) <= 0.03 ? 5 : 0) +
+    (rsi != null && rsi >= 40 && rsi <= 55 ? 3 : 0) +   // pullback into buy zone
+    (recent5BarMove < 8 ? 2 : 0)
+  );
 
-  // pullbackScore (0-10)
-  let pullbackScore = 0;
-  if (sma20 != null && sma20 > 0 && Math.abs((price - sma20) / sma20) <= 0.03) pullbackScore += 5;
-  if (rsi != null && rsi >= 40 && rsi <= 55) pullbackScore += 3;
-  if (recent5BarMove < 8) pullbackScore += 2;
-  pullbackScore = Math.min(10, pullbackScore);
+  // ── SELL setup quality ─────────────────────────────────────────────────
+  // Rewards: downtrend (below SMAs), bearish MACD, rally to SMA20 resistance, RSI not yet overbought
+  const sellTrendScore = Math.min(10,
+    (sma50 > 0 && price < sma50 ? 3 : 0) +
+    (sma200 > 0 && price < sma200 ? 3 : 0) +
+    (sma50 > 0 && sma200 > 0 && sma50 < sma200 ? 2 : 0) +
+    (macd != null && macd < 0 ? 2 : 0)
+  );
+  const sellSetupScore = Math.min(10,
+    (sma20 != null && sma20 > 0 && Math.abs((price - sma20) / sma20) <= 0.03 ? 5 : 0) +
+    (rsi != null && rsi >= 45 && rsi <= 65 ? 3 : 0) +   // bounced but not overbought → room to fall
+    (recent5BarMove < 8 ? 2 : 0)
+  );
 
-  // extensionPenalty
-  let penalty = 0;
-  if (recent5BarMove > 15) penalty += 3;
-  if (recent10BarMove > 25) penalty += 3;
+  // Extension penalty applies to both directions
+  const penalty = (recent5BarMove > 15 ? 3 : 0) + (recent10BarMove > 25 ? 3 : 0);
 
-  const swingSetupScore = round(0.6 * trendScore + 0.4 * pullbackScore - penalty, 2);
+  const buyScore  = round(0.6 * buyTrendScore  + 0.4 * buySetupScore  - penalty, 2);
+  const sellScore = round(0.6 * sellTrendScore + 0.4 * sellSetupScore - penalty, 2);
+
+  // Take the higher of the two — the stock qualifies on whichever direction has more edge
+  const swingSetupScore = Math.max(buyScore, sellScore);
+  const swingBias: 'BUY' | 'SELL' = sellScore > buyScore ? 'SELL' : 'BUY';
+
   (q as YahooQuote & { _swingSetupScore: number })._swingSetupScore = swingSetupScore;
-  (q as YahooQuote & { _trendScore: number })._trendScore = trendScore;
-  (q as YahooQuote & { _pullbackScore: number })._pullbackScore = pullbackScore;
+  (q as YahooQuote & { _swingBias: string })._swingBias = swingBias;
+  (q as YahooQuote & { _trendScore: number })._trendScore = Math.max(buyTrendScore, sellTrendScore);
+  (q as YahooQuote & { _pullbackScore: number })._pullbackScore = Math.max(buySetupScore, sellSetupScore);
   (q as YahooQuote & { _extensionPenalty: number })._extensionPenalty = penalty;
   return swingSetupScore;
 }
@@ -2263,17 +2289,32 @@ Deno.serve(async (req) => {
       const swingQuotes = await fetchSwingQuotes(swingSymbols);
       let candidates = swingQuotes.filter(preSwingFilter);
 
-      // SwingSetupScore pre-ranking: score → sort → top 30 → Pass 1
+      // SwingSetupScore pre-ranking: score → balanced top-30 → Pass 1
+      // Take top 15 BUY-biased + top 15 SELL-biased candidates (deduplicated).
+      // This guarantees SELL setups reach the AI even in full bear-market conditions
+      // where every stock below SMA50/SMA200 previously scored 0 on the bullish-only formula.
       if (candidates.length > 0) {
         for (const q of candidates) {
           computeSwingSetupScore(q);
         }
-        candidates = candidates
-          .filter(q => (q._swingSetupScore ?? -999) > -999)
-          .sort((a, b) => (b._swingSetupScore ?? -999) - (a._swingSetupScore ?? -999))
-          .slice(0, 30);
+        const scored = candidates.filter(q => (q._swingSetupScore ?? -999) > -999);
+        const buyBucket  = scored
+          .filter(q => (q as YahooQuote & { _swingBias?: string })._swingBias !== 'SELL')
+          .sort((a, b) => (b._swingSetupScore ?? 0) - (a._swingSetupScore ?? 0))
+          .slice(0, 15);
+        const sellBucket = scored
+          .filter(q => (q as YahooQuote & { _swingBias?: string })._swingBias === 'SELL')
+          .sort((a, b) => (b._swingSetupScore ?? 0) - (a._swingSetupScore ?? 0))
+          .slice(0, 15);
+        const seen = new Set<string>();
+        candidates = [];
+        for (const q of [...buyBucket, ...sellBucket]) {
+          if (!seen.has(q.symbol)) { candidates.push(q); seen.add(q.symbol); }
+        }
         if (candidates.length > 0) {
-          console.log(`[Trade Scanner] Swing SwingSetupScore top 5: ${candidates.slice(0, 5).map(q => `${q.symbol}:${q._swingSetupScore?.toFixed(2)}(${q._extensionPenalty ?? 0})`).join(', ')}`);
+          const buyCount  = candidates.filter(q => (q as YahooQuote & { _swingBias?: string })._swingBias !== 'SELL').length;
+          const sellCount = candidates.length - buyCount;
+          console.log(`[Trade Scanner] Swing top-30: ${buyCount} BUY-biased + ${sellCount} SELL-biased | top 5: ${candidates.slice(0, 5).map(q => `${q.symbol}:${(q as YahooQuote & { _swingBias?: string })._swingBias ?? '?'}/${q._swingSetupScore?.toFixed(1)}`).join(', ')}`);
         }
       }
 
