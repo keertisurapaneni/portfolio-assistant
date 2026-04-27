@@ -2377,22 +2377,37 @@ async function _executeSuggestedFindTradeInner(
   // Geopolitical selloffs are when defense/energy Gold Mines outperform.
   const goldMineBelowSma200 = stock.tag === 'Gold Mine' && await isSpyBelowSma200();
 
-  // Lightweight direction check: if FA explicitly says SELL, skip this stock even
-  // for long-term buys. The daily pipeline scores conviction at generation time;
-  // a SELL from FA means something has materially changed (earnings miss, sector
-  // blow-up, etc.) since the suggestion was cached. We don't apply conviction drop
-  // checks here (that's browser-side only) — just the hard directional veto.
+  // FA direction + conviction-drop check before buying.
+  // SELL recommendation always blocks. For Steady Compounders, a ≥5-point
+  // conviction drop since caching also blocks — thesis may have deteriorated.
+  // Gold Mines are news/event driven; FA can't second-guess them, so only SELL veto applies.
   try {
     const fa = await fetchTradingSignal(ticker, 'SWING_TRADE');
-    if (fa.trade?.recommendation === 'SELL') {
+    const faRec = fa.trade?.recommendation;
+    const faConf = fa.trade?.confidence ?? 0;
+    const convDrop = conviction - faConf;
+
+    if (faRec === 'SELL') {
       log(`${ticker}: FA says SELL — skipping Suggested Find`);
       persistEvent(ticker, 'warning', `FA direction veto: SELL — skipping ${stock.tag}`, {
         action: 'skipped', source: 'suggested_finds', mode: 'LONG_TERM',
         scanner_signal: 'BUY', scanner_confidence: conviction,
-        fa_recommendation: 'SELL', fa_confidence: fa.trade?.confidence,
+        fa_recommendation: 'SELL', fa_confidence: faConf,
         skip_reason: 'FA says SELL',
       });
       return 'skipped:fa_sell';
+    }
+
+    if (stock.tag === 'Steady Compounder' && convDrop >= 5) {
+      const msg = `Conviction dropped ${convDrop} pts (cached: ${conviction} → fresh: ${faConf}) — skipping Steady Compounder`;
+      log(`${ticker}: ${msg}`);
+      persistEvent(ticker, 'warning', msg, {
+        action: 'skipped', source: 'suggested_finds', mode: 'LONG_TERM',
+        scanner_signal: 'BUY', scanner_confidence: conviction,
+        fa_recommendation: faRec ?? 'HOLD', fa_confidence: faConf,
+        skip_reason: `Conviction drop ${convDrop} pts`,
+      });
+      return 'skipped:conviction_drop';
     }
   } catch {
     // FA check failure is non-blocking — proceed with cached conviction
