@@ -70,6 +70,7 @@ import { runEarningsScan, closeExpiredEarningsPositions } from './lib/earnings-s
 import { runWatchlistScreener } from './lib/watchlist-screener.js';
 import { runOptionsManageCycle } from './lib/options-manager.js';
 import { runDipWatcher } from './lib/dip-watcher.js';
+import { checkSpxLevelSetups } from './lib/spx-level-scanner.js';
 import { warmPositionPriceCache } from './routes/positions.js';
 import { generateMorningBrief } from './lib/morning-brief.js';
 
@@ -4557,7 +4558,57 @@ async function runSchedulerCycle(): Promise<void> {
       summaryLog(msg);
     }
 
-    // 11. Options wheel — manage open positions (every cycle, 30-min intervals)
+    // 11. SPX key-level breakout-retest scanner (Somesh's strategy)
+    // Watches $50 SPX levels for the break → 2 independent candles → retest pattern.
+    // Generates a SPY DAY_TRADE order when a clean retest is confirmed.
+    // Runs every cycle during market hours; state machine persists in memory across cycles.
+    try {
+      const spxSetups = await checkSpxLevelSetups();
+      for (const setup of spxSetups) {
+        // Build a TradeIdea so it flows through the same pre-trade checks + order placement
+        // as other scanner ideas.  Confidence is fixed at 9 — this is a mechanical,
+        // rule-based setup with a pre-defined entry, stop, and target.
+        const idea: TradeIdea = {
+          ticker: 'SPY',
+          name: 'SPDR S&P 500 ETF Trust',
+          price: setup.spyEntry,
+          change: 0,
+          changePercent: 0,
+          signal: setup.signal,
+          confidence: 9,
+          reason: setup.description,
+          tags: ['spx_key_level', 'breakout_retest'],
+          mode: 'DAY_TRADE',
+          entryPrice: setup.spyEntry,
+          stopLoss: setup.spyStop,
+          targetPrice: setup.spyTarget,
+          riskReward: setup.riskReward,
+        };
+
+        if (await hasActiveTrade('SPY')) {
+          log(`[SpxScanner] SPY already has an active trade — skipping level ${setup.spxLevel} setup`);
+          continue;
+        }
+        if (await isDayTradeLossGateActive(config)) {
+          log('[SpxScanner] Day-trade loss gate active — skipping SPX setup');
+          continue;
+        }
+
+        const refreshedPositions = await getEnrichedPositions();
+        const result = await executeScannerTrade(idea, config, refreshedPositions);
+        log(`[SpxScanner] SPY ${setup.signal} @ ${setup.spxLevel} retest: ${result}`);
+        persistEvent('SPY', result.startsWith('executed') ? 'success' : 'skipped',
+          `SPX ${setup.spxLevel} retest: ${result}`, {
+            source: 'spx_level_scanner',
+            spx_level: setup.spxLevel,
+            direction: setup.direction,
+          });
+      }
+    } catch (err) {
+      log(`[SpxScanner] Error: ${err instanceof Error ? err.message : 'unknown'}`);
+    }
+
+    // 13. Options wheel — manage open positions (every cycle, 30-min intervals)
     try {
       const optsMgr = await runOptionsManageCycle();
       if (optsMgr.closed50Pct.length > 0) log(`Options: closed at 50% profit — ${optsMgr.closed50Pct.join(', ')}`);
@@ -4595,7 +4646,7 @@ Check the Options Wheel → Open tab to review the covered call position.`,
       log(`Options manager error: ${err instanceof Error ? err.message : 'unknown'}`);
     }
 
-    // 12. Options wheel — full-day scan (10:00 AM – 3:30 PM ET)
+    // 14. Options wheel — full-day scan (10:00 AM – 3:30 PM ET)
     //
     // Expanded from morning-only to catch dislocations throughout the entire session.
     // The VIX-spike + 200 DMA signal we target can trigger at ANY time, not just at open.
@@ -4701,10 +4752,10 @@ No new options positions will be opened until next month. Existing positions con
       }
     }
 
-    // 13. Daily rehydration (after 4:15 PM ET)
+    // 15. Daily rehydration (after 4:15 PM ET)
     await runDailyRehydration(config);
 
-    // 14. Pre-warm position price cache so the next page load is instant.
+    // 16. Pre-warm position price cache so the next page load is instant.
     // Runs in background — cycle timing not affected.
     const { requestPositions } = await import('./ib-connection.js');
     requestPositions().then(async (posData) => {

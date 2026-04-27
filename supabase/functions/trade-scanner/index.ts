@@ -687,7 +687,9 @@ function formatQuoteForAI(q: YahooQuote, idx: number): string {
 // ── Gemini AI ───────────────────────────────────────────
 
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
-const GEMINI_MODELS = ['gemini-2.0-flash-lite', 'gemini-2.0-flash'];
+// gemini-1.5-flash has a separate daily quota from 2.0-flash variants — serves as last-resort fallback
+// when all 13 keys are exhausted for the 2.0 models.
+const GEMINI_MODELS = ['gemini-2.0-flash-lite', 'gemini-2.0-flash', 'gemini-1.5-flash'];
 
 let _geminiKeyIdx = 0;
 let _geminiModelIdx = 0;
@@ -695,8 +697,10 @@ const _rateLimitedUntil: Map<string, number> = new Map();
 
 // ── Groq fallback ────────────────────────────────────────
 // Used when all Gemini keys are rate-limited (429). Free tier, fast.
+// llama-4-scout: 30K TPM on free tier — handles large swing scan prompts (6-10K tokens each).
+// llama-3.3-70b-versatile only has 6K TPM and fails on any prompt > 6K tokens.
 const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions';
-const GROQ_MODEL = 'llama-3.3-70b-versatile';
+const GROQ_MODEL = 'meta-llama/llama-4-scout-17b-16e-instruct';
 
 async function callGroq(
   apiKey: string,
@@ -803,9 +807,25 @@ async function callGemini(
 function cleanJson(text: string): string {
   let cleaned = text
     .replace(/<think>[\s\S]*?<\/think>/gi, '')
-    .replace(/```json?\s*/g, '')
+    .replace(/```json\s*/gi, '')
     .replace(/```/g, '')
     .trim();
+
+  // Extract the first JSON object or array — strips preamble text added by some models (e.g. llama-4-scout)
+  const arrStart = cleaned.indexOf('[');
+  const objStart = cleaned.indexOf('{');
+  if (arrStart !== -1 && (objStart === -1 || arrStart < objStart)) {
+    const end = cleaned.lastIndexOf(']');
+    if (end > arrStart) cleaned = cleaned.slice(arrStart, end + 1);
+  } else if (objStart !== -1) {
+    const end = cleaned.lastIndexOf('}');
+    if (end > objStart) cleaned = cleaned.slice(objStart, end + 1);
+  }
+
+  // Collapse unescaped control chars (newlines, tabs, carriage returns) that appear inside
+  // JSON string values — LLMs often emit multi-line strings without escaping them.
+  // Strategy: replace newlines with a space (safe for JSON string content).
+  cleaned = cleaned.replace(/\n/g, ' ').replace(/\r/g, ' ').replace(/\t/g, ' ');
 
   // Fix common AI JSON issues: trailing commas, single quotes
   cleaned = cleaned
@@ -1704,15 +1724,18 @@ async function runPass2(
     }
   }
 
-  // ── Run ALL Gemini calls in PARALLEL using FA prompt format ──
+  // ── Run FA analysis calls in PARALLEL (Gemini) or SEQUENTIAL (Groq fallback) ──
+  // Groq fallback has 30K TPM. With 10 swing tickers × ~5K tokens each = 50K burst → 413 errors.
+  // Sequential processing stays within TPM even under fallback.
+  // Day trades still run parallel (Gemini is primary; Groq fallback is rare for day scans).
+  const useSequential = mode === 'SWING_TRADE'; // Swing always sequential — safer under any quota
   const systemPrompt = mode === 'DAY_TRADE' ? DAY_TRADE_SYSTEM : SWING_TRADE_SYSTEM;
   const faTemplate = mode === 'DAY_TRADE' ? FA_DAY_USER : FA_SWING_USER;
 
-  const evalResults = await Promise.all(
-    tickers.map(async (ticker) => {
+  async function evalTicker(ticker: string): Promise<AIEval | null> {
       const candles = candleMap.get(ticker);
       if (!candles || candles.ohlcvBars.length < 30) {
-        console.log(`[Trade Scanner] ${ticker}: insufficient candle data`);
+        console.log(`[Trade Scanner] ${ticker}: insufficient candle data (ohlcvBars=${quoteMap.get(ticker)?._ohlcvBars?.length ?? 'NO_QUOTE'})`);
         return null;
       }
 
@@ -1752,7 +1775,23 @@ async function runPass2(
           .replace('{{SENTIMENT_DATA}}', JSON.stringify(newsForPrompt));
 
         const raw = await callGemini(geminiKeys, systemPrompt, userPrompt, 0.15, 2000);
-        const parsed = JSON.parse(cleanJson(raw));
+        let parsed: Record<string, unknown>;
+        try {
+          parsed = JSON.parse(cleanJson(raw));
+        } catch {
+          // Fallback: regex-extract the key scalar fields — robust against unescaped quotes inside strings
+          // that LLMs sometimes emit in the rationale/bias fields of the FA-format response.
+          const rec = /["\s]recommendation["']?\s*:\s*["'](\w+)/.exec(raw)?.[1]
+            ?? /["\s]signal["']?\s*:\s*["'](\w+)/.exec(raw)?.[1];
+          const conf = parseFloat((/["\s]confidence["']?\s*:\s*([\d.]+)/.exec(raw)?.[1]) ?? '0');
+          const entry = parseFloat((/["\s]entryPrice["']?\s*:\s*([\d.]+)/.exec(raw)?.[1]) ?? '');
+          const stop = parseFloat((/["\s]stopLoss["']?\s*:\s*([\d.]+)/.exec(raw)?.[1]) ?? '');
+          const target = parseFloat((/["\s]targetPrice["']?\s*:\s*([\d.]+)/.exec(raw)?.[1]) ?? '');
+          const rr = /["\s]riskReward["']?\s*:\s*["']([^"']+)/.exec(raw)?.[1];
+          if (!rec) throw new Error(`regex fallback also failed — no recommendation in: ${raw.slice(0, 200)}`);
+          console.log(`[Trade Scanner] ${ticker} used regex fallback: ${rec}/${conf}`);
+          parsed = { recommendation: rec, confidence: conf, entryPrice: isNaN(entry) ? null : entry, stopLoss: isNaN(stop) ? null : stop, targetPrice: isNaN(target) ? null : target, riskReward: rr ?? null };
+        }
 
         // Extract recommendation from FA-format response
         const recommendation = parsed.recommendation ?? parsed.signal ?? 'HOLD';
@@ -1774,11 +1813,28 @@ async function runPass2(
           atr: indicators.atr ?? null,
         } as AIEval;
       } catch (err) {
-        console.warn(`[Trade Scanner] ${ticker} Pass 2 failed:`, err);
+        console.warn(`[Trade Scanner] ${ticker} Pass 2 failed:`, err instanceof Error ? err.message : String(err));
         return null;
       }
-    })
-  );
+  }
+
+  let evalResults: (AIEval | null)[];
+  if (useSequential) {
+    // Sequential: process one ticker at a time — avoids Groq TPM burst when Gemini is exhausted
+    evalResults = [];
+    for (const ticker of tickers) {
+      const result = await evalTicker(ticker);
+      evalResults.push(result);
+      // Pause between sequential calls: Groq free tier has ~30K TPM.
+      // Each swing FA call ≈ 3-5K tokens. 10 calls × 4K = 40K > 30K burst limit.
+      // 2s delay spaces them out to ~20K tokens/minute (well within budget).
+      if (tickers.indexOf(ticker) < tickers.length - 1) {
+        await new Promise(r => setTimeout(r, 2000));
+      }
+    }
+  } else {
+    evalResults = await Promise.all(tickers.map(evalTicker));
+  }
 
   const results = evalResults.filter((r): r is AIEval => r !== null);
 
@@ -2196,6 +2252,7 @@ Deno.serve(async (req) => {
     // Start fresh each new trading day for swing too — prevents week-old picks lingering
     let swingIdeas: TradeIdea[] = (swingFromPreviousDay || forceRefresh) ? [] : (swingRow?.data ?? []);
     let swingUniverseInfo: { total: number; sources: Record<string, number> } | undefined;
+    let swingDebugInfo: string[] = [];
     if (needSwingRefresh) {
       console.log('[Trade Scanner] Refreshing swing trades (dynamic universe)...');
       const { symbols: swingSymbols, sources: swingSources } = await buildDynamicSwingUniverse(sb, portfolioTickers);
@@ -2245,15 +2302,31 @@ Deno.serve(async (req) => {
           const nonSkip = evals.filter(e => e.signal !== 'SKIP' && e.signal !== 'HOLD').sort((a, b) => b.confidence - a.confidence);
           console.log(`[Trade Scanner] Swing Pass 1 non-SKIP (${nonSkip.length}): ${nonSkip.map(e => `${e.ticker}:${e.signal}/${e.confidence}`).join(', ') || 'none'}`);
 
-          const pass1 = nonSkip
-            .filter(e => e.confidence >= 4) // lowered from 5 — bear/choppy markets get conservative AI scores
-            .slice(0, 10);
+          // Select up to 5 tickers for swing Pass 2, balanced by direction.
+          // Sequential Pass 2 with 2s delays: 5 × ~4K tokens = 20K total (under 30K TPM).
+          // Ensure both BUY and SELL directions are represented — in bear markets all BUYs
+          // may downgrade to HOLD in Pass 2, so we always include the top SELLs too.
+          const nonSkipFiltered = nonSkip.filter(e => e.confidence >= 4);
+          const topBuys = nonSkipFiltered.filter(e => e.signal === 'BUY').slice(0, 3);
+          const topSells = nonSkipFiltered.filter(e => e.signal === 'SELL').slice(0, 2);
+          const pass1: AIEval[] = [];
+          const seen = new Set<string>();
+          for (const e of [...topBuys, ...topSells]) {
+            if (!seen.has(e.ticker)) { pass1.push(e); seen.add(e.ticker); }
+          }
+          // Fill remaining slots with next-best by confidence
+          for (const e of nonSkipFiltered) {
+            if (pass1.length >= 5) break;
+            if (!seen.has(e.ticker)) { pass1.push(e); seen.add(e.ticker); }
+          }
 
           console.log(`[Trade Scanner] Swing Pass 1 → Pass 2 (${pass1.length}): ${pass1.map(e => `${e.ticker}:${e.signal}/${e.confidence}`).join(', ') || 'none'}`);
 
           // ── Pass 2: Full shared indicator analysis ──
+          swingDebugInfo.push(`Pass1→Pass2: ${pass1.map(e => `${e.ticker}:${e.signal}/${e.confidence}`).join(', ') || 'none'}`);
           if (pass1.length > 0) {
             const newIdeas = await runPass2(pass1, quoteMap, 'SWING_TRADE', GEMINI_KEYS);
+            swingDebugInfo.push(`Pass2: ${newIdeas.length > 0 ? newIdeas.map(d => `${d.ticker}:${d.signal}/${d.confidence}`).join(', ') : 'all HOLD — no actionable setups in current market'}`);
             // Merge new ideas with existing — don't overwrite earlier picks
             const existingTickers = new Set(swingIdeas.map(d => d.ticker));
             for (const idea of newIdeas) {
@@ -2265,6 +2338,7 @@ Deno.serve(async (req) => {
               }
             }
           } else {
+            swingDebugInfo.push(`Pass2: skipped — no tickers reached Pass2 (confidence >= 4 filter)`);
             console.log(`[Trade Scanner] Swing: ${candidates.length} candidates → 0 passed pass 1, skipping pass 2`);
           }
         } catch (err) {
@@ -2300,6 +2374,7 @@ Deno.serve(async (req) => {
       preMarketGappers,
       timestamp: Date.now(),
       ...(swingUniverseInfo ? { swingUniverse: swingUniverseInfo } : {}),
+      ...(swingDebugInfo.length > 0 ? { swingDebug: swingDebugInfo } : {}),
     }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
 
   } catch (err) {

@@ -9,6 +9,7 @@ Current implementation docs for each major feature.
 | [Morning Brief](./features/morning-brief.md) | AI pre-market research dashboard — architecture, cloud schedule, data schema, on-demand generation |
 | [Auto-Trader Execution Paths](./features/auto-trader-execution-paths.md) | Three trade sources (Scanner, Influencer, Suggested Finds) — gate logic, FA checks, position sizing |
 | [Trade Scanner](./features/trade-scanner.md) | Two-pass day/swing scanner — InPlayScore, Gemini AI, pre-market gaps |
+| [SPX Level Scanner](./features/spx-level-scanner.md) | Mechanical breakout-retest scanner — Somesh's $50 SPX key-level strategy, trades SPY |
 | [Trading Signals Indicators](./features/trading-signals-indicators.md) | Indicator engine — RSI, MACD, EMA, ATR, ADX fed to AI prompts |
 | [Suggested Finds](./features/suggested-finds.md) | Daily stock discovery — Quiet Compounders + Gold Mines pipeline |
 | [Gold Mines](./features/gold-mines.md) | Gold Mine archetype rules — exit logic, sizing, empirical evidence, simulation |
@@ -66,6 +67,7 @@ Design sessions and multi-step implementation plans.
 | [Options Wheel Strategy Upgrades (2026-04-21)](./cursor/2026-04-21-options-wheel-strategy-upgrades.md) | Video-analysis-driven upgrades: prob-profit floor, break-even display, ROC, stop-loss, auto-roll, 21 DTE hard close |
 | [Advanced Options + Morning Brief (2026-04-24)](./cursor/2026-04-24-advanced-options-morning-brief.md) | VIX-tiered delta, 200 DMA gate, rolling strategy, CC cost-basis guard, morning brief, full-day scanning |
 | [Trade Scanner — Key Levels (2026-04-20)](./cursor/2026-04-20-trade-scanner-track1-key-levels.md) | Track 1 key levels enhancement design |
+| [SPX Breakout-Retest Strategy (2026-04-27)](./cursor/2026-04-27-spx-breakout-retest-strategy.md) | Somesh's $50 key-level strategy — design decisions and trade-offs |
 
 ## Archive
 Historical planning artifacts and session notes — kept for reference, superseded by implementation.

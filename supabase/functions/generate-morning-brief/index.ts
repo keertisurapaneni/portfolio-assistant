@@ -21,10 +21,12 @@ const corsHeaders = {
 };
 
 const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions';
-// Use 8B model (~6x fewer tokens/call vs 70B). Plenty capable for structured JSON briefs.
-const GROQ_MODEL = 'llama-3.1-8b-instant';
-// Gemini Flash fallback — free tier, 1M tokens/min, no daily cap.
-const GEMINI_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent';
+// llama-4-scout: 30K TPM on free tier (vs 6K for llama-3.x) — necessary since brief prompts are ~7-8K tokens.
+const GROQ_MODEL = 'meta-llama/llama-4-scout-17b-16e-instruct';
+// Gemini Flash fallback — free tier.
+// Try gemini-2.0-flash first; if all keys exhausted, fall back to gemini-1.5-flash (separate quota pool).
+const GEMINI_URL_2 = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent';
+const GEMINI_URL_15 = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent';
 
 const BRIEF_SYSTEM = `You are a professional pre-market trading analyst. You synthesize raw market data into a concise, actionable daily briefing for a retail options and equity trader.
 
@@ -154,6 +156,7 @@ Generate the structured daily market briefing JSON for this trading day.`;
     // Groq free tier: 100K tokens/day. Gemini Flash: 1M tokens/min, no daily cap.
     // If Groq hits rate limit (429) or is unavailable, we fall through to Gemini.
     let raw = '';
+    const debugErrors: string[] = [];
 
     const groqKey = Deno.env.get('GROQ_API_KEY') ?? '';
     let groqFailed = false;
@@ -178,50 +181,83 @@ Generate the structured daily market briefing JSON for this trading day.`;
         raw = groqData.choices[0].message.content.trim();
       } else {
         const errText = await groqRes.text();
-        console.warn(`[morning-brief] Groq failed (${groqRes.status}), falling back to Gemini. Error: ${errText.slice(0, 200)}`);
+        const groqErr = `Groq(${groqRes.status}): ${errText.slice(0, 300)}`;
+        console.warn(`[morning-brief] ${groqErr}`);
+        debugErrors.push(groqErr);
         groqFailed = true;
       }
     } else {
+      debugErrors.push('Groq: no GROQ_API_KEY set');
       groqFailed = true;
     }
 
     if (groqFailed || !raw) {
-      // Rotate through all available Gemini keys until one succeeds (quota rotation pattern)
+      // Rotate through all available Gemini keys until one succeeds (quota rotation pattern).
+      // Try gemini-2.0-flash first (keys 1-13). If all are quota-exceeded, retry with gemini-1.5-flash
+      // which has a separate daily quota pool.
       const geminiKeyNames = [
         'GEMINI_API_KEY', 'GEMINI_API_KEY_2', 'GEMINI_API_KEY_3', 'GEMINI_API_KEY_4',
         'GEMINI_API_KEY_5', 'GEMINI_API_KEY_6', 'GEMINI_API_KEY_7', 'GEMINI_API_KEY_8',
         'GEMINI_API_KEY_9', 'GEMINI_API_KEY_10', 'GEMINI_API_KEY_11', 'GEMINI_API_KEY_12',
         'GEMINI_API_KEY_13',
       ];
+      const geminiBody = JSON.stringify({
+        contents: [{ parts: [{ text: `${BRIEF_SYSTEM}\n\n---\n\n${userPrompt}` }] }],
+        generationConfig: { temperature: 0.3, maxOutputTokens: 4096 },
+      });
 
       let geminiSucceeded = false;
-      for (const keyName of geminiKeyNames) {
-        const geminiKey = Deno.env.get(keyName) ?? '';
-        if (!geminiKey) continue;
 
-        const geminiRes = await fetch(`${GEMINI_URL}?key=${geminiKey}`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [{ parts: [{ text: `${BRIEF_SYSTEM}\n\n---\n\n${userPrompt}` }] }],
-            generationConfig: { temperature: 0.3, maxOutputTokens: 4096 },
-          }),
+      // Pass 1: gemini-2.0-flash (sample first 3 keys — if all quota-exceeded, rest will be too)
+      for (const keyName of geminiKeyNames.slice(0, 3)) {
+        const geminiKey = Deno.env.get(keyName) ?? '';
+        if (!geminiKey) { debugErrors.push(`${keyName}: not set`); continue; }
+
+        const geminiRes = await fetch(`${GEMINI_URL_2}?key=${geminiKey}`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: geminiBody,
         });
 
         if (geminiRes.ok) {
-          const geminiData = await geminiRes.json() as { candidates: [{ content: { parts: [{ text: string }] } }] };
-          raw = geminiData.candidates[0].content.parts[0].text.trim();
+          const d = await geminiRes.json() as { candidates: [{ content: { parts: [{ text: string }] } }] };
+          raw = d.candidates[0].content.parts[0].text.trim();
           geminiSucceeded = true;
-          console.log(`[morning-brief] Used Gemini fallback (${keyName})`);
+          console.log(`[morning-brief] Used gemini-2.0-flash (${keyName})`);
           break;
         } else {
           const errText = await geminiRes.text();
-          console.warn(`[morning-brief] ${keyName} failed (${geminiRes.status}): ${errText.slice(0, 100)}`);
+          debugErrors.push(`${keyName}/2.0(${geminiRes.status}): ${errText.slice(0, 120)}`);
+        }
+      }
+
+      // Pass 2: gemini-1.5-flash — separate daily quota, try all 13 keys
+      if (!geminiSucceeded) {
+        for (const keyName of geminiKeyNames) {
+          const geminiKey = Deno.env.get(keyName) ?? '';
+          if (!geminiKey) continue;
+
+          const geminiRes = await fetch(`${GEMINI_URL_15}?key=${geminiKey}`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: geminiBody,
+          });
+
+          if (geminiRes.ok) {
+            const d = await geminiRes.json() as { candidates: [{ content: { parts: [{ text: string }] } }] };
+            raw = d.candidates[0].content.parts[0].text.trim();
+            geminiSucceeded = true;
+            console.log(`[morning-brief] Used gemini-1.5-flash (${keyName})`);
+            break;
+          } else {
+            const errText = await geminiRes.text();
+            const geminiErr = `${keyName}/1.5(${geminiRes.status}): ${errText.slice(0, 120)}`;
+            console.warn(`[morning-brief] ${geminiErr}`);
+            debugErrors.push(geminiErr);
+            // Stop early if the pattern is quota-exceeded — rest will be the same
+            if (geminiRes.status === 429 && debugErrors.filter(e => e.includes('/1.5(429)')).length >= 3) break;
+          }
         }
       }
 
       if (!geminiSucceeded || !raw) {
-        throw new Error('All LLM providers exhausted (Groq rate-limited + all Gemini keys quota-exceeded). Try again in a few minutes.');
+        throw new Error(`All LLM providers exhausted:\n${debugErrors.join('\n')}`);
       }
     }
 

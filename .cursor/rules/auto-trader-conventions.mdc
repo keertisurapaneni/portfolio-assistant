@@ -25,7 +25,33 @@ Browser (React) → auto-trader service (localhost:3001) → IB Gateway (TWS API
 
 ## Event Sources
 
-`auto_trade_events.source` must be one of: `scanner`, `suggested_finds`, `manual`, `system`, `dip_buy`, `profit_take`
+`auto_trade_events.source` must be one of: `scanner`, `suggested_finds`, `manual`, `system`, `dip_buy`, `profit_take`, `spx_level_scanner`
+
+## SPX Key-Level Breakout-Retest Strategy
+
+Implemented in `auto-trader/src/lib/spx-level-scanner.ts`.
+
+**Somesh's strategy** — SPY day trades using SPX 5-min structure:
+
+1. Identify $50 key levels on SPX (5500, 5550, 5600, …)
+2. Wait for a 5-min candle to **close** on one side of the level (the "break" candle)
+3. The next **two** consecutive 5-min candles must NOT touch the level at all (high/low stay away)
+4. When price returns to the level (retest), enter SPY in the direction of the break:
+   - **BUY** if break was to the upside → stop $1 below the level in SPY terms
+   - **SELL** if break was to the downside → stop $1 above the level in SPY terms
+5. Target: next $50 SPX level in the direction of the breakout
+
+**State machine** per level (in-memory, resets at midnight ET):
+`idle → break_detected → independent_1 → confirmed → triggered | invalidated`
+
+**Confidence**: fixed at 9 — this is a mechanical pattern, not an AI estimate.
+
+**Source tag**: `spx_level_scanner`
+
+When modifying this scanner:
+- The `TOUCH_BUFFER_SPX` constant (default 5 pts) controls how close a wick must come to "touch" the level
+- The `INVALIDATION_BARS_MAX` constant (default 20 bars = 100 min) controls how long we wait for a retest before giving up
+- SPX/10 ≈ SPY conversion is used for stop/target levels only — actual entry uses live SPY quote
 
 ## When Adding New Metrics or Displays
 
