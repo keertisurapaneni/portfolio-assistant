@@ -1053,7 +1053,7 @@ export async function discoverStocks(
     buildGoldMineAnalysisPrompt(validGoldMineMetrics, marketNews, goldMineCandidates, currentTheme),
     'discover_goldmines',
     0.3,
-    4000
+    8000
   );
   const goldMines = parseGoldMineAnalysis(goldMineAnalysisRaw);
 
@@ -1136,7 +1136,7 @@ export async function discoverCategoryStocks(
     buildCompounderAnalysisPrompt(validMetrics),
     'discover_compounders',
     0.3,
-    4000
+    8000
   );
   const compounders = parseCompounderResponse(compounderRaw);
 
@@ -1209,7 +1209,7 @@ export async function discoverGoldMineCategoryStocks(
     buildGoldMineCategoryAnalysisPrompt(validMetrics, category),
     'discover_goldmines',
     0.3,
-    4000
+    8000
   );
   const goldMines = parseGoldMineAnalysis(analysisRaw);
 
