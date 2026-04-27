@@ -275,6 +275,7 @@ Deno.serve(async (req) => {
   const TICKER_CORRECTIONS: Record<string, string> = {
     KKI: 'QQQ', KQQ: 'QQQ', QQ: 'QQQ', KQQQ: 'QQQ',
     MERA: 'META', NVDIA: 'NVDA', NFDA: 'NVDA',
+    BLTR: 'PLTR', PLRT: 'PLTR',  // P/B OCR misread on Palantir
     TSLA: 'TSLA', // identity — keep common ones to prevent further drift
   };
   const rawSignals = Array.isArray(extracted.extracted_signals) ? extracted.extracted_signals : [];
