@@ -71,6 +71,7 @@ import { runWatchlistScreener } from './lib/watchlist-screener.js';
 import { runOptionsManageCycle } from './lib/options-manager.js';
 import { runDipWatcher } from './lib/dip-watcher.js';
 import { checkSpxLevelSetups } from './lib/spx-level-scanner.js';
+import { isInsideOrb } from './lib/orb.js';
 import { warmPositionPriceCache } from './routes/positions.js';
 import { generateMorningBrief } from './lib/morning-brief.js';
 
@@ -2068,6 +2069,21 @@ async function executeScannerTrade(
   if (mode === 'DAY_TRADE' && await isDayTradeLossGateActive(config)) {
     log(`${ticker}: day-trade skipped — daily loss gate active`);
     return 'skipped:daily_loss_gate';
+  }
+
+  // ── ORB (Opening Range Breakout) chop gate ───────────────────────────
+  // Day trades only. If the ticker is stuck inside its 15-min opening range,
+  // the market is choppy — skip and wait for a directional breakout.
+  // Gate is non-blocking on data failure (isInsideOrb returns false when unavailable).
+  if (mode === 'DAY_TRADE') {
+    const choppy = await isInsideOrb(ticker, signal as 'BUY' | 'SELL');
+    if (choppy) {
+      log(`${ticker}: inside ORB (choppy) — skipping ${signal} day trade`);
+      persistEvent(ticker, 'skipped', `Inside ORB — choppy conditions, no directional trend`, {
+        action: 'skipped', source: 'scanner', mode, skip_reason: 'inside_orb',
+      });
+      return 'skipped:inside_orb';
+    }
   }
 
   // ── Candlestick pattern confidence modifier ───────────────────────────

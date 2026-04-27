@@ -10,6 +10,7 @@ Current implementation docs for each major feature.
 | [Auto-Trader Execution Paths](./features/auto-trader-execution-paths.md) | Three trade sources (Scanner, Influencer, Suggested Finds) — gate logic, FA checks, position sizing |
 | [Trade Scanner](./features/trade-scanner.md) | Two-pass day/swing scanner — InPlayScore, Gemini AI, pre-market gaps |
 | [SPX Level Scanner](./features/spx-level-scanner.md) | Mechanical breakout-retest scanner — Somesh's $50 SPX key-level strategy, trades SPY |
+| [ORB Chop Filter](./features/orb-chop-filter.md) | Opening Range Breakout gate — skips day trades when price is inside the 15-min opening range |
 | [Trading Signals Indicators](./features/trading-signals-indicators.md) | Indicator engine — RSI, MACD, EMA, ATR, ADX fed to AI prompts |
 | [Suggested Finds](./features/suggested-finds.md) | Daily stock discovery — Quiet Compounders + Gold Mines pipeline |
 | [Gold Mines](./features/gold-mines.md) | Gold Mine archetype rules — exit logic, sizing, empirical evidence, simulation |

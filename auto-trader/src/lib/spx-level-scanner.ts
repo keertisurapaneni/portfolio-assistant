@@ -2,6 +2,9 @@
  * SPX $50 Key-Level Breakout-Retest Scanner
  *
  * Somesh's strategy — SPY day trades built on SPX 5-min structure:
+ * Includes an ORB (Opening Range Breakout) chop gate: a retest signal is
+ * suppressed if SPX is still trading inside its 15-min opening range,
+ * since that indicates choppy, non-directional conditions.
  *
  *   1. Identify $50 key levels on SPX (5500, 5550, 5600, 5650, …).
  *   2. Wait for a 5-min candle to CLOSE on one side of the level (the "break" candle).
@@ -27,6 +30,8 @@
  *   It returns triggered setups that should be executed as SPY DAY_TRADE orders.
  *   Once a setup fires, it is marked done and won't re-trigger the same day.
  */
+
+import { fetchOrb } from './orb.js';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -338,6 +343,26 @@ export async function checkSpxLevelSetups(): Promise<SpxSetup[]> {
     const justTriggered = advanceLevelState(state, bars);
 
     if (justTriggered && state.direction) {
+      // ORB chop gate: if SPX itself is still inside its 15-min opening range,
+      // there's no directional conviction yet — suppress the signal.
+      // fetchOrb uses ^GSPC (same data source as the scanner bars).
+      const spxOrb = await fetchOrb('^GSPC');
+      if (spxOrb && spxOrb.status !== 'not_ready') {
+        const orbBlocked =
+          spxOrb.status === 'inside' ||
+          (state.direction === 'ABOVE' && spxOrb.status === 'below') ||
+          (state.direction === 'BELOW' && spxOrb.status === 'above');
+        if (orbBlocked) {
+          console.log(
+            `[SpxScanner] Level ${level}: triggered but SPX ORB says ${spxOrb.status} ` +
+            `(dir=${state.direction}) — suppressed (choppy / misaligned)`
+          );
+          // Don't mark as invalidated — let it re-check next cycle in case ORB breaks out
+          state.phase = 'confirmed';
+          continue;
+        }
+      }
+
       const spyPrice = await fetchSpyPrice();
       if (!spyPrice) {
         console.warn(`[SpxScanner] Level ${level}: triggered but could not fetch SPY price — skipping`);

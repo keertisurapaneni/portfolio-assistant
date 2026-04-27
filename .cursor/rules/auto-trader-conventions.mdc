@@ -52,6 +52,23 @@ When modifying this scanner:
 - The `TOUCH_BUFFER_SPX` constant (default 5 pts) controls how close a wick must come to "touch" the level
 - The `INVALIDATION_BARS_MAX` constant (default 20 bars = 100 min) controls how long we wait for a retest before giving up
 - SPX/10 ≈ SPY conversion is used for stop/target levels only — actual entry uses live SPY quote
+- An ORB gate is applied before firing: if SPX is inside its 15-min opening range the signal is deferred (not invalidated) to the next cycle
+
+## ORB (Opening Range Breakout) Chop Filter
+
+Implemented in `auto-trader/src/lib/orb.ts`.
+
+Somesh's rule: **never trade a stock that is inside its 15-min opening range** — price is choppy with no directional conviction.
+
+**Opening range** = high/low of the first three 5-min candles (9:30, 9:35, 9:40 AM ET).
+
+Applied in two places:
+1. `executeScannerTrade` — all `DAY_TRADE` orders check the ticker's ORB before execution. Skips with `inside_orb` reason.
+2. `checkSpxLevelSetups` — defers a triggered SPX retest signal if SPX is still inside its own ORB.
+
+Gate is **non-blocking on data failure** — if Yahoo Finance is unavailable, the trade proceeds normally.
+
+`isInsideOrb(symbol, 'BUY' | 'SELL')` is the convenience export for callers that just need a boolean.
 
 ## When Adding New Metrics or Displays
 
