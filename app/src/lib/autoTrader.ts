@@ -8,7 +8,7 @@
 
 import type { TradeIdea } from './tradeScannerApi';
 import type { EnhancedSuggestedStock } from '../data/suggestedFinds';
-import type { TradingSignalsResponse, SignalsMode } from './tradingSignalsApi';
+import type { TradingSignalsResponse } from './tradingSignalsApi';
 import { fetchTradingSignal } from './tradingSignalsApi';
 import {
   checkAuthStatus,
