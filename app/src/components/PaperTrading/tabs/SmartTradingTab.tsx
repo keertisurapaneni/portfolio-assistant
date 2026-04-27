@@ -276,11 +276,13 @@ export function SmartTradingTab({ config, regime, kellyMultiplier, totalDeployed
             <h3 className="text-sm font-semibold text-[hsl(var(--foreground))]">Last Cycle Log</h3>
           </div>
           <div className="divide-y divide-[hsl(var(--border))] max-h-48 overflow-y-auto">
-            {lastCycleSummary.map((line, i) => (
-              <div key={i} className="px-4 py-1.5 text-xs font-mono text-[hsl(var(--muted-foreground))]">
-                {line}
-              </div>
-            ))}
+            {lastCycleSummary
+              .filter(line => !line.toLowerCase().includes('waiting — no quote') && !line.toLowerCase().includes('waiting - no quote'))
+              .map((line, i) => (
+                <div key={i} className="px-4 py-1.5 text-xs font-mono text-[hsl(var(--muted-foreground))]">
+                  {line}
+                </div>
+              ))}
           </div>
         </div>
       )}
@@ -301,12 +303,21 @@ export function SmartTradingTab({ config, regime, kellyMultiplier, totalDeployed
                     ? null  // gainPct shown inline in the message; no separate dollar shown
                     : null;
               const addOnDollar = event.source === 'dip_buy' && typeof meta.addOnDollar === 'number' ? meta.addOnDollar : null;
+              const isSystemClose = event.source === 'system' && event.message?.toLowerCase().includes('closed:');
+              const isSystemWin = isSystemClose && event.action === 'executed';
+              const systemBadgeLabel = isSystemClose
+                ? (event.message?.toLowerCase().includes('target_hit') ? 'target hit'
+                  : event.message?.toLowerCase().includes('stop_loss') ? 'stop loss'
+                  : 'auto-close')
+                : 'system';
+
               return (
                 <div key={event.id} className="flex items-start gap-2 px-4 py-2 text-xs">
                   {event.source === 'dip_buy' && <TrendingDown className="w-3.5 h-3.5 text-blue-500 mt-0.5 flex-shrink-0" />}
                   {event.source === 'profit_take' && <TrendingUp className="w-3.5 h-3.5 text-emerald-500 mt-0.5 flex-shrink-0" />}
                   {event.source === 'lt_auto_sell' && <TrendingUp className="w-3.5 h-3.5 text-violet-500 mt-0.5 flex-shrink-0" />}
-                  {event.source === 'system' && <ShieldAlert className="w-3.5 h-3.5 text-red-500 mt-0.5 flex-shrink-0" />}
+                  {event.source === 'system' && isSystemWin && <TrendingUp className="w-3.5 h-3.5 text-emerald-500 mt-0.5 flex-shrink-0" />}
+                  {event.source === 'system' && !isSystemWin && <ShieldAlert className="w-3.5 h-3.5 text-red-500 mt-0.5 flex-shrink-0" />}
                   {event.source !== 'dip_buy' && event.source !== 'profit_take' && event.source !== 'lt_auto_sell' && event.source !== 'system' && (
                     <Shield className="w-3.5 h-3.5 text-amber-500 mt-0.5 flex-shrink-0" />
                   )}
@@ -314,7 +325,7 @@ export function SmartTradingTab({ config, regime, kellyMultiplier, totalDeployed
                     <span className="font-bold text-[hsl(var(--foreground))]">{event.ticker}</span>
                     {event.action && (
                       <span className={cn('ml-1.5 px-1.5 py-0.5 rounded text-[10px] font-medium', {
-                        'bg-emerald-100 text-emerald-700': event.action === 'executed',
+                        'bg-emerald-100 text-emerald-700': event.action === 'executed' && event.source !== 'lt_auto_sell',
                         'bg-amber-100 text-amber-700': event.action === 'skipped',
                         'bg-red-100 text-red-700': event.action === 'failed',
                         'bg-violet-100 text-violet-700': event.source === 'lt_auto_sell',
@@ -323,6 +334,7 @@ export function SmartTradingTab({ config, regime, kellyMultiplier, totalDeployed
                           : event.source === 'profit_take' ? 'profit take'
                           : event.source === 'loss_cut' ? 'loss cut'
                           : event.source === 'lt_auto_sell' ? 'long-term exit'
+                          : event.source === 'system' ? systemBadgeLabel
                           : 'blocked'}
                       </span>
                     )}
