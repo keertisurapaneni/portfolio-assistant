@@ -72,6 +72,7 @@ import { runOptionsManageCycle } from './lib/options-manager.js';
 import { runDipWatcher } from './lib/dip-watcher.js';
 import { checkSpxLevelSetups } from './lib/spx-level-scanner.js';
 import { isInsideOrb } from './lib/orb.js';
+import { evaluateVwapAlignment } from './lib/vwap.js';
 import { warmPositionPriceCache } from './routes/positions.js';
 import { generateMorningBrief } from './lib/morning-brief.js';
 
@@ -2086,6 +2087,22 @@ async function executeScannerTrade(
     }
   }
 
+  // ── VWAP alignment confidence modifier ───────────────────────────────
+  // Day trades only, after 10 AM ET. Adds +0.3 confidence when price is
+  // near VWAP and the trade direction aligns with institutional flow.
+  // Always non-blocking: missing data, pre-10AM, or far-from-VWAP = 0 delta.
+  let adjustedConf = scannerConf;
+  if (mode === 'DAY_TRADE') {
+    const etHour = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/New_York' })).getHours();
+    const { delta: vwapDelta, log: vwapLog } = await evaluateVwapAlignment(ticker, signal as 'BUY' | 'SELL', etHour);
+    if (vwapDelta !== 0) {
+      adjustedConf = Math.min(10, adjustedConf + vwapDelta);
+      log(`${ticker}: VWAP +${vwapDelta} confidence → ${adjustedConf} (${vwapLog})`);
+    } else {
+      log(`${ticker}: ${vwapLog}`);
+    }
+  }
+
   // ── Candlestick pattern confidence modifier ───────────────────────────
   // Applies to scanner-generated day/swing ideas only (not influencer signals,
   // not Suggested Finds, not options). Uses daily bars — no new API calls.
@@ -2094,7 +2111,6 @@ async function executeScannerTrade(
   // Contradicting patterns (e.g. bearish engulfing on BUY) → -1.0 confidence
   //   If confidence drops below minScannerConfidence, the idea is skipped.
   // Neutral / no pattern detected → no change (non-blocking).
-  let adjustedConf = scannerConf;
   let candlePatternLog: string[] = [];
   if (mode === 'DAY_TRADE' || mode === 'SWING_TRADE') {
     const candles = await fetchRecentDailyCandles(ticker).catch(() => null);
