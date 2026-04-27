@@ -14,7 +14,7 @@ const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions';
 // Model fallback: try best quality first, fall back on rate limits
 const GROQ_MODELS = [
   'llama-3.3-70b-versatile',   // Best reasoning for stock discovery
-  'qwen/qwen3-32b',            // Smart fallback with higher limits
+  'llama-3.1-8b-instant',      // Fast non-thinking fallback (avoids Qwen3 reasoning token drain)
   'llama3-8b-8192',            // Last resort
 ];
 
