@@ -2721,8 +2721,12 @@ async function executeExternalStrategySignal(
   // execution window opens), losing their allocationSplit group context. Always use the lenient
   // conflict check for them so they aren't blocked by a same-direction strategy trade.
   const isGenericAutoSignal = (signal.notes ?? '').toLowerCase().includes('generic strategy auto');
+  // Influencer signals (strategy_video_id != null) must never be blocked by a scanner trade
+  // on the same ticker — they are fundamentally different signal sources. A scanner trade and
+  // an influencer signal for AMD are not duplicates: one is AI-generated, the other is a human
+  // expert's specific level. Only block if the SAME video already has an active trade open.
   if (!skipConfirmationGates) {
-    if (allowDuplicateTicker || isGenericAutoSignal) {
+    if (allowDuplicateTicker || isGenericAutoSignal || signal.strategy_video_id != null) {
       const activeTrades = await getActiveTrades();
       const sameTickerTrades = activeTrades.filter(
         trade => trade.ticker.toUpperCase() === ticker
