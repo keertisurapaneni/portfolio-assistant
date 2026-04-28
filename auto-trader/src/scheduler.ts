@@ -98,6 +98,7 @@ interface TradeIdea {
   in_play_score?: number;
   pass1_confidence?: number;
   market_condition?: 'trend' | 'chop';
+  volumeVs10dAvg?: number | null;
 }
 
 interface TradingSignalsResponse {
@@ -2243,6 +2244,35 @@ async function executeScannerTrade(
         action: 'skipped', source: 'scanner', mode, skip_reason: 'inside_orb',
       });
       return 'skipped:inside_orb';
+    }
+  }
+
+  // ── Swing trade quality gates ─────────────────────────────────────────
+  // Swing trades bypass the ORB/VWAP gates above (intraday metrics don't apply
+  // to multi-day holds), so we enforce quality via the scanner's own ML features.
+  //
+  // Chop gate: scanner records market_condition='chop' when the stock has no
+  // clear trend structure. Entering a swing trade in chop is low-probability —
+  // the AI narrative can say "bullish" but the regime label doesn't lie.
+  //
+  // Volume gate: volume_vs_10d_avg < 0.3 means the stock is trading at less than
+  // 30% of its normal volume. Low-conviction entries in thin conditions gap through
+  // stop-loss levels rather than filling cleanly (as seen with AAON on 2026-04-28,
+  // which had 0.06x volume and blew through its stop by $1.04, costing -1.32R).
+  if (mode === 'SWING_TRADE') {
+    if (idea.market_condition === 'chop') {
+      log(`${ticker}: swing trade skipped — market_condition=chop`);
+      persistEvent(ticker, 'skipped', `Swing trade skipped: choppy market conditions`, {
+        action: 'skipped', source: 'scanner', mode, skip_reason: 'swing_chop',
+      });
+      return 'skipped:swing_chop';
+    }
+    if (idea.volumeVs10dAvg != null && idea.volumeVs10dAvg < 0.3) {
+      log(`${ticker}: swing trade skipped — volume ${idea.volumeVs10dAvg.toFixed(2)}x avg (< 0.3x threshold)`);
+      persistEvent(ticker, 'skipped', `Swing trade skipped: low volume (${idea.volumeVs10dAvg.toFixed(2)}x 10d avg)`, {
+        action: 'skipped', source: 'scanner', mode, skip_reason: 'swing_low_volume',
+      });
+      return 'skipped:swing_low_volume';
     }
   }
 
