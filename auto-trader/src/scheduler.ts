@@ -317,6 +317,27 @@ export function startScheduler(): void {
   }, { timezone: 'America/New_York' });
   log('Morning brief: weekdays 8:00 AM ET');
 
+  // Startup catch-up: if the service starts after 8 AM on a weekday and no brief exists
+  // yet today (e.g. after a restart), generate it immediately rather than waiting until tomorrow.
+  setTimeout(async () => {
+    try {
+      const etDay = new Date().toLocaleDateString('en-US', { timeZone: 'America/New_York', weekday: 'short' });
+      const etMins = (() => {
+        const et = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }));
+        return et.getHours() * 60 + et.getMinutes();
+      })();
+      const isWeekday = !['Sat', 'Sun'].includes(etDay);
+      const isAfter8AmEt = etMins >= 8 * 60;
+      const isBeforeEodEt = etMins < 17 * 60; // don't bother after 5 PM
+      if (isWeekday && isAfter8AmEt && isBeforeEodEt) {
+        log('[Scheduler] Startup catch-up: checking for missed morning brief...');
+        await generateMorningBrief(); // no-op if already generated today
+      }
+    } catch (err) {
+      console.error('[Scheduler] Morning brief catch-up failed:', err instanceof Error ? err.message : err);
+    }
+  }, 15_000); // 15s after startup — let IB connect first
+
   // Weekly watchlist screener — runs Monday 10:30 AM ET to surface new ticker candidates
   cron.schedule('30 10 * * 1', async () => {
     try {
