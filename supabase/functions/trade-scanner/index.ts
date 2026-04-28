@@ -68,6 +68,7 @@ interface TradeIdea {
   in_play_score?: number;
   pass1_confidence?: number;
   market_condition?: 'trend' | 'chop';
+  volumeVs10dAvg?: number | null;
 }
 
 interface ScanResult {
@@ -976,6 +977,7 @@ function buildIdea(
     in_play_score: quote._inPlayScore,
     pass1_confidence: opts?.pass1Confidence,
     market_condition: opts?.marketCondition,
+    volumeVs10dAvg: avgVol > 0 ? round(volRatio, 2) : null,
   };
 }
 
