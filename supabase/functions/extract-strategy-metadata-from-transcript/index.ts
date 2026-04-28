@@ -192,7 +192,12 @@ Deno.serve(async (req) => {
     uploaderHandle ? `Creator handle (from platform metadata, authoritative): @${uploaderHandle}` : null,
     videoDescription ? `Video caption/description: ${videoDescription}` : null,
   ].filter(Boolean).join('\n');
-  const userPrompt = `${contextLines}\n\nTranscript:\n\n${transcript}\n\nExtract metadata from this trading strategy video transcript.\n\nFor trade_date: trading videos are almost always posted ON the day they cover (or the night before for pre-market). Resolve day-of-week references like "today", "Tuesday's trading day", "Monday's gameplan" to today's date (${todayEt}) unless a specific future date is explicitly stated. Only use a future date if the transcript clearly says "tomorrow" or names a specific future date. Use the creator name/handle above as-is for source_name/source_handle — do not guess or substitute a different name.`;
+  const tomorrowEtForPrompt = (() => {
+    const d = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }));
+    d.setDate(d.getDate() + 1);
+    return d.toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+  })();
+  const userPrompt = `${contextLines}\n\nTranscript:\n\n${transcript}\n\nExtract metadata from this trading strategy video transcript.\n\nFor trade_date: videos are often posted the night before for next-day pre-market viewing. Resolve day-of-week references like "Tuesday's trading day", "Monday's gameplan" to the specific date they name — if that date is tomorrow (${tomorrowEtForPrompt}), use tomorrow's date, not today's (${todayEt}). Only use a date further in the future if the transcript explicitly names one. Use the creator name/handle above as-is for source_name/source_handle — do not guess or substitute a different name.`;
 
   let extracted: Record<string, unknown>;
   try {
@@ -255,12 +260,20 @@ Deno.serve(async (req) => {
   // Only accept ISO date strings — reject relative values like "Friday", "tomorrow", etc.
   const rawTradeDate = extracted.trade_date ? String(extracted.trade_date).trim() : null;
   let trade_date = rawTradeDate && /^\d{4}-\d{2}-\d{2}$/.test(rawTradeDate) ? rawTradeDate : null;
-  // For daily_signal videos: if the LLM returned a future date, clamp to today.
-  // Instagram daily signal videos are always for the current trading day — they're never posted
-  // in advance. A future date is always an LLM inference error.
-  if (trade_date && extractedStrategyType === 'daily_signal' && trade_date > todayEt) {
-    console.warn(`[extract] trade_date ${trade_date} is in the future for daily_signal — clamping to today (${todayEt})`);
-    trade_date = todayEt;
+  // For daily_signal videos: clamp to tomorrow if the LLM returned a date more than 1 day out.
+  // Creators often upload the next trading day's gameplan the night before (pre-market), so a
+  // date 1 calendar day in the future is valid and should NOT be clamped. Anything further is
+  // an LLM inference error.
+  if (trade_date && extractedStrategyType === 'daily_signal') {
+    const tomorrowEt = new Date(
+      new Date().toLocaleString('en-US', { timeZone: 'America/New_York' })
+    );
+    tomorrowEt.setDate(tomorrowEt.getDate() + 1);
+    const tomorrowEtStr = tomorrowEt.toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+    if (trade_date > tomorrowEtStr) {
+      console.warn(`[extract] trade_date ${trade_date} is >1 day in the future for daily_signal — clamping to today (${todayEt})`);
+      trade_date = todayEt;
+    }
   }
   const timeframe = extracted.timeframe === 'DAY_TRADE' || extracted.timeframe === 'SWING_TRADE' || extracted.timeframe === 'LONG_TERM'
     ? extracted.timeframe
