@@ -2197,7 +2197,10 @@ async function executeScannerTrade(
 
   // Belt-and-suspenders: never place scanner orders outside market hours,
   // regardless of which code path invoked this function.
-  if (!isMarketHoursET()) return 'skipped:outside-market-hours';
+  // Also block the 9:30–9:34 window — the first candle hasn't formed yet and
+  // spreads are widest right at open. The dedicated 9:36 first-candle cron
+  // handles first-candle setups; scanner trades shouldn't race it.
+  if (!isMarketHoursET() || getETMinutes() < 9 * 60 + 35) return 'skipped:outside-market-hours';
 
   if (await hasActiveTrade(ticker)) return 'skipped:duplicate';
 
