@@ -148,6 +148,45 @@ SPX retest triggers (Strategy 1)
 
 ---
 
+---
+
+## Strategy 5: Wyckoff Volume Divergence — "Four More Phase"
+
+**Source:** Somesh video, 2026-04-28
+
+**The rule:** Every major market move has four phases: Accumulation (chop) → Public Phase (breakout on HIGH volume) → Four More Phase (new high on LOWER volume than the breakout) → Distribution (reversal). The tell is the volume signature: if a new high is made on meaningfully less volume than the prior peak, retail is chasing (FOMO) while smart money is already out. That's the Four More Phase — and distribution is coming next.
+
+**The signal:**
+```
+1. Accumulation: price chops in a tight range
+2. Public Phase: breakout candle prints with HIGH volume (this becomes the reference)
+3. Four More Phase: price pulls back, then makes a NEW HIGH — but volume is weaker than the breakout
+4. Distribution: structure fails, reversal begins
+```
+
+**Entry (short side):** Wait for the structure to fail after the Four More high → retest → SHORT.
+
+**Why it works:** Institutional volume is the fuel for moves. If a new high has less fuel than the prior surge, there's no new conviction behind it — just retail momentum-chasers. The prior high becomes distribution overhead. Works on all timeframes (2m, 5m, 15m, daily).
+
+**Connection to Wyckoff:** This is textbook Wyckoff Distribution Theory (1930s), also known as "Upthrust After Distribution" (UTAD). Well-documented in VSA (Volume Spread Analysis) and Stan Weinberg's Stage Analysis. Signal quality: ~65-70% with full sequence confirmed; ~50% on volume divergence alone.
+
+**How it's used in the auto-trader (as of 2026-04-28):**
+
+The system uses this concept as a **swing trade entry gate** — not a short signal (yet):
+
+- `volumeVsPriorPeak` = today's volume ÷ highest-volume session in last 20 daily bars
+- Computed in `trade-scanner` edge function via `buildIdea()`, using existing `_ohlcvBars`
+- If `volumeVsPriorPeak < 0.65` AND signal is BUY: **skip the swing trade** (`skipped:swing_volume_divergence`)
+- If `volumeVsPriorPeak < 0.6`: adds `volume-divergence` tag to `TradeIdea`
+
+**Real-world case:** AAON (2026-04-28) had `volumeVs10dAvg = 0.06x` — the stock was in a Four More Phase. The system entered long anyway (Groq fallback generated a bullish narrative). The position lost -$1,807 when the stop was blown through by $1.04 on thin tape. Both the volume-vs-avg gate AND this prior-peak gate would have blocked the trade.
+
+**Implemented in:** `supabase/functions/trade-scanner/index.ts` (field computation) + `auto-trader/src/scheduler.ts` (execution gate)
+
+**Full short-side automation (future):** Build a `four-phase-scanner.ts` state machine after validating the divergence alert's hit rate on 30+ days of real scanner output. See `docs/cursor/2026-04-28-90-minute-rule.md` backlog pattern for how to spec this.
+
+---
+
 ## What's Not Automated (Yet)
 
 | Concept | Status | Notes |
@@ -156,6 +195,7 @@ SPX retest triggers (Strategy 1)
 | VWAP as standalone entry signal | Not built | Build once VWAP modifier data shows clear win-rate lift |
 | Multi-timeframe VWAP (weekly/monthly) | Not in scope | Session VWAP is sufficient for day trades |
 | QQQ-specific level scanner (NDX levels) | Not built | QQQ has its own $10 key levels worth scanning separately |
+| Wyckoff full state machine (short side) | Backlog | Need 30+ days of divergence alert data first; see Strategy 5 above |
 | Backtesting / win-rate analysis | Manual | Use `auto_trade_events` with `source = spx_level_scanner` to query outcomes |
 
 ---

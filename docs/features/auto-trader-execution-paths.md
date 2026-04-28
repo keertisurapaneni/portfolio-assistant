@@ -22,15 +22,24 @@ The auto-trader has three distinct trade sources, each with its own appropriate 
 Scanner signals come from `trade-scanner` edge function (technical momentum). FA validation is the right gate here because scanner signals are raw technicals without fundamental context.
 
 **Gate order:**
-1. No duplicate active trade for ticker
-2. FA fetch → confidence ≥ `minFAConfidence` (default 7)
-3. FA recommendation ≠ HOLD
-4. FA direction matches signal (BUY/SELL)
-5. Entry/stop/target levels present
-6. Day trade only: R:R ≥ 1.8
-7. `runPreTradeChecks` (drawdown, allocation cap, sector exposure, earnings blackout)
-8. IB contract lookup
-9. Swing only: current price within 4% of entry level
+1. Time gate: must be ≥ 9:35 AM ET (avoids first-candle volatility; added 2026-04-28)
+2. No duplicate active trade for ticker
+3. Day trade only: daily max-loss gate active → skip
+4. Day trade only: inside ORB (choppy) → skip
+5. **Swing trade quality gates** (added 2026-04-28):
+   - `market_condition = 'chop'` → skip (regime not trending)
+   - `volumeVs10dAvg < 0.3` → skip (< 30% of normal volume, thin tape)
+   - `volumeVsPriorPeak < 0.65` AND BUY → skip (Wyckoff "Four More Phase" — new high on declining volume vs prior 20-day peak)
+6. Day trade only (after 10 AM): VWAP alignment confidence modifier (±0.3, non-blocking)
+7. Candle pattern modifier (±0.5/1.0 confidence, non-blocking)
+8. FA fetch → confidence ≥ `minFAConfidence` (default 7)
+9. FA recommendation ≠ HOLD
+10. FA direction matches signal (BUY/SELL)
+11. Entry/stop/target levels present
+12. Day trade only: R:R ≥ 1.8
+13. `runPreTradeChecks` (drawdown, allocation cap, sector exposure, earnings blackout)
+14. IB contract lookup
+15. Swing only: current price within 4% of entry level
 
 ---
 
