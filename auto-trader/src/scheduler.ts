@@ -2195,6 +2195,10 @@ async function executeScannerTrade(
 ): Promise<string> {
   const { ticker, signal, confidence: scannerConf, mode } = idea;
 
+  // Belt-and-suspenders: never place scanner orders outside market hours,
+  // regardless of which code path invoked this function.
+  if (!isMarketHoursET()) return 'skipped:outside-market-hours';
+
   if (await hasActiveTrade(ticker)) return 'skipped:duplicate';
 
   // ── Daily max-loss gate ───────────────────────────────────────────────
