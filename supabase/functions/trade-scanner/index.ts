@@ -69,6 +69,9 @@ interface TradeIdea {
   pass1_confidence?: number;
   market_condition?: 'trend' | 'chop';
   volumeVs10dAvg?: number | null;
+  // Wyckoff volume divergence: current volume vs highest-volume bar in last 20 days.
+  // < 0.7 on a new-high candle = "Four More Phase" risk (retail FOMO, smart money out).
+  volumeVsPriorPeak?: number | null;
 }
 
 interface ScanResult {
@@ -958,6 +961,24 @@ function buildIdea(
     if (sma50 > 0 && Math.abs((price - sma50) / sma50) <= 0.02) tags.push('at-sma50');
   }
 
+  // ── Wyckoff volume divergence: current vs prior 20-day peak ──────────────
+  // Somesh's "Four More Phase": if price is making a new move but volume is
+  // meaningfully weaker than the highest-volume day in the last 20 sessions,
+  // smart money has likely already distributed. Flag so the scheduler can gate.
+  // Only computed when we have OHLCV bars (swing trades always have these;
+  // day trades may not — non-blocking when absent).
+  let volumeVsPriorPeak: number | null = null;
+  const bars = quote._ohlcvBars ?? [];
+  if (bars.length >= 5 && volume > 0) {
+    // bars[0] = today (newest-first). Look at bars[1..20] = prior 20 sessions.
+    const priorBars = bars.slice(1, 21);
+    const priorPeakVol = priorBars.reduce((max, b) => Math.max(max, b.v ?? 0), 0);
+    if (priorPeakVol > 0) {
+      volumeVsPriorPeak = round(volume / priorPeakVol, 2);
+      if (volumeVsPriorPeak < 0.6) tags.push('volume-divergence');
+    }
+  }
+
   return {
     ticker: eval_.ticker,
     name: quote.shortName ?? quote.longName ?? eval_.ticker,
@@ -978,6 +999,7 @@ function buildIdea(
     pass1_confidence: opts?.pass1Confidence,
     market_condition: opts?.marketCondition,
     volumeVs10dAvg: avgVol > 0 ? round(volRatio, 2) : null,
+    volumeVsPriorPeak,
   };
 }
 

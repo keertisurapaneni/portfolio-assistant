@@ -99,6 +99,7 @@ interface TradeIdea {
   pass1_confidence?: number;
   market_condition?: 'trend' | 'chop';
   volumeVs10dAvg?: number | null;
+  volumeVsPriorPeak?: number | null;
 }
 
 interface TradingSignalsResponse {
@@ -2273,6 +2274,18 @@ async function executeScannerTrade(
         action: 'skipped', source: 'scanner', mode, skip_reason: 'swing_low_volume',
       });
       return 'skipped:swing_low_volume';
+    }
+
+    // Wyckoff "Four More Phase" gate: new move on volume weaker than the prior 20-day peak.
+    // If today's volume is < 65% of the highest-volume session in the last 20 days,
+    // the move lacks institutional conviction — smart money likely already distributed.
+    // This is the same pattern Somesh calls the "Four More Phase" (Wyckoff Distribution).
+    if (signal === 'BUY' && idea.volumeVsPriorPeak != null && idea.volumeVsPriorPeak < 0.65) {
+      log(`${ticker}: swing trade skipped — volume divergence ${idea.volumeVsPriorPeak.toFixed(2)}x prior peak (< 0.65x threshold) — Wyckoff Four More Phase risk`);
+      persistEvent(ticker, 'skipped', `Swing trade skipped: Wyckoff volume divergence (${idea.volumeVsPriorPeak.toFixed(2)}x prior 20d peak)`, {
+        action: 'skipped', source: 'scanner', mode, skip_reason: 'swing_volume_divergence',
+      });
+      return 'skipped:swing_volume_divergence';
     }
   }
 
