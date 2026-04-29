@@ -2,16 +2,19 @@
  * Weekly Watchlist Screener
  *
  * Runs every Monday morning and screens a broad candidate universe for
- * options wheel suitability. Surfaces the top picks as suggestions in
- * the `options_watchlist_candidates` table for the user to review and add.
+ * options wheel suitability. Auto-promotes the top picks directly into
+ * `options_watchlist` — no manual review required. Results are also
+ * recorded in `options_watchlist_candidates` for audit history.
  *
- * Screening criteria (same philosophy as the main scanner, but pre-entry):
- *   1. Market cap ≥ $10B (large enough for liquid options chain)
- *   2. Stock price $20–$2000 (avoids penny stocks + very high-priced names)
- *   3. Beta 0.3–2.5 (not too sleepy, not too wild)
- *   4. IV rank ≥ 35 (enough premium to make selling worthwhile)
- *   5. Not already in the watchlist
- *   6. Not a micro-cap or OTC stock
+ * The main options-scanner acts as the real quality gate at trade time
+ * (IV rank, options chain validity, earnings blackout, etc.), so adding
+ * a ticker to the watchlist just means "consider this each scan cycle".
+ *
+ * Screening criteria:
+ *   1. Market cap ≥ $5B (large enough for liquid options chain)
+ *   2. Stock price $15–$2000 (avoids penny stocks + very high-priced names)
+ *   3. Beta 0.3–2.8 (not too sleepy, not too wild)
+ *   4. Not already in the watchlist
  *
  * Tier auto-assigned by beta:
  *   beta < 0.9  → STABLE
@@ -186,10 +189,11 @@ export async function runWatchlistScreener(): Promise<void> {
 
   // Top 20 candidates
   const top = candidates.slice(0, 20);
+  const now = new Date().toISOString();
 
-  // Upsert into options_watchlist_candidates table
   if (top.length > 0) {
-    const rows = top.map(c => ({
+    // 1. Record in candidates table for audit history (dismissed=true = already handled)
+    const candidateRows = top.map(c => ({
       ticker: c.ticker,
       name: c.name,
       price: c.price,
@@ -201,20 +205,32 @@ export async function runWatchlistScreener(): Promise<void> {
       tier: c.tier,
       industry: c.industry,
       reason: c.reason,
-      scanned_at: new Date().toISOString(),
+      scanned_at: now,
+      dismissed: true,   // auto-promoted — no manual action needed
+      added_at: now,
     }));
+    await sb.from('options_watchlist_candidates').upsert(candidateRows, { onConflict: 'ticker' });
 
-    await sb.from('options_watchlist_candidates').upsert(rows, { onConflict: 'ticker' });
+    // 2. Auto-promote directly to options_watchlist (skip tickers already there)
+    const watchlistRows = top.map(c => ({
+      ticker: c.ticker,
+      active: true,
+      notes: c.reason,
+      tier: c.tier,
+    }));
+    await sb.from('options_watchlist').upsert(watchlistRows, { onConflict: 'ticker', ignoreDuplicates: true });
+
+    console.log(`[Watchlist Screener] Auto-promoted ${top.length} tickers to options_watchlist.`);
+    top.forEach(c => console.log(`  ✅ ${c.ticker} (${c.tier}) — $${c.price.toFixed(0)}, beta ${c.beta.toFixed(2)}, ${c.pctFrom52wHigh.toFixed(0)}% off high — ${c.reason}`));
   }
 
-  console.log(`[Watchlist Screener] Done. ${top.length} candidates surfaced, ${skipped.length} skipped.`);
-  top.forEach(c => console.log(`  ✅ ${c.ticker} (${c.tier}) — $${c.price.toFixed(0)}, beta ${c.beta.toFixed(2)}, ${c.pctFrom52wHigh.toFixed(0)}% off high — ${c.reason}`));
+  console.log(`[Watchlist Screener] Done. ${top.length} added, ${skipped.length} skipped.`);
 
   await createAutoTradeEvent({
     action: 'scan_complete',
     source: 'watchlist_screener',
     metadata: {
-      candidates: top.length,
+      auto_promoted: top.length,
       skipped: skipped.length,
       top5: top.slice(0, 5).map(c => c.ticker),
     },
