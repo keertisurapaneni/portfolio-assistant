@@ -56,6 +56,7 @@ const MAX_POSITIONS_NORMAL = 12;           // max concurrent open options puts (
 const MAX_POSITIONS_HIGH_VIX = 6;          // VIX > 25 — half positions in stress
 const EARNINGS_BLACKOUT_DAYS = 7;
 const IV_SPIKE_THRESHOLD = 20;             // points — sudden IV jump = news event
+const RED_DAY_THRESHOLD_PCT = 3;           // single-session drop ≥3% = red day entry (influencer: elevated IV, lower price)
 const MIN_PROB_PROFIT = 75;                // minimum 75% OTM probability (video: 80-90%, we set 75 as floor)
 const VIX_SPIKE_MIN_PROB_PROFIT = 60;      // VIX-spike + 200 DMA mode: accept higher assignment risk (0.35δ → ~65% OTM)
 const MAX_SPREAD_PCT = 0.30;               // bid-ask spread must be < 30% of mid
@@ -219,12 +220,12 @@ async function fetchJson<T>(url: string): Promise<T | null> {
   }
 }
 
-async function getStockQuote(ticker: string): Promise<{ price: number; change: number } | null> {
-  const data = await fetchJson<{ c: number; d: number }>(
+async function getStockQuote(ticker: string): Promise<{ price: number; change: number; pctChange: number } | null> {
+  const data = await fetchJson<{ c: number; d: number; dp: number }>(
     `https://finnhub.io/api/v1/quote?symbol=${ticker}&token=${FINNHUB_KEY}`
   );
   if (!data?.c) return null;
-  return { price: data.c, change: data.d ?? 0 };
+  return { price: data.c, change: data.d ?? 0, pctChange: data.dp ?? 0 };
 }
 
 async function getRSI(ticker: string): Promise<{ rsi: number; prevRsi: number } | null> {
@@ -574,7 +575,10 @@ async function checkStock(
   // Get current price
   const quote = await getStockQuote(ticker);
   if (!quote) return { ticker, skipped: true, reason: 'no_price_data' };
-  const { price } = quote;
+  const { price, pctChange: todayPctChange } = quote;
+  // Single-session red day: stock dropped ≥3% today = same IV spike rationale as cumulative dip.
+  // Influencer insight: entering on a hard red day captures elevated same-day IV at a lower strike.
+  const redDayEntry = todayPctChange <= -RED_DAY_THRESHOLD_PCT;
 
   // Check 3: Min price
   const effectiveMinPrice = minPrice ?? MIN_STOCK_PRICE;
@@ -582,7 +586,10 @@ async function checkStock(
   if (price < effectiveMinPrice) return { ticker, skipped: true, reason: `price_too_low_${price.toFixed(0)}` };
 
   // Check 3.2: Dip detection + SMA20 + Bollinger Bands (shared candle fetch — zero extra API calls)
-  // Dip entry: stock dropped ≥5% from 20-day high = elevated IV, larger OTM cushion
+  // Dip entry (cumulative): stock dropped ≥5% from 20-day high = elevated IV, larger OTM cushion
+  // Red day entry: stock dropped ≥3% in a single session = same-day IV spike (new gate, influencer insight)
+  // Either qualifies as "any dip entry" and unlocks the same benefits: yield floor reduction,
+  // 52w-high exemption, SMA20 floor exemption, and +1 contract conviction.
   // SMA20 = BB middle band; ±2σ gives lower/upper bands.
   // BB lower band touch = prime entry: stock oversold, IV elevated, bigger OTM cushion.
   let dipEntry = false;
@@ -596,7 +603,13 @@ async function checkStock(
       const recentHigh = Math.max(...dipBars.slice(-20).map(b => b.high));
       const dipPct = ((recentHigh - price) / recentHigh) * 100;
       dipEntry = dipPct >= DIP_ENTRY_BONUS_THRESHOLD;
-      checks.dipEntry = `${dipPct.toFixed(1)}%_from_20d_high${dipEntry ? '_DIP' : ''}`;
+      // Either a cumulative 5%+ dip OR a same-session 3%+ red day qualifies as a dip entry
+      const anyDipEntry = dipEntry || redDayEntry;
+      checks.dipEntry = `${dipPct.toFixed(1)}%_from_20d_high${dipEntry ? '_CUM_DIP' : ''}${redDayEntry ? `_RED_DAY(${todayPctChange.toFixed(1)}%)` : ''}${anyDipEntry && !dipEntry ? '_DIP' : ''}`;
+      dipEntry = anyDipEntry;
+    } else if (redDayEntry) {
+      dipEntry = true;
+      checks.dipEntry = `red_day(${todayPctChange.toFixed(1)}%)_DIP`;
     }
     // SMA20 + Bollinger Bands (needs ≥ 20 closes)
     if (dipBars && dipBars.length >= 20) {
@@ -859,9 +872,17 @@ async function checkStock(
     : 'building_history';
   const ivOk = ivRank === null || ivRank >= effectiveMinIvRank;
 
-  // Check 9.5: IV spike — sudden >20pt jump = news event, skip
+  // Check 9.5: IV spike detection.
+  // Large spike (≥20pt delta) = news event risk → block.
+  // Moderate spike (5–19pt delta) = fear premium, not news explosion → conviction booster (+1 contract).
+  // Especially meaningful when paired with a red day entry: the IV rise confirms panic selling.
   const ivSpike = await checkIvSpike(ticker, currentIvPct);
-  checks.noIvSpike = ivSpike.spiked ? `SPIKE+${ivSpike.delta.toFixed(0)}pts` : `ok(${ivSpike.delta > 0 ? '+' : ''}${ivSpike.delta.toFixed(0)}pts)`;
+  const ivModerateBoost = !ivSpike.spiked && ivSpike.delta >= 5;
+  checks.noIvSpike = ivSpike.spiked
+    ? `SPIKE+${ivSpike.delta.toFixed(0)}pts`
+    : ivModerateBoost
+      ? `moderate_boost+${ivSpike.delta.toFixed(0)}pts`
+      : `ok(${ivSpike.delta > 0 ? '+' : ''}${ivSpike.delta.toFixed(0)}pts)`;
   if (ivSpike.spiked) {
     return { ticker, skipped: true, reason: `iv_spike:+${ivSpike.delta.toFixed(0)}pts` };
   }
@@ -884,12 +905,13 @@ async function checkStock(
   ].filter(Boolean).length;
 
   // Scale contracts 1–N by conviction, capped by tier config.
-  // Stacking: base score → +1 for dip entry → +1 for BB lower band touch (high conviction entry)
+  // Stacking: base score → +1 for dip entry (cumulative or red day) → +1 for BB lower band touch
+  //           → +1 for moderate IV spike (confirms fear premium is real, not just noise)
   const baseContracts = (put.probProfit >= 80 && (ivRank ?? 0) >= 65 && rsiBonus) ? 3
     : (put.probProfit >= 75 && (ivRank ?? 0) >= 55) ? 2 : 1;
   const contracts = Math.min(
     tierCfg.maxContracts,
-    baseContracts + (dipEntry ? 1 : 0) + (bbSignal === 'at_lower' ? 1 : 0),
+    baseContracts + (dipEntry ? 1 : 0) + (bbSignal === 'at_lower' ? 1 : 0) + (ivModerateBoost ? 1 : 0),
   );
 
   return {
