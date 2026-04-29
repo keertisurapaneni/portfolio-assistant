@@ -200,7 +200,7 @@ export async function promoteWatchlistCandidate(ticker: string, notes?: string):
   await addToOptionsWatchlist(ticker, notes);
   await supabase
     .from('options_watchlist_candidates')
-    .update({ added_at: new Date().toISOString() })
+    .update({ added_at: new Date().toISOString(), dismissed: true })
     .eq('ticker', ticker.toUpperCase());
 }
 
