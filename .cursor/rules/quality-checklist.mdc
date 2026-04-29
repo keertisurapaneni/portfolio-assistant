@@ -59,3 +59,26 @@ Performance metrics must only count executed trades:
 - Exclude CANCELLED, REJECTED, EXPIRED statuses
 - Only include trades with `fill_price != null` in win/loss calculations
 - Don't count unfilled bracket orders as losses
+
+## 8. New Supabase Tables — RLS Checklist
+
+Every `CREATE TABLE` migration **must** include these three things before committing:
+
+```sql
+-- 1. Enable RLS
+ALTER TABLE my_new_table ENABLE ROW LEVEL SECURITY;
+
+-- 2. At minimum, a SELECT policy
+CREATE POLICY "Anyone can read my_new_table" ON my_new_table FOR SELECT USING (true);
+CREATE POLICY "Anyone can insert my_new_table" ON my_new_table FOR INSERT WITH CHECK (true);
+CREATE POLICY "Anyone can update my_new_table" ON my_new_table FOR UPDATE USING (true);
+CREATE POLICY "Anyone can delete my_new_table" ON my_new_table FOR DELETE USING (true);
+```
+
+**Before committing any migration**, run this mental check:
+> "Does every `CREATE TABLE` in this file have a matching `ENABLE ROW LEVEL SECURITY`?"
+
+If a table holds user-specific data, use `auth.uid() = user_id` instead of `true`.
+If it's a system/log table (single-user app), `USING (true)` is fine.
+
+Missing RLS = table is publicly readable and writable by anyone with the project URL.
