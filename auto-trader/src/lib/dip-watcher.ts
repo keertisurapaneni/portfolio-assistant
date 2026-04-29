@@ -18,7 +18,8 @@
 import { getSupabase, createAutoTradeEvent } from './supabase.js';
 
 const FINNHUB_KEY = process.env.FINNHUB_API_KEY ?? '';
-const DIP_THRESHOLD_PCT = 5;      // stock down ≥5% from 20-day high = dip entry
+const DIP_THRESHOLD_PCT = 5;      // stock down ≥5% from 20-day high = dip entry (cumulative)
+const RED_DAY_THRESHOLD_PCT = 3;  // single-session drop ≥3% = red day entry (same-day IV spike)
 const DIP_LOOKBACK_DAYS = 20;     // measure high over last 20 trading days
 
 // Track which tickers we've already alerted on today (reset at midnight)
@@ -52,23 +53,31 @@ interface DipCheckResult {
   price: number;
   recentHigh: number;
   dipPct: number;
+  todayChangePct: number;  // single-session % change (from Finnhub quote dp field)
   aboveSma50: boolean;
-  isDip: boolean;
+  isDip: boolean;          // true if cumulative dip ≥5% OR single-session drop ≥3%
+  trigger: 'cumulative_dip' | 'red_day' | 'both' | null;
 }
 
 async function checkDip(ticker: string): Promise<DipCheckResult | null> {
   const to = Math.floor(Date.now() / 1000);
   const from = to - 86400 * (DIP_LOOKBACK_DAYS + 10); // extra buffer
 
-  const data = await fetchJson<{ c?: number[]; h?: number[] }>(
-    `https://finnhub.io/api/v1/stock/candle?symbol=${ticker}&resolution=D&from=${from}&to=${to}&token=${FINNHUB_KEY}`
-  );
+  const [candles, quote] = await Promise.all([
+    fetchJson<{ c?: number[]; h?: number[] }>(
+      `https://finnhub.io/api/v1/stock/candle?symbol=${ticker}&resolution=D&from=${from}&to=${to}&token=${FINNHUB_KEY}`
+    ),
+    fetchJson<{ c: number; dp: number }>(
+      `https://finnhub.io/api/v1/quote?symbol=${ticker}&token=${FINNHUB_KEY}`
+    ),
+  ]);
 
-  if (!data?.c || !data.h || data.c.length < 10) return null;
+  if (!candles?.c || !candles.h || candles.c.length < 10) return null;
 
-  const closes = data.c;
-  const highs = data.h;
+  const closes = candles.c;
+  const highs = candles.h;
   const price = closes[closes.length - 1];
+  const todayChangePct = quote?.dp ?? 0;
 
   // 20-day high from recent highs
   const recentHighs = highs.slice(-DIP_LOOKBACK_DAYS);
@@ -82,9 +91,16 @@ async function checkDip(ticker: string): Promise<DipCheckResult | null> {
   const aboveSma50 = sma50 !== null ? price > sma50 : true;
 
   const dipPct = recentHigh > 0 ? ((recentHigh - price) / recentHigh) * 100 : 0;
-  const isDip = dipPct >= DIP_THRESHOLD_PCT && aboveSma50;
+  const isCumulativeDip = dipPct >= DIP_THRESHOLD_PCT && aboveSma50;
+  const isRedDay = todayChangePct <= -RED_DAY_THRESHOLD_PCT && aboveSma50;
+  const isDip = isCumulativeDip || isRedDay;
 
-  return { ticker, price, recentHigh, dipPct, aboveSma50, isDip };
+  const trigger = (isCumulativeDip && isRedDay) ? 'both'
+    : isCumulativeDip ? 'cumulative_dip'
+    : isRedDay ? 'red_day'
+    : null;
+
+  return { ticker, price, recentHigh, dipPct, todayChangePct, aboveSma50, isDip, trigger };
 }
 
 export async function runDipWatcher(): Promise<void> {
@@ -113,7 +129,12 @@ export async function runDipWatcher(): Promise<void> {
     dipCandidates.push(result.ticker);
     alertedToday.add(result.ticker);
 
-    const msg = `📉 Dip entry: ${result.ticker} down ${result.dipPct.toFixed(1)}% from 20d high ($${result.recentHigh.toFixed(2)} → $${result.price.toFixed(2)}) — uptrend intact`;
+    const triggerDesc = result.trigger === 'red_day'
+      ? `red day ${result.todayChangePct.toFixed(1)}% today`
+      : result.trigger === 'both'
+        ? `red day ${result.todayChangePct.toFixed(1)}% today + down ${result.dipPct.toFixed(1)}% from 20d high`
+        : `down ${result.dipPct.toFixed(1)}% from 20d high ($${result.recentHigh.toFixed(2)})`;
+    const msg = `📉 Dip entry: ${result.ticker} — ${triggerDesc} @ $${result.price.toFixed(2)} — uptrend intact`;
     console.log(`[Dip Watcher] ${msg}`);
 
     createAutoTradeEvent({
@@ -125,10 +146,11 @@ export async function runDipWatcher(): Promise<void> {
       message: msg,
       metadata: {
         dipPct: result.dipPct,
+        todayChangePct: result.todayChangePct,
         recentHigh: result.recentHigh,
         currentPrice: result.price,
         aboveSma50: result.aboveSma50,
-        trigger: 'dip_watcher',
+        trigger: result.trigger ?? 'dip_watcher',
       },
     });
   }
