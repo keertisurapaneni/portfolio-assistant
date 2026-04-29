@@ -21,7 +21,26 @@ Tell the user: "Dev server running at http://localhost:5173/ — test your chang
 
 **Wait for the user to test and confirm** before proceeding to build.
 
-## 1. Supabase Edge Functions (if changed)
+## 1. Auto-Trader (if `auto-trader/src/` changed) — CRITICAL
+
+**The auto-trader runs as a local LaunchAgent. It does NOT auto-reload on git pull.**
+If any file under `auto-trader/src/` was changed, you MUST rebuild and restart:
+
+```bash
+cd auto-trader && npm run build
+launchctl unload ~/Library/LaunchAgents/com.portfolio-assistant.auto-trader.plist
+launchctl load  ~/Library/LaunchAgents/com.portfolio-assistant.auto-trader.plist
+```
+
+Then verify it started:
+```bash
+sleep 5 && tail -20 /tmp/auto-trader-stdout.log
+```
+
+**Missing this step = old code keeps running, new gates/logic never take effect.**
+This was the root cause of the AAON swing trade loss on 2026-04-29 (gates were merged but service never restarted).
+
+## 2. Supabase Edge Functions (if changed)
 
 Deploy edge functions **before** the frontend push:
 
@@ -31,7 +50,7 @@ npx supabase functions deploy <function-name> --no-verify-jwt
 
 If `_shared/` modules changed, redeploy **both** `trading-signals` and `trade-scanner`.
 
-## 2. Local Build Verification
+## 3. Local Build Verification
 
 ```bash
 cd app && npm run build
@@ -40,7 +59,7 @@ cd app && npm run build
 - If the build **fails**, fix all errors before proceeding.
 - Re-run until it passes cleanly.
 
-## 3. Create PR (not direct push)
+## 4. Create PR (not direct push)
 
 After a successful build, ask for confirmation, then:
 
@@ -56,7 +75,7 @@ GITHUB_TOKEN=$GITHUB_TOKEN_PERSONAL gh pr create --repo keertisurapaneni/portfol
 
 This lets CodeQL and other checks run before code hits master.
 
-## 4. Merge PR
+## 5. Merge PR
 
 After checks pass (or if no CI checks are configured yet), merge the PR:
 
@@ -66,7 +85,7 @@ GITHUB_TOKEN=$GITHUB_TOKEN_PERSONAL gh pr merge <number> --repo keertisurapaneni
 
 Vercel auto-deploys from master after merge.
 
-## 5. Return to master
+## 6. Return to master
 
 ```bash
 git checkout master && git pull origin master
