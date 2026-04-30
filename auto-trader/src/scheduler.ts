@@ -2543,6 +2543,11 @@ async function _executeSuggestedFindTradeInner(
 ): Promise<string> {
   const { ticker, conviction } = stock;
 
+  // Hard minimum: never place Suggested Find orders before 9:30 AM ET (belt-and-suspenders).
+  // preGenerateSuggestedFinds already checks isMarketHoursET(), but this catches any edge case
+  // where that check runs at the boundary (e.g. slow event loop crossing the 9:30 threshold).
+  if (!isMarketHoursET()) return 'skipped:outside-market-hours';
+
   if (await hasActiveTrade(ticker)) return 'skipped:duplicate';
 
   // Same-day guard: block a second entry for the same ticker on the same ET calendar day.
@@ -4715,14 +4720,10 @@ async function runSchedulerCycle(): Promise<void> {
     await syncPositions(config, positions);
     _pendingDeployedDollar = 0; // reset after sync — IB is source of truth
 
-    // 2. Pre-generate Suggested Finds (daily at ~9 AM ET)
-    // Runs AFTER sync+reset so SF trades are tracked in _pendingDeployedDollar for this cycle.
-    await preGenerateSuggestedFinds(config, positions);
-
-    // 3. Save daily portfolio snapshot
+    // 2. Save daily portfolio snapshot
     await savePortfolioSnapshotQuiet(config, positions);
 
-    // 4. Update portfolio value from IB positions
+    // 3. Update portfolio value from IB positions
     if (positions.length > 0) {
       const totalMktValue = positions.reduce(
         (sum, p) => sum + Math.abs(p.position) * (p.mktPrice > 0 ? p.mktPrice : p.avgCost), 0
@@ -4736,7 +4737,7 @@ async function runSchedulerCycle(): Promise<void> {
       }
     }
 
-    // 5. Portfolio health check
+    // 4. Portfolio health check
     const health = assessDrawdownMultiplier(positions);
     if (health.level !== 'normal') {
       log(`Drawdown protection: ${health.level} (${health.pnlPct.toFixed(1)}%, multiplier: ${health.multiplier})`);
@@ -4750,6 +4751,11 @@ async function runSchedulerCycle(): Promise<void> {
       _lastRunResult = 'ok: position management only (outside market hours)';
       return;
     }
+
+    // 5. Pre-generate Suggested Finds (daily, after market open only)
+    // Moved AFTER the market hours gate — belt-and-suspenders to prevent pre-market order placement.
+    // Runs after sync+reset so SF trades are tracked in _pendingDeployedDollar for this cycle.
+    await preGenerateSuggestedFinds(config, positions);
 
     // 6. Position management: dip buy, profit take, loss cut, swing expiry
     await checkStaleDayTrades(positions);              // flag/close day trades stuck FILLED from a prior day
