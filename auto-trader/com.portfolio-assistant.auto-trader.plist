@@ -29,9 +29,9 @@
     <key>RunAtLoad</key>
     <true/>
 
-    <!-- Don't restart if it exits (start.sh handles its own lifecycle) -->
+    <!-- Restart automatically if the process exits (crash recovery) -->
     <key>KeepAlive</key>
-    <false/>
+    <true/>
 
     <key>StandardOutPath</key>
     <string>/tmp/auto-trader-stdout.log</string>
