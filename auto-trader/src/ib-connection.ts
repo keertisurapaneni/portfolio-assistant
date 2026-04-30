@@ -231,6 +231,22 @@ export function placeBracketOrder(params: BracketOrderParams): Promise<BracketOr
     }
 
     const { symbol, side, quantity, entryPrice, stopLoss, takeProfit, tif = 'GTC' } = params;
+
+    // Hard gate: DAY orders must not be placed before 9:30 AM ET.
+    // This is the lowest-level defense — even if application logic fails to check market hours,
+    // the IB client will refuse to send the order. DAY orders expire at market close anyway,
+    // so placing them pre-market means they'd be sent to IB before liquidity exists.
+    if (tif === 'DAY') {
+      const etNow = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }));
+      const etDay = etNow.getDay();
+      const etMins = etNow.getHours() * 60 + etNow.getMinutes();
+      const marketOpen = 9 * 60 + 30; // 9:30 AM ET
+      if (etDay !== 0 && etDay !== 6 && etMins < marketOpen) {
+        const etStr = `${String(etNow.getHours()).padStart(2, '0')}:${String(etNow.getMinutes()).padStart(2, '0')} ET`;
+        console.error(`[IB] ❌ DAY bracket order for ${symbol} rejected — market not open yet (${etStr})`);
+        return reject(new Error(`DAY order rejected: market not open (${etStr}) — order would be invalid before 9:30 AM ET`));
+      }
+    }
     const contract = createStockContract(symbol);
 
     const parentId = getNextOrderId();
