@@ -2,9 +2,15 @@
  * Trade feedback loop — analyze completed trades, update performance patterns.
  * Ported from app/src/lib/aiFeedback.ts for server-side rehydration.
  * Feeds buildFeedbackContext in edge functions so AI learns from history.
+ *
+ * LOSS analysis uses Groq (llama-4-scout) for real post-mortem text.
+ * Template fallback activates if the API key is missing or the call fails.
  */
 
 import { getSupabase } from './supabase.js';
+
+const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions';
+const GROQ_MODEL = 'meta-llama/llama-4-scout-17b-16e-instruct';
 
 interface PaperTradeLike {
   id: string;
@@ -107,6 +113,99 @@ function generateLesson(
   };
 }
 
+/**
+ * Calls Groq to generate a specific post-mortem for a LOSS trade.
+ * Returns null on any failure so the caller can fall back to the template.
+ *
+ * Failure categories (one of):
+ *   stop_too_tight | stop_too_wide | bad_entry_timing | macro_headwind |
+ *   sector_rotation | scanner_overconfidence | eod_timeout | unknown
+ */
+async function generateLossLessonWithAI(ctx: {
+  ticker: string;
+  mode: string;
+  signal: string;
+  scannerConfidence: number | null;
+  faConfidence: number | null;
+  entryPrice: number | null;
+  fillPrice: number | null;
+  stopLoss: number | null;
+  targetPrice: number | null;
+  closePrice: number | null;
+  pnlPercent: number | null;
+  closeReason: string | null;
+  scannerReason: string | null;
+  faRationale: { technical?: string; sentiment?: string; risk?: string } | null;
+  duration: number | null;
+}): Promise<LessonResult | null> {
+  const groqKey = process.env['GROQ_API_KEY'] ?? '';
+  if (!groqKey) return null;
+
+  const stopDist = ctx.entryPrice && ctx.stopLoss
+    ? (Math.abs(ctx.entryPrice - ctx.stopLoss) / ctx.entryPrice * 100).toFixed(1)
+    : 'unknown';
+  const riskReward = ctx.entryPrice && ctx.stopLoss && ctx.targetPrice
+    ? (Math.abs(ctx.targetPrice - ctx.entryPrice) / Math.abs(ctx.entryPrice - ctx.stopLoss)).toFixed(2)
+    : 'unknown';
+
+  const prompt = `You are a trading post-mortem analyst. A ${ctx.mode} ${ctx.signal} trade on ${ctx.ticker} just closed as a LOSS.
+
+Trade details:
+- Close reason: ${ctx.closeReason ?? 'unknown'}
+- P&L: ${ctx.pnlPercent != null ? `${ctx.pnlPercent.toFixed(1)}%` : 'unknown'}
+- Entry price: ${ctx.fillPrice ?? ctx.entryPrice ?? 'unknown'}
+- Stop loss: ${ctx.stopLoss ?? 'unknown'} (${stopDist}% from entry)
+- Target price: ${ctx.targetPrice ?? 'unknown'} (R:R = ${riskReward})
+- Close price: ${ctx.closePrice ?? 'unknown'}
+- Duration: ${ctx.duration != null ? `${ctx.duration} minutes` : 'unknown'}
+- Scanner confidence: ${ctx.scannerConfidence ?? 'unknown'}/9
+- FA confidence: ${ctx.faConfidence ?? 'unknown'}/9
+- Scanner rationale: ${ctx.scannerReason ?? 'not recorded'}
+- FA technical: ${ctx.faRationale?.technical ?? 'not recorded'}
+- FA risk: ${ctx.faRationale?.risk ?? 'not recorded'}
+
+Respond ONLY with valid JSON in this exact format (no markdown, no explanation):
+{
+  "failure_category": "<one of: stop_too_tight|stop_too_wide|bad_entry_timing|macro_headwind|sector_rotation|scanner_overconfidence|eod_timeout|unknown>",
+  "what_failed": "<1-2 specific sentences about what went wrong for THIS trade>",
+  "what_to_do_differently": "<1 sentence — concrete change to entry criteria, stop placement, or timing>",
+  "market_context": "<1 sentence about market conditions that contributed>"
+}`;
+
+  try {
+    const res = await fetch(GROQ_URL, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${groqKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: GROQ_MODEL,
+        messages: [{ role: 'user', content: prompt }],
+        max_tokens: 300,
+        temperature: 0.3,
+      }),
+    });
+
+    if (!res.ok) return null;
+
+    const data = await res.json() as { choices: [{ message: { content: string } }] };
+    const raw = data.choices[0]?.message?.content?.trim() ?? '';
+    const parsed = JSON.parse(raw) as {
+      failure_category: string;
+      what_failed: string;
+      what_to_do_differently: string;
+      market_context: string;
+    };
+
+    return {
+      lesson: `${ctx.ticker} ${ctx.signal} LOSS [${parsed.failure_category}]: ${parsed.what_failed} ${parsed.what_to_do_differently}`,
+      whatWorked: 'N/A',
+      whatFailed: `[${parsed.failure_category}] ${parsed.what_failed}`,
+      marketContext: parsed.market_context,
+    };
+  } catch {
+    return null;
+  }
+}
+
 function extractPatterns(texts: string[]): string[] {
   const keywords: Record<string, number> = {};
   const patterns = [
@@ -182,28 +281,35 @@ export async function analyzeCompletedTrade(trade: PaperTradeLike): Promise<bool
     ? Math.round((new Date(trade.closed_at).getTime() - new Date(trade.opened_at).getTime()) / 60000)
     : null;
 
-  const lesson = generateLesson(
-    {
-      ticker: trade.ticker,
-      mode: trade.mode,
-      signal: trade.signal,
-      scannerConfidence: trade.scanner_confidence,
-      faConfidence: trade.fa_confidence,
-      faRecommendation: trade.fa_recommendation,
-      entryPrice: trade.entry_price,
-      stopLoss: trade.stop_loss,
-      targetPrice: trade.target_price,
-      fillPrice: trade.fill_price,
-      closePrice: trade.close_price,
-      pnl: trade.pnl,
-      pnlPercent: trade.pnl_percent,
-      closeReason: trade.close_reason,
-      faRationale: trade.fa_rationale,
-      scannerReason: trade.scanner_reason,
-      duration,
-    },
-    outcome
-  );
+  const templateCtx = {
+    ticker: trade.ticker,
+    mode: trade.mode,
+    signal: trade.signal,
+    scannerConfidence: trade.scanner_confidence,
+    faConfidence: trade.fa_confidence,
+    faRecommendation: trade.fa_recommendation,
+    entryPrice: trade.entry_price,
+    stopLoss: trade.stop_loss,
+    targetPrice: trade.target_price,
+    fillPrice: trade.fill_price,
+    closePrice: trade.close_price,
+    pnl: trade.pnl,
+    pnlPercent: trade.pnl_percent,
+    closeReason: trade.close_reason,
+    faRationale: trade.fa_rationale,
+    scannerReason: trade.scanner_reason,
+    duration,
+  };
+
+  // For LOSS trades, try to generate a real AI post-mortem first.
+  // Template fallback activates if Groq is unavailable or returns invalid JSON.
+  let lesson: LessonResult;
+  if (outcome === 'LOSS') {
+    const aiLesson = await generateLossLessonWithAI(templateCtx);
+    lesson = aiLesson ?? generateLesson(templateCtx, outcome);
+  } else {
+    lesson = generateLesson(templateCtx, outcome);
+  }
 
   const sb = getSupabase();
   const { error } = await sb.from('trade_learnings').insert({
