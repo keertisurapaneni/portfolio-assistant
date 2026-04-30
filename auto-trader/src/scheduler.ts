@@ -464,6 +464,30 @@ async function closeAllDayTrades(config: AutoTraderConfig): Promise<void> {
         continue;
       }
 
+      // Cancel the original IB entry order first (SUBMITTED/PARTIAL trades that haven't filled).
+      // This is the root-cause fix for pre-market fills: without cancellation, IB holds the open
+      // entry order overnight and fills it the next morning. DAY tif should auto-expire, but
+      // explicit cancel is belt-and-suspenders in case IB extended-hours settings are active.
+      if (trade.status === 'SUBMITTED' || trade.status === 'PARTIAL') {
+        const orderId = trade.ib_order_id ? parseInt(trade.ib_order_id, 10) : NaN;
+        if (!Number.isNaN(orderId)) {
+          try {
+            cancelOrder(orderId);
+            log(`${trade.ticker}: EOD — cancelled open entry IB order #${orderId}`);
+          } catch (cancelErr) {
+            log(`${trade.ticker}: EOD — cancel IB order #${orderId} failed (${cancelErr instanceof Error ? cancelErr.message : 'unknown'}) — continuing`);
+          }
+        }
+        // SUBMITTED = entry never filled, so there's no position to close. Mark CLOSED and skip.
+        await updatePaperTrade(trade.id, {
+          status: 'CLOSED',
+          close_reason: 'eod_close',
+          closed_at: new Date().toISOString(),
+        });
+        log(`${trade.ticker}: EOD closed (unfilled SUBMITTED order cancelled)`);
+        continue;
+      }
+
       try {
         await placeMarketOrder({ symbol: trade.ticker, side: closeSide, quantity: qty });
         log(`${trade.ticker}: EOD close order placed (${qty} shares ${closeSide})`);
