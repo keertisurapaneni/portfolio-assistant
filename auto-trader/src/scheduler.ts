@@ -35,6 +35,7 @@ import {
   getActiveTrades,
   getLongTermExposureByTag,
   hasActiveTrade,
+  hasRecentLoss,
   countActivePositions,
   createPaperTrade,
   updatePaperTrade,
@@ -2251,6 +2252,20 @@ async function executeScannerTrade(
 
   if (await hasActiveTrade(ticker)) return 'skipped:duplicate';
 
+  // ── Recent-loss cooldown gate ─────────────────────────────────────────
+  // Block re-entry on any ticker that lost money in the last N days.
+  // SWING_TRADE uses 14 days; DAY_TRADE uses 5 days (intraday patterns reset faster).
+  {
+    const lookbackDays = mode === 'SWING_TRADE' ? 14 : 5;
+    if (await hasRecentLoss(ticker, lookbackDays)) {
+      log(`${ticker}: skipped — recent loss within ${lookbackDays}d cooldown`);
+      persistEvent(ticker, 'skipped', `Re-entry blocked — ticker had a loss within ${lookbackDays} days`, {
+        action: 'skipped', source: 'scanner', mode, skip_reason: 'recent_loss_cooldown',
+      });
+      return 'skipped:recent_loss_cooldown';
+    }
+  }
+
   // ── Daily max-loss gate ───────────────────────────────────────────────
   if (mode === 'DAY_TRADE' && await isDayTradeLossGateActive(config)) {
     log(`${ticker}: day-trade skipped — daily loss gate active`);
@@ -2573,6 +2588,18 @@ async function _executeSuggestedFindTradeInner(
   if (!isMarketHoursET()) return 'skipped:outside-market-hours';
 
   if (await hasActiveTrade(ticker)) return 'skipped:duplicate';
+
+  // ── Recent-loss cooldown gate ─────────────────────────────────────────
+  // LONG_TERM trades use a 21-day lookback. This caught the POOL ×2 scenario
+  // where two consecutive confidence-9 entries both stopped out at -24% and -25%.
+  if (await hasRecentLoss(ticker, 21)) {
+    log(`${ticker}: LONG_TERM skipped — recent loss within 21d cooldown`);
+    persistEvent(ticker, 'skipped', `LONG_TERM re-entry blocked — ticker had a loss within 21 days`, {
+      action: 'skipped', source: 'suggested_finds', mode: 'LONG_TERM',
+      skip_reason: 'recent_loss_cooldown',
+    });
+    return 'skipped:recent_loss_cooldown';
+  }
 
   // Same-day guard: block a second entry for the same ticker on the same ET calendar day.
   // Protects against TEN-style duplicate orders that slip through hasActiveTrade due to

@@ -373,6 +373,26 @@ export async function hasActiveTrade(
   return (count ?? 0) > 0;
 }
 
+/**
+ * Returns true if the ticker had a closed loss within the last `lookbackDays` days.
+ * Used to prevent re-entering a ticker that recently stopped out — particularly
+ * important for LONG_TERM positions where consecutive losses (e.g. POOL ×2) destroy capital.
+ */
+export async function hasRecentLoss(
+  ticker: string,
+  lookbackDays = 21,
+): Promise<boolean> {
+  const since = new Date(Date.now() - lookbackDays * 86_400_000).toISOString();
+  const sb = getSupabase();
+  const { count } = await sb
+    .from('paper_trades')
+    .select('id', { count: 'exact', head: true })
+    .eq('ticker', ticker)
+    .lt('pnl', 0)
+    .gte('closed_at', since);
+  return (count ?? 0) > 0;
+}
+
 export async function countActivePositions(): Promise<number> {
   const sb = getSupabase();
   const { count } = await sb
