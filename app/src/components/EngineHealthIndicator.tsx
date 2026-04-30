@@ -1,5 +1,11 @@
 import { useState, useEffect, useRef } from 'react';
+import { createClient } from '@supabase/supabase-js';
 import { cn } from '../lib/utils';
+
+const supabase = createClient(
+  import.meta.env.VITE_SUPABASE_URL ?? '',
+  import.meta.env.VITE_SUPABASE_ANON_KEY ?? '',
+);
 
 interface SchedulerStatus {
   running: boolean;       // cron job is active
@@ -29,21 +35,40 @@ function isMarketHours(): boolean {
   return true;
 }
 
-function getHealthLevel(status: SchedulerStatus | null, reachable: boolean): HealthLevel {
-  if (!reachable || !status) return 'idle';
-  if (!isMarketHours()) return 'idle';
-
-  if (status.lastResult.startsWith('error')) return 'error';
-  if (status.lastResult === 'never') return 'warning';
-
-  if (status.lastRun) {
-    const minutesAgo = (Date.now() - new Date(status.lastRun).getTime()) / 60000;
-    if (minutesAgo > 120) return 'error';
-    if (minutesAgo > 30) return 'warning';
+function getHealthLevel(
+  status: SchedulerStatus | null,
+  reachable: boolean,
+  heartbeat: HeartbeatRow | null,
+): HealthLevel {
+  // If live endpoint is reachable, use it as source of truth
+  if (reachable && status) {
+    if (!isMarketHours()) return 'idle';
+    if (status.lastResult.startsWith('error')) return 'error';
+    if (status.lastResult === 'never') return 'warning';
+    if (status.lastRun) {
+      const minutesAgo = (Date.now() - new Date(status.lastRun).getTime()) / 60000;
+      if (minutesAgo > 120) return 'error';
+      if (minutesAgo > 30) return 'warning';
+    }
+    if (status.lastResult.startsWith('ok') || status.lastResult.startsWith('skipped')) return 'healthy';
+    return 'warning';
   }
 
-  if (status.lastResult.startsWith('ok') || status.lastResult.startsWith('skipped')) return 'healthy';
-  return 'warning';
+  // Service unreachable — fall back to Supabase heartbeat
+  if (heartbeat) {
+    const minsAgo = (Date.now() - new Date(heartbeat.last_seen_at).getTime()) / 60000;
+    if (isMarketHours()) {
+      if (minsAgo > 30) return 'error';   // stale during market hours = problem
+      if (minsAgo > 10) return 'warning';
+      return heartbeat.status === 'error' ? 'error'
+           : heartbeat.status === 'degraded' ? 'warning' : 'healthy';
+    }
+    // Outside market hours: show degraded if stale > 4h (service may have crashed overnight)
+    if (minsAgo > 240) return 'warning';
+    return 'idle';
+  }
+
+  return 'idle';
 }
 
 function timeAgo(isoStr: string | null): string {
@@ -57,14 +82,25 @@ function timeAgo(isoStr: string | null): string {
   return `${Math.floor(hours / 24)}d ago`;
 }
 
+interface HeartbeatRow {
+  last_seen_at: string;
+  status: 'ok' | 'degraded' | 'error';
+  ib_connected: boolean;
+  active_trades: number;
+  last_cycle_result: string | null;
+  run_count: number;
+}
+
 export function EngineHealthIndicator() {
   const [status, setStatus] = useState<SchedulerStatus | null>(null);
+  const [heartbeat, setHeartbeat] = useState<HeartbeatRow | null>(null);
   const [reachable, setReachable] = useState(false);
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const popoverRef = useRef<HTMLDivElement>(null);
 
   async function fetchStatus() {
+    // Try the live HTTP endpoint first
     try {
       const res = await fetch(`${AUTO_TRADER_URL}/api/scheduler/status`, {
         signal: AbortSignal.timeout(4000),
@@ -76,6 +112,18 @@ export function EngineHealthIndicator() {
     } catch {
       setReachable(false);
       setStatus(null);
+    }
+
+    // Always fetch Supabase heartbeat as fallback / corroboration
+    try {
+      const { data } = await supabase
+        .from('system_heartbeats')
+        .select('last_seen_at, status, ib_connected, active_trades, last_cycle_result, run_count')
+        .eq('id', 'auto-trader')
+        .single();
+      setHeartbeat(data as HeartbeatRow | null);
+    } catch {
+      // Non-blocking
     } finally {
       setLoading(false);
     }
@@ -83,7 +131,7 @@ export function EngineHealthIndicator() {
 
   useEffect(() => {
     fetchStatus();
-    const interval = setInterval(fetchStatus, 5 * 60 * 1000);
+    const interval = setInterval(fetchStatus, 60 * 1000); // refresh every minute
     return () => clearInterval(interval);
   }, []);
 
@@ -97,7 +145,7 @@ export function EngineHealthIndicator() {
     return () => document.removeEventListener('mousedown', handleClick);
   }, [open]);
 
-  const health = getHealthLevel(status, reachable);
+  const health = getHealthLevel(status, reachable, heartbeat);
 
   const dotColor: Record<HealthLevel, string> = {
     healthy: 'bg-emerald-500',
@@ -114,9 +162,9 @@ export function EngineHealthIndicator() {
   };
 
   const label: Record<HealthLevel, string> = {
-    healthy: 'Engine running',
-    warning: 'Engine degraded',
-    error: 'Engine error',
+    healthy: reachable ? 'Engine running' : 'Engine running (heartbeat)',
+    warning: reachable ? 'Engine degraded' : 'Engine unreachable',
+    error: reachable ? 'Engine error' : 'Engine down',
     idle: 'Market closed',
   };
 
@@ -151,10 +199,44 @@ export function EngineHealthIndicator() {
           </div>
 
           {!reachable ? (
-            <p className="text-xs text-slate-500">
-              Auto-trader service unreachable at{' '}
-              <span className="font-mono">{AUTO_TRADER_URL}</span>
-            </p>
+            <div className="space-y-2 text-xs text-slate-600">
+              <p className="text-slate-500">
+                Live endpoint unreachable at{' '}
+                <span className="font-mono text-xs">{AUTO_TRADER_URL}</span>
+              </p>
+              {heartbeat && (
+                <>
+                  <div className="flex justify-between">
+                    <span className="text-slate-400">Last heartbeat</span>
+                    <span className={cn(
+                      'font-medium',
+                      (Date.now() - new Date(heartbeat.last_seen_at).getTime()) / 60000 > 30
+                        ? 'text-red-600' : 'text-slate-700'
+                    )}>
+                      {timeAgo(heartbeat.last_seen_at)}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-slate-400">IB connection</span>
+                    <span className={cn('font-medium', heartbeat.ib_connected ? 'text-emerald-600' : 'text-slate-400')}>
+                      {heartbeat.ib_connected ? 'Connected' : 'Disconnected'}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-slate-400">Active trades</span>
+                    <span className="font-medium">{heartbeat.active_trades}</span>
+                  </div>
+                  {heartbeat.last_cycle_result && (
+                    <div className="flex justify-between">
+                      <span className="text-slate-400">Last result</span>
+                      <span className="font-medium text-right max-w-[160px] truncate">
+                        {heartbeat.last_cycle_result}
+                      </span>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
           ) : status ? (
             <div className="space-y-2 text-xs text-slate-600">
               <div className="flex justify-between">

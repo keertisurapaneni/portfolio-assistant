@@ -17,7 +17,6 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
 PORT="${PORT:-3001}"
-service_already_running="no"
 
 # ── Colors ──
 RED='\033[0;31m'
@@ -66,9 +65,16 @@ if [ -n "$listener_pids" ]; then
   done <<< "$listener_pids"
 
   if [ "$running_our_service" = "yes" ]; then
+    # Service is already running. With KeepAlive=true launchd only calls start.sh
+    # after the process exits — so this only happens if called manually while the
+    # service is already up. Wait for it to exit naturally (or be killed externally),
+    # then fall through to restart. This prevents an infinite KeepAlive restart loop.
     echo -e "${GREEN}✅ Auto-trader already running on port $PORT${NC}"
-    echo "   No restart needed for Node service; continuing with IB Gateway checks."
-    service_already_running="yes"
+    echo "   Waiting for existing process to exit before restarting..."
+    while lsof -tiTCP:"$PORT" -sTCP:LISTEN > /dev/null 2>&1; do
+      sleep 5
+    done
+    echo "   Process exited — proceeding with restart."
   else
     echo "   Attempting to stop stale listener(s): $listener_pids"
     echo "$listener_pids" | xargs kill -TERM 2>/dev/null || true
@@ -138,11 +144,6 @@ else
 fi
 
 # ── Start auto-trader Node.js service ──
-
-if [ "$service_already_running" = "yes" ]; then
-  echo -e "${GREEN}✅ Leaving existing auto-trader process running${NC}"
-  exit 0
-fi
 
 echo -e "${GREEN}🤖 Starting auto-trader service on port $PORT...${NC}"
 echo ""

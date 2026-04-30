@@ -779,3 +779,38 @@ export async function getPerformance(): Promise<{
     .single();
   return data as { total_trades: number; win_rate: number; avg_win: number; avg_loss: number } | null;
 }
+
+// ── System Heartbeat ──────────────────────────────────────
+
+export interface HeartbeatPayload {
+  status: 'ok' | 'degraded' | 'error';
+  ibConnected: boolean;
+  activeTrades: number;
+  lastCycleResult: string | null;
+  lastCycleAt: string | null;
+  runCount: number;
+}
+
+/**
+ * Upserts a single-row heartbeat record so the dashboard can detect
+ * whether the auto-trader is alive even when the HTTP endpoint is unreachable.
+ * Silently swallows errors — a failed heartbeat write must never crash the service.
+ */
+export async function upsertHeartbeat(payload: HeartbeatPayload): Promise<void> {
+  try {
+    const sb = getSupabase();
+    await sb.from('system_heartbeats').upsert({
+      id: 'auto-trader',
+      last_seen_at: new Date().toISOString(),
+      status: payload.status,
+      ib_connected: payload.ibConnected,
+      active_trades: payload.activeTrades,
+      last_cycle_result: payload.lastCycleResult,
+      last_cycle_at: payload.lastCycleAt,
+      run_count: payload.runCount,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: 'id' });
+  } catch {
+    // Intentionally silent — heartbeat failure must not impact trading
+  }
+}

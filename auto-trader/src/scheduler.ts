@@ -52,6 +52,7 @@ import {
   updateExternalStrategySignal,
   savePortfolioSnapshot,
   getPerformance,
+  upsertHeartbeat,
   type AutoTraderConfig,
   type ExternalStrategySignal,
   type PaperTrade,
@@ -416,6 +417,28 @@ Action needed: Check the auto-trader service and restart if necessary.`,
       console.error('[Scheduler] Initial cycle failed:', err);
     });
   }, 10_000);
+
+  // ── Heartbeat — write to Supabase every 60s ─────────────────────────────
+  // This lets the dashboard show "last seen X min ago" even when the HTTP
+  // endpoint is unreachable, and lets a cloud-side pg_cron staleness checker
+  // send an email alert when the service is completely down.
+  async function writeHeartbeat() {
+    const s = getSchedulerStatus();
+    const activeTrades = await getActiveTrades().then(t => t.length).catch(() => 0);
+    await upsertHeartbeat({
+      status: s.lastResult.startsWith('error') ? 'error'
+            : s.ibConnected ? 'ok' : 'degraded',
+      ibConnected: s.ibConnected,
+      activeTrades,
+      lastCycleResult: s.lastResult,
+      lastCycleAt: s.lastRun,
+      runCount: s.runCount,
+    });
+  }
+  // Write immediately on startup (so dashboard shows "just now" after a restart)
+  setTimeout(() => writeHeartbeat().catch(() => {}), 5_000);
+  // Then every 60s
+  setInterval(() => writeHeartbeat().catch(() => {}), 60_000);
 }
 
 export function stopScheduler(): void {
