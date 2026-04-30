@@ -77,6 +77,7 @@ import { isInsideOrb } from './lib/orb.js';
 import { evaluateVwapAlignment } from './lib/vwap.js';
 import { warmPositionPriceCache } from './routes/positions.js';
 import { generateMorningBrief } from './lib/morning-brief.js';
+import { validateOrder } from './lib/validateOrder.js';
 
 // ── Types ────────────────────────────────────────────────
 
@@ -2505,6 +2506,26 @@ async function executeScannerTrade(
     return 'skipped:pre_trade_check';
   }
 
+  // ── Pure order sanity check (synchronous, no DB) ─────────────────────
+  {
+    const deployed = await getTotalDeployed(positions);
+    const orderCheck = validateOrder({
+      symbol: ticker,
+      side: signal as 'BUY' | 'SELL',
+      quantity: sizing.quantity,
+      dollarSize: sizing.dollarSize,
+      portfolioValue: config.portfolioValue,
+      maxPositionPct: config.maxPositionPct,
+      deployedCapital: deployed,
+      maxTotalAllocation: config.maxTotalAllocation,
+    });
+    if (!orderCheck.valid) {
+      log(`${ticker}: order validation failed [${orderCheck.code}] — ${orderCheck.reason}`);
+      return `skipped:validate_order_${orderCheck.code.toLowerCase()}`;
+    }
+    log(`${ticker}: order validation OK — ${orderCheck.reason}`);
+  }
+
   const contract = await searchContract(ticker);
   if (!contract) return 'failed:no_contract';
 
@@ -3123,6 +3144,26 @@ async function executeExternalStrategySignal(
       });
       return 'skipped';
     }
+  }
+
+  // ── Pure order sanity check (synchronous, no DB) ─────────────────────
+  {
+    const deployed = await getTotalDeployed(positions);
+    const orderCheck = validateOrder({
+      symbol: ticker,
+      side: signal.signal as 'BUY' | 'SELL',
+      quantity: sizing.quantity,
+      dollarSize: sizing.dollarSize,
+      portfolioValue: config.portfolioValue,
+      maxPositionPct: config.maxPositionPct,
+      deployedCapital: deployed,
+      maxTotalAllocation: config.maxTotalAllocation,
+    });
+    if (!orderCheck.valid) {
+      log(`${ticker}: order validation failed [${orderCheck.code}] — ${orderCheck.reason}`);
+      return 'skipped';
+    }
+    log(`${ticker}: order validation OK — ${orderCheck.reason}`);
   }
 
   try {
