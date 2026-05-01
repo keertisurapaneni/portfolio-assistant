@@ -4680,9 +4680,13 @@ async function runTradeExecutionOnly(): Promise<void> {
           .sort((a, b) => b.confidence - a.confidence)
           .slice(0, slots);
         for (const idea of qualified) {
-          _processedTickers.add(idea.ticker);
           const result = await executeScannerTrade(idea, config, positions);
           log(`  ${idea.ticker}: ${result}`);
+          // Only mark as processed for non-time-based outcomes so the ticker is retried
+          // when the market-hours window opens (e.g. the 9:30–9:35 first-candle guard).
+          if (result !== 'skipped:outside-market-hours') {
+            _processedTickers.add(idea.ticker);
+          }
           await new Promise(r => setTimeout(r, 2000));
         }
       }
@@ -4919,9 +4923,13 @@ async function runSchedulerCycle(): Promise<void> {
           .slice(0, slots);
 
         for (const idea of qualified) {
-          _processedTickers.add(idea.ticker);
           const result = await executeScannerTrade(idea, config, positions);
           log(`  ${idea.ticker}: ${result}`);
+          // Only mark as processed for non-time-based outcomes so the ticker is retried
+          // when the market-hours window opens (e.g. the 9:30–9:35 first-candle guard).
+          if (result !== 'skipped:outside-market-hours') {
+            _processedTickers.add(idea.ticker);
+          }
           await new Promise(r => setTimeout(r, 2000));
         }
       } else {
