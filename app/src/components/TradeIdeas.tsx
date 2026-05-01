@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import {
   Flame,
   TrendingUp,
@@ -17,11 +17,7 @@ import {
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { fetchTradeIdeas, type TradeIdea, type ScanResult, type KeyLevelSetup } from '../lib/tradeScannerApi';
-import {
-  getAutoTraderConfig,
-  processTradeIdeas,
-  type ProcessResult,
-} from '../lib/autoTrader';
+import { getAutoTraderConfig } from '../lib/autoTrader';
 import { getActiveTrades, getAllTrades } from '../lib/paperTradesApi';
 import { Spinner } from './Spinner';
 
@@ -126,22 +122,8 @@ export function TradeIdeas({ onSelectTicker }: TradeIdeasProps) {
   const [data, setData] = useState<ScanResult | null>(_cache);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [autoTrading, setAutoTrading] = useState(false);
-  const [, setAutoTradeResults] = useState<ProcessResult[]>([]);
   const [tradedTickers, setTradedTickers] = useState<Set<string>>(new Set());
   const [marketOpen, setMarketOpen] = useState(() => isMarketHoursWindow());
-  // Track already-processed tickers — persisted to sessionStorage keyed by date so
-  // revisiting the page on the same day doesn't re-trigger processTradeIdeas (which
-  // would otherwise burn AI quota on every navigation to /signals).
-  const _today = new Date().toISOString().slice(0, 10);
-  const _processedKey = `auto-trade-processed-${_today}`;
-  const _storedProcessed = (() => {
-    try {
-      const raw = sessionStorage.getItem(_processedKey);
-      return raw ? new Set<string>(JSON.parse(raw) as string[]) : new Set<string>();
-    } catch { return new Set<string>(); }
-  })();
-  const processedRef = useRef<Set<string>>(_storedProcessed);
 
   // Re-check market hours every minute so the badge updates as windows open/close.
   useEffect(() => {
@@ -222,32 +204,6 @@ export function TradeIdeas({ onSelectTicker }: TradeIdeasProps) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Auto-trade: when new data arrives and auto-trading is enabled,
-  // process any new ideas that haven't been processed yet
-  useEffect(() => {
-    if (!data) return;
-    const config = getAutoTraderConfig();
-    if (!config.enabled) return;
-
-    const allIdeas = [...(data.dayTrades ?? []), ...(data.swingTrades ?? [])];
-    const newIdeas = allIdeas.filter(i => !processedRef.current.has(i.ticker));
-    if (newIdeas.length === 0) return;
-
-    // Mark as processing so we don't re-trigger — persist to sessionStorage so
-    // navigating away and back doesn't reprocess the same tickers today.
-    newIdeas.forEach(i => processedRef.current.add(i.ticker));
-    try {
-      sessionStorage.setItem(_processedKey, JSON.stringify([...processedRef.current]));
-    } catch { /* storage quota exceeded — non-fatal */ }
-
-    setAutoTrading(true);
-    processTradeIdeas(newIdeas, config)
-      .then(results => {
-        setAutoTradeResults(prev => [...results, ...prev].slice(0, 20));
-      })
-      .catch(console.error)
-      .finally(() => setAutoTrading(false));
-  }, [data]);
 
   const dayIdeas = data?.dayTrades ?? [];
   const swingIdeas = data?.swingTrades ?? [];
@@ -285,13 +241,7 @@ export function TradeIdeas({ onSelectTicker }: TradeIdeasProps) {
             </span>
           )}
           {loading && <Spinner size="xs" className="text-amber-500" />}
-          {autoTrading && (
-            <span className="flex items-center gap-1 text-[10px] font-semibold bg-blue-50 text-blue-700 border border-blue-200 px-1.5 py-0.5 rounded-full">
-              <Bot className="w-3 h-3 animate-pulse" />
-              Auto-executing...
-            </span>
-          )}
-          {getAutoTraderConfig().enabled && !autoTrading && (
+          {getAutoTraderConfig().enabled && (
             <span className="flex items-center gap-1 text-[10px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200 px-1.5 py-0.5 rounded-full">
               <Bot className="w-3 h-3" />
               AUTO

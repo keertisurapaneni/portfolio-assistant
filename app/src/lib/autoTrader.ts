@@ -6,6 +6,15 @@
  * Runs entirely in the browser. No backend polling needed.
  */
 
+/** Returns true only during regular US market hours: 9:30 AM – 4:00 PM ET, Mon–Fri. */
+function isMarketOpen(): boolean {
+  const et = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }));
+  const day = et.getDay();
+  if (day === 0 || day === 6) return false;
+  const mins = et.getHours() * 60 + et.getMinutes();
+  return mins >= 9 * 60 + 30 && mins <= 16 * 60;
+}
+
 import type { TradeIdea } from './tradeScannerApi';
 import type { EnhancedSuggestedStock } from '../data/suggestedFinds';
 import type { TradingSignalsResponse } from './tradingSignalsApi';
@@ -620,6 +629,11 @@ export async function processTradeIdeas(
   ideas: TradeIdea[],
   config?: AutoTraderConfig
 ): Promise<ProcessResult[]> {
+  if (!isMarketOpen()) {
+    logEvent('*', 'warning', 'Market not open — skipping scanner trade execution');
+    return [];
+  }
+
   const cfg = config ?? getAutoTraderConfig();
   const results: ProcessResult[] = [];
 
@@ -2022,6 +2036,11 @@ export async function processSuggestedFinds(
   config?: AutoTraderConfig,
   topPickTickers?: Set<string>
 ): Promise<ProcessResult[]> {
+  if (!isMarketOpen()) {
+    logEvent('*', 'warning', 'Market not open — skipping Suggested Finds execution');
+    return [];
+  }
+
   const cfg = config ?? getAutoTraderConfig();
   const results: ProcessResult[] = [];
 
