@@ -2274,6 +2274,18 @@ async function executeScannerTrade(
   // handles first-candle setups; scanner trades shouldn't race it.
   if (!isMarketHoursET() || getETMinutes() < 9 * 60 + 35) return 'skipped:outside-market-hours';
 
+  // Never auto-short from scanner signals. SELL ideas are bearish research — executing them
+  // without an existing long position would open a naked short, which is not the intent.
+  // The only valid scanner SELL auto-execution would be closing an existing long, but that's
+  // handled by checkLossCutOpportunities / checkProfitTakeOpportunities, not here.
+  if (signal === 'SELL') {
+    const hasLong = positions.some(p => p.symbol.toUpperCase() === ticker && p.position > 0);
+    if (!hasLong) {
+      log(`${ticker}: scanner SELL skipped — no long position to close (would be a naked short)`);
+      return 'skipped:no_long_to_sell';
+    }
+  }
+
   if (await hasActiveTrade(ticker)) return 'skipped:duplicate';
 
   // ── Recent-loss cooldown gate ─────────────────────────────────────────
