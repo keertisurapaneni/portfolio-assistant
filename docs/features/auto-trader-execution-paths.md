@@ -1,6 +1,6 @@
 # Auto-Trader Execution Paths
 
-**Date:** 2026-02-23  
+**Date:** 2026-02-23 (last updated 2026-05-04)  
 **Purpose:** Document the three trade execution paths, what checks each applies, and why — so we don't re-add wrong checks.
 
 ---
@@ -23,8 +23,9 @@ Scanner signals come from `trade-scanner` edge function (technical momentum). FA
 
 **Gate order:**
 1. Time gate: must be ≥ 9:35 AM ET (avoids first-candle volatility; added 2026-04-28)
-2. No duplicate active trade for ticker
-3. Day trade only: daily max-loss gate active → skip
+2. **SELL signal guard** (added 2026-05-04): scanner SELL signals blocked unless an existing IB long position exists for the ticker — prevents naked short sells. Scanner SELL ideas are bearish research, not short-sell instructions. Closing longs is handled by loss-cut/profit-take paths.
+3. No duplicate active trade for ticker
+4. Day trade only: daily max-loss gate active → skip
 4. Day trade only: inside ORB (choppy) → skip
 5. **Swing trade quality gates** (added 2026-04-28):
    - `market_condition = 'chop'` → skip (regime not trending)
@@ -69,13 +70,17 @@ Suggested Finds are generated daily by the AI pipeline: HuggingFace candidates �
 - Comparing them directly caused good picks (e.g. NEM conviction 9) to be blocked by swing FA returning 4
 
 **Gate order:**
-1. No duplicate active trade for ticker
-2. Gold Mine only: SPY < SMA200 blocks entry (bear market macro protection)
-3. ~~FA check~~ — **removed** (was wrong tool; AI pipeline is the analysis)
-4. Current price from Finnhub
-5. Gold Mine 40% allocation cap (`0.40 * maxTotalAllocation`)
-6. `runPreTradeChecks` (drawdown, allocation cap, sector exposure, earnings blackout)
-7. IB contract lookup
+1. **Leveraged/inverse ETF blocklist** (added 2026-05-04): SOXL, SOXS, TQQQ, SQQQ, SPXL, SPXU, UVXY, SVXY, LABU, LABD, NUGT, DUST, and 10+ others blocked. Daily volatility decay makes them incompatible with a quality long-term hold thesis.
+2. No duplicate active trade for ticker
+3. **Recent-loss cooldown** (21-day): if ticker had a recorded loss in last 21 days → block
+4. **Repeated stop-out gate** (added 2026-05-04): if ticker was loss-cut ≥ 3 times in last 90 days → block regardless of time. Prevents POOL/AOS-style churn on broken theses.
+5. Same-day duplicate guard
+6. Gold Mine only: SPY < SMA200 blocks entry (bear market macro protection)
+7. ~~FA check~~ — **removed** (was wrong tool; AI pipeline is the analysis)
+8. Current price from Finnhub
+9. Gold Mine 40% allocation cap (`0.40 * maxTotalAllocation`)
+10. `runPreTradeChecks` (drawdown, allocation cap, sector exposure, earnings blackout)
+11. IB contract lookup
 
 **Pre-filtering** (in `preGenerateSuggestedFinds` before execution):
 - Conviction ≥ `minSuggestedFindsConviction`

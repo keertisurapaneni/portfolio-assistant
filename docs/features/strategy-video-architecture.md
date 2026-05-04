@@ -1,6 +1,6 @@
 # Strategy System — Architecture
 
-**Last updated:** 2026-04-22
+**Last updated:** 2026-05-04
 
 ## Overview
 
@@ -75,8 +75,8 @@ Each signal and paper trade carries:
 | `process-strategy-video-queue` | Creates minimal `strategy_videos` row; triggers platform-specific ingest |
 | `fetch-youtube-transcript` | Fetches YouTube captions; calls extract |
 | `trigger-instagram-ingest` | Dispatches GitHub Actions `repository_dispatch` for Instagram/Twitter |
-| `extract-strategy-metadata-from-transcript` | Groq Llama 3.3 70B extracts metadata; triggers `import-strategy-signals` if daily_signal |
-| `import-strategy-signals` | Converts `extracted_signals` → PENDING `external_strategy_signals` (idempotent) |
+| `extract-strategy-metadata-from-transcript` | Groq Llama 3.3 70B extracts metadata; triggers `import-strategy-signals` if daily_signal. Post-processes extracted dates: if the transcript names a weekday (e.g. "Monday") and the extracted date doesn't match that day, the weekday name wins — preventing off-by-one date bugs. |
+| `import-strategy-signals` | Converts `extracted_signals` → PENDING `external_strategy_signals` (idempotent). Creates **one row per entry level** (one BUY per `longTriggerAbove`, one SELL per `shortTriggerBelow`). Multiple targets are summarised in the `notes` field. This avoids `uq_pending_signal_per_date` constraint violations when a signal has several target prices sharing the same entry price. |
 | `fix-unknown-strategy-sources` | Resolves Unknown sources by fetching Instagram og:url |
 | `assign-strategy-videos-to-source` | Manual assignment of Unknown videos to a known source |
 

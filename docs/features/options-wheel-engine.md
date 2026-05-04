@@ -1,6 +1,6 @@
 # Options Wheel Engine
 
-**Last updated:** 2026-04-24 (end of day — ETF tier + scanner reliability)  
+**Last updated:** 2026-05-04  
 **Status:** Live — paper trading mode (IB paper account DUP876374)  
 **Auto-trade:** ENABLED — `auto_trader_config.options_auto_trade_enabled = true`  
 **Real orders:** Placed via IB Gateway (paper account); falls back to paper-only if IB offline
@@ -183,6 +183,8 @@ Dip entries receive: 0.5% yield grace, +1 contract bonus, SMA20 strike floor exe
 
 Current leveraged ETFs on watchlist: SOXL, TQQQ, NVDL, AAPU, TSLL
 
+> **Note (2026-05-04):** SOXL and similar leveraged/inverse ETFs are **blocked from the LONG_TERM Suggested Finds path** via a hardcoded blocklist in `scheduler.ts`. They may still appear in the options wheel watchlist above (with special parameters), but will never be picked up by the long-term buy-and-hold strategy.
+
 ---
 
 ## Watchlist Tiers
@@ -264,6 +266,19 @@ If options P&L for the calendar month falls below **−5% of options budget** (�
 | `supabase/migrations/20260424000003_options_roll_tracking.sql` | Adds `roll_count`, `rolled_from_id` to `paper_trades` |
 | `supabase/migrations/20260424000002_options_watchlist_sector_source.sql` | Adds `sector` column to `options_watchlist` |
 | `supabase/migrations/20260424000006_options_watchlist_index_etf.sql` | Adds `is_index_etf` column; inserts VPU, VYM, VIG as STABLE tier |
+
+---
+
+## LONG_TERM Position Sync — fill_price Bug Fix (2026-05-04)
+
+When `syncPositions` syncs a `SUBMITTED` trade to `FILLED`, it now sets `fill_price` differently for BUY vs SELL records:
+
+| Signal | `fill_price` source | Rationale |
+|--------|---------------------|-----------|
+| BUY | `ibPos.avgCost` | Cost basis of shares acquired — correct |
+| SELL | `trade.entry_price` (falls back to `ibPos.mktPrice`) | Market price at order submission — the actual sale price. `avgCost` for a SELL is the *remaining* position's cost, not the exit price. |
+
+**Prior to this fix:** all SELL records (loss cuts, profit takes) showed `fill_price = avgCost` of remaining shares, making closed-position P&L appear as zero. This masked real losses and prevented the `hasRecentLoss` gate from triggering re-entry blocks.
 
 ---
 
