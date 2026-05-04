@@ -2288,7 +2288,7 @@ Deno.serve(async (req) => {
       // - If Track 2 AI failed but Track 1 produced ideas → still write those to DB
       // - Only fall back to previous DB scan if we truly have nothing at all
       if (dayIdeas.length > 0) {
-        await writeToDB(sb, 'day_trades', dayIdeas, 390);
+        await writeToDB(sb, 'day_trades', dayIdeas, 30);
       } else if (!dayAISucceeded) {
         console.warn('[Trade Scanner] Day AI failed and Track 1 empty — skipping DB write to preserve previous results');
         dayIdeas = dayRow?.data ?? [];
