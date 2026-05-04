@@ -197,7 +197,7 @@ Deno.serve(async (req) => {
     d.setDate(d.getDate() + 1);
     return d.toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
   })();
-  const userPrompt = `${contextLines}\n\nTranscript:\n\n${transcript}\n\nExtract metadata from this trading strategy video transcript.\n\nFor trade_date: videos are often posted the night before for next-day pre-market viewing. Resolve day-of-week references like "Tuesday's trading day", "Monday's gameplan" to the specific date they name — if that date is tomorrow (${tomorrowEtForPrompt}), use tomorrow's date, not today's (${todayEt}). Only use a date further in the future if the transcript explicitly names one. Use the creator name/handle above as-is for source_name/source_handle — do not guess or substitute a different name.`;
+  const userPrompt = `${contextLines}\n\nTranscript:\n\n${transcript}\n\nExtract metadata from this trading strategy video transcript.\n\nFor trade_date: videos are often posted the night before for next-day pre-market viewing. Resolve day-of-week references like "Tuesday's trading day", "Monday's gameplan" to the specific date they name — if that date is tomorrow (${tomorrowEtForPrompt}), use tomorrow's date, not today's (${todayEt}). Only use a date further in the future if the transcript explicitly names one. IMPORTANT: If the transcript mentions both a day-of-week name AND a specific date (e.g. "Monday, May 5th"), first verify they are consistent — check what day of week that date actually falls on. If they conflict (e.g. May 5th is actually a Tuesday, not Monday), trust the day-of-week name and use the correct calendar date for that day relative to today, not the inconsistent explicit date. Use the creator name/handle above as-is for source_name/source_handle — do not guess or substitute a different name.`;
 
   let extracted: Record<string, unknown>;
   try {
@@ -273,6 +273,33 @@ Deno.serve(async (req) => {
     if (trade_date > tomorrowEtStr) {
       console.warn(`[extract] trade_date ${trade_date} is >1 day in the future for daily_signal — clamping to today (${todayEt})`);
       trade_date = todayEt;
+    }
+
+    // Day-of-week consistency check: if the transcript/heading names a weekday (e.g. "Monday")
+    // but the extracted date falls on a different weekday, the creator stated the date wrong.
+    // Correct by shifting to the date within ±1 day of today that matches the named weekday.
+    const DAY_NAMES = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+    const searchText = ((video_heading ?? '') + ' ' + transcript.slice(0, 500)).toLowerCase();
+    const mentionedDayIdx = DAY_NAMES.findIndex((d) => searchText.includes(d));
+    if (mentionedDayIdx >= 0) {
+      // Parse trade_date at noon UTC to avoid day-boundary shifts
+      const tradeDateObj = new Date(`${trade_date}T12:00:00Z`);
+      const tradeDateDayIdx = tradeDateObj.getUTCDay();
+      if (tradeDateDayIdx !== mentionedDayIdx) {
+        // Shift by the difference in days to land on the named weekday
+        const diff = mentionedDayIdx - tradeDateDayIdx;
+        const adjusted = new Date(tradeDateObj);
+        adjusted.setUTCDate(adjusted.getUTCDate() + diff);
+        const adjustedStr = adjusted.toISOString().split('T')[0];
+        // Only accept adjustment if it stays within today..tomorrow window
+        if (adjustedStr >= todayEt && adjustedStr <= tomorrowEtStr) {
+          console.warn(
+            `[extract] trade_date day-of-week mismatch: ${trade_date} is a ${DAY_NAMES[tradeDateDayIdx]} ` +
+            `but transcript says "${DAY_NAMES[mentionedDayIdx]}" — correcting to ${adjustedStr}`
+          );
+          trade_date = adjustedStr;
+        }
+      }
     }
   }
   const timeframe = extracted.timeframe === 'DAY_TRADE' || extracted.timeframe === 'SWING_TRADE' || extracted.timeframe === 'LONG_TERM'
