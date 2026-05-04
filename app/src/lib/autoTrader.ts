@@ -1770,6 +1770,24 @@ async function processSingleIdea(
 ): Promise<ProcessResult> {
   const { ticker, signal, confidence: scannerConf, mode } = idea;
 
+  // ── 0. Block naked shorts from scanner SELL signals ──
+  // SELL ideas from the scanner are bearish research — not short-sell instructions.
+  // Auto-executing a SELL without an existing long position would open a naked short.
+  // Position management (loss cuts, profit takes) handles closing longs via their own paths.
+  if (signal === 'SELL') {
+    const positions = await getPositions(config.accountId!).catch(() => []);
+    const hasLong = positions.some(p => (p.contractDesc ?? '').toUpperCase() === ticker && p.position > 0);
+    if (!hasLong) {
+      const msg = 'Scanner SELL skipped — no long position to close (would be a naked short)';
+      logEvent(ticker, 'info', msg);
+      persistEvent(ticker, 'info', msg, {
+        action: 'skipped', source: 'scanner', mode, scanner_signal: signal,
+        scanner_confidence: scannerConf, skip_reason: 'no_long_to_sell',
+      });
+      return { ticker, action: 'skipped', reason: msg };
+    }
+  }
+
   // ── 1. Dedup check ──
   const alreadyActive = await hasActiveTrade(ticker);
   if (alreadyActive) {
