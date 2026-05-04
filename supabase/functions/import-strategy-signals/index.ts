@@ -265,57 +265,60 @@ Deno.serve(async (req) => {
     const stopLoss = sig.stopLoss ?? null;
     const noteText = sig.notes ?? null;
 
-    // Long (BUY) signals — one per target level
+    // Long (BUY) signal — one row per entry level (unique constraint is on ticker+signal+entry_price+date).
+    // Use the first target as primary; additional targets go into notes for human reference.
     if (sig.longTriggerAbove != null) {
       const entryPrice = sig.longTriggerAbove;
-      const targets = (sig.longTargets ?? []).length > 0 ? sig.longTargets! : [null];
-      targets.forEach((targetPrice, i) => {
-        const label = targets.length > 1 ? ` T${i + 1}` : '';
-        toInsert.push({
-          source_name: video.source_name,
-          source_url: sourceUrl,
-          ticker,
-          signal: 'BUY',
-          mode: primaryMode,
-          confidence: 7,
-          entry_price: entryPrice,
-          stop_loss: stopLoss ?? (sig.shortTriggerBelow ?? null),
-          target_price: targetPrice,
-          execute_on_date: tradeDate,
-          execute_at: executeAt,
-          expires_at: expiresAt,
-          notes: noteText ?? `Long above ${entryPrice}${label}${targetPrice ? `, target ${targetPrice}` : ''}`,
-          status: 'PENDING',
-          strategy_video_id: videoId,
-          strategy_video_heading: video.video_heading ?? null,
-        });
+      const longTargets = sig.longTargets ?? [];
+      const primaryTarget = longTargets[0] ?? null;
+      const targetSummary = longTargets.length > 0
+        ? longTargets.map((t, i) => `T${i + 1}: ${t}`).join(', ')
+        : null;
+      toInsert.push({
+        source_name: video.source_name,
+        source_url: sourceUrl,
+        ticker,
+        signal: 'BUY',
+        mode: primaryMode,
+        confidence: 7,
+        entry_price: entryPrice,
+        stop_loss: stopLoss ?? (sig.shortTriggerBelow ?? null),
+        target_price: primaryTarget,
+        execute_on_date: tradeDate,
+        execute_at: executeAt,
+        expires_at: expiresAt,
+        notes: noteText ?? `Long above ${entryPrice}${targetSummary ? ` — targets: ${targetSummary}` : ''}`,
+        status: 'PENDING',
+        strategy_video_id: videoId,
+        strategy_video_heading: video.video_heading ?? null,
       });
     }
 
-    // Short (SELL) signals — one per target level
+    // Short (SELL) signal — one row per entry level.
     if (sig.shortTriggerBelow != null) {
       const entryPrice = sig.shortTriggerBelow;
-      const targets = (sig.shortTargets ?? []).length > 0 ? sig.shortTargets! : [null];
-      targets.forEach((targetPrice, i) => {
-        const label = targets.length > 1 ? ` T${i + 1}` : '';
-        toInsert.push({
-          source_name: video.source_name,
-          source_url: sourceUrl,
-          ticker,
-          signal: 'SELL',
-          mode: primaryMode,
-          confidence: 7,
-          entry_price: entryPrice,
-          stop_loss: stopLoss ?? (sig.longTriggerAbove ?? null),
-          target_price: targetPrice,
-          execute_on_date: tradeDate,
-          execute_at: executeAt,
-          expires_at: expiresAt,
-          notes: noteText ?? `Short below ${entryPrice}${label}${targetPrice ? `, target ${targetPrice}` : ''}`,
-          status: 'PENDING',
-          strategy_video_id: videoId,
-          strategy_video_heading: video.video_heading ?? null,
-        });
+      const shortTargets = sig.shortTargets ?? [];
+      const primaryTarget = shortTargets[0] ?? null;
+      const targetSummary = shortTargets.length > 0
+        ? shortTargets.map((t, i) => `T${i + 1}: ${t}`).join(', ')
+        : null;
+      toInsert.push({
+        source_name: video.source_name,
+        source_url: sourceUrl,
+        ticker,
+        signal: 'SELL',
+        mode: primaryMode,
+        confidence: 7,
+        entry_price: entryPrice,
+        stop_loss: stopLoss ?? (sig.longTriggerAbove ?? null),
+        target_price: primaryTarget,
+        execute_on_date: tradeDate,
+        execute_at: executeAt,
+        expires_at: expiresAt,
+        notes: noteText ?? `Short below ${entryPrice}${targetSummary ? ` — targets: ${targetSummary}` : ''}`,
+        status: 'PENDING',
+        strategy_video_id: videoId,
+        strategy_video_heading: video.video_heading ?? null,
       });
     }
   }
