@@ -36,6 +36,7 @@ import {
   getLongTermExposureByTag,
   hasActiveTrade,
   hasRecentLoss,
+  countRecentStopOuts,
   countActivePositions,
   createPaperTrade,
   updatePaperTrade,
@@ -2638,6 +2639,20 @@ async function _executeSuggestedFindTradeInner(
 ): Promise<string> {
   const { ticker, conviction } = stock;
 
+  // ── Leveraged/inverse ETF blocklist ──────────────────────────────────
+  // These instruments have daily volatility reset and compounding decay that
+  // make them structurally incompatible with a quality long-term hold strategy.
+  // High IV makes them attractive to the AI screener but unsuitable for the wheel.
+  const LEVERAGED_ETF_BLOCKLIST = new Set([
+    'SOXL', 'SOXS', 'TQQQ', 'SQQQ', 'SPXL', 'SPXU', 'UVXY', 'SVXY',
+    'LABU', 'LABD', 'NUGT', 'DUST', 'JNUG', 'JDST', 'FAS', 'FAZ',
+    'TNA', 'TZA', 'NAIL', 'DRN', 'DRV', 'DFEN', 'WEBL', 'WEBS',
+  ]);
+  if (LEVERAGED_ETF_BLOCKLIST.has(ticker.toUpperCase())) {
+    log(`${ticker}: LONG_TERM skipped — leveraged/inverse ETF not suitable for wheel strategy`);
+    return 'skipped:leveraged_etf';
+  }
+
   // Hard minimum: never place Suggested Find orders before 9:30 AM ET (belt-and-suspenders).
   // preGenerateSuggestedFinds already checks isMarketHoursET(), but this catches any edge case
   // where that check runs at the boundary (e.g. slow event loop crossing the 9:30 threshold).
@@ -2646,8 +2661,7 @@ async function _executeSuggestedFindTradeInner(
   if (await hasActiveTrade(ticker)) return 'skipped:duplicate';
 
   // ── Recent-loss cooldown gate ─────────────────────────────────────────
-  // LONG_TERM trades use a 21-day lookback. This caught the POOL ×2 scenario
-  // where two consecutive confidence-9 entries both stopped out at -24% and -25%.
+  // LONG_TERM trades use a 21-day lookback.
   if (await hasRecentLoss(ticker, 21)) {
     log(`${ticker}: LONG_TERM skipped — recent loss within 21d cooldown`);
     persistEvent(ticker, 'skipped', `LONG_TERM re-entry blocked — ticker had a loss within 21 days`, {
@@ -2655,6 +2669,22 @@ async function _executeSuggestedFindTradeInner(
       skip_reason: 'recent_loss_cooldown',
     });
     return 'skipped:recent_loss_cooldown';
+  }
+
+  // ── Repeated stop-out gate ────────────────────────────────────────────
+  // If a ticker has been loss-cut 3+ times in the last 90 days, the thesis
+  // is broken regardless of the current conviction score. Block re-entry
+  // indefinitely until the window clears. Prevents POOL/AOS-style churn.
+  {
+    const stopOuts = await countRecentStopOuts(ticker, 90);
+    if (stopOuts >= 3) {
+      log(`${ticker}: LONG_TERM skipped — ${stopOuts} stop-outs in last 90 days (thesis invalidated)`);
+      persistEvent(ticker, 'skipped', `LONG_TERM re-entry blocked — ${stopOuts} stop-outs in 90d`, {
+        action: 'skipped', source: 'suggested_finds', mode: 'LONG_TERM',
+        skip_reason: 'repeated_stop_out',
+      });
+      return 'skipped:repeated_stop_out';
+    }
   }
 
   // Same-day guard: block a second entry for the same ticker on the same ET calendar day.
@@ -3484,7 +3514,13 @@ async function syncPositions(
         if (trade.mode === 'SWING_TRADE' && trade.entry_trigger_type === 'bracket_limit') {
           upsertSwingMetrics({ date: getETDateString(), swing_orders_filled: 1 }).catch(() => {});
         }
-        const fillPrice = ibPos.avgCost;
+        // BUY fills: avgCost is a good proxy for the execution price (IB recalculates after each buy).
+        // SELL fills: avgCost is the cost of the REMAINING long shares — NOT the sale price. Use
+        // entry_price instead, which was set to ibPos.mktPrice at order creation time and closely
+        // approximates the actual execution price for a market sell.
+        const fillPrice = trade.signal === 'SELL'
+          ? (trade.entry_price ?? ibPos.mktPrice)
+          : ibPos.avgCost;
         const updates: Record<string, unknown> = {
           status: 'FILLED',
           fill_price: fillPrice,

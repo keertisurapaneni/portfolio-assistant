@@ -393,6 +393,27 @@ export async function hasRecentLoss(
   return (count ?? 0) > 0;
 }
 
+/**
+ * Returns the number of times a ticker was stopped out (loss cut fired)
+ * within the given lookback window. Used to block repeated re-entry on
+ * structurally broken theses — e.g. POOL stopped out 5+ times.
+ */
+export async function countRecentStopOuts(
+  ticker: string,
+  lookbackDays = 90,
+): Promise<number> {
+  const since = new Date(Date.now() - lookbackDays * 86_400_000).toISOString();
+  const sb = getSupabase();
+  const { count } = await sb
+    .from('paper_trades')
+    .select('id', { count: 'exact', head: true })
+    .eq('ticker', ticker)
+    .eq('signal', 'SELL')
+    .eq('entry_trigger_type', 'loss_cut')
+    .gte('created_at', since);
+  return count ?? 0;
+}
+
 export async function countActivePositions(): Promise<number> {
   const sb = getSupabase();
   const { count } = await sb
