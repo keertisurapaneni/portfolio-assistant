@@ -426,6 +426,35 @@ export async function countRecentStopOuts(
   return (await query).count ?? 0;
 }
 
+/**
+ * Returns the win rate and trade count for a ticker over the last N days.
+ * Only counts closed trades with non-zero PnL in DAY_TRADE and SWING_TRADE modes.
+ * Used to block chronic losers from being re-traded.
+ */
+export async function getTickerWinRate(
+  ticker: string,
+  lookbackDays = 30,
+): Promise<{ wins: number; losses: number; winRate: number; total: number }> {
+  const since = new Date(Date.now() - lookbackDays * 86_400_000).toISOString();
+  const sb = getSupabase();
+  const { data } = await sb
+    .from('paper_trades')
+    .select('pnl')
+    .eq('ticker', ticker)
+    .eq('status', 'CLOSED')
+    .in('mode', ['DAY_TRADE', 'SWING_TRADE'])
+    .not('pnl', 'is', null)
+    .neq('pnl', 0)
+    .gte('closed_at', since);
+
+  const trades = data ?? [];
+  const wins = trades.filter(t => (t.pnl as number) > 0).length;
+  const losses = trades.filter(t => (t.pnl as number) < 0).length;
+  const total = wins + losses;
+  const winRate = total > 0 ? wins / total : 0;
+  return { wins, losses, winRate, total };
+}
+
 export async function countActivePositions(): Promise<number> {
   const sb = getSupabase();
   // Options positions run on their own pipeline and budget — exclude them from
