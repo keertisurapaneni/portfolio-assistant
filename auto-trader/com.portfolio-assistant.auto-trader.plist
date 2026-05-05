@@ -25,6 +25,13 @@
         <string>cd ~/Git-RV/portfolio-assistant/auto-trader &amp;&amp; ./start.sh</string>
     </array>
 
+    <!-- Ensure Homebrew and system tools are on PATH — LaunchAgents inherit a minimal env -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+
     <!-- Start whenever user logs in — no time restriction -->
     <key>RunAtLoad</key>
     <true/>
