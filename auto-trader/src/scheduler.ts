@@ -2295,14 +2295,14 @@ async function executeScannerTrade(
   // handles first-candle setups; scanner trades shouldn't race it.
   if (!isMarketHoursET() || getETMinutes() < 9 * 60 + 35) return 'skipped:outside-market-hours';
 
-  // Never auto-short from scanner signals. SELL ideas are bearish research — executing them
-  // without an existing long position would open a naked short, which is not the intent.
-  // The only valid scanner SELL auto-execution would be closing an existing long, but that's
-  // handled by checkLossCutOpportunities / checkProfitTakeOpportunities, not here.
-  if (signal === 'SELL') {
+  // For SWING_TRADE SELL signals: block unless we already hold a long to close.
+  // Multi-day shorts from scanner signals are too risky to auto-execute.
+  // For DAY_TRADE SELL signals: allow — intraday shorts are standard day trading
+  // (open short, cover same day). The EOD sweep closes any open day trades.
+  if (signal === 'SELL' && mode === 'SWING_TRADE') {
     const hasLong = positions.some(p => p.symbol.toUpperCase() === ticker && p.position > 0);
     if (!hasLong) {
-      log(`${ticker}: scanner SELL skipped — no long position to close (would be a naked short)`);
+      log(`${ticker}: scanner SELL skipped — no long position to close (swing short not allowed)`);
       return 'skipped:no_long_to_sell';
     }
   }
