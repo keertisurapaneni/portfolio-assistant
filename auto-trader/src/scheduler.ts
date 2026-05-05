@@ -54,6 +54,8 @@ import {
   savePortfolioSnapshot,
   getPerformance,
   upsertHeartbeat,
+  writeScanEvaluations,
+  type ScanEvaluationStatus,
   type AutoTraderConfig,
   type ExternalStrategySignal,
   type PaperTrade,
@@ -2258,6 +2260,24 @@ function parseRiskReward(rr: string | null | undefined): number | null {
 }
 
 const MIN_DAY_TRADE_RISK_REWARD = 1.8;
+
+/** Map executeScannerTrade result codes → UI status + human reason. */
+function scanResultToEval(result: string): { status: ScanEvaluationStatus; reason: string } {
+  if (result === 'executed')                    return { status: 'executed',  reason: 'Order placed' };
+  if (result === 'skipped:inside_orb')          return { status: 'watching',  reason: 'ORB — waiting for breakout' };
+  if (result === 'skipped:outside-market-hours')return { status: 'watching',  reason: 'Outside market hours' };
+  if (result.startsWith('skipped:rr_'))         return { status: 'watching',  reason: 'R/R too low at current price' };
+  if (result === 'skipped:no_long_to_sell')     return { status: 'blocked',   reason: 'No position to close' };
+  if (result === 'skipped:duplicate')           return { status: 'blocked',   reason: 'Already trading this ticker' };
+  if (result === 'skipped:same_day_duplicate')  return { status: 'blocked',   reason: 'Already traded today' };
+  if (result === 'skipped:recent_loss_cooldown')return { status: 'blocked',   reason: 'Loss cooldown active' };
+  if (result === 'skipped:daily_loss_gate')     return { status: 'blocked',   reason: 'Daily loss limit reached' };
+  if (result === 'skipped:swing_chop')          return { status: 'blocked',   reason: 'Market too choppy' };
+  if (result === 'skipped:pre_trade_check')     return { status: 'blocked',   reason: 'Pre-trade gate failed' };
+  if (result === 'skipped:max_positions')       return { status: 'blocked',   reason: 'Max positions reached' };
+  if (result.startsWith('failed:'))             return { status: 'blocked',   reason: 'Order failed — see logs' };
+  return { status: 'blocked', reason: result.replace(/^skipped:/, '') };
+}
 
 // ── Trade Execution ──────────────────────────────────────
 
@@ -4716,6 +4736,8 @@ async function runTradeExecutionOnly(): Promise<void> {
       !_processedTickers.has(i.ticker) &&
       !genericQueuedTickers.has(i.ticker)
     );
+    const rtDayEvals: Record<string, { status: ScanEvaluationStatus; reason: string }> = {};
+    const rtSwingEvals: Record<string, { status: ScanEvaluationStatus; reason: string }> = {};
     if (newIdeas.length > 0) {
       const activeCount = await countActivePositions();
       const slots = config.maxPositions - activeCount;
@@ -4727,6 +4749,9 @@ async function runTradeExecutionOnly(): Promise<void> {
         for (const idea of qualified) {
           const result = await executeScannerTrade(idea, config, positions);
           log(`  ${idea.ticker}: ${result}`);
+          const ev = scanResultToEval(result);
+          if (idea.mode === 'DAY_TRADE') rtDayEvals[idea.ticker] = ev;
+          else rtSwingEvals[idea.ticker] = ev;
           // Only mark as processed for non-time-based outcomes so the ticker is retried
           // when the market-hours window opens (e.g. the 9:30–9:35 first-candle guard).
           if (result !== 'skipped:outside-market-hours') {
@@ -4736,6 +4761,8 @@ async function runTradeExecutionOnly(): Promise<void> {
         }
       }
     }
+    if (Object.keys(rtDayEvals).length > 0)   writeScanEvaluations('day_trades', rtDayEvals).catch(() => {});
+    if (Object.keys(rtSwingEvals).length > 0)  writeScanEvaluations('swing_trades', rtSwingEvals).catch(() => {});
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
     log(`[Realtime] Trade execution complete (${elapsed}s)`);
   } catch (err) {
@@ -4957,6 +4984,15 @@ async function runSchedulerCycle(): Promise<void> {
       !_processedTickers.has(i.ticker) &&
       !genericQueuedTickers.has(i.ticker)
     );
+    // Collect gate results per scan row for UI status badges
+    const dayEvals: Record<string, { status: ScanEvaluationStatus; reason: string }> = {};
+    const swingEvals: Record<string, { status: ScanEvaluationStatus; reason: string }> = {};
+    const recordEval = (idea: TradeIdea, result: string) => {
+      const ev = scanResultToEval(result);
+      if (idea.mode === 'DAY_TRADE') dayEvals[idea.ticker] = ev;
+      else swingEvals[idea.ticker] = ev;
+    };
+
     if (newIdeas.length > 0) {
       const activeCount = await countActivePositions();
       const slots = config.maxPositions - activeCount;
@@ -4970,6 +5006,7 @@ async function runSchedulerCycle(): Promise<void> {
         for (const idea of qualified) {
           const result = await executeScannerTrade(idea, config, positions);
           log(`  ${idea.ticker}: ${result}`);
+          recordEval(idea, result);
           // Only mark as processed for non-time-based outcomes so the ticker is retried
           // when the market-hours window opens (e.g. the 9:30–9:35 first-candle guard).
           if (result !== 'skipped:outside-market-hours') {
@@ -4979,12 +5016,18 @@ async function runSchedulerCycle(): Promise<void> {
         }
       } else {
         log(`Max positions reached (${config.maxPositions}) — skipping scanner ideas`);
+        // Mark all unprocessed ideas as blocked due to max positions
+        for (const idea of newIdeas) recordEval(idea, 'skipped:max_positions');
       }
     } else if (scannerIdeasLoaded) {
       const msg = allIdeas.length === 0 ? 'No scanner ideas' : `Scanner: ${allIdeas.length} ideas (all filtered or already processed)`;
       log(msg);
       summaryLog(msg);
     }
+
+    // Write evaluation results to DB so the UI can show Armed/Watching/Blocked badges
+    if (Object.keys(dayEvals).length > 0)   writeScanEvaluations('day_trades', dayEvals).catch(() => {});
+    if (Object.keys(swingEvals).length > 0)  writeScanEvaluations('swing_trades', swingEvals).catch(() => {});
 
     // 11. SPX key-level breakout-retest scanner (Somesh's strategy)
     // Watches $50 SPX levels for the break → 2 independent candles → retest pattern.

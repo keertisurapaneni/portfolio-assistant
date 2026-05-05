@@ -56,6 +56,35 @@ export interface ScanResult {
   cached?: boolean;
 }
 
+export type ScanEvaluationStatus = 'armed' | 'watching' | 'blocked' | 'executed';
+
+export interface ScanEvaluation {
+  status: ScanEvaluationStatus;
+  reason: string;
+  evaluated_at: string;
+}
+
+/** Keyed by ticker (uppercased). Merged from both day_trades + swing_trades rows. */
+export type ScanEvaluations = Record<string, ScanEvaluation>;
+
+/** Fetch auto-trader gate evaluation results from trade_scans rows directly. */
+export async function fetchScanEvaluations(): Promise<ScanEvaluations> {
+  const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+  const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+  try {
+    const res = await fetch(
+      `${supabaseUrl}/rest/v1/trade_scans?id=in.(day_trades,swing_trades)&select=auto_evaluations`,
+      { headers: { apikey: supabaseKey, Authorization: `Bearer ${supabaseKey}` } }
+    );
+    if (!res.ok) return {};
+    const rows: Array<{ auto_evaluations: Record<string, ScanEvaluation> }> = await res.json();
+    // Merge both rows into a single ticker-keyed map
+    return rows.reduce<ScanEvaluations>((acc, row) => ({ ...acc, ...row.auto_evaluations }), {});
+  } catch {
+    return {};
+  }
+}
+
 export async function fetchTradeIdeas(
   portfolioTickers?: string[],
   forceRefresh = false,

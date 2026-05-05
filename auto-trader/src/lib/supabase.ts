@@ -817,6 +817,47 @@ export interface HeartbeatPayload {
  * whether the auto-trader is alive even when the HTTP endpoint is unreachable.
  * Silently swallows errors — a failed heartbeat write must never crash the service.
  */
+// ── Scan Evaluations ──────────────────────────────────────
+// Written by the auto-trader after each evaluation cycle so the UI can
+// show Armed / Watching / Blocked status on Trade Idea cards.
+
+export type ScanEvaluationStatus = 'armed' | 'watching' | 'blocked' | 'executed';
+
+export interface ScanEvaluation {
+  status: ScanEvaluationStatus;
+  reason: string;
+  evaluated_at: string;
+}
+
+export async function writeScanEvaluations(
+  scanId: 'day_trades' | 'swing_trades',
+  evals: Record<string, { status: ScanEvaluationStatus; reason: string }>
+): Promise<void> {
+  if (Object.keys(evals).length === 0) return;
+  try {
+    const sb = getSupabase();
+    const evaluated_at = new Date().toISOString();
+    // Read-merge-write so we don't clobber evaluations from the other scan row.
+    const { data: existing } = await sb
+      .from('trade_scans')
+      .select('auto_evaluations')
+      .eq('id', scanId)
+      .single();
+    const merged: Record<string, ScanEvaluation> = {
+      ...(existing?.auto_evaluations ?? {}),
+      ...Object.fromEntries(
+        Object.entries(evals).map(([ticker, ev]) => [ticker, { ...ev, evaluated_at }])
+      ),
+    };
+    await sb
+      .from('trade_scans')
+      .update({ auto_evaluations: merged })
+      .eq('id', scanId);
+  } catch {
+    // Non-critical — don't let UI sync failure impact trading
+  }
+}
+
 export async function upsertHeartbeat(payload: HeartbeatPayload): Promise<void> {
   try {
     const sb = getSupabase();

@@ -17,7 +17,15 @@ import {
   Ban,
 } from 'lucide-react';
 import { cn } from '../lib/utils';
-import { fetchTradeIdeas, type TradeIdea, type ScanResult, type KeyLevelSetup } from '../lib/tradeScannerApi';
+import {
+  fetchTradeIdeas,
+  fetchScanEvaluations,
+  type TradeIdea,
+  type ScanResult,
+  type KeyLevelSetup,
+  type ScanEvaluation,
+  type ScanEvaluations,
+} from '../lib/tradeScannerApi';
 import { getAutoTraderConfig } from '../lib/autoTrader';
 import { getActiveTrades, getAllTrades } from '../lib/paperTradesApi';
 import { Spinner } from './Spinner';
@@ -124,6 +132,7 @@ export function TradeIdeas({ onSelectTicker }: TradeIdeasProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [tradedTickers, setTradedTickers] = useState<Set<string>>(new Set());
+  const [evaluations, setEvaluations] = useState<ScanEvaluations>({});
   const [marketOpen, setMarketOpen] = useState(() => isMarketHoursWindow());
 
   // Re-check market hours every minute so the badge updates as windows open/close.
@@ -152,6 +161,16 @@ export function TradeIdeas({ onSelectTicker }: TradeIdeasProps) {
         setTradedTickers(tickers);
       })
       .catch(console.error);
+  }, []);
+
+  // Load auto-trader gate evaluations (Armed / Watching / Blocked) for each idea.
+  // Refreshes every 2 minutes so the UI stays in sync with the scheduler cycle.
+  useEffect(() => {
+    fetchScanEvaluations().then(setEvaluations).catch(() => {});
+    const interval = setInterval(() => {
+      fetchScanEvaluations().then(setEvaluations).catch(() => {});
+    }, 2 * 60 * 1000);
+    return () => clearInterval(interval);
   }, []);
 
   const load = useCallback(async (force = false) => {
@@ -209,8 +228,24 @@ export function TradeIdeas({ onSelectTicker }: TradeIdeasProps) {
   const dayIdeas = data?.dayTrades ?? [];
   const swingIdeas = data?.swingTrades ?? [];
   const gameplanSetups = data?.keyLevelSetups ?? [];
-  const ideas = tab === 'day' ? dayIdeas : tab === 'swing' ? swingIdeas : [];
   const totalCount = dayIdeas.length + swingIdeas.length; // key level setups excluded from badge count
+
+  // Sort order: executed/armed → watching → no-eval → blocked
+  const evalSortWeight = (ticker: string, signal: 'BUY' | 'SELL') => {
+    const ev = evaluations[ticker.toUpperCase()];
+    if (!ev) return signal === 'SELL' ? 3 : 2; // SELL with no eval likely blocked; BUY unknown
+    if (ev.status === 'executed' || ev.status === 'armed') return 0;
+    if (ev.status === 'watching') return 1;
+    return 3; // blocked
+  };
+  const sortedIdeas = (raw: TradeIdea[]) =>
+    [...raw].sort((a, b) => evalSortWeight(a.ticker, a.signal) - evalSortWeight(b.ticker, b.signal));
+
+  const ideas = tab === 'day'
+    ? sortedIdeas(dayIdeas)
+    : tab === 'swing'
+      ? sortedIdeas(swingIdeas)
+      : [];
 
   return (
     <div className="rounded-xl border border-[hsl(var(--border))] bg-white shadow-sm overflow-hidden">
@@ -449,6 +484,7 @@ export function TradeIdeas({ onSelectTicker }: TradeIdeasProps) {
                         idea={idea}
                         traded={tradedTickers.has(idea.ticker.toUpperCase())}
                         hasOpenPosition={idea.signal === 'BUY' || tradedTickers.has(idea.ticker.toUpperCase())}
+                        evaluation={evaluations[idea.ticker.toUpperCase()]}
                         onSelect={onSelectTicker}
                       />
                     ))}
@@ -646,16 +682,21 @@ function IdeaCard({
   idea,
   traded,
   hasOpenPosition = true,
+  evaluation,
   onSelect,
 }: {
   idea: TradeIdea;
   traded: boolean;
   hasOpenPosition?: boolean;
+  evaluation?: ScanEvaluation;
   onSelect: (ticker: string, mode: 'DAY_TRADE' | 'SWING_TRADE') => void;
 }) {
   const isPositive = idea.changePercent >= 0;
   // SELL signal with no matching open position — auto-trader will skip this
   const ineligibleShort = idea.signal === 'SELL' && !hasOpenPosition;
+  const isArmed = evaluation?.status === 'armed' || evaluation?.status === 'executed';
+  const isWatching = evaluation?.status === 'watching';
+  const isBlocked = evaluation?.status === 'blocked' || ineligibleShort;
 
   return (
     <button
@@ -666,9 +707,13 @@ function IdeaCard({
         'hover:shadow-md hover:-translate-y-0.5',
         traded
           ? 'bg-emerald-50/40 border-emerald-300 hover:border-emerald-400'
-          : ineligibleShort
-            ? 'bg-[hsl(var(--secondary))]/60 border-[hsl(var(--border))] opacity-55 hover:opacity-75 hover:border-[hsl(var(--border))]'
-            : 'bg-white border-[hsl(var(--border))] hover:border-[hsl(var(--ring))]'
+          : isArmed
+            ? 'bg-white border-emerald-400 ring-1 ring-emerald-300 hover:border-emerald-500'
+            : isBlocked && !evaluation
+              ? 'bg-[hsl(var(--secondary))]/60 border-[hsl(var(--border))] opacity-55 hover:opacity-75 hover:border-[hsl(var(--border))]'
+              : isBlocked
+                ? 'bg-[hsl(var(--secondary))]/60 border-[hsl(var(--border))] opacity-55 hover:opacity-75 hover:border-[hsl(var(--border))]'
+                : 'bg-white border-[hsl(var(--border))] hover:border-[hsl(var(--ring))]'
       )}
     >
       {/* Traded badge */}
@@ -679,8 +724,8 @@ function IdeaCard({
         </div>
       )}
 
-      {/* Ineligible short badge */}
-      {ineligibleShort && !traded && (
+      {/* Ineligible short badge (no evaluation yet) */}
+      {ineligibleShort && !traded && !evaluation && (
         <div className="absolute top-2 right-2 flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-slate-100 border border-slate-200">
           <Ban className="w-3 h-3 text-slate-400" />
           <span className="text-[9px] font-medium text-slate-500">No position</span>
@@ -733,6 +778,25 @@ function IdeaCard({
               {tag}
             </span>
           ))}
+        </div>
+      )}
+
+      {/* Auto-trade status line */}
+      {evaluation && !traded && (
+        <div className={cn(
+          'flex items-center gap-1 mt-2 text-[10px] font-medium',
+          isArmed    ? 'text-emerald-600' :
+          isWatching ? 'text-amber-600'   :
+                       'text-slate-400'
+        )}>
+          {isArmed    && <Zap         className="w-3 h-3 flex-shrink-0" />}
+          {isWatching && <RefreshCw   className="w-3 h-3 flex-shrink-0" />}
+          {isBlocked  && <Ban         className="w-3 h-3 flex-shrink-0" />}
+          <span className="truncate">
+            {isArmed    ? `Armed` :
+             isWatching ? `Watching · ${evaluation.reason}` :
+                          `Blocked · ${evaluation.reason}`}
+          </span>
         </div>
       )}
 
