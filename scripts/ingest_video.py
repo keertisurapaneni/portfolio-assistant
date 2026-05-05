@@ -57,11 +57,28 @@ def parse_url(url: str) -> dict | None:
 
 
 def _add_cookie_args(cmd: list, cookies_file: str | None, cookies_from_browser: str | None) -> list:
-    """Append cookie flags to a yt-dlp command list."""
-    if cookies_from_browser:
-        cmd.extend(["--cookies-from-browser", cookies_from_browser])
-    elif cookies_file and os.path.isfile(cookies_file):
+    """Append cookie flags to a yt-dlp command list.
+
+    NOTE: --cookies-from-browser (e.g. 'chrome') requires macOS Keychain access to decrypt
+    Chrome v10 cookies. This is unavailable in LaunchAgent/headless contexts, causing
+    'cannot decrypt v10 cookies: no key found' warnings. Prefer a pre-exported cookies.txt
+    via --cookies instead. If only cookies_from_browser is provided in a headless context,
+    we skip it to avoid noisy failures — Instagram public reels typically work without auth.
+    """
+    if cookies_file and os.path.isfile(cookies_file):
         cmd.extend(["--cookies", cookies_file])
+    elif cookies_from_browser:
+        # Only use browser cookies when running interactively (TTY), not in a daemon/LaunchAgent.
+        # Chrome v10 AES-GCM decryption requires the user's login keychain, which is locked
+        # in background service contexts.
+        import sys as _sys
+        if _sys.stdin.isatty():
+            cmd.extend(["--cookies-from-browser", cookies_from_browser])
+        else:
+            print(
+                f"[ingest] Warning: --cookies-from-browser={cookies_from_browser!r} skipped in headless context "
+                f"(Chrome v10 keychain unavailable). Export a cookies.txt and use --cookies instead."
+            )
     return cmd
 
 
@@ -102,6 +119,13 @@ def download_audio(url: str, out_path: str, cookies_file: str | None = None, coo
     # Use m4a to avoid ffmpeg dependency (Instagram DASH is often m4a; faster-whisper accepts it)
     base = out_path.replace(".wav", "").replace(".m4a", "")
     out_template = base + ".%(ext)s"
+
+    # Resolve ffmpeg location — LaunchAgents run with restricted PATH that often excludes
+    # /opt/homebrew/bin. Probe common locations and pass --ffmpeg-location explicitly.
+    import shutil
+    _ffmpeg_bin = shutil.which("ffmpeg") or shutil.which("ffmpeg", path="/opt/homebrew/bin:/usr/local/bin")
+    _ffmpeg_dir = os.path.dirname(_ffmpeg_bin) if _ffmpeg_bin else os.environ.get("FFMPEG_LOCATION", "/opt/homebrew/bin")
+
     cmd = [
         sys.executable,
         "-m",
@@ -109,6 +133,8 @@ def download_audio(url: str, out_path: str, cookies_file: str | None = None, coo
         "-x",
         "--audio-format",
         "m4a",
+        "--ffmpeg-location",
+        _ffmpeg_dir,
         "-o",
         out_template,
         "--no-playlist",
