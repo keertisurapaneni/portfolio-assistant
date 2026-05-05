@@ -26,6 +26,8 @@ export interface TradeIdea {
   in_play_score?: number;
   pass1_confidence?: number;
   market_condition?: 'trend' | 'chop';
+  /** When true, bypasses the naked-short guard. Set for user-initiated manual trades. */
+  allowShort?: boolean;
 }
 
 export interface KeyLevelSetup {

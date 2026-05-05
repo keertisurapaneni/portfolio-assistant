@@ -563,6 +563,8 @@ export function TradingSignals() {
         stopLoss: result.trade.stopLoss,
         targetPrice: result.trade.targetPrice,
         riskReward: result.trade.riskReward != null ? String(result.trade.riskReward) : null,
+        // User explicitly requested this trade — allow short selling even without a long position
+        allowShort: true,
       };
 
       const results = await processTradeIdeas([idea]);
