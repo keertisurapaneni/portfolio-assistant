@@ -269,25 +269,25 @@ export function SuggestedFinds({ existingTickers }: SuggestedFindsProps) {
       )}
 
       {/* Dip Discovery — blue-chip stocks buying the dip */}
-      {dipDiscoveries.length > 0 && (
-        <section>
-          <div className="flex items-center gap-3 mb-3">
-            <div className="p-2 rounded-lg bg-indigo-50">
-              <TrendingDown className="w-4 h-4 text-indigo-600" />
-            </div>
-            <div className="flex-1">
-              <div className="flex items-center gap-2">
-                <h3 className="font-semibold text-[hsl(var(--foreground))]">Dip Discovery</h3>
-                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-600 text-[10px] font-medium">
-                  Blue-Chip Dips
-                </span>
-              </div>
-              <p className="text-sm text-[hsl(var(--muted-foreground))]">
-                Fortune 500 stocks down 30-50% from 52-week highs — buying quality on sale
-              </p>
-            </div>
+      <section>
+        <div className="flex items-center gap-3 mb-3">
+          <div className="p-2 rounded-lg bg-indigo-50">
+            <TrendingDown className="w-4 h-4 text-indigo-600" />
           </div>
+          <div className="flex-1">
+            <div className="flex items-center gap-2">
+              <h3 className="font-semibold text-[hsl(var(--foreground))]">Dip Discovery</h3>
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-600 text-[10px] font-medium">
+                Blue-Chip Dips
+              </span>
+            </div>
+            <p className="text-sm text-[hsl(var(--muted-foreground))]">
+              Fortune 500 stocks down 30-50% from 52-week highs — buying quality on sale
+            </p>
+          </div>
+        </div>
 
+        {dipDiscoveries.length > 0 ? (
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
             {dipDiscoveries.map((stock) => (
               <DipDiscoveryCard
@@ -297,8 +297,14 @@ export function SuggestedFinds({ existingTickers }: SuggestedFindsProps) {
               />
             ))}
           </div>
-        </section>
-      )}
+        ) : (
+          <div className="rounded-xl border border-dashed border-indigo-200 bg-indigo-50/30 px-5 py-6 text-center">
+            <p className="text-sm text-[hsl(var(--muted-foreground))]">
+              No blue-chip dips found right now. The scanner runs daily during market hours.
+            </p>
+          </div>
+        )}
+      </section>
 
       {/* Steady Compounders */}
       <section>
