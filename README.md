@@ -10,7 +10,7 @@ AI-powered stock signals — skip the noise, catch the plays.
 |---|---|
 | **My Portfolio** `/` | Conviction scoring (0-100), AI BUY/SELL signals, risk profiles, brokerage sync (SnapTrade), CSV import, news, daily P&L |
 | **Trade Signals** `/signals` | AI scanner finds day/swing setups → full analysis with indicators, scenarios, dual targets, charts, long-term outlook |
-| **Suggested Finds** `/finds` | Quiet Compounders (quality + valuation ranked) and Gold Mines (macro-theme opportunities) discovered daily by AI, with "Owned" badge for stocks in portfolio |
+| **Suggested Finds** `/finds` | Dip Discovery (blue-chip stocks 30-50% off 52w high), Quiet Compounders (quality + valuation ranked), and Gold Mines (macro-theme opportunities) discovered daily by AI, with "Owned" badge for stocks in portfolio |
 | **Paper Trading** `/paper-trading` | Auto-executes high-confidence signals on IB paper account, tracks P&L, AI learns from outcomes |
 | **Market Movers** `/movers` | Top 25 gainers/losers from Yahoo Finance |
 
@@ -36,6 +36,7 @@ AI-powered stock signals — skip the noise, catch the plays.
 
 ### Suggested Finds
 
+- **Dip Discovery** — Fortune 500 / S&P 500 stocks down 30-50% from 52-week high, verified with Finnhub data, AI catalyst check filters out structural damage. Position size $3-5K, max 3 concurrent, max 1 per sector. Exit: 40% drawdown recovery TP, -15% stop, 120-day max hold
 - **Quiet Compounders** — Quality stocks ranked by conviction (1-10), valuation tags (Deep Value → Fully Valued), filterable by industry
 - **Gold Mines** — Macro-theme-driven opportunities across the value chain, with conviction scores and valuation tags
 - **Top Pick** badge on highest-conviction stock per category
@@ -106,6 +107,7 @@ Browser (React 19 · Vite 7 · TypeScript 5.9 · Tailwind CSS 4)
 | Trade Signals | Gemini (rotated) | Full analysis: indicators, scenarios, targets, long-term outlook |
 | Quiet Compounders | HuggingFace (Qwen2.5-72B) | Discover quality stocks, rank by conviction + valuation |
 | Gold Mines | HuggingFace (Qwen2.5-72B) | Macro-theme opportunities from news + fundamentals |
+| Dip Discovery | HuggingFace + Finnhub | Blue-chip dip-buying: AI candidates → drawdown verification → catalyst check |
 | Paper Trading | Gemini (via scanner + FA) | Auto-execute signals → IB bracket orders |
 | AI Feedback Loop | Heuristic | Analyze trade outcomes → pattern recognition |
 
@@ -176,6 +178,7 @@ npm run lint     # ESLint
 | [`docs/INSTAGRAM-STRATEGY-ARCHITECTURE.md`](docs/INSTAGRAM-STRATEGY-ARCHITECTURE.md) | External strategy signals from videos |
 | [`supabase/functions/README.md`](supabase/functions/README.md) | Edge functions, prompts, API keys |
 | [`auto-trader/README.md`](auto-trader/README.md) | IB Gateway setup, scheduler |
+| [`docs/cursor/2026-05-05-dip-discovery-strategy.md`](docs/cursor/2026-05-05-dip-discovery-strategy.md) | Dip Discovery strategy design (entry, sizing, exits) |
 
 ## Commit Conventions
 

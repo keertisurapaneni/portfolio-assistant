@@ -81,7 +81,7 @@ export interface ConvictionResult {
 export interface SuggestedStock {
   ticker: string;
   name: string;
-  tag: 'Steady Compounder' | 'Gold Mine';
+  tag: 'Steady Compounder' | 'Gold Mine' | 'Dip Discovery';
   reason: string;
   /** Gold Mine only — macro theme category driving exit rule selection */
   archetype?: 'Tech/Semi' | 'Defense' | 'Energy' | 'Financials';

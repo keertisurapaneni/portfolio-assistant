@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import {
   TrendingUp,
+  TrendingDown,
   Gem,
   ChevronDown,
   ChevronUp,
@@ -30,6 +31,7 @@ export function SuggestedFinds({ existingTickers }: SuggestedFindsProps) {
     displayedCompounders,
     goldMines,
     displayedGoldMines,
+    dipDiscoveries,
     currentTheme,
     isLoading,
     error,
@@ -264,6 +266,38 @@ export function SuggestedFinds({ existingTickers }: SuggestedFindsProps) {
             : `Auto-buy enabled — conviction ${getAutoTraderConfig().minSuggestedFindsConviction}+ Undervalued/Deep Value + all Top Picks`
           }
         </div>
+      )}
+
+      {/* Dip Discovery — blue-chip stocks buying the dip */}
+      {dipDiscoveries.length > 0 && (
+        <section>
+          <div className="flex items-center gap-3 mb-3">
+            <div className="p-2 rounded-lg bg-indigo-50">
+              <TrendingDown className="w-4 h-4 text-indigo-600" />
+            </div>
+            <div className="flex-1">
+              <div className="flex items-center gap-2">
+                <h3 className="font-semibold text-[hsl(var(--foreground))]">Dip Discovery</h3>
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-600 text-[10px] font-medium">
+                  Blue-Chip Dips
+                </span>
+              </div>
+              <p className="text-sm text-[hsl(var(--muted-foreground))]">
+                Fortune 500 stocks down 30-50% from 52-week highs — buying quality on sale
+              </p>
+            </div>
+          </div>
+
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+            {dipDiscoveries.map((stock) => (
+              <DipDiscoveryCard
+                key={stock.ticker}
+                stock={stock}
+                isOwned={ownedTickers.has(stock.ticker)}
+              />
+            ))}
+          </div>
+        </section>
       )}
 
       {/* Steady Compounders */}
@@ -653,6 +687,131 @@ function ValuationPill({ tag }: { tag: string }) {
     <span className={cn('text-[10px] px-2 py-0.5 rounded-full font-medium', style)}>
       {tag}
     </span>
+  );
+}
+
+// ──────────────────────────────────────────────────────────
+// Dip Discovery card — shows drawdown & recovery target
+// ──────────────────────────────────────────────────────────
+
+function DipDiscoveryCard({ stock, isOwned }: { stock: EnhancedSuggestedStock; isOwned?: boolean }) {
+  const [isExpanded, setIsExpanded] = useState(false);
+  const drawdown = (stock as unknown as Record<string, unknown>).drawdownPct as number | undefined;
+  const high52w = (stock as unknown as Record<string, unknown>).high52w as number | undefined;
+  const sector = (stock as unknown as Record<string, unknown>).sector as string | undefined;
+
+  return (
+    <div
+      className={cn(
+        'bg-white rounded-2xl border border-[hsl(var(--border))] p-5 transition-all shadow-sm relative',
+        'hover:border-indigo-200',
+        isExpanded && 'shadow-md'
+      )}
+    >
+      {isOwned && (
+        <div className="absolute -top-2.5 left-4 inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-blue-500 text-white text-[10px] font-semibold shadow-sm">
+          <CheckCircle2 className="w-3 h-3" />
+          Owned
+        </div>
+      )}
+
+      <div className="flex items-start justify-between mb-2">
+        <TickerLabel ticker={stock.ticker} name={stock.name} />
+        {stock.conviction != null && <ConvictionBadge score={stock.conviction} />}
+      </div>
+
+      {/* Drawdown + sector badges */}
+      <div className="flex flex-wrap gap-1.5 mb-2">
+        {drawdown != null && (
+          <span className="text-[10px] px-2 py-0.5 rounded-full font-medium bg-red-50 text-red-700">
+            {drawdown.toFixed(0)}% off 52w high
+          </span>
+        )}
+        {sector && (
+          <span className="text-[10px] px-2 py-0.5 rounded-full font-medium bg-indigo-50 text-indigo-700">
+            {sector}
+          </span>
+        )}
+      </div>
+
+      {stock.valuationTag && (
+        <div className="flex flex-wrap gap-1 mb-2">
+          <ValuationPill tag={stock.valuationTag} />
+        </div>
+      )}
+
+      <p className="text-sm text-[hsl(var(--muted-foreground))] leading-relaxed mb-3">
+        {stock.reason}
+      </p>
+
+      {/* Key metrics */}
+      <div className="flex flex-wrap gap-1.5 mb-3">
+        {high52w != null && (
+          <span className="text-[11px] px-2 py-0.5 bg-[hsl(var(--secondary))] rounded-full">
+            <span className="text-[hsl(var(--muted-foreground))]">52w High:</span>{' '}
+            <span className="font-semibold text-[hsl(var(--foreground))]">${high52w.toFixed(2)}</span>
+          </span>
+        )}
+        {stock.metrics?.slice(0, 2).map((metric) => (
+          <span
+            key={metric.label}
+            className="text-[11px] px-2 py-0.5 bg-[hsl(var(--secondary))] rounded-full"
+          >
+            <span className="text-[hsl(var(--muted-foreground))]">{metric.label}:</span>{' '}
+            <span className="font-semibold text-[hsl(var(--foreground))]">{metric.value}</span>
+          </span>
+        ))}
+      </div>
+
+      <button
+        onClick={() => setIsExpanded(!isExpanded)}
+        className="text-xs text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))] flex items-center gap-1 transition-colors"
+      >
+        {isExpanded ? (
+          <>
+            <ChevronUp className="w-3.5 h-3.5" />
+            Less
+          </>
+        ) : (
+          <>
+            <ChevronDown className="w-3.5 h-3.5" />
+            Why this dip?
+          </>
+        )}
+      </button>
+
+      {isExpanded && (
+        <div className="mt-3 pt-3 border-t border-[hsl(var(--border))]">
+          {stock.metrics && stock.metrics.length > 2 && (
+            <div className="flex flex-wrap gap-1.5 mb-3">
+              {stock.metrics.slice(2).map((metric) => (
+                <span
+                  key={metric.label}
+                  className="text-[11px] px-2 py-0.5 bg-[hsl(var(--secondary))] rounded-full"
+                >
+                  <span className="text-[hsl(var(--muted-foreground))]">{metric.label}:</span>{' '}
+                  <span className="font-semibold text-[hsl(var(--foreground))]">{metric.value}</span>
+                </span>
+              ))}
+            </div>
+          )}
+
+          <ul className="space-y-1.5">
+            {stock.whyGreat.map((point, index) => (
+              <li key={index} className="flex items-start gap-2 text-sm">
+                <span className="mt-1.5 w-1.5 h-1.5 rounded-full flex-shrink-0 bg-indigo-500" />
+                <span className="text-[hsl(var(--muted-foreground))]">{point}</span>
+              </li>
+            ))}
+          </ul>
+
+          <p className="text-[10px] text-[hsl(var(--muted-foreground))]/50 mt-3 flex items-center gap-1">
+            <Sparkles className="w-2.5 h-2.5" />
+            AI-generated insight — verify before investing
+          </p>
+        </div>
+      )}
+    </div>
   );
 }
 

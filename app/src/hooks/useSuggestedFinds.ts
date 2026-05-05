@@ -38,6 +38,7 @@ export interface UseSuggestedFindsResult {
   displayedCompounders: EnhancedSuggestedStock[];
   goldMines: EnhancedSuggestedStock[];
   displayedGoldMines: EnhancedSuggestedStock[];
+  dipDiscoveries: EnhancedSuggestedStock[];
   currentTheme: ThemeData | null;
   isLoading: boolean;
   error: string | null;
@@ -66,6 +67,7 @@ export interface UseSuggestedFindsResult {
 export function useSuggestedFinds(existingTickers: string[]): UseSuggestedFindsResult {
   const [compounders, setCompounders] = useState<EnhancedSuggestedStock[]>([]);
   const [goldMines, setGoldMines] = useState<EnhancedSuggestedStock[]>([]);
+  const [dipDiscoveries, setDipDiscoveries] = useState<EnhancedSuggestedStock[]>([]);
   const [currentTheme, setCurrentTheme] = useState<ThemeData | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -93,6 +95,7 @@ export function useSuggestedFinds(existingTickers: string[]): UseSuggestedFindsR
   const applyResult = useCallback((result: DiscoveryResult) => {
     setCompounders(result.compounders);
     setGoldMines(result.goldMines);
+    setDipDiscoveries(result.dipDiscoveries ?? []);
     setCurrentTheme(result.currentTheme);
     setLastUpdated(result.timestamp);
     setError(null);
@@ -253,6 +256,7 @@ export function useSuggestedFinds(existingTickers: string[]): UseSuggestedFindsR
     displayedCompounders,
     goldMines,
     displayedGoldMines,
+    dipDiscoveries,
     currentTheme,
     isLoading,
     error,

@@ -115,7 +115,10 @@ Updates `strategy_type` or source on an existing `strategy_videos` row.
 ### Other Functions
 
 #### `daily-suggestions`
-Long-term AI stock suggestions (Quiet Compounders / Gold Mines). Uses HuggingFace.
+Long-term AI stock suggestions (Dip Discovery / Quiet Compounders / Gold Mines). Uses HuggingFace + Finnhub.
+
+#### `huggingface-proxy`
+Secure HuggingFace/Groq proxy. Supports `discover_dips` type for the Dip Discovery pipeline alongside existing compounders/gold-mines prompts.
 
 #### `fetch-yahoo-news` / `scrape-market-movers`
 News and market movers data.
