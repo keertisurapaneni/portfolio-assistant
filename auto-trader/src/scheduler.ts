@@ -2586,9 +2586,6 @@ async function executeScannerTrade(
       pass1_confidence: idea.pass1_confidence,
       entry_trigger_type: 'bracket_limit',
       market_condition: idea.market_condition,
-      ...(candlePatternLog.length > 0 && {
-        metadata: { candle_patterns: candlePatternLog },
-      }),
     });
 
     recordPendingOrder(sizing.dollarSize);
