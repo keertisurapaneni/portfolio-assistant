@@ -525,17 +525,28 @@ async function closeAllDayTrades(config: AutoTraderConfig): Promise<void> {
         await placeMarketOrder({ symbol: trade.ticker, side: closeSide, quantity: qty });
         log(`${trade.ticker}: EOD close order placed (${qty} shares ${closeSide})`);
       } catch (orderErr) {
-        // IB order failed (disconnected, rejected, etc.) — log but still mark CLOSED in DB.
-        // If IB truly holds the position, `reconcileIBShorts` at next startup will cover it.
-        // Leaving DB in FILLED prevents the reconciler from knowing the order was attempted.
         log(`EOD sweep: ${trade.ticker} — IB order failed (${orderErr instanceof Error ? orderErr.message : 'unknown'}) — marking CLOSED in DB anyway`);
       }
+
+      const closePrice = await getQuotePrice(trade.ticker);
+      const fillPrice = trade.fill_price ?? trade.entry_price ?? 0;
+      const isLong = trade.signal === 'BUY';
+      const actual = closePrice ?? fillPrice;
+      const pnl = isLong
+        ? (actual - fillPrice) * qty
+        : (fillPrice - actual) * qty;
+      const costBasis = fillPrice * qty;
+      const pnlPct = costBasis > 0 ? (pnl / costBasis) * 100 : 0;
+
       await updatePaperTrade(trade.id, {
         status: 'CLOSED',
         close_reason: 'eod_close',
+        close_price: actual,
+        pnl: parseFloat(pnl.toFixed(2)),
+        pnl_percent: parseFloat(pnlPct.toFixed(2)),
         closed_at: new Date().toISOString(),
       });
-      log(`${trade.ticker}: EOD closed (${qty} shares ${closeSide})`);
+      log(`${trade.ticker}: EOD closed (${qty} shares ${closeSide}) — P&L $${pnl.toFixed(2)}`);
     } catch (err) {
       log(`EOD sweep: ${trade.ticker} — close failed: ${err instanceof Error ? err.message : 'unknown'}`);
     }
@@ -598,12 +609,20 @@ async function softCloseDayTrades(positions: EnrichedPosition[]): Promise<void> 
       } catch (orderErr) {
         log(`${trade.ticker}: [SoftClose] IB order failed (${orderErr instanceof Error ? orderErr.message : 'unknown'}) — marking CLOSED in DB`);
       }
+
+      const pnl = unrealizedPnl;
+      const costBasis = fillPrice * (trade.quantity ?? 1);
+      const pnlPct = costBasis > 0 ? (pnl / costBasis) * 100 : 0;
+
       await updatePaperTrade(trade.id, {
         status:       'CLOSED',
         close_reason: 'soft_eod_close',
+        close_price:  currentPrice,
+        pnl:          parseFloat(pnl.toFixed(2)),
+        pnl_percent:  parseFloat(pnlPct.toFixed(2)),
         closed_at:    new Date().toISOString(),
       });
-      log(`${trade.ticker}: [SoftClose] DB marked closed at 3:45 PM — ${reason}`);
+      log(`${trade.ticker}: [SoftClose] DB marked closed at 3:45 PM — ${reason} — P&L $${pnl.toFixed(2)}`);
       closed++;
     } catch (err) {
       log(`${trade.ticker}: [SoftClose] close failed — ${err instanceof Error ? err.message : 'unknown'}`);
@@ -642,29 +661,47 @@ async function checkStaleDayTrades(positions: EnrichedPosition[]): Promise<void>
 
     log(`  ${trade.ticker}: stale DAY_TRADE from ${tradeDate} — attempting close`);
 
+    const fillPrice = trade.fill_price ?? trade.entry_price ?? 0;
+    const isLong = trade.signal === 'BUY';
+    const qty = trade.quantity ?? 0;
+
     // If IB position no longer exists, just mark closed in DB (position already gone)
     if (!ibPos || Math.abs(ibPos.position) === 0) {
+      const staleClosePrice = await getQuotePrice(trade.ticker);
+      const actual = staleClosePrice ?? fillPrice;
+      const stalePnl = isLong ? (actual - fillPrice) * qty : (fillPrice - actual) * qty;
+      const staleCost = fillPrice * qty;
+      const stalePnlPct = staleCost > 0 ? (stalePnl / staleCost) * 100 : 0;
       await updatePaperTrade(trade.id, {
         status:       'CLOSED',
         close_reason: 'stale_eod_reconcile',
+        close_price:  actual,
+        pnl:          parseFloat(stalePnl.toFixed(2)),
+        pnl_percent:  parseFloat(stalePnlPct.toFixed(2)),
         closed_at:    new Date().toISOString(),
       });
-      log(`  ${trade.ticker}: no IB position found — marked CLOSED (reconciled)`);
+      log(`  ${trade.ticker}: no IB position found — marked CLOSED (reconciled) — P&L $${stalePnl.toFixed(2)}`);
       continue;
     }
 
-    const closeSide = trade.signal === 'BUY' ? 'SELL' : 'BUY';
-    const qty = trade.quantity ?? 0;
+    const closeSide = isLong ? 'SELL' : 'BUY';
     if (qty <= 0) continue;
 
     try {
       await placeMarketOrder({ symbol: trade.ticker, side: closeSide, quantity: qty });
+      const staleActual = ibPos.mktPrice > 0 ? ibPos.mktPrice : fillPrice;
+      const stalePnl = isLong ? (staleActual - fillPrice) * qty : (fillPrice - staleActual) * qty;
+      const staleCost = fillPrice * qty;
+      const stalePnlPct = staleCost > 0 ? (stalePnl / staleCost) * 100 : 0;
       await updatePaperTrade(trade.id, {
         status:       'CLOSED',
         close_reason: 'stale_eod_close',
+        close_price:  staleActual,
+        pnl:          parseFloat(stalePnl.toFixed(2)),
+        pnl_percent:  parseFloat(stalePnlPct.toFixed(2)),
         closed_at:    new Date().toISOString(),
       });
-      log(`  ${trade.ticker}: stale position closed via market order`);
+      log(`  ${trade.ticker}: stale position closed via market order — P&L $${stalePnl.toFixed(2)}`);
     } catch (err) {
       log(`  ${trade.ticker}: stale close failed — ${err instanceof Error ? err.message : 'unknown'}`);
     }
