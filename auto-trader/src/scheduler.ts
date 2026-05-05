@@ -139,7 +139,10 @@ interface SuggestedStock {
   valuationTag: string;
   tag: string;
   reason: string;
-  archetype?: string; // Gold Mine archetype: 'Tech/Semi' | 'Defense' | 'Energy' | 'Financials'
+  archetype?: string;
+  high52w?: number;
+  drawdownPct?: number;
+  sector?: string;
 }
 
 interface DailyVideoSignal {
@@ -1865,20 +1868,21 @@ async function fetchDailySuggestions(): Promise<SuggestedStock[] | null> {
     });
     const data = await res.json() as {
       cached: boolean;
-      data?: { compounders?: SuggestedStock[]; goldMines?: SuggestedStock[] };
+      data?: { compounders?: SuggestedStock[]; goldMines?: SuggestedStock[]; dipDiscoveries?: SuggestedStock[] };
     };
     if (!data.cached || !data.data) return null;
     return [
       ...(data.data.compounders ?? []),
       ...(data.data.goldMines ?? []),
+      ...(data.data.dipDiscoveries ?? []),
     ];
   } catch { return null; }
 }
 
 // ── Position Sizing ──────────────────────────────────────
 
-/** Gold Mine: cap at 1.25x. Steady Compounder: full up to 1.5x. */
-function convictionMultiplier(conv: number, suggestedFindTag?: 'Steady Compounder' | 'Gold Mine'): number {
+/** Gold Mine: cap at 1.25x. Steady Compounder: full up to 1.5x. Dip Discovery: cap at 1.0x. */
+function convictionMultiplier(conv: number, suggestedFindTag?: 'Steady Compounder' | 'Gold Mine' | 'Dip Discovery'): number {
   let mult: number;
   if (conv >= 10) mult = 1.5;
   else if (conv >= 9) mult = 1.25;
@@ -1886,6 +1890,7 @@ function convictionMultiplier(conv: number, suggestedFindTag?: 'Steady Compounde
   else if (conv >= 7) mult = 0.75;
   else mult = 0.5;
   if (suggestedFindTag === 'Gold Mine') mult = Math.min(mult, 1.25);
+  if (suggestedFindTag === 'Dip Discovery') mult = Math.min(mult, 1.0);
   return mult;
 }
 
@@ -1895,7 +1900,7 @@ function calculatePositionSize(
     price: number;
     mode: 'LONG_TERM' | 'DAY_TRADE' | 'SWING_TRADE' | 'OPTIONS_PUT' | 'OPTIONS_CALL';
     conviction?: number;
-    suggestedFindTag?: 'Steady Compounder' | 'Gold Mine';
+    suggestedFindTag?: 'Steady Compounder' | 'Gold Mine' | 'Dip Discovery';
     entryPrice?: number;
     stopLoss?: number;
     regimeMultiplier?: number;
@@ -1932,6 +1937,7 @@ function calculatePositionSize(
     // Compounders historically lose money on big positions (>$5K: 20% WR, -$928)
     // but are profitable on small ones (<=$5K: 78% WR, +$1,589). Hard-cap at $3K.
     if (suggestedFindTag === 'Steady Compounder') dollarSize = Math.min(dollarSize, 3000);
+    if (suggestedFindTag === 'Dip Discovery') dollarSize = Math.min(dollarSize, 5000);
   } else if (stopLoss && entryPrice && Math.abs(entryPrice - stopLoss) > 0) {
     const riskBudget = alloc * (config.riskPerTradePct / 100);
     const riskPerShare = Math.abs(entryPrice - stopLoss);
@@ -2811,6 +2817,8 @@ async function _executeSuggestedFindTradeInner(
   // Regime gate — Steady Compounders: SKIP entirely in a bear market (SPY < SMA200).
   // Buying long-term holds into a downtrend catches falling knives and produces the
   // worst outcomes. Only accumulate compounders when the macro trend is intact.
+  // Dip Discovery is EXEMPT — we explicitly want to buy quality stocks at deep discounts,
+  // which often happens during broad market downturns.
   if (stock.tag === 'Steady Compounder') {
     const bearMarket = await isSpyBelowSma200();
     if (bearMarket) {
@@ -2820,6 +2828,20 @@ async function _executeSuggestedFindTradeInner(
         skip_reason: 'bear_market_gate',
       });
       return 'skipped:bear_market';
+    }
+  }
+
+  // Dip Discovery: max 3 concurrent positions, max 1 per GICS sector
+  if (stock.tag === 'Dip Discovery') {
+    const { dipDiscoveryCount, dipDiscoverySectors } = await getLongTermExposureByTag();
+    if (dipDiscoveryCount >= 3) {
+      log(`${ticker}: Dip Discovery — already at max 3 concurrent positions, skipping`);
+      return 'skipped:dip_discovery_cap';
+    }
+    const sector = stock.sector ?? 'Unknown';
+    if (sector !== 'Unknown' && dipDiscoverySectors.has(sector)) {
+      log(`${ticker}: Dip Discovery — already have a position in ${sector} sector, skipping`);
+      return 'skipped:dip_discovery_sector_cap';
     }
   }
 
@@ -2878,7 +2900,7 @@ async function _executeSuggestedFindTradeInner(
   if (goldMineBelowSma200) log(`${ticker}: Gold Mine — SPY below SMA200, buying at 50% size`);
   const sizing = calculatePositionSize(config, {
     price: currentPrice, mode: 'LONG_TERM', conviction,
-    suggestedFindTag: (stock.tag === 'Gold Mine' || stock.tag === 'Steady Compounder') ? stock.tag : undefined,
+    suggestedFindTag: (stock.tag === 'Gold Mine' || stock.tag === 'Steady Compounder' || stock.tag === 'Dip Discovery') ? stock.tag as 'Gold Mine' | 'Steady Compounder' | 'Dip Discovery' : undefined,
     regimeMultiplier: sma200Multiplier,
     drawdownMultiplier: 1.0,
   });
@@ -2922,6 +2944,9 @@ async function _executeSuggestedFindTradeInner(
         stock.archetype ? `Archetype: ${stock.archetype}` : null,
         `Conviction: ${conviction}/10`,
         stock.valuationTag,
+        stock.tag === 'Dip Discovery' && stock.high52w ? `52wHigh: ${stock.high52w.toFixed(2)}` : null,
+        stock.tag === 'Dip Discovery' && stock.drawdownPct ? `Drawdown: ${stock.drawdownPct.toFixed(1)}%` : null,
+        stock.tag === 'Dip Discovery' && stock.sector ? `Sector: ${stock.sector}` : null,
       ].filter(Boolean).join(' | '),
       entry_trigger_type: 'market',
     });
@@ -4176,9 +4201,32 @@ async function checkLongTermAutoSell(
     const everAboveEntry = effectivePeak > entryPrice * 1.001;
 
     let reason: string | null = null;
-    const isGoldMine = /Gold Mine/i.test(`${trade.notes ?? ''} ${trade.scanner_reason ?? ''}`);
+    const tradeNotes = `${trade.notes ?? ''} ${trade.scanner_reason ?? ''}`;
+    const isGoldMine = /Gold Mine/i.test(tradeNotes);
+    const isDipDiscovery = /Dip Discovery/i.test(tradeNotes);
 
-    if (isGoldMine) {
+    if (isDipDiscovery) {
+      // ── Dip Discovery: mean-reversion exit rules ────────────────────────
+      // Take-profit = 40% recovery of the drawdown from 52-week high.
+      // Parse stored 52-week high from notes to compute the dynamic target.
+      const high52wMatch = tradeNotes.match(/52wHigh:\s*([\d.]+)/);
+      const high52w = high52wMatch ? parseFloat(high52wMatch[1]) : 0;
+
+      let dipTpPct = 20; // fallback: +20% from entry
+      if (high52w > 0 && entryPrice > 0 && high52w > entryPrice) {
+        const drawdownDollars = high52w - entryPrice;
+        const recoveryTarget = entryPrice + drawdownDollars * 0.40;
+        dipTpPct = ((recoveryTarget - entryPrice) / entryPrice) * 100;
+      }
+
+      if (gainPct >= dipTpPct) {
+        reason = `dd_profit_take:+${gainPct.toFixed(1)}%>=${dipTpPct.toFixed(1)}% (40% recovery)`;
+      } else if (gainPct <= -15) {
+        reason = `dd_stop_loss:${gainPct.toFixed(1)}%<=-15%`;
+      } else if (daysHeld >= 120) {
+        reason = `dd_max_hold:${daysHeld.toFixed(0)}d>=120d`;
+      }
+    } else if (isGoldMine) {
       // ── Gold Mine: archetype-specific exit rules ──────────────────────────
       const archetype = detectGoldMineArchetype(trade.notes ?? null, trade.scanner_reason ?? null);
       let rules = GM_ARCHETYPE_RULES[archetype];
@@ -4262,7 +4310,10 @@ async function checkLongTermAutoSell(
       });
 
       const emoji = gainPct >= 0 ? '✅' : '🛑';
-      const label = reason.startsWith('gm_profit_take') ? 'GM profit-take'
+      const label = reason.startsWith('dd_profit_take') ? 'Dip Discovery profit-take'
+        : reason.startsWith('dd_stop_loss')    ? 'Dip Discovery stop-loss'
+        : reason.startsWith('dd_max_hold')     ? 'Dip Discovery max-hold exit'
+        : reason.startsWith('gm_profit_take')  ? 'GM profit-take'
         : reason.startsWith('gm_entry_lock')   ? 'GM entry-lock exit'
         : reason.startsWith('gm_hard_stop')    ? 'GM hard stop (no bounce)'
         : reason.startsWith('gm_max_hold')     ? 'GM max-hold exit'
@@ -4725,14 +4776,17 @@ async function preGenerateSuggestedFinds(
       log('No cached Suggested Finds — generating server-side...');
       try {
         const result = await generateSuggestedFinds();
-        stocks = [...result.compounders, ...result.goldMines].map(s => ({
+        stocks = [...result.compounders, ...result.goldMines, ...(result.dipDiscoveries ?? [])].map(s => ({
           ticker: s.ticker,
           conviction: s.conviction ?? 0,
           valuationTag: s.valuationTag ?? '',
           tag: s.tag,
           reason: s.reason,
+          high52w: s.high52w,
+          drawdownPct: s.drawdownPct,
+          sector: s.sector,
         }));
-        log(`Generated ${stocks.length} Suggested Finds (${result.compounders.length} compounders, ${result.goldMines.length} gold mines)`);
+        log(`Generated ${stocks.length} Suggested Finds (${result.compounders.length} compounders, ${result.goldMines.length} gold mines, ${(result.dipDiscoveries ?? []).length} dip discoveries)`);
       } catch (genErr) {
         log(`Server-side discovery failed: ${genErr instanceof Error ? genErr.message : 'unknown'}`);
         _lastSuggestedFindsDate = today; // Don't retry — avoid exhausting AI keys
@@ -4768,6 +4822,7 @@ async function preGenerateSuggestedFinds(
         if (conv < minConv) return false;
         if (seenTickers.has(s.ticker)) return false;
         seenTickers.add(s.ticker);
+        if (s.tag === 'Dip Discovery') return true;
         if (topTickers.has(s.ticker)) return true;
         const tag = (s.valuationTag ?? '').toLowerCase();
         return tag === 'deep value' || tag === 'undervalued';

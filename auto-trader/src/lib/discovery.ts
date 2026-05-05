@@ -23,18 +23,22 @@ interface ThemeData {
 interface SuggestedStock {
   ticker: string;
   name: string;
-  tag: 'Steady Compounder' | 'Gold Mine';
+  tag: 'Steady Compounder' | 'Gold Mine' | 'Dip Discovery';
   reason: string;
   category?: string;
   conviction?: number;
   valuationTag?: string;
   whyGreat: string[];
   metrics: { label: string; value: string }[];
+  high52w?: number;
+  drawdownPct?: number;
+  sector?: string;
 }
 
 interface DiscoveryResult {
   compounders: SuggestedStock[];
   goldMines: SuggestedStock[];
+  dipDiscoveries: SuggestedStock[];
   currentTheme: ThemeData;
   timestamp: string;
 }
@@ -68,7 +72,7 @@ interface MarketNewsItem {
 
 async function callHuggingFace(
   prompt: string,
-  type: 'discover_compounders' | 'discover_goldmines' | 'analyze_themes',
+  type: 'discover_compounders' | 'discover_goldmines' | 'discover_dips' | 'analyze_themes',
   temperature = 0.4,
   maxOutputTokens = 4000,
   retries = 3,
@@ -513,6 +517,236 @@ function parseGoldMineCandidates(raw: string): {
   return { theme, candidates };
 }
 
+// ── Dip Discovery Pipeline ───────────────────────────────
+// Finds S&P 500 / Fortune 500 stocks that have dropped 30-50% from their
+// 52-week high and show signs of stabilization (price > 10-day SMA).
+// AI identifies candidates; Finnhub data verifies drawdown and stabilization.
+
+const FINNHUB_KEY = process.env.FINNHUB_API_KEY ?? '';
+
+interface DipCandidate {
+  ticker: string;
+  name: string;
+  reason: string;
+  sector: string;
+}
+
+async function finnhubGet<T>(path: string): Promise<T | null> {
+  try {
+    const res = await fetch(`https://finnhub.io/api/v1${path}&token=${FINNHUB_KEY}`);
+    if (!res.ok) return null;
+    return await res.json() as T;
+  } catch { return null; }
+}
+
+function buildDipCandidatePrompt(): string {
+  return `You are a quantitative equity screener. Identify US-listed S&P 500 or Fortune 500 companies whose stock price has FALLEN 30% to 50% from its 52-week high.
+
+Requirements:
+- Must be an S&P 500 constituent OR a Fortune 500 company (market cap > $10B)
+- Current price is 30-50% BELOW the stock's 52-week high (a significant drawdown)
+- The decline should be RECENT (within the last 4-16 weeks, not a slow multi-year bleed)
+- The reason for the dip should be TEMPORARY — earnings miss with intact guidance, sector rotation, macro selloff, tariff fear, management transition with strong successor
+- EXCLUDE stocks where the dip is STRUCTURAL — accounting fraud, secular industry decline, credit downgrade to junk, product safety crisis, terminal business model
+
+Return ONLY a JSON array of objects with these fields:
+{
+  "candidates": [
+    { "ticker": "XYZ", "name": "Company Name", "reason": "Brief reason for the dip", "sector": "GICS sector" }
+  ]
+}
+
+Return 5-15 candidates. No explanations outside the JSON.`;
+}
+
+function buildDipCatalystPrompt(candidates: Array<{ ticker: string; name: string; reason: string; drawdownPct: number }>): string {
+  const stockList = candidates.map(c =>
+    `${c.ticker} (${c.name}): Down ${c.drawdownPct.toFixed(0)}% — ${c.reason}`
+  ).join('\n');
+
+  return `You are an experienced equity analyst. For each stock below, determine whether the dip is a BUYING OPPORTUNITY or a VALUE TRAP.
+
+Stocks:
+${stockList}
+
+For each stock, analyze:
+1. Is the reason for the dip temporary or structural?
+2. Does the company have strong fundamentals to recover (market position, cash flow, management)?
+3. What is the realistic recovery timeline?
+
+Return ONLY a JSON array:
+{
+  "stocks": [
+    {
+      "ticker": "XYZ",
+      "name": "Company Name",
+      "verdict": "BUY" or "AVOID",
+      "conviction": 1-10,
+      "reason": "One-sentence thesis for buy/avoid",
+      "whyGreat": ["point 1", "point 2", "point 3"],
+      "metrics": [{"label": "P/E", "value": "12.3"}, {"label": "Market Cap", "value": "$45B"}, {"label": "Drawdown", "value": "-35%"}],
+      "valuationTag": "Deep Value" or "Undervalued" or "Fair Value"
+    }
+  ]
+}`;
+}
+
+function parseDipCandidates(raw: string): DipCandidate[] {
+  const cleaned = cleanJSON(raw);
+  try {
+    const parsed = JSON.parse(cleaned);
+    const arr = parsed.candidates || parsed.stocks || parsed;
+    if (!Array.isArray(arr)) return [];
+    return arr
+      .filter((c: Record<string, unknown>) => c.ticker && typeof c.ticker === 'string')
+      .map((c: Record<string, unknown>) => ({
+        ticker: String(c.ticker).toUpperCase(),
+        name: String(c.name || ''),
+        reason: String(c.reason || ''),
+        sector: String(c.sector || 'Unknown'),
+      }));
+  } catch {
+    const matches = cleaned.match(/\b[A-Z]{1,5}\b/g);
+    if (matches && matches.length >= 3) {
+      const skipWords = new Set(['THE', 'AND', 'FOR', 'NOT', 'ARE', 'BUT', 'JSON', 'ONLY', 'ALSO', 'WITH', 'FROM']);
+      return matches.filter(m => !skipWords.has(m)).slice(0, 15).map(t => ({
+        ticker: t, name: '', reason: '', sector: 'Unknown',
+      }));
+    }
+    return [];
+  }
+}
+
+function parseDipAnalysis(raw: string): SuggestedStock[] {
+  const cleaned = cleanJSON(raw);
+  const parsed = JSON.parse(cleaned);
+  const stocks = parsed.stocks || parsed;
+  if (!Array.isArray(stocks)) return [];
+
+  return stocks
+    .filter((s: Record<string, unknown>) => String(s.verdict || '').toUpperCase() === 'BUY')
+    .map((s: Record<string, unknown>) => ({
+      ticker: String(s.ticker || '').toUpperCase(),
+      name: String(s.name || ''),
+      tag: 'Dip Discovery' as const,
+      reason: String(s.reason || ''),
+      conviction: typeof s.conviction === 'number' ? s.conviction : 7,
+      valuationTag: s.valuationTag ? String(s.valuationTag) : 'Deep Value',
+      whyGreat: Array.isArray(s.whyGreat) ? s.whyGreat.map(String) : [],
+      metrics: Array.isArray(s.metrics)
+        ? (s.metrics as Array<{ label: string; value: string }>).map(m => ({
+            label: String(m.label || ''),
+            value: String(m.value || ''),
+          }))
+        : [],
+    }))
+    .sort((a, b) => (b.conviction ?? 0) - (a.conviction ?? 0));
+}
+
+export async function discoverDipStocks(): Promise<SuggestedStock[]> {
+  if (!FINNHUB_KEY) {
+    console.warn('[DipDiscovery] No FINNHUB_API_KEY — skipping');
+    return [];
+  }
+
+  console.log('[DipDiscovery] Step 1: AI identifying dip candidates...');
+  const candidateRaw = await callHuggingFace(buildDipCandidatePrompt(), 'discover_dips', 0.3, 2000);
+  const candidates = parseDipCandidates(candidateRaw);
+  console.log(`[DipDiscovery] AI suggested ${candidates.length} candidates: ${candidates.map(c => c.ticker).join(', ')}`);
+
+  if (candidates.length === 0) return [];
+
+  // Step 2: Verify drawdown with Finnhub data
+  console.log('[DipDiscovery] Step 2: Verifying drawdown with Finnhub data...');
+  const verified: Array<DipCandidate & { high52w: number; price: number; drawdownPct: number; marketCap: number; eps: number }> = [];
+
+  for (let i = 0; i < candidates.length; i += 3) {
+    const batch = candidates.slice(i, i + 3);
+    const results = await Promise.all(batch.map(async (c) => {
+      const [metrics, quote] = await Promise.all([
+        finnhubGet<{ metric?: Record<string, number> }>(`/stock/metric?symbol=${c.ticker}&metric=all`),
+        finnhubGet<{ c?: number }>(`/quote?symbol=${c.ticker}`),
+      ]);
+
+      const m = metrics?.metric ?? {};
+      const high52w = m['52WeekHigh'] ?? 0;
+      const price = quote?.c ?? 0;
+      const marketCap = m.marketCapitalization ?? 0;
+      const eps = m.epsTTM ?? m.epsAnnual ?? 0;
+
+      if (!high52w || !price || high52w <= 0 || price <= 0) return null;
+
+      const drawdownPct = ((high52w - price) / high52w) * 100;
+      if (drawdownPct < 30 || drawdownPct > 50) return null;
+      if (marketCap < 10000) return null; // < $10B (Finnhub reports in millions)
+      if (eps <= 0) return null;
+
+      return { ...c, high52w, price, drawdownPct, marketCap, eps };
+    }));
+
+    verified.push(...results.filter((r): r is NonNullable<typeof results[number]> => r !== null));
+    if (i + 3 < candidates.length) await sleep(400);
+  }
+
+  console.log(`[DipDiscovery] ${verified.length} pass drawdown/fundamentals filter: ${verified.map(v => `${v.ticker}(-${v.drawdownPct.toFixed(0)}%)`).join(', ')}`);
+  if (verified.length === 0) return [];
+
+  // Step 3: Check 10-day SMA stabilization
+  console.log('[DipDiscovery] Step 3: Checking 10-day SMA stabilization...');
+  const stabilized: typeof verified = [];
+
+  for (const stock of verified) {
+    const to = Math.floor(Date.now() / 1000);
+    const from = to - 86400 * 25; // ~25 calendar days for 10 trading days + buffer
+    const candles = await finnhubGet<{ c?: number[] }>(`/stock/candle?symbol=${stock.ticker}&resolution=D&from=${from}&to=${to}`);
+    const closes = candles?.c?.filter((v): v is number => v != null && v > 0) ?? [];
+
+    if (closes.length < 10) {
+      console.log(`  ${stock.ticker}: insufficient candle data (${closes.length} bars)`);
+      continue;
+    }
+
+    const last10 = closes.slice(-10);
+    const sma10 = last10.reduce((a, b) => a + b, 0) / last10.length;
+    const currentClose = closes[closes.length - 1];
+
+    if (currentClose < sma10) {
+      console.log(`  ${stock.ticker}: below 10-day SMA ($${currentClose.toFixed(2)} < $${sma10.toFixed(2)}) — still bleeding`);
+      continue;
+    }
+
+    console.log(`  ${stock.ticker}: above 10-day SMA ($${currentClose.toFixed(2)} > $${sma10.toFixed(2)}) — stabilized`);
+    stabilized.push(stock);
+    await sleep(300);
+  }
+
+  if (stabilized.length === 0) {
+    console.log('[DipDiscovery] No candidates passed SMA stabilization check');
+    return [];
+  }
+
+  // Step 4: AI catalyst analysis — buy or avoid?
+  console.log(`[DipDiscovery] Step 4: AI catalyst analysis for ${stabilized.length} stocks...`);
+  const catalystRaw = await callHuggingFace(
+    buildDipCatalystPrompt(stabilized),
+    'discover_dips', 0.3, 4000,
+  );
+  const analyzed = parseDipAnalysis(catalystRaw);
+
+  // Attach Finnhub-verified data to the results
+  for (const stock of analyzed) {
+    const match = stabilized.find(s => s.ticker === stock.ticker);
+    if (match) {
+      stock.high52w = match.high52w;
+      stock.drawdownPct = match.drawdownPct;
+      stock.sector = match.sector;
+    }
+  }
+
+  console.log(`[DipDiscovery] Final: ${analyzed.length} buy candidates — ${analyzed.map(s => s.ticker).join(', ')}`);
+  return analyzed;
+}
+
 // ── Cache writer ─────────────────────────────────────────
 
 async function storeServerCache(data: DiscoveryResult): Promise<void> {
@@ -581,11 +815,21 @@ export async function generateSuggestedFinds(): Promise<DiscoveryResult> {
   );
   const goldMines = parseStocksResponse(goldMineRaw, 'Gold Mine');
 
-  console.log(`[Discovery] Done: ${compounders.length} compounders, ${goldMines.length} gold mines (${currentTheme.name})`);
+  // ── DIP DISCOVERY PIPELINE ──
+  console.log('[Discovery] Step 6: Dip Discovery scan...');
+  let dipDiscoveries: SuggestedStock[] = [];
+  try {
+    dipDiscoveries = await discoverDipStocks();
+  } catch (err) {
+    console.warn(`[Discovery] Dip Discovery failed (non-blocking): ${err instanceof Error ? err.message : 'unknown'}`);
+  }
+
+  console.log(`[Discovery] Done: ${compounders.length} compounders, ${goldMines.length} gold mines (${currentTheme.name}), ${dipDiscoveries.length} dip discoveries`);
 
   const result: DiscoveryResult = {
     compounders,
     goldMines,
+    dipDiscoveries,
     currentTheme,
     timestamp: new Date().toISOString(),
   };
