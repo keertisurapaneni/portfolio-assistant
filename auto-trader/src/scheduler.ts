@@ -1929,6 +1929,9 @@ function calculatePositionSize(
     const base = alloc * (config.baseAllocationPct / 100);
     dollarSize = base * convictionMultiplier(conviction, suggestedFindTag);
     if (suggestedFindTag === 'Gold Mine') dollarSize *= 0.75 * 0.33; // 0.75 = Gold Mine tag discount; 0.33 = risk mgmt until Kelly > 0
+    // Compounders historically lose money on big positions (>$5K: 20% WR, -$928)
+    // but are profitable on small ones (<=$5K: 78% WR, +$1,589). Hard-cap at $3K.
+    if (suggestedFindTag === 'Steady Compounder') dollarSize = Math.min(dollarSize, 3000);
   } else if (stopLoss && entryPrice && Math.abs(entryPrice - stopLoss) > 0) {
     const riskBudget = alloc * (config.riskPerTradePct / 100);
     const riskPerShare = Math.abs(entryPrice - stopLoss);
@@ -4222,6 +4225,11 @@ async function checkLongTermAutoSell(
       ) {
         const dropFromPeak = ((effectivePeak - currentPrice) / effectivePeak * 100).toFixed(1);
         reason = `trailing_stop:${dropFromPeak}%_from_peak($${effectivePeak.toFixed(2)})`;
+      } else if (gainPct <= -8 && daysHeld >= 10 && !everAboveEntry) {
+        // Hard stop for Compounders: if down 8%+ and never bounced above entry
+        // after 10 calendar days, the thesis is broken. Data shows Compounders
+        // that don't bounce are 0% WR and bleed indefinitely.
+        reason = `sc_hard_stop:${gainPct.toFixed(1)}%_no_bounce_${daysHeld.toFixed(0)}d`;
       } else if (compounderStopLossPct < 0 && gainPct <= compounderStopLossPct) {
         // Macro circuit breaker: if SPY has dropped >5% in the last 5 trading days,
         // this is broad-market turbulence, not a broken business thesis. Suspend the
@@ -4258,6 +4266,7 @@ async function checkLongTermAutoSell(
         : reason.startsWith('gm_entry_lock')   ? 'GM entry-lock exit'
         : reason.startsWith('gm_hard_stop')    ? 'GM hard stop (no bounce)'
         : reason.startsWith('gm_max_hold')     ? 'GM max-hold exit'
+        : reason.startsWith('sc_hard_stop')    ? 'Compounder hard stop (no bounce)'
         : reason.startsWith('profit_take')     ? 'profit-take'
         : reason.startsWith('trailing_stop')   ? 'trailing stop'
         : reason.startsWith('stop_loss')       ? 'stop-loss'
@@ -4753,9 +4762,12 @@ async function preGenerateSuggestedFinds(
       // Note: removed the goldMineMinConv +1 escalation (was: if gmCount > compCount*2, raise min by 1).
       // That logic was silently blocking conviction-9 Gold Mines when the list had many candidates.
       // The 40% Gold Mine cap in executeSuggestedFindTrade already prevents over-allocation.
+      const seenTickers = new Set<string>();
       const qualified = stocks.filter(s => {
         const conv = s.conviction ?? 0;
         if (conv < minConv) return false;
+        if (seenTickers.has(s.ticker)) return false;
+        seenTickers.add(s.ticker);
         if (topTickers.has(s.ticker)) return true;
         const tag = (s.valuationTag ?? '').toLowerCase();
         return tag === 'deep value' || tag === 'undervalued';
