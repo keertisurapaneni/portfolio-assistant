@@ -20,7 +20,7 @@ const GROQ_MODELS = [
 
 interface RequestPayload {
   prompt: string;
-  type: 'discover_compounders' | 'discover_goldmines' | 'analyze_themes';
+  type: 'discover_compounders' | 'discover_goldmines' | 'discover_dips' | 'analyze_themes';
   temperature?: number;
   maxOutputTokens?: number;
 }
@@ -50,7 +50,7 @@ Deno.serve(async (req) => {
       );
     }
 
-    const validTypes = ['discover_compounders', 'discover_goldmines', 'analyze_themes'];
+    const validTypes = ['discover_compounders', 'discover_goldmines', 'discover_dips', 'analyze_themes'];
     if (!validTypes.includes(type)) {
       return new Response(
         JSON.stringify({ error: `Invalid type. Must be one of: ${validTypes.join(', ')}` }),

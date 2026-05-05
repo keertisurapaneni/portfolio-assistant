@@ -322,35 +322,50 @@ export async function getActiveTrades(): Promise<PaperTrade[]> {
   return (data ?? []) as PaperTrade[];
 }
 
-/** Get LONG_TERM exposure by tag (Gold Mine vs Compounders) for tag-level caps. */
+/** Get LONG_TERM exposure by tag (Gold Mine vs Compounders vs Dip Discovery) for tag-level caps. */
 export async function getLongTermExposureByTag(): Promise<{
   totalGoldMineExposure: number;
   totalCompounderExposure: number;
+  totalDipDiscoveryExposure: number;
+  dipDiscoveryCount: number;
+  dipDiscoverySectors: Set<string>;
   longTermTotal: number;
 }> {
   const activeTrades = await getActiveTrades();
   const longTerm = activeTrades.filter(t => t.mode === 'LONG_TERM');
 
-  const tagByTicker = new Map<string, 'Gold Mine' | 'Compounder'>();
+  const tagByTicker = new Map<string, 'Gold Mine' | 'Compounder' | 'Dip Discovery'>();
   for (const t of longTerm) {
     if ((t.notes ?? '').startsWith('Dip buy')) continue;
     if (!tagByTicker.has(t.ticker)) {
-      const isGoldMine = /Gold Mine/i.test((t.notes ?? '') + (t.scanner_reason ?? ''));
-      tagByTicker.set(t.ticker, isGoldMine ? 'Gold Mine' : 'Compounder');
+      const notes = (t.notes ?? '') + (t.scanner_reason ?? '');
+      const isDipDiscovery = /Dip Discovery/i.test(notes);
+      const isGoldMine = /Gold Mine/i.test(notes);
+      tagByTicker.set(t.ticker, isDipDiscovery ? 'Dip Discovery' : isGoldMine ? 'Gold Mine' : 'Compounder');
     }
   }
 
   let totalGoldMineExposure = 0;
   let totalCompounderExposure = 0;
+  let totalDipDiscoveryExposure = 0;
+  let dipDiscoveryCount = 0;
+  const dipDiscoverySectors = new Set<string>();
+
   for (const t of longTerm) {
     const tag = tagByTicker.get(t.ticker);
     if (!tag) continue;
     const size = t.position_size ?? 0;
     if (tag === 'Gold Mine') totalGoldMineExposure += size;
+    else if (tag === 'Dip Discovery') {
+      totalDipDiscoveryExposure += size;
+      dipDiscoveryCount++;
+      const sectorMatch = (t.notes ?? '').match(/Sector:\s*([^|]+)/);
+      if (sectorMatch) dipDiscoverySectors.add(sectorMatch[1].trim());
+    }
     else totalCompounderExposure += size;
   }
-  const longTermTotal = totalGoldMineExposure + totalCompounderExposure;
-  return { totalGoldMineExposure, totalCompounderExposure, longTermTotal };
+  const longTermTotal = totalGoldMineExposure + totalCompounderExposure + totalDipDiscoveryExposure;
+  return { totalGoldMineExposure, totalCompounderExposure, totalDipDiscoveryExposure, dipDiscoveryCount, dipDiscoverySectors, longTermTotal };
 }
 
 export async function hasActiveTrade(
