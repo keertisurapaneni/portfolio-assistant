@@ -11,6 +11,7 @@
  */
 
 import { getSupabaseUrl, getSupabaseAnonKey } from './supabase.js';
+import { fetchDailyBars } from './yahoo-finance.js';
 
 // ── Types ────────────────────────────────────────────────
 
@@ -696,10 +697,8 @@ export async function discoverDipStocks(): Promise<SuggestedStock[]> {
   const stabilized: typeof verified = [];
 
   for (const stock of verified) {
-    const to = Math.floor(Date.now() / 1000);
-    const from = to - 86400 * 25; // ~25 calendar days for 10 trading days + buffer
-    const candles = await finnhubGet<{ c?: number[] }>(`/stock/candle?symbol=${stock.ticker}&resolution=D&from=${from}&to=${to}`);
-    const closes = candles?.c?.filter((v): v is number => v != null && v > 0) ?? [];
+    const bars = await fetchDailyBars(stock.ticker, '1mo');
+    const closes = bars?.map(b => b.close).filter((v): v is number => v > 0) ?? [];
 
     if (closes.length < 10) {
       console.log(`  ${stock.ticker}: insufficient candle data (${closes.length} bars)`);
