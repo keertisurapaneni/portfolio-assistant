@@ -37,6 +37,7 @@ import {
   hasActiveTrade,
   hasRecentLoss,
   countRecentStopOuts,
+  getTickerWinRate,
   countActivePositions,
   createPaperTrade,
   updatePaperTrade,
@@ -2278,6 +2279,8 @@ function scanResultToEval(result: string): { status: ScanEvaluationStatus; reaso
   if (result === 'skipped:max_positions')       return { status: 'blocked',   reason: 'Max positions reached' };
   if (result === 'skipped:penny_stock')        return { status: 'blocked',   reason: 'Price below $5 (penny stock)' };
   if (result === 'skipped:illiquid')           return { status: 'blocked',   reason: 'Illiquid — volume too low' };
+  if (result === 'skipped:poor_win_rate')     return { status: 'blocked',   reason: 'Poor win rate — chronic loser' };
+  if (result === 'skipped:dust_trade')        return { status: 'blocked',   reason: 'Position too small to be profitable' };
   if (result.startsWith('failed:'))             return { status: 'blocked',   reason: 'Order failed — see logs' };
   return { status: 'blocked', reason: result.replace(/^skipped:/, '') };
 }
@@ -2346,6 +2349,21 @@ async function executeScannerTrade(
         action: 'skipped', source: 'scanner', mode, skip_reason: 'recent_loss_cooldown',
       });
       return 'skipped:recent_loss_cooldown';
+    }
+  }
+
+  // ── Ticker performance gate ──────────────────────────────────────────
+  // Block tickers that are chronic losers for us. If we've traded a ticker
+  // at least 4 times in the last 30 days and the win rate is below 35%,
+  // stop throwing money at it. Focus capital on proven winners instead.
+  {
+    const perf = await getTickerWinRate(ticker, 30);
+    if (perf.total >= 4 && perf.winRate < 0.35) {
+      log(`${ticker}: skipped — poor win rate ${(perf.winRate * 100).toFixed(0)}% (${perf.wins}W/${perf.losses}L last 30d)`);
+      persistEvent(ticker, 'skipped', `Ticker performance gate: ${(perf.winRate * 100).toFixed(0)}% win rate (${perf.wins}W/${perf.losses}L)`, {
+        action: 'skipped', source: 'scanner', mode, skip_reason: 'poor_win_rate',
+      });
+      return 'skipped:poor_win_rate';
     }
   }
 
@@ -2579,6 +2597,17 @@ async function executeScannerTrade(
     quantity: Math.max(1, Math.floor(cappedDollarSize / entryPrice)),
   };
   if (sizing.quantity < 1) return 'skipped:size_too_small';
+
+  // ── Dust trade filter ──────────────────────────────────────────────
+  // If the expected profit at target is less than $10, the trade isn't
+  // worth the execution risk and commissions. Skip it.
+  if (targetPrice && entryPrice) {
+    const expectedPnl = Math.abs(targetPrice - entryPrice) * sizing.quantity;
+    if (expectedPnl < 10) {
+      log(`${ticker}: skipped — expected PnL $${expectedPnl.toFixed(2)} < $10 (dust trade)`);
+      return 'skipped:dust_trade';
+    }
+  }
 
   if (!(await runPreTradeChecks(config, ticker, sizing.dollarSize, positions, mode))) {
     return 'skipped:pre_trade_check';
