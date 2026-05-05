@@ -2590,7 +2590,18 @@ async function executeScannerTrade(
   // Scanner trades (AI-generated, not expert-vetted) must be capped at positionSize.
   // Dynamic sizing can produce 200-400 share positions when the stop is very tight —
   // a gap-through on a volatile open turns a $300 expected loss into a $1,500+ wipeout.
-  const scannerPositionCap = config.positionSize > 0 ? config.positionSize : 5000;
+  //
+  // Confidence-based sizing: high-confidence BUY signals get larger positions.
+  // Data shows conf 9 BUY = 72% WR / $174 avg, conf 8 BUY = 69% WR / $60 avg,
+  // while conf 7 and SELLs don't benefit from increased size.
+  const baseCap = config.positionSize > 0 ? config.positionSize : 5000;
+  const confMultiplier = (signal === 'BUY' && scannerConf >= 9) ? 2.0
+    : (signal === 'BUY' && scannerConf >= 8) ? 1.5
+    : 1.0;
+  const scannerPositionCap = baseCap * confMultiplier;
+  if (confMultiplier > 1.0) {
+    log(`${ticker}: confidence sizing — conf ${scannerConf} ${signal} → ${confMultiplier}x cap ($${scannerPositionCap.toFixed(0)})`);
+  }
   const cappedDollarSize = Math.min(sizingRaw.dollarSize, scannerPositionCap);
   const sizing = {
     dollarSize: cappedDollarSize,
