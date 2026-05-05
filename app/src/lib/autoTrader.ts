@@ -1774,7 +1774,8 @@ async function processSingleIdea(
   // SELL ideas from the scanner are bearish research — not short-sell instructions.
   // Auto-executing a SELL without an existing long position would open a naked short.
   // Position management (loss cuts, profit takes) handles closing longs via their own paths.
-  if (signal === 'SELL') {
+  // Exception: user-initiated manual trades (allowShort=true) may intentionally short.
+  if (signal === 'SELL' && !idea.allowShort) {
     const positions = await getPositions(config.accountId!).catch(() => []);
     const hasLong = positions.some(p => (p.contractDesc ?? '').toUpperCase() === ticker && p.position > 0);
     if (!hasLong) {
