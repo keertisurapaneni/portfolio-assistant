@@ -205,14 +205,19 @@ export function useSuggestedFinds(existingTickers: string[]): UseSuggestedFindsR
   // - Category selected + focused results exist: show focused results
   // - Category selected + no focused results: filter main gold mines by category
   const displayedGoldMines = useMemo(() => {
-    if (!selectedGoldMineCategory) return goldMines;
-    if (goldMineCategoryStocks.length > 0) return goldMineCategoryStocks;
-
-    const catLower = selectedGoldMineCategory.toLowerCase();
-    return goldMines.filter((s) =>
-      s.category?.toLowerCase().includes(catLower) ||
-      catLower.includes(s.category?.toLowerCase() ?? '')
-    );
+    const minConviction = 7;
+    const base = !selectedGoldMineCategory
+      ? goldMines
+      : goldMineCategoryStocks.length > 0
+        ? goldMineCategoryStocks
+        : (() => {
+            const catLower = selectedGoldMineCategory.toLowerCase();
+            return goldMines.filter((s) =>
+              s.category?.toLowerCase().includes(catLower) ||
+              catLower.includes(s.category?.toLowerCase() ?? '')
+            );
+          })();
+    return base.filter((s) => (s.conviction ?? 0) >= minConviction);
   }, [selectedGoldMineCategory, goldMines, goldMineCategoryStocks]);
 
   // Compute displayed compounders:
