@@ -355,7 +355,7 @@ export async function getLongTermExposureByTag(): Promise<{
 
 export async function hasActiveTrade(
   ticker: string,
-  opts?: { excludeMode?: 'LONG_TERM'; signal?: 'BUY' | 'SELL' }
+  opts?: { excludeMode?: 'LONG_TERM'; signal?: 'BUY' | 'SELL'; excludeOptions?: boolean }
 ): Promise<boolean> {
   const sb = getSupabase();
   let query = sb
@@ -365,6 +365,9 @@ export async function hasActiveTrade(
     .in('status', ['PENDING', 'SUBMITTED', 'FILLED', 'PARTIAL']);
   if (opts?.excludeMode) {
     query = query.neq('mode', opts.excludeMode);
+  }
+  if (opts?.excludeOptions) {
+    query = query.not('mode', 'in', '(OPTIONS_PUT,OPTIONS_CALL)');
   }
   if (opts?.signal) {
     query = query.eq('signal', opts.signal);
@@ -381,15 +384,20 @@ export async function hasActiveTrade(
 export async function hasRecentLoss(
   ticker: string,
   lookbackDays = 21,
+  opts?: { excludeOptions?: boolean },
 ): Promise<boolean> {
   const since = new Date(Date.now() - lookbackDays * 86_400_000).toISOString();
   const sb = getSupabase();
-  const { count } = await sb
+  let query = sb
     .from('paper_trades')
     .select('id', { count: 'exact', head: true })
     .eq('ticker', ticker)
     .lt('pnl', 0)
     .gte('closed_at', since);
+  if (opts?.excludeOptions) {
+    query = query.not('mode', 'in', '(OPTIONS_PUT,OPTIONS_CALL)');
+  }
+  const { count } = await query;
   return (count ?? 0) > 0;
 }
 
@@ -401,25 +409,32 @@ export async function hasRecentLoss(
 export async function countRecentStopOuts(
   ticker: string,
   lookbackDays = 90,
+  opts?: { excludeOptions?: boolean },
 ): Promise<number> {
   const since = new Date(Date.now() - lookbackDays * 86_400_000).toISOString();
   const sb = getSupabase();
-  const { count } = await sb
+  let query = sb
     .from('paper_trades')
     .select('id', { count: 'exact', head: true })
     .eq('ticker', ticker)
     .eq('signal', 'SELL')
     .eq('entry_trigger_type', 'loss_cut')
     .gte('created_at', since);
-  return count ?? 0;
+  if (opts?.excludeOptions) {
+    query = query.not('mode', 'in', '(OPTIONS_PUT,OPTIONS_CALL)');
+  }
+  return (await query).count ?? 0;
 }
 
 export async function countActivePositions(): Promise<number> {
   const sb = getSupabase();
+  // Options positions run on their own pipeline and budget — exclude them from
+  // the stock scanner's max-positions slot count so they don't starve day/swing trades.
   const { count } = await sb
     .from('paper_trades')
     .select('id', { count: 'exact', head: true })
-    .in('status', ['PENDING', 'SUBMITTED', 'FILLED', 'PARTIAL']);
+    .in('status', ['PENDING', 'SUBMITTED', 'FILLED', 'PARTIAL'])
+    .not('mode', 'in', '(OPTIONS_PUT,OPTIONS_CALL)');
   return count ?? 0;
 }
 
