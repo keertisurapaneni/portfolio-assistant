@@ -1,7 +1,7 @@
 # Dip Discovery — Suggested Finds Category
 
 **Date:** 2026-05-05
-**Status:** Implementing
+**Status:** Shipped
 
 ## Goal
 
@@ -44,3 +44,16 @@ Current Suggested Finds BUYs (Compounders + Gold Mines) have 0-19% win rates —
 - 30-50% drawdown range (user preference — more conservative than the 15-35% institutional default)
 - Sits alongside existing categories, not replacing them
 - AI catalyst check distinguishes "overreaction" from "broken company"
+
+## Files Changed
+
+| File | What |
+|---|---|
+| `auto-trader/src/lib/discovery.ts` | New `discoverDipStocks()` pipeline: AI candidates → Finnhub drawdown verify → SMA stabilization → AI catalyst check |
+| `auto-trader/src/lib/supabase.ts` | `getLongTermExposureByTag()` tracks Dip Discovery exposure, count, and sector set |
+| `auto-trader/src/scheduler.ts` | Dip Discovery integration: fetching, position sizing ($5K cap), allocation gates (max 3, max 1/sector), custom exit rules (40% recovery TP, -15% SL, 120-day max hold) |
+| `supabase/functions/huggingface-proxy/index.ts` | Added `discover_dips` to valid prompt types |
+| `app/src/types/index.ts` | `SuggestedStock.tag` includes `'Dip Discovery'` |
+| `app/src/lib/aiSuggestedFinds.ts` | `DiscoveryResult.dipDiscoveries` field |
+| `app/src/hooks/useSuggestedFinds.ts` | Exposes `dipDiscoveries` state from hook |
+| `app/src/components/SuggestedFinds.tsx` | Dip Discovery section (top of page) with `DipDiscoveryCard` showing drawdown, sector, 52w high |

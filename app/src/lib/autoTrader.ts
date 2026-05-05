@@ -872,7 +872,7 @@ async function checkAllocationCap(
 /** Conviction multiplier for long-term holds.
  *  Gold Mine: capped at 1.25x (even if conviction = 10).
  *  Steady Compounder: full multiplier up to 1.5x. */
-function convictionMultiplier(conviction: number, suggestedFindTag?: 'Steady Compounder' | 'Gold Mine'): number {
+function convictionMultiplier(conviction: number, suggestedFindTag?: 'Steady Compounder' | 'Gold Mine' | 'Dip Discovery'): number {
   let mult: number;
   if (conviction >= 10) mult = 1.5;
   else if (conviction >= 9) mult = 1.25;
@@ -890,7 +890,7 @@ export function calculatePositionSize(
     price: number;
     mode: 'LONG_TERM' | 'DAY_TRADE' | 'SWING_TRADE';
     conviction?: number;      // for long-term holds
-    suggestedFindTag?: 'Steady Compounder' | 'Gold Mine';  // for LONG_TERM: Gold Mine → 0.75x final (after conviction)
+    suggestedFindTag?: 'Steady Compounder' | 'Gold Mine' | 'Dip Discovery';
     entryPrice?: number;      // for scanner trades
     stopLoss?: number;        // for scanner trades (risk-based sizing)
     regimeMultiplier?: number; // from market regime check

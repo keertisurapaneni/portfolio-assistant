@@ -42,6 +42,7 @@ export interface ThemeData {
 export interface DiscoveryResult {
   compounders: EnhancedSuggestedStock[];
   goldMines: EnhancedSuggestedStock[];
+  dipDiscoveries?: EnhancedSuggestedStock[];
   currentTheme: ThemeData;
   timestamp: string;
 }
