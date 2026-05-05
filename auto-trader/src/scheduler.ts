@@ -77,7 +77,7 @@ import { runOptionsManageCycle } from './lib/options-manager.js';
 import { runDipWatcher } from './lib/dip-watcher.js';
 import { checkSpxLevelSetups } from './lib/spx-level-scanner.js';
 import { isInsideOrb } from './lib/orb.js';
-import { evaluateVwapAlignment } from './lib/vwap.js';
+import { evaluateVwapAlignment, detectVwapReclaim } from './lib/vwap.js';
 import { warmPositionPriceCache } from './routes/positions.js';
 import { generateMorningBrief } from './lib/morning-brief.js';
 import { validateOrder } from './lib/validateOrder.js';
@@ -2333,16 +2333,26 @@ async function executeScannerTrade(
 
   // ── ORB (Opening Range Breakout) chop gate ───────────────────────────
   // Day trades only. If the ticker is stuck inside its 15-min opening range,
-  // the market is choppy — skip and wait for a directional breakout.
+  // the market is choppy — but check for a VWAP reclaim before blocking.
+  // Somesh's rule: one 5-min candle closing above VWAP signals chop is ending.
   // Gate is non-blocking on data failure (isInsideOrb returns false when unavailable).
   if (mode === 'DAY_TRADE') {
     const choppy = await isInsideOrb(ticker, signal as 'BUY' | 'SELL');
     if (choppy) {
-      log(`${ticker}: inside ORB (choppy) — skipping ${signal} day trade`);
-      persistEvent(ticker, 'skipped', `Inside ORB — choppy conditions, no directional trend`, {
-        action: 'skipped', source: 'scanner', mode, skip_reason: 'inside_orb',
-      });
-      return 'skipped:inside_orb';
+      const reclaim = await detectVwapReclaim(ticker, signal as 'BUY' | 'SELL');
+      if (reclaim.reclaimed) {
+        log(`${ticker}: inside ORB but VWAP ${signal === 'BUY' ? 'reclaimed' : 'broke down'} — proceeding (${reclaim.log})`);
+        persistEvent(ticker, 'info', `ORB chop overridden by VWAP reclaim: ${reclaim.log}`, {
+          action: 'proceeding', source: 'scanner', mode,
+          vwap: reclaim.vwap, current_price: reclaim.currentPrice,
+        });
+      } else {
+        log(`${ticker}: inside ORB (choppy), no VWAP reclaim — skipping ${signal} day trade (${reclaim.log})`);
+        persistEvent(ticker, 'skipped', `Inside ORB — choppy conditions, no VWAP reclaim`, {
+          action: 'skipped', source: 'scanner', mode, skip_reason: 'inside_orb',
+        });
+        return 'skipped:inside_orb';
+      }
     }
   }
 
