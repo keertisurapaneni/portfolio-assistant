@@ -14,6 +14,7 @@ import {
   Target,
   ArrowUpRight,
   ArrowDownRight,
+  Ban,
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { fetchTradeIdeas, type TradeIdea, type ScanResult, type KeyLevelSetup } from '../lib/tradeScannerApi';
@@ -447,6 +448,7 @@ export function TradeIdeas({ onSelectTicker }: TradeIdeasProps) {
                         key={idea.ticker}
                         idea={idea}
                         traded={tradedTickers.has(idea.ticker.toUpperCase())}
+                        hasOpenPosition={idea.signal === 'BUY' || tradedTickers.has(idea.ticker.toUpperCase())}
                         onSelect={onSelectTicker}
                       />
                     ))}
@@ -643,13 +645,17 @@ function KeyLevelCard({ setup, onSelect }: { setup: KeyLevelSetup; onSelect: () 
 function IdeaCard({
   idea,
   traded,
+  hasOpenPosition = true,
   onSelect,
 }: {
   idea: TradeIdea;
   traded: boolean;
+  hasOpenPosition?: boolean;
   onSelect: (ticker: string, mode: 'DAY_TRADE' | 'SWING_TRADE') => void;
 }) {
   const isPositive = idea.changePercent >= 0;
+  // SELL signal with no matching open position — auto-trader will skip this
+  const ineligibleShort = idea.signal === 'SELL' && !hasOpenPosition;
 
   return (
     <button
@@ -657,10 +663,12 @@ function IdeaCard({
       onClick={() => onSelect(idea.ticker, idea.mode)}
       className={cn(
         'group relative flex flex-col rounded-lg border p-3 text-left transition-all duration-200',
-        'hover:shadow-md hover:border-[hsl(var(--ring))] hover:-translate-y-0.5',
+        'hover:shadow-md hover:-translate-y-0.5',
         traded
-          ? 'bg-emerald-50/40 border-emerald-300'
-          : 'bg-white border-[hsl(var(--border))]'
+          ? 'bg-emerald-50/40 border-emerald-300 hover:border-emerald-400'
+          : ineligibleShort
+            ? 'bg-[hsl(var(--secondary))]/60 border-[hsl(var(--border))] opacity-55 hover:opacity-75 hover:border-[hsl(var(--border))]'
+            : 'bg-white border-[hsl(var(--border))] hover:border-[hsl(var(--ring))]'
       )}
     >
       {/* Traded badge */}
@@ -668,6 +676,14 @@ function IdeaCard({
         <div className="absolute top-2 right-2 flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-emerald-100 border border-emerald-200">
           <CheckCircle className="w-3 h-3 text-emerald-600" />
           <span className="text-[9px] font-bold text-emerald-700">TRADED</span>
+        </div>
+      )}
+
+      {/* Ineligible short badge */}
+      {ineligibleShort && !traded && (
+        <div className="absolute top-2 right-2 flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-slate-100 border border-slate-200">
+          <Ban className="w-3 h-3 text-slate-400" />
+          <span className="text-[9px] font-medium text-slate-500">No position</span>
         </div>
       )}
 
