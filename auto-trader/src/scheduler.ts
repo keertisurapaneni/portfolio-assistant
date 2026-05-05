@@ -1318,7 +1318,7 @@ async function autoQueueGenericSignalsFromTrackedVideos(
   const isActiveTicker = async (ticker: string): Promise<boolean> => {
     const cached = activeTickerCache.get(ticker);
     if (cached != null) return cached;
-    const active = await hasActiveTrade(ticker);
+    const active = await hasActiveTrade(ticker, { excludeOptions: true });
     activeTickerCache.set(ticker, active);
     return active;
   };
@@ -2307,14 +2307,16 @@ async function executeScannerTrade(
     }
   }
 
-  if (await hasActiveTrade(ticker)) return 'skipped:duplicate';
+  // Options positions on the same ticker don't block stock day/swing trades —
+  // they are different instruments and managed by a separate pipeline.
+  if (await hasActiveTrade(ticker, { excludeOptions: true })) return 'skipped:duplicate';
 
   // ── Recent-loss cooldown gate ─────────────────────────────────────────
   // Block re-entry on any ticker that lost money in the last N days.
   // SWING_TRADE uses 14 days; DAY_TRADE uses 5 days (intraday patterns reset faster).
   {
     const lookbackDays = mode === 'SWING_TRADE' ? 14 : 5;
-    if (await hasRecentLoss(ticker, lookbackDays)) {
+    if (await hasRecentLoss(ticker, lookbackDays, { excludeOptions: true })) {
       log(`${ticker}: skipped — recent loss within ${lookbackDays}d cooldown`);
       persistEvent(ticker, 'skipped', `Re-entry blocked — ticker had a loss within ${lookbackDays} days`, {
         action: 'skipped', source: 'scanner', mode, skip_reason: 'recent_loss_cooldown',
@@ -2675,11 +2677,11 @@ async function _executeSuggestedFindTradeInner(
   // where that check runs at the boundary (e.g. slow event loop crossing the 9:30 threshold).
   if (!isMarketHoursET()) return 'skipped:outside-market-hours';
 
-  if (await hasActiveTrade(ticker)) return 'skipped:duplicate';
+  if (await hasActiveTrade(ticker, { excludeOptions: true })) return 'skipped:duplicate';
 
   // ── Recent-loss cooldown gate ─────────────────────────────────────────
   // LONG_TERM trades use a 21-day lookback.
-  if (await hasRecentLoss(ticker, 21)) {
+  if (await hasRecentLoss(ticker, 21, { excludeOptions: true })) {
     log(`${ticker}: LONG_TERM skipped — recent loss within 21d cooldown`);
     persistEvent(ticker, 'skipped', `LONG_TERM re-entry blocked — ticker had a loss within 21 days`, {
       action: 'skipped', source: 'suggested_finds', mode: 'LONG_TERM',
@@ -2693,7 +2695,7 @@ async function _executeSuggestedFindTradeInner(
   // is broken regardless of the current conviction score. Block re-entry
   // indefinitely until the window clears. Prevents POOL/AOS-style churn.
   {
-    const stopOuts = await countRecentStopOuts(ticker, 90);
+    const stopOuts = await countRecentStopOuts(ticker, 90, { excludeOptions: true });
     if (stopOuts >= 3) {
       log(`${ticker}: LONG_TERM skipped — ${stopOuts} stop-outs in last 90 days (thesis invalidated)`);
       persistEvent(ticker, 'skipped', `LONG_TERM re-entry blocked — ${stopOuts} stop-outs in 90d`, {
@@ -2970,6 +2972,7 @@ async function executeExternalStrategySignal(
     } else if (await hasActiveTrade(ticker, {
       ...(signal.mode !== 'LONG_TERM' ? { excludeMode: 'LONG_TERM' as const } : {}),
       signal: signal.signal,
+      excludeOptions: true,
     })) {
       return skipExternalSignal('Duplicate active trade for ticker', 'duplicate_active_trade');
     }
@@ -5061,7 +5064,7 @@ async function runSchedulerCycle(): Promise<void> {
           riskReward: setup.riskReward,
         };
 
-        if (await hasActiveTrade('SPY')) {
+        if (await hasActiveTrade('SPY', { excludeOptions: true })) {
           log(`[SpxScanner] SPY already has an active trade — skipping level ${setup.spxLevel} setup`);
           continue;
         }
