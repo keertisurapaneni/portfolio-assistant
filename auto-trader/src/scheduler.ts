@@ -78,6 +78,7 @@ import { runDipWatcher } from './lib/dip-watcher.js';
 import { checkSpxLevelSetups } from './lib/spx-level-scanner.js';
 import { isInsideOrb } from './lib/orb.js';
 import { evaluateVwapAlignment, detectVwapReclaim } from './lib/vwap.js';
+import { getEconDayProfile } from './lib/econ-calendar.js';
 import { warmPositionPriceCache } from './routes/positions.js';
 import { generateMorningBrief } from './lib/morning-brief.js';
 import { validateOrder } from './lib/validateOrder.js';
@@ -2275,6 +2276,8 @@ function scanResultToEval(result: string): { status: ScanEvaluationStatus; reaso
   if (result === 'skipped:swing_chop')          return { status: 'blocked',   reason: 'Market too choppy' };
   if (result === 'skipped:pre_trade_check')     return { status: 'blocked',   reason: 'Pre-trade gate failed' };
   if (result === 'skipped:max_positions')       return { status: 'blocked',   reason: 'Max positions reached' };
+  if (result === 'skipped:penny_stock')        return { status: 'blocked',   reason: 'Price below $5 (penny stock)' };
+  if (result === 'skipped:illiquid')           return { status: 'blocked',   reason: 'Illiquid — volume too low' };
   if (result.startsWith('failed:'))             return { status: 'blocked',   reason: 'Order failed — see logs' };
   return { status: 'blocked', reason: result.replace(/^skipped:/, '') };
 }
@@ -2294,6 +2297,27 @@ async function executeScannerTrade(
   // spreads are widest right at open. The dedicated 9:36 first-candle cron
   // handles first-candle setups; scanner trades shouldn't race it.
   if (!isMarketHoursET() || getETMinutes() < 9 * 60 + 35) return 'skipped:outside-market-hours';
+
+  // ── Liquidity gate ─────────────────────────────────────────────────
+  // Block day trades on stocks trading below $5 (penny stocks) or with
+  // abnormally low volume (< 0.15x 10-day avg). Prevents GFAI-type blowups
+  // where thin liquidity causes outsized losses on small-cap garbage.
+  if (mode === 'DAY_TRADE') {
+    if (idea.price < 5) {
+      log(`${ticker}: skipped — price $${idea.price.toFixed(2)} below $5 minimum (penny stock filter)`);
+      persistEvent(ticker, 'skipped', `Penny stock filter: price $${idea.price.toFixed(2)} < $5`, {
+        action: 'skipped', source: 'scanner', mode, skip_reason: 'penny_stock',
+      });
+      return 'skipped:penny_stock';
+    }
+    if (idea.volumeVs10dAvg != null && idea.volumeVs10dAvg < 0.15) {
+      log(`${ticker}: skipped — volume ${idea.volumeVs10dAvg.toFixed(2)}x avg (< 0.15x, illiquid)`);
+      persistEvent(ticker, 'skipped', `Illiquid: volume ${idea.volumeVs10dAvg.toFixed(2)}x 10d avg`, {
+        action: 'skipped', source: 'scanner', mode, skip_reason: 'illiquid',
+      });
+      return 'skipped:illiquid';
+    }
+  }
 
   // For SWING_TRADE SELL signals: block unless we already hold a long to close.
   // Multi-day shorts from scanner signals are too risky to auto-execute.
@@ -2532,9 +2556,18 @@ async function executeScannerTrade(
   const dd = assessDrawdownMultiplier(positions);
   const kellyMult = await calculateKellyMultiplier(config);
   const vixMult = await getVixRegimeMultiplier();
+
+  // High-impact economic event days (FOMC, CPI, NFP, etc.) → halve position size.
+  // These days produce outsized volatility that wrecks directional day trades.
+  const econProfile = mode === 'DAY_TRADE' ? await getEconDayProfile() : null;
+  const econMult = econProfile?.positionSizeMultiplier ?? 1.0;
+  if (econProfile?.isHighImpact && econMult < 1.0) {
+    log(`${ticker}: high-impact econ day — position size ×${econMult} (${econProfile.events.map(e => e.event).join(', ')})`);
+  }
+
   const sizingRaw = calculatePositionSize(config, {
     price: entryPrice, mode, entryPrice, stopLoss,
-    drawdownMultiplier: dd.multiplier * kellyMult * vixMult,
+    drawdownMultiplier: dd.multiplier * kellyMult * vixMult * econMult,
   });
   // Scanner trades (AI-generated, not expert-vetted) must be capped at positionSize.
   // Dynamic sizing can produce 200-400 share positions when the stop is very tight —
