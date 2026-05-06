@@ -4923,7 +4923,7 @@ async function preGenerateSuggestedFinds(
         if (conv < minConv) return false;
         if (seenTickers.has(s.ticker)) return false;
         seenTickers.add(s.ticker);
-        if (s.tag === 'Dip Discovery') return true;
+        if (s.tag === 'Dip Discovery') return false; // Disabled: tuning moat analysis before enabling auto-buy
         if (topTickers.has(s.ticker)) return true;
         const tag = (s.valuationTag ?? '').toLowerCase();
         return tag === 'deep value' || tag === 'undervalued';
