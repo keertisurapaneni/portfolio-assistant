@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import {
   TrendingUp,
   TrendingDown,
@@ -73,6 +73,21 @@ export function SuggestedFinds({ existingTickers }: SuggestedFindsProps) {
       .then(trades => setOwnedTickers(new Set(trades.map(t => t.ticker))))
       .catch(() => {/* ignore — badge is best-effort */});
   }, [isAuthed, isAutoTrading]); // re-fetch after auto-trading finishes
+
+  // Filter displayed stocks by the user's min conviction setting
+  const minConviction = getAutoTraderConfig().minSuggestedFindsConviction;
+  const filteredCompounders = useMemo(
+    () => displayedCompounders.filter(s => (s.conviction ?? 0) >= minConviction),
+    [displayedCompounders, minConviction]
+  );
+  const filteredGoldMines = useMemo(
+    () => displayedGoldMines.filter(s => (s.conviction ?? 0) >= minConviction),
+    [displayedGoldMines, minConviction]
+  );
+  const filteredDipDiscoveries = useMemo(
+    () => dipDiscoveries.filter(s => (s.conviction ?? 0) >= minConviction),
+    [dipDiscoveries, minConviction]
+  );
 
   // ── Auto-buy Suggested Finds ──
   useEffect(() => {
@@ -287,9 +302,9 @@ export function SuggestedFinds({ existingTickers }: SuggestedFindsProps) {
           </div>
         </div>
 
-        {dipDiscoveries.length > 0 ? (
+        {filteredDipDiscoveries.length > 0 ? (
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-            {dipDiscoveries.map((stock) => (
+            {filteredDipDiscoveries.map((stock) => (
               <DipDiscoveryCard
                 key={stock.ticker}
                 stock={stock}
@@ -354,26 +369,32 @@ export function SuggestedFinds({ existingTickers }: SuggestedFindsProps) {
               Retry
             </button>
           </div>
-        ) : displayedCompounders.length === 0 && selectedCategory ? (
+        ) : filteredCompounders.length === 0 && selectedCategory ? (
           <CategoryEmptyState
             category={selectedCategory}
             onDiscover={() => discoverCategory(selectedCategory)}
           />
+        ) : filteredCompounders.length === 0 ? (
+          <div className="rounded-xl border border-dashed border-blue-200 bg-blue-50/30 px-5 py-6 text-center">
+            <p className="text-sm text-[hsl(var(--muted-foreground))]">
+              No compounders with conviction {minConviction}+ today. Lower the threshold in Settings to see more.
+            </p>
+          </div>
         ) : (
           <>
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-              {displayedCompounders.map((stock, idx) => (
+              {filteredCompounders.map((stock, idx) => (
                 <StockCard
                   key={stock.ticker}
                   stock={stock}
                   accentColor="blue"
-                  isTopPick={idx === 0 && (stock.conviction ?? 0) >= 8}
+                  isTopPick={idx === 0 && (stock.conviction ?? 0) >= minConviction}
                   isOwned={ownedTickers.has(stock.ticker)}
                 />
               ))}
             </div>
             {/* Show "Find more" when filtered results are sparse */}
-            {selectedCategory && displayedCompounders.length <= 2 && displayedCompounders.length > 0 && (
+            {selectedCategory && filteredCompounders.length <= 2 && filteredCompounders.length > 0 && (
               <button
                 onClick={() => discoverCategory(selectedCategory)}
                 className="mt-4 inline-flex items-center gap-1.5 text-sm text-blue-600 hover:text-blue-700 font-medium transition-colors"
@@ -446,12 +467,18 @@ export function SuggestedFinds({ existingTickers }: SuggestedFindsProps) {
               Retry
             </button>
           </div>
-        ) : displayedGoldMines.length === 0 && selectedGoldMineCategory ? (
+        ) : filteredGoldMines.length === 0 && selectedGoldMineCategory ? (
           <CategoryEmptyState
             category={selectedGoldMineCategory}
             onDiscover={() => discoverGoldMineCategory(selectedGoldMineCategory)}
             accentColor="amber"
           />
+        ) : filteredGoldMines.length === 0 ? (
+          <div className="rounded-xl border border-dashed border-amber-200 bg-amber-50/30 px-5 py-6 text-center">
+            <p className="text-sm text-[hsl(var(--muted-foreground))]">
+              No gold mines with conviction {minConviction}+ today. Lower the threshold in Settings to see more.
+            </p>
+          </div>
         ) : (
           <>
             {/* Auto-trade prompt — shown at top before cards so it's immediately visible */}
@@ -459,7 +486,7 @@ export function SuggestedFinds({ existingTickers }: SuggestedFindsProps) {
               <div className="mb-4 flex items-center gap-3 rounded-lg bg-amber-50 border border-amber-200 px-4 py-3">
                 <Zap className="w-4 h-4 text-amber-600 flex-shrink-0" />
                 <p className="text-sm text-amber-800 flex-1">
-                  Auto-trade qualifying <span className="font-semibold">{selectedGoldMineCategory}</span> picks? Only conviction 8+ and undervalued stocks will be bought.
+                  Auto-trade qualifying <span className="font-semibold">{selectedGoldMineCategory}</span> picks? Only conviction {minConviction}+ and undervalued stocks will be bought.
                 </p>
                 <button
                   onClick={handleCategoryAutoTrade}
@@ -496,17 +523,17 @@ export function SuggestedFinds({ existingTickers }: SuggestedFindsProps) {
             )}
 
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-              {displayedGoldMines.map((stock, idx) => (
+              {filteredGoldMines.map((stock, idx) => (
                 <StockCard
                   key={stock.ticker}
                   stock={stock}
                   accentColor="amber"
-                  isTopPick={idx === 0 && (stock.conviction ?? 0) >= 8}
+                  isTopPick={idx === 0 && (stock.conviction ?? 0) >= minConviction}
                   isOwned={ownedTickers.has(stock.ticker)}
                 />
               ))}
             </div>
-            {selectedGoldMineCategory && displayedGoldMines.length <= 2 && displayedGoldMines.length > 0 && (
+            {selectedGoldMineCategory && filteredGoldMines.length <= 2 && filteredGoldMines.length > 0 && (
               <button
                 onClick={() => discoverGoldMineCategory(selectedGoldMineCategory)}
                 className="mt-4 inline-flex items-center gap-1.5 text-sm text-amber-600 hover:text-amber-700 font-medium transition-colors"
