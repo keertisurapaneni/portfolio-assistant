@@ -2746,8 +2746,8 @@ async function executeScannerTrade(
     }
     persistEvent(ticker, 'success', `Order placed: ${signal} ${sizing.quantity} @ $${entryPrice}`, {
       action: 'executed', source: 'scanner', mode,
-      scanner_signal: signal, scanner_confidence: effectiveScannerConf,
-      fa_recommendation: faRec, fa_confidence: faConf,
+      scanner_signal: signal, scanner_confidence: Math.round(effectiveScannerConf),
+      fa_recommendation: faRec, fa_confidence: faConf != null ? Math.round(faConf) : null,
       ...(candlePatternLog.length > 0 && { candle_patterns: candlePatternLog }),
     });
     return 'executed';
