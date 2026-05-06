@@ -16,6 +16,7 @@ const IB_CLIENT_ID = parseInt(process.env.IB_CLIENT_ID ?? '1', 10);
 
 const RECONNECT_BASE_MS = 2_000;
 const RECONNECT_MAX_MS = 60_000;
+const MAX_CONCURRENT_REQUESTS = 8;
 
 // ── State ────────────────────────────────────────────────
 
@@ -26,6 +27,38 @@ let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let accounts: string[] = [];
 let nextOrderId = 0;
 let connectionListeners: Array<(state: boolean) => void> = [];
+
+// Per-request error routing: when IB sends error code 200 for a specific reqId,
+// resolve the pending promise immediately instead of waiting for timeout.
+const _pendingReqCallbacks = new Map<number, (code: number, msg: string) => void>();
+
+// Semaphore to limit concurrent IB API requests and prevent flooding
+let _activeRequests = 0;
+const _requestQueue: Array<() => void> = [];
+
+export async function acquireRequestSlot(): Promise<void> {
+  if (_activeRequests < MAX_CONCURRENT_REQUESTS) {
+    _activeRequests++;
+    return;
+  }
+  return new Promise<void>(resolve => {
+    _requestQueue.push(() => { _activeRequests++; resolve(); });
+  });
+}
+
+export function releaseRequestSlot(): void {
+  _activeRequests--;
+  const next = _requestQueue.shift();
+  if (next) next();
+}
+
+export function registerReqErrorCallback(reqId: number, cb: (code: number, msg: string) => void): void {
+  _pendingReqCallbacks.set(reqId, cb);
+}
+
+export function unregisterReqErrorCallback(reqId: number): void {
+  _pendingReqCallbacks.delete(reqId);
+}
 
 // ── Public API ───────────────────────────────────────────
 
@@ -95,6 +128,15 @@ export function connect(): void {
       return;
     }
 
+    // Route per-request errors (e.g. code 200 "No security definition") to the
+    // waiting promise so it resolves immediately instead of waiting for timeout.
+    if (reqId != null && code != null && _pendingReqCallbacks.has(reqId)) {
+      const cb = _pendingReqCallbacks.get(reqId)!;
+      _pendingReqCallbacks.delete(reqId);
+      cb(code, err.message);
+      return;
+    }
+
     console.error(`[IB] Error (code=${code}, reqId=${reqId}): ${err.message}`);
 
     if (code === 1100) {
@@ -159,51 +201,76 @@ export interface ContractSearchResult {
   description: string;
 }
 
-export function searchContract(symbol: string): Promise<ContractSearchResult | null> {
-  return new Promise((resolve, reject) => {
-    if (!ib || !connected) {
-      return reject(new Error('Not connected to IB Gateway'));
-    }
+export async function searchContract(symbol: string): Promise<ContractSearchResult | null> {
+  if (!ib || !connected) {
+    throw new Error('Not connected to IB Gateway');
+  }
 
-    const reqId = getNextOrderId();
-    const contract = createStockContract(symbol);
-    let resolved = false;
+  await acquireRequestSlot();
+  try {
+    return await new Promise<ContractSearchResult | null>((resolve) => {
+      const reqId = getNextOrderId();
+      // Use empty exchange for contract detail lookups — SMART is a routing strategy
+      // and reqContractDetails can return empty results when exchange is set to SMART.
+      const contract: Contract = {
+        symbol: symbol.toUpperCase(),
+        secType: SecType.STK,
+        currency: 'USD',
+      };
+      let resolved = false;
 
-    const timeout = setTimeout(() => {
-      if (!resolved) {
+      const cleanup = () => {
+        unregisterReqErrorCallback(reqId);
+      };
+
+      const timeout = setTimeout(() => {
+        if (!resolved) {
+          resolved = true;
+          cleanup();
+          resolve(null);
+        }
+      }, 10_000);
+
+      // Register per-request error handler (e.g. code 200 = no security definition)
+      registerReqErrorCallback(reqId, (_code: number, _msg: string) => {
+        if (resolved) return;
         resolved = true;
+        clearTimeout(timeout);
         resolve(null);
-      }
-    }, 10_000);
-
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const emitter = ib as any;
-
-    // Use reqContractDetails to get full contract info including conId
-    emitter.on(EventName.contractDetails, (rId: number, details: { contract: { conId?: number; symbol?: string; secType?: string; primaryExch?: string; currency?: string }; longName?: string }) => {
-      if (rId !== reqId || resolved) return;
-      resolved = true;
-      clearTimeout(timeout);
-
-      resolve({
-        conId: details.contract.conId ?? 0,
-        symbol: details.contract.symbol ?? symbol,
-        secType: details.contract.secType ?? 'STK',
-        primaryExch: details.contract.primaryExch ?? '',
-        currency: details.contract.currency ?? 'USD',
-        description: details.longName ?? '',
       });
-    });
 
-    emitter.on(EventName.contractDetailsEnd, (rId: number) => {
-      if (rId !== reqId || resolved) return;
-      resolved = true;
-      clearTimeout(timeout);
-      resolve(null);
-    });
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const emitter = ib as any;
 
-    ib.reqContractDetails(reqId, contract);
-  });
+      emitter.on(EventName.contractDetails, (rId: number, details: { contract: { conId?: number; symbol?: string; secType?: string; primaryExch?: string; currency?: string }; longName?: string }) => {
+        if (rId !== reqId || resolved) return;
+        resolved = true;
+        clearTimeout(timeout);
+        cleanup();
+
+        resolve({
+          conId: details.contract.conId ?? 0,
+          symbol: details.contract.symbol ?? symbol,
+          secType: details.contract.secType ?? 'STK',
+          primaryExch: details.contract.primaryExch ?? '',
+          currency: details.contract.currency ?? 'USD',
+          description: details.longName ?? '',
+        });
+      });
+
+      emitter.on(EventName.contractDetailsEnd, (rId: number) => {
+        if (rId !== reqId || resolved) return;
+        resolved = true;
+        clearTimeout(timeout);
+        cleanup();
+        resolve(null);
+      });
+
+      ib!.reqContractDetails(reqId, contract);
+    });
+  } finally {
+    releaseRequestSlot();
+  }
 }
 
 // ── Place Bracket Order ──────────────────────────────────

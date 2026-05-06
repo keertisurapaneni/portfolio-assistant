@@ -18,7 +18,6 @@ import { fileURLToPath } from 'node:url';
 import {
   isConnected,
   requestPositions,
-  searchContract,
   placeBracketOrder,
   placeMarketOrder,
   cancelOrder,
@@ -485,9 +484,8 @@ async function closeAllDayTrades(config: AutoTraderConfig): Promise<void> {
   log(`EOD sweep: ${dayTrades.length} open day trade(s) to close`);
   for (const trade of dayTrades) {
     try {
-      const contract = await searchContract(trade.ticker);
-      if (!contract) {
-        log(`EOD sweep: ${trade.ticker} — no IB contract found, skipping`);
+      if (!isConnected()) {
+        log(`EOD sweep: ${trade.ticker} — IB not connected, skipping`);
         continue;
       }
       const closeSide = trade.signal === 'BUY' ? 'SELL' : 'BUY';
@@ -2690,8 +2688,10 @@ async function executeScannerTrade(
     log(`${ticker}: order validation OK — ${orderCheck.reason}`);
   }
 
-  const contract = await searchContract(ticker);
-  if (!contract) return 'failed:no_contract';
+  // Verify IB connection is live before attempting order placement.
+  // We skip reqContractDetails for STK orders — it can fail transiently (empty
+  // results with SMART routing) while placeOrder handles contract resolution itself.
+  if (!isConnected()) return 'failed:no_contract';
 
   // SWING only: skip if price too far from entry (entry precision matters)
   if (mode === 'SWING_TRADE' && entryPrice > 0) {
@@ -2719,8 +2719,8 @@ async function executeScannerTrade(
 
     await createPaperTrade({
       ticker, mode, signal,
-      scanner_confidence: effectiveScannerConf,
-      fa_confidence: faConf,
+      scanner_confidence: Math.round(effectiveScannerConf),
+      fa_confidence: faConf != null ? Math.round(faConf) : null,
       fa_recommendation: faRec,
       entry_price: entryPrice,
       stop_loss: stopLoss,
@@ -2956,8 +2956,7 @@ async function _executeSuggestedFindTradeInner(
     return 'skipped:pre_trade_check';
   }
 
-  const contract = await searchContract(ticker);
-  if (!contract) return 'failed:no_contract';
+  if (!isConnected()) return 'failed:no_contract';
 
   try {
     const result = await placeMarketOrder({
@@ -3321,11 +3320,10 @@ async function executeExternalStrategySignal(
     return 'skipped';
   }
 
-  const contract = await searchContract(ticker);
-  if (!contract) {
+  if (!isConnected()) {
     await updateExternalStrategySignal(signal.id, {
       status: 'FAILED',
-      failure_reason: 'Ticker not found in IB contract search',
+      failure_reason: 'IB Gateway not connected',
     });
     return 'failed';
   }
@@ -4053,8 +4051,7 @@ async function checkDipBuyOpportunities(
     if (!(await checkAllocationCap(config, addOnDollar, ticker, positions, 'LONG_TERM'))) continue;
 
     try {
-      const contract = await searchContract(ticker);
-      if (!contract) continue;
+      if (!isConnected()) continue;
 
       const result = await placeMarketOrder({
         symbol: ticker, side: 'BUY', quantity: addOnQty,
@@ -4469,8 +4466,7 @@ async function checkProfitTakeOpportunities(
     if (actualTrimQty < 1) continue;
 
     try {
-      const contract = await searchContract(trade.ticker);
-      if (!contract) continue;
+      if (!isConnected()) continue;
 
       await placeMarketOrder({
         symbol: trade.ticker, side: 'SELL', quantity: actualTrimQty,
@@ -4652,8 +4648,7 @@ async function checkLossCutOpportunities(
     if (sellQty < 1) continue;
 
     try {
-      const contract = await searchContract(trade.ticker);
-      if (!contract) continue;
+      if (!isConnected()) continue;
 
       const side = ibPos.position > 0 ? 'SELL' : 'BUY';
       await placeMarketOrder({ symbol: trade.ticker, side: side as 'BUY' | 'SELL', quantity: sellQty });
@@ -5417,6 +5412,9 @@ No new options positions will be opened until next month. Existing positions con
       } catch (err) {
         log(`Options scan error: ${err instanceof Error ? err.message : 'unknown'}`);
       }
+      // Drain delay: let IB Gateway clear any pending responses before next cycle's
+      // day-trade contract lookups. Prevents no_contract failures after heavy scans.
+      await new Promise(r => setTimeout(r, 5_000));
     }
 
     // 15. Daily rehydration (after 4:15 PM ET)
