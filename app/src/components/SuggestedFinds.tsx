@@ -752,6 +752,12 @@ function DipDiscoveryCard({ stock, isOwned }: { stock: EnhancedSuggestedStock; i
 
       {/* Key metrics */}
       <div className="flex flex-wrap gap-1.5 mb-3">
+        {high52w != null && drawdown != null && (
+          <span className="text-[11px] px-2 py-0.5 bg-[hsl(var(--secondary))] rounded-full">
+            <span className="text-[hsl(var(--muted-foreground))]">Price:</span>{' '}
+            <span className="font-semibold text-[hsl(var(--foreground))]">${(high52w * (1 - drawdown / 100)).toFixed(2)}</span>
+          </span>
+        )}
         {high52w != null && (
           <span className="text-[11px] px-2 py-0.5 bg-[hsl(var(--secondary))] rounded-full">
             <span className="text-[hsl(var(--muted-foreground))]">52w High:</span>{' '}
