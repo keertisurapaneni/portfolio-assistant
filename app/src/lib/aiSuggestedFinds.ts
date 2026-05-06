@@ -885,6 +885,9 @@ function getLocalCachedDiscovery(): CachedDiscovery | null {
     const cached: CachedDiscovery = JSON.parse(raw);
     const cachedDay = cached.suggestionDateEt ?? formatInstantToEtYmd(cached.timestamp);
     if (cachedDay !== todayEt) return null;
+    // If dipDiscoveries key is absent, the cache was written before the dip scan ran.
+    // Fall through to server which may have been patched with dip results since.
+    if (!('dipDiscoveries' in cached.data)) return null;
     return cached;
   } catch { /* invalid cache */ }
   return null;
