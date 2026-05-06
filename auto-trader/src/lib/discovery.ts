@@ -548,7 +548,19 @@ Requirements:
 - Current price is 30-50% BELOW the stock's 52-week high (a significant drawdown)
 - The decline should be RECENT (within the last 4-16 weeks, not a slow multi-year bleed)
 - The reason for the dip should be TEMPORARY — earnings miss with intact guidance, sector rotation, macro selloff, tariff fear, management transition with strong successor
-- EXCLUDE stocks where the dip is STRUCTURAL — accounting fraud, secular industry decline, credit downgrade to junk, product safety crisis, terminal business model
+- The company's COMPETITIVE MOAT must be INTACT — not threatened by AI disruption, geopolitical realignment, or secular industry decline
+
+HARD EXCLUDES (do NOT suggest these):
+- Companies whose core product is being commoditized by AI (e.g., creative software replaced by generative AI, basic data services replaced by LLMs, routine consulting replaced by AI agents)
+- Companies with unresolvable geopolitical supply chain risk (>50% revenue dependent on adversarial-nation trade)
+- Secular decline industries (legacy media, fossil-only energy without transition plan, declining retail)
+- Accounting fraud, credit downgrade to junk, product safety crisis
+
+PREFER companies with:
+- Physical infrastructure moats (pipelines, railroads, data centers, power plants)
+- Regulatory moats (licensed utilities, defense contractors, healthcare monopolies)
+- Network effects that AI cannot replicate (payment networks, exchanges, social platforms with real identity)
+- Mission-critical enterprise software with deep integration (ERP, core banking)
 
 Return ONLY a JSON array of objects with these fields:
 {
@@ -565,15 +577,42 @@ function buildDipCatalystPrompt(candidates: Array<{ ticker: string; name: string
     `${c.ticker} (${c.name}): Down ${c.drawdownPct.toFixed(0)}% — ${c.reason}`
   ).join('\n');
 
-  return `You are an experienced equity analyst. For each stock below, determine whether the dip is a BUYING OPPORTUNITY or a VALUE TRAP.
+  return `You are a skeptical equity analyst specializing in moat durability. For each stock below, determine whether the dip is a BUYING OPPORTUNITY or a VALUE TRAP.
 
 Stocks:
 ${stockList}
 
-For each stock, analyze:
-1. Is the reason for the dip temporary or structural?
-2. Does the company have strong fundamentals to recover (market position, cash flow, management)?
-3. What is the realistic recovery timeline?
+For each stock, rigorously analyze these five dimensions:
+
+1. MOAT DURABILITY — Is the company's competitive advantage DURABLE or ERODING?
+   - AI disruption: Can AI tools replicate or commoditize their core product/service? (e.g., creative software vs AI generation, data services vs LLMs, consulting vs AI agents)
+   - Network effects: Are switching costs still high, or are alternatives emerging?
+   - If AI meaningfully threatens their moat within 3 years → AVOID
+
+2. GEOPOLITICAL & REGULATORY RISK
+   - Supply chain dependency on adversarial nations (China, Russia)
+   - Tariff exposure, sanctions risk, export controls
+   - Pending antitrust or regulatory action that could force restructuring
+   - If geopolitical risk could permanently impair revenue >20% → AVOID
+
+3. SECULAR vs CYCLICAL — Is the industry growing or shrinking?
+   - Secular decline (print media, legacy telecom, fossil-only energy) → AVOID
+   - Cyclical downturn in a growing industry (semiconductors, cloud) → potential BUY
+
+4. FINANCIAL RESILIENCE
+   - Can the company self-fund through the recovery? (cash flow positive, manageable debt)
+   - Is there dividend coverage, buyback capacity, or does it need to raise capital?
+
+5. RECOVERY CATALYST — What specific event will drive the stock back up?
+   - Earnings inflection, new product cycle, cost restructuring, M&A, management change
+   - If no clear catalyst within 6-12 months → AVOID
+
+VERDICT RULES:
+- AVOID if moat is being disrupted by AI (even if financials look cheap)
+- AVOID if geopolitical risk is unresolvable by management
+- AVOID if no clear recovery catalyst within 12 months
+- BUY only if moat is INTACT, dip cause is TEMPORARY, and recovery catalyst is IDENTIFIABLE
+- Be harsh — most dips are value traps. Only recommend BUY for truly resilient businesses.
 
 Return ONLY a JSON array:
 {
@@ -584,7 +623,7 @@ Return ONLY a JSON array:
       "verdict": "BUY" or "AVOID",
       "conviction": 1-10,
       "reason": "One-sentence thesis for buy/avoid",
-      "whyGreat": ["point 1", "point 2", "point 3"],
+      "whyGreat": ["point 1 citing moat strength", "point 2 citing recovery catalyst", "point 3 citing financial resilience"],
       "metrics": [{"label": "P/E", "value": "12.3"}, {"label": "Market Cap", "value": "$45B"}, {"label": "Drawdown", "value": "-35%"}],
       "valuationTag": "Deep Value" or "Undervalued" or "Fair Value"
     }
