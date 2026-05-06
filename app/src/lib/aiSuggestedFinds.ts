@@ -694,7 +694,7 @@ function parseCompounderResponse(raw: string): EnhancedSuggestedStock[] {
       : [],
   }));
 
-  // Sort by conviction (highest first)
+  // Sort by conviction (highest first) — display filtering uses user's settings
   return results.sort((a, b) => (b.conviction ?? 0) - (a.conviction ?? 0));
 }
 
@@ -763,7 +763,7 @@ function parseGoldMineAnalysis(raw: string): EnhancedSuggestedStock[] {
       : [],
   }));
 
-  // Sort by conviction when available (category discovery)
+  // Sort by conviction — display filtering uses user's settings
   return results.sort((a, b) => (b.conviction ?? 0) - (a.conviction ?? 0));
 }
 
@@ -1067,13 +1067,18 @@ export async function discoverStocks(
 
   await new Promise((r) => setTimeout(r, 2000));
 
-  const goldMineAnalysisRaw = await callHuggingFace(
-    buildGoldMineAnalysisPrompt(validGoldMineMetrics, marketNews, goldMineCandidates, currentTheme),
-    'discover_goldmines',
-    0.3,
-    8000
-  );
-  const goldMines = parseGoldMineAnalysis(goldMineAnalysisRaw);
+  let goldMines: EnhancedSuggestedStock[] = [];
+  try {
+    const goldMineAnalysisRaw = await callHuggingFace(
+      buildGoldMineAnalysisPrompt(validGoldMineMetrics, marketNews.slice(0, 10), goldMineCandidates, currentTheme),
+      'discover_goldmines',
+      0.3,
+      8000
+    );
+    goldMines = parseGoldMineAnalysis(goldMineAnalysisRaw);
+  } catch (gmErr) {
+    console.warn('[Discovery] Gold Mine analysis failed (non-blocking):', gmErr instanceof Error ? gmErr.message : gmErr);
+  }
 
   console.log(
     `[Discovery] Done: ${compounders.length} compounders, ${goldMines.length} gold mines (${currentTheme.name})`
