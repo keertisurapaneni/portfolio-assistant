@@ -12,7 +12,7 @@
  */
 
 import { EventName, SecType, OptionType, type Contract } from '@stoqey/ib';
-import { getIBApi, getNextOrderId, isConnected, searchContract } from '../ib-connection.js';
+import { getIBApi, getNextOrderId, isConnected, searchContract, acquireRequestSlot, releaseRequestSlot, registerReqErrorCallback, unregisterReqErrorCallback } from '../ib-connection.js';
 import { estimateHistoricalVol } from './yahoo-finance.js';
 
 // ── Types ────────────────────────────────────────────────
@@ -223,168 +223,175 @@ interface OptionParams {
   tradingClass: string;
 }
 
-function getOptionChainParams(conId: number, symbol: string): Promise<OptionParams | null> {
-  return new Promise((resolve) => {
-    const ib = getIBApi();
-    if (!ib || !isConnected()) return resolve(null);
+async function getOptionChainParams(conId: number, symbol: string): Promise<OptionParams | null> {
+  const ib = getIBApi();
+  if (!ib || !isConnected()) return null;
 
-    const reqId = getNextOrderId();
-    const emitter = ib as unknown as NodeJS.EventEmitter;
-    let resolved = false;
-    const allParams: OptionParams[] = [];
+  await acquireRequestSlot();
+  try {
+    return await new Promise<OptionParams | null>((resolve) => {
+      const reqId = getNextOrderId();
+      const emitter = ib as unknown as NodeJS.EventEmitter;
+      let resolved = false;
+      const allParams: OptionParams[] = [];
 
-    const timeout = setTimeout(() => {
-      if (!resolved) { resolved = true; emitter.off(EventName.securityDefinitionOptionParameter, paramHandler); emitter.off(EventName.securityDefinitionOptionParameterEnd, endHandler); resolve(allParams[0] ?? null); }
-    }, 15_000);
+      const finish = (result: OptionParams | null) => {
+        if (resolved) return;
+        resolved = true;
+        clearTimeout(timeout);
+        unregisterReqErrorCallback(reqId);
+        emitter.off(EventName.securityDefinitionOptionParameter, paramHandler);
+        emitter.off(EventName.securityDefinitionOptionParameterEnd, endHandler);
+        resolve(result);
+      };
 
-    const paramHandler = (rId: number, exchange: string, _conId: number, tradingClass: string, multiplier: string, expirations: string[], strikes: number[]) => {
-      if (rId !== reqId) return;
-      // Prefer SMART exchange data
-      if (exchange === 'SMART' || allParams.length === 0) {
-        allParams.unshift({ expirations: Array.from(expirations).sort(), strikes: Array.from(strikes).sort((a, b) => a - b), multiplier, tradingClass });
-      } else {
-        allParams.push({ expirations: Array.from(expirations).sort(), strikes: Array.from(strikes).sort((a, b) => a - b), multiplier, tradingClass });
-      }
-    };
+      const timeout = setTimeout(() => finish(allParams[0] ?? null), 15_000);
 
-    const endHandler = (rId: number) => {
-      if (rId !== reqId || resolved) return;
-      resolved = true;
-      clearTimeout(timeout);
-      emitter.off(EventName.securityDefinitionOptionParameter, paramHandler);
-      emitter.off(EventName.securityDefinitionOptionParameterEnd, endHandler);
-      resolve(allParams[0] ?? null);
-    };
+      registerReqErrorCallback(reqId, () => finish(null));
 
-    emitter.on(EventName.securityDefinitionOptionParameter, paramHandler);
-    emitter.on(EventName.securityDefinitionOptionParameterEnd, endHandler);
+      const paramHandler = (rId: number, exchange: string, _conId: number, tradingClass: string, multiplier: string, expirations: string[], strikes: number[]) => {
+        if (rId !== reqId) return;
+        if (exchange === 'SMART' || allParams.length === 0) {
+          allParams.unshift({ expirations: Array.from(expirations).sort(), strikes: Array.from(strikes).sort((a, b) => a - b), multiplier, tradingClass });
+        } else {
+          allParams.push({ expirations: Array.from(expirations).sort(), strikes: Array.from(strikes).sort((a, b) => a - b), multiplier, tradingClass });
+        }
+      };
 
-    (ib as unknown as { reqSecDefOptParams: (reqId: number, symbol: string, exchange: string, secType: string, conId: number) => void })
-      .reqSecDefOptParams(reqId, symbol.toUpperCase(), '', 'STK', conId);
-  });
+      const endHandler = (rId: number) => {
+        if (rId !== reqId || resolved) return;
+        finish(allParams[0] ?? null);
+      };
+
+      emitter.on(EventName.securityDefinitionOptionParameter, paramHandler);
+      emitter.on(EventName.securityDefinitionOptionParameterEnd, endHandler);
+
+      (ib as unknown as { reqSecDefOptParams: (reqId: number, symbol: string, exchange: string, secType: string, conId: number) => void })
+        .reqSecDefOptParams(reqId, symbol.toUpperCase(), '', 'STK', conId);
+    });
+  } finally {
+    releaseRequestSlot();
+  }
 }
 
 // ── Get Greeks for a Specific Option Contract ─────────────
 
-function getOptionGreeksForContract(
+async function getOptionGreeksForContract(
   symbol: string,
   strike: number,
   expiry: string,
   optionType: 'P' | 'C',
   underlyingPrice: number,
 ): Promise<OptionGreeks | null> {
-  return new Promise((resolve) => {
-    const ib = getIBApi();
-    if (!ib || !isConnected()) return resolve(null);
+  const ib = getIBApi();
+  if (!ib || !isConnected()) return null;
 
-    const reqId = getNextOrderId();
-    const emitter = ib as unknown as NodeJS.EventEmitter;
-    let resolved = false;
-    let bidPrice = -1, askPrice = -1;
-    let impliedVol = 0, delta = 0, theta = 0, gamma = 0, vega = 0;
+  await acquireRequestSlot();
+  try {
+    return await new Promise<OptionGreeks | null>((resolve) => {
+      const reqId = getNextOrderId();
+      const emitter = ib as unknown as NodeJS.EventEmitter;
+      let resolved = false;
+      let bidPrice = -1, askPrice = -1;
+      let impliedVol = 0, delta = 0, theta = 0, gamma = 0, vega = 0;
 
-    const contract: Contract = {
-      symbol: symbol.toUpperCase(),
-      secType: SecType.OPT,
-      exchange: 'SMART',
-      currency: 'USD',
-      strike,
-      right: optionType === 'P' ? OptionType.Put : OptionType.Call,
-      lastTradeDateOrContractMonth: expiry,
-      multiplier: 100,
-    };
-
-    const timeout = setTimeout(() => {
-      if (!resolved) {
-        resolved = true;
-        cleanup();
-        if (impliedVol > 0 && delta !== 0) {
-          resolve(buildResult());
-        } else {
-          resolve(null);
-        }
-      }
-    }, 12_000);
-
-    function cleanup() {
-      emitter.off(EventName.tickOptionComputation, greeksHandler);
-      emitter.off(EventName.tickPrice, priceHandler);
-      emitter.off(EventName.error, errorHandler);
-      try { (ib as unknown as { cancelMktData: (id: number) => void }).cancelMktData(reqId); } catch { /* ignore */ }
-    }
-
-    function buildResult(): OptionGreeks {
-      const mid = bidPrice >= 0 && askPrice >= 0 ? (bidPrice + askPrice) / 2 : Math.max(bidPrice, askPrice, 0);
-      // Simulate realistic fill at mid - $0.05
-      const realisticMid = Math.max(mid - 0.05, 0.01);
-      const dte = daysToExpiry(expiry);
-      const annualYield = dte > 0 ? (realisticMid / strike) * (365 / dte) * 100 : 0;
-      const absDelta = Math.abs(delta);
-      const probProfit = (1 - absDelta) * 100;
-
-      return {
-        strike, expiry,
-        optionType,
-        bid: bidPrice >= 0 ? bidPrice : 0,
-        ask: askPrice >= 0 ? askPrice : 0,
-        mid: realisticMid,
-        impliedVol,
-        delta,
-        theta,
-        gamma,
-        vega,
-        probProfit,
-        annualYield,
+      const contract: Contract = {
+        symbol: symbol.toUpperCase(),
+        secType: SecType.OPT,
+        exchange: 'SMART',
+        currency: 'USD',
+        strike,
+        right: optionType === 'P' ? OptionType.Put : OptionType.Call,
+        lastTradeDateOrContractMonth: expiry,
+        multiplier: 100,
       };
-    }
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const greeksHandler = (tickerId: number, _tickType: number, _tickAttrib: number, iv: number, d: number, _optPrice: number, _pvDiv: number, g: number, v: number, t: number, _undPrice: number) => {
-      if (tickerId !== reqId) return;
-      if (iv && iv > 0 && iv < 5) impliedVol = iv;  // sanity check: IV as decimal
-      if (d && d !== 0 && Math.abs(d) <= 1) delta = d;
-      if (t && t !== 0) theta = t;
-      if (g && g !== 0) gamma = g;
-      if (v && v !== 0) vega = v;
-
-      // Resolve once we have IV + delta + both prices
-      if (!resolved && impliedVol > 0 && delta !== 0 && bidPrice >= 0 && askPrice >= 0) {
+      function finish(result: OptionGreeks | null) {
+        if (resolved) return;
         resolved = true;
         clearTimeout(timeout);
-        cleanup();
-        resolve(buildResult());
+        unregisterReqErrorCallback(reqId);
+        emitter.off(EventName.tickOptionComputation, greeksHandler);
+        emitter.off(EventName.tickPrice, priceHandler);
+        emitter.off(EventName.error, errorHandler);
+        try { (ib as unknown as { cancelMktData: (id: number) => void }).cancelMktData(reqId); } catch { /* ignore */ }
+        resolve(result);
       }
-    };
 
-    const priceHandler = (tickerId: number, tickType: number, price: number) => {
-      if (tickerId !== reqId) return;
-      if (tickType === 1) bidPrice = price;  // BID
-      if (tickType === 2) askPrice = price;  // ASK
-    };
+      function buildResult(): OptionGreeks {
+        const mid = bidPrice >= 0 && askPrice >= 0 ? (bidPrice + askPrice) / 2 : Math.max(bidPrice, askPrice, 0);
+        const realisticMid = Math.max(mid - 0.05, 0.01);
+        const dte = daysToExpiry(expiry);
+        const annualYield = dte > 0 ? (realisticMid / strike) * (365 / dte) * 100 : 0;
+        const absDelta = Math.abs(delta);
+        const probProfit = (1 - absDelta) * 100;
 
-    // Immediately bail on "not subscribed" errors — no point waiting 12 s per strike.
-    // IB error event signature: (err: Error, code: number, reqId: number)
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const errorHandler = (_err: any, code: number, id: number) => {
-      if (id !== reqId) return;
-      // 354 = not subscribed, 10091 = needs additional subscription
-      if ((code === 354 || code === 10091) && !resolved) {
-        resolved = true;
-        clearTimeout(timeout);
-        cleanup();
-        resolve(null);
+        return {
+          strike, expiry,
+          optionType,
+          bid: bidPrice >= 0 ? bidPrice : 0,
+          ask: askPrice >= 0 ? askPrice : 0,
+          mid: realisticMid,
+          impliedVol,
+          delta,
+          theta,
+          gamma,
+          vega,
+          probProfit,
+          annualYield,
+        };
       }
-    };
 
-    emitter.on(EventName.tickOptionComputation, greeksHandler);
-    emitter.on(EventName.tickPrice, priceHandler);
-    emitter.on(EventName.error, errorHandler);
+      const timeout = setTimeout(() => {
+        if (impliedVol > 0 && delta !== 0) {
+          finish(buildResult());
+        } else {
+          finish(null);
+        }
+      }, 12_000);
 
-    // Request market data — for OPT contracts tickOptionComputation fires automatically;
-    // generic tick 13 is invalid for options, so use empty string to avoid IB error 321.
-    (ib as unknown as { reqMktData: (id: number, c: Contract, genericTicks: string, snapshot: boolean, regulatory: boolean, options: unknown[]) => void })
-      .reqMktData(reqId, contract, '', false, false, []);
-  });
+      // Centralized per-request error routing (handles code 200 "no security definition")
+      registerReqErrorCallback(reqId, () => finish(null));
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const greeksHandler = (tickerId: number, _tickType: number, _tickAttrib: number, iv: number, d: number, _optPrice: number, _pvDiv: number, g: number, v: number, t: number, _undPrice: number) => {
+        if (tickerId !== reqId) return;
+        if (iv && iv > 0 && iv < 5) impliedVol = iv;
+        if (d && d !== 0 && Math.abs(d) <= 1) delta = d;
+        if (t && t !== 0) theta = t;
+        if (g && g !== 0) gamma = g;
+        if (v && v !== 0) vega = v;
+
+        if (!resolved && impliedVol > 0 && delta !== 0 && bidPrice >= 0 && askPrice >= 0) {
+          finish(buildResult());
+        }
+      };
+
+      const priceHandler = (tickerId: number, tickType: number, price: number) => {
+        if (tickerId !== reqId) return;
+        if (tickType === 1) bidPrice = price;
+        if (tickType === 2) askPrice = price;
+      };
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const errorHandler = (_err: any, code: number, id: number) => {
+        if (id !== reqId) return;
+        // 200 = no security definition, 354 = not subscribed, 10091 = needs subscription
+        if ((code === 200 || code === 354 || code === 10091) && !resolved) {
+          finish(null);
+        }
+      };
+
+      emitter.on(EventName.tickOptionComputation, greeksHandler);
+      emitter.on(EventName.tickPrice, priceHandler);
+      emitter.on(EventName.error, errorHandler);
+
+      (ib as unknown as { reqMktData: (id: number, c: Contract, genericTicks: string, snapshot: boolean, regulatory: boolean, options: unknown[]) => void })
+        .reqMktData(reqId, contract, '', false, false, []);
+    });
+  } finally {
+    releaseRequestSlot();
+  }
 }
 
 // ── Find Best Put Strike ──────────────────────────────────

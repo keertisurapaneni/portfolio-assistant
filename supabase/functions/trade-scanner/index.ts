@@ -2417,8 +2417,11 @@ Deno.serve(async (req) => {
         if (swingIdeas.length > 0) {
           await writeToDB(sb, 'swing_trades', swingIdeas, 360);
         } else {
-          console.log('[Trade Scanner] Swing scan produced 0 ideas — preserving previous scan results');
-          swingIdeas = swingRow?.data ?? [];
+          console.log('[Trade Scanner] Swing scan produced 0 ideas — updating timestamp, preserving previous data');
+          // Update scanned_at so the user knows the scan ran (even with 0 new results)
+          const prevData = swingRow?.data ?? [];
+          await writeToDB(sb, 'swing_trades', prevData, 360);
+          swingIdeas = prevData;
         }
       } else {
         console.warn('[Trade Scanner] Swing AI failed — skipping DB write to preserve previous results');
