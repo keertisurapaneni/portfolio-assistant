@@ -2364,7 +2364,7 @@ function parseRiskReward(rr: string | null | undefined): number | null {
   return Number.isFinite(x) ? x : null;
 }
 
-const MIN_DAY_TRADE_RISK_REWARD = 1.8;
+const MIN_DAY_TRADE_RISK_REWARD = 1.5;
 
 /** Map executeScannerTrade result codes → UI status + human reason. */
 function scanResultToEval(result: string): { status: ScanEvaluationStatus; reason: string } {
@@ -2481,7 +2481,9 @@ async function executeScannerTrade(
   // the market is choppy — but check for a VWAP reclaim before blocking.
   // Somesh's rule: one 5-min candle closing above VWAP signals chop is ending.
   // Gate is non-blocking on data failure (isInsideOrb returns false when unavailable).
-  if (mode === 'DAY_TRADE') {
+  // Gate expires after 12 PM ET — the opening range is stale by afternoon.
+  const etMinutes = getETMinutes();
+  if (mode === 'DAY_TRADE' && etMinutes < 12 * 60) {
     const choppy = await isInsideOrb(ticker, signal as 'BUY' | 'SELL');
     if (choppy) {
       const reclaim = await detectVwapReclaim(ticker, signal as 'BUY' | 'SELL');
