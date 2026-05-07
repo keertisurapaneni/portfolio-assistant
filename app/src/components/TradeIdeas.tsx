@@ -145,18 +145,17 @@ export function TradeIdeas({ onSelectTicker }: TradeIdeasProps) {
   // Intentionally excludes long-term holds, options, and external signals so the
   // "TRADED" badge only lights up when the scanner actually acted on this idea today.
   useEffect(() => {
-    const todayPrefix = new Date().toISOString().slice(0, 10); // "YYYY-MM-DD"
+    const todayET = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
     Promise.all([getActiveTrades(), getAllTrades(50)])
       .then(([active, all]) => {
         const relevantModes = new Set(['DAY_TRADE', 'SWING_TRADE']);
         const tickers = new Set<string>();
-        // Active trades: only day/swing
-        active
-          .filter(t => relevantModes.has(t.mode ?? ''))
-          .forEach(t => tickers.add(t.ticker.toUpperCase()));
-        // Recent trades: only day/swing placed today
-        all
-          .filter(t => relevantModes.has(t.mode ?? '') && (t.opened_at ?? '').startsWith(todayPrefix))
+        // Only include active or recent trades that were actually opened today
+        [...active, ...all]
+          .filter(t =>
+            relevantModes.has(t.mode ?? '') &&
+            (t.opened_at ?? '').startsWith(todayET)
+          )
           .forEach(t => tickers.add(t.ticker.toUpperCase()));
         setTradedTickers(tickers);
       })

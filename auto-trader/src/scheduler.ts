@@ -195,6 +195,23 @@ let _dailyDeployedDate = '';
 const _processedTickers = new Set<string>();
 let _processedTickersDate = '';
 
+/** Skip results that are time-dependent — the ticker should be retried in later cycles
+ *  because market conditions (ORB breakout, volume, price movement) can change. */
+const RETRYABLE_SKIP_PREFIXES = [
+  'skipped:outside-market-hours',
+  'skipped:inside_orb',
+  'skipped:illiquid',
+  'skipped:rr_',
+  'skipped:price_too_far',
+  'skipped:swing_chop',
+  'skipped:swing_low_volume',
+  'skipped:swing_volume_divergence',
+];
+
+function isRetryableSkip(result: string): boolean {
+  return RETRYABLE_SKIP_PREFIXES.some(p => result.startsWith(p));
+}
+
 const FINNHUB_BASE = 'https://finnhub.io/api/v1';
 const FINNHUB_KEY = process.env.FINNHUB_API_KEY ?? '';
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -5006,9 +5023,10 @@ async function runTradeExecutionOnly(): Promise<void> {
           const ev = scanResultToEval(result);
           if (idea.mode === 'DAY_TRADE') rtDayEvals[idea.ticker] = ev;
           else rtSwingEvals[idea.ticker] = ev;
-          // Only mark as processed for non-time-based outcomes so the ticker is retried
-          // when the market-hours window opens (e.g. the 9:30–9:35 first-candle guard).
-          if (result !== 'skipped:outside-market-hours') {
+          // Don't mark time-dependent skips as processed — conditions change throughout the day.
+          // ORB status changes as price breaks out, volume increases fix illiquidity,
+          // and price movement changes R/R ratios.
+          if (!isRetryableSkip(result)) {
             _processedTickers.add(idea.ticker);
           }
           await new Promise(r => setTimeout(r, 2000));
@@ -5261,9 +5279,8 @@ async function runSchedulerCycle(): Promise<void> {
           const result = await executeScannerTrade(idea, config, positions);
           log(`  ${idea.ticker}: ${result}`);
           recordEval(idea, result);
-          // Only mark as processed for non-time-based outcomes so the ticker is retried
-          // when the market-hours window opens (e.g. the 9:30–9:35 first-candle guard).
-          if (result !== 'skipped:outside-market-hours') {
+          // Don't mark time-dependent skips as processed — conditions change throughout the day.
+          if (!isRetryableSkip(result)) {
             _processedTickers.add(idea.ticker);
           }
           await new Promise(r => setTimeout(r, 2000));

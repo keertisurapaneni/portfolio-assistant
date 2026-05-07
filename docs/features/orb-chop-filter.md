@@ -42,6 +42,10 @@ Before placing any `DAY_TRADE` scanner order, the ticker's ORB is checked:
 
 The check runs for all scanner-sourced day trades. Influencer signals and Suggested Finds are exempt (they have their own entry logic).
 
+**Retryable skip**: `inside_orb` is a time-dependent condition — the ticker is **not** marked as permanently processed. It will be re-evaluated in every subsequent scheduler cycle because stocks break out of their opening range throughout the day. This also applies to other market-condition-based skips (`illiquid`, `rr_*`, `price_too_far`, `swing_chop`, `swing_low_volume`, `swing_volume_divergence`). See `isRetryableSkip()` in `scheduler.ts`.
+
+> **Bug fixed 2026-05-07**: Previously, `inside_orb` skips permanently marked the ticker as processed, meaning a stock blocked at 9:45 AM (when VWAP data was insufficient for reclaim detection) would never be retried — even if it broke out of its ORB hours later. This caused zero day trades on choppy-open days.
+
 ### 2. SPX level scanner gate (`spx-level-scanner.ts → checkSpxLevelSetups`)
 
 When an SPX breakout-retest setup triggers, the SPX index itself is checked against its ORB before generating a SPY order:
