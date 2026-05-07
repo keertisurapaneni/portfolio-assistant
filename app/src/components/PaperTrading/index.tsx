@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   Bot,
   Wifi,
@@ -63,10 +63,10 @@ import {
   getTodaysExecutedEvents,
   getDayTradeValidationReport,
   getSwingTradeValidationReport,
+  clearSharedTradesCache,
 } from '../../lib/paperTradesApi';
 import { getTotalDeployed, getMarketRegime, calculateKellyMultiplier, type MarketRegime } from '../../lib/autoTrader';
 import { Spinner } from '../Spinner';
-import { analyzeUnreviewedTrades, updatePerformancePatterns } from '../../lib/aiFeedback';
 import { fmtUsd } from './utils';
 import { StatCard } from './shared';
 import {
@@ -82,79 +82,104 @@ import {
 
 export type Tab = 'portfolio' | 'today' | 'smart' | 'strategies' | 'validation' | 'history' | 'performance' | 'settings';
 
+// Module-level cache: survives unmount so navigating back is instant
+const PAGE_CACHE_TTL = 2 * 60 * 1000; // 2 minutes
+interface PageCache {
+  ts: number;
+  performance: TradePerformance | null;
+  persistedEvents: AutoTradeEventRecord[];
+  todaysExecuted: AutoTradeEventRecord[];
+  ibPositions: IBPosition[];
+  ibOrders: IBLiveOrder[];
+  allTrades: PaperTrade[];
+  pendingSignals: PendingStrategySignal[];
+  todaySignalsForExecute: PendingStrategySignal[];
+  categoryPerf: CategoryPerformance[];
+  sourcePerf: StrategySourcePerformance[];
+  videoPerf: StrategyVideoPerformance[];
+  strategyStatuses: StrategySignalStatusSummary[];
+  validationReport: DayTradeValidationReport | null;
+  swingValidationReport: SwingTradeValidationReport | null;
+  totalDeployed: number;
+  marketRegime: MarketRegime | null;
+  kellyMultiplier: number;
+  lastCycleSummary: string[];
+  fetchedGroups: string[];
+}
+let _pageCache: PageCache | null = null;
+
 export function PaperTrading() {
+  const cached = _pageCache && Date.now() - _pageCache.ts < PAGE_CACHE_TTL ? _pageCache : null;
+
   const [config, setConfig] = useState<AutoTraderConfig>(getAutoTraderConfig);
   const [connected, setConnected] = useState(isIBConnected());
   const [events, setEvents] = useState<AutoTradeEvent[]>(getEventLog());
-  const [allTrades, setAllTrades] = useState<PaperTrade[]>([]);
-  const [performance, setPerformance] = useState<TradePerformance | null>(null);
-  const [ibPositions, setIbPositions] = useState<IBPosition[]>([]);
-  const [ibOrders, setIbOrders] = useState<IBLiveOrder[]>([]);
-  const [persistedEvents, setPersistedEvents] = useState<AutoTradeEventRecord[]>([]);
-  const [todaysExecuted, setTodaysExecuted] = useState<AutoTradeEventRecord[]>([]);
-  const [categoryPerf, setCategoryPerf] = useState<CategoryPerformance[]>([]);
-  const [sourcePerf, setSourcePerf] = useState<StrategySourcePerformance[]>([]);
-  const [videoPerf, setVideoPerf] = useState<StrategyVideoPerformance[]>([]);
-  const [strategyStatuses, setStrategyStatuses] = useState<StrategySignalStatusSummary[]>([]);
-  const [pendingSignals, setPendingSignals] = useState<PendingStrategySignal[]>([]);
-  const [todaySignalsForExecute, setTodaySignalsForExecute] = useState<PendingStrategySignal[]>([]);
-  const [validationReport, setValidationReport] = useState<DayTradeValidationReport | null>(null);
-  const [swingValidationReport, setSwingValidationReport] = useState<SwingTradeValidationReport | null>(null);
-  const [totalDeployed, setTotalDeployed] = useState(0);
-  const [lastCycleSummary, setLastCycleSummary] = useState<string[]>([]);
-  const [marketRegime, setMarketRegime] = useState<MarketRegime | null>(null);
-  const [kellyMultiplier, setKellyMultiplier] = useState<number>(1.0);
+  const [allTrades, setAllTrades] = useState<PaperTrade[]>(cached?.allTrades ?? []);
+  const [performance, setPerformance] = useState<TradePerformance | null>(cached?.performance ?? null);
+  const [ibPositions, setIbPositions] = useState<IBPosition[]>(cached?.ibPositions ?? []);
+  const [ibOrders, setIbOrders] = useState<IBLiveOrder[]>(cached?.ibOrders ?? []);
+  const [persistedEvents, setPersistedEvents] = useState<AutoTradeEventRecord[]>(cached?.persistedEvents ?? []);
+  const [todaysExecuted, setTodaysExecuted] = useState<AutoTradeEventRecord[]>(cached?.todaysExecuted ?? []);
+  const [categoryPerf, setCategoryPerf] = useState<CategoryPerformance[]>(cached?.categoryPerf ?? []);
+  const [sourcePerf, setSourcePerf] = useState<StrategySourcePerformance[]>(cached?.sourcePerf ?? []);
+  const [videoPerf, setVideoPerf] = useState<StrategyVideoPerformance[]>(cached?.videoPerf ?? []);
+  const [strategyStatuses, setStrategyStatuses] = useState<StrategySignalStatusSummary[]>(cached?.strategyStatuses ?? []);
+  const [pendingSignals, setPendingSignals] = useState<PendingStrategySignal[]>(cached?.pendingSignals ?? []);
+  const [todaySignalsForExecute, setTodaySignalsForExecute] = useState<PendingStrategySignal[]>(cached?.todaySignalsForExecute ?? []);
+  const [validationReport, setValidationReport] = useState<DayTradeValidationReport | null>(cached?.validationReport ?? null);
+  const [swingValidationReport, setSwingValidationReport] = useState<SwingTradeValidationReport | null>(cached?.swingValidationReport ?? null);
+  const [totalDeployed, setTotalDeployed] = useState(cached?.totalDeployed ?? 0);
+  const [lastCycleSummary, setLastCycleSummary] = useState<string[]>(cached?.lastCycleSummary ?? []);
+  const [marketRegime, setMarketRegime] = useState<MarketRegime | null>(cached?.marketRegime ?? null);
+  const [kellyMultiplier, setKellyMultiplier] = useState<number>(cached?.kellyMultiplier ?? 1.0);
   const [tab, setTab] = useState<Tab>('portfolio');
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(!cached);
+  const [tabLoading, setTabLoading] = useState(false);
   const [syncing, setSyncing] = useState(false);
 
-  const loadData = useCallback(async () => {
-    setLoading(true);
-    try {
-      const [all, perf, savedEvents, todayEvents, catPerf, srcPerf, vidPerf, signalStatuses, pending, todayForExecute, deployed, regime, kelly, validation, swingValidation] = await Promise.all([
-        getAllTrades(500),
-        getPerformance(),
-        getAutoTradeEvents(100),
-        getTodaysExecutedEvents(),
-        recalculatePerformanceByCategory(),
-        recalculatePerformanceByStrategySource(),
-        recalculatePerformanceByStrategyVideo(),
-        getStrategySignalStatusSummaries(),
-        getPendingStrategySignals(300),
-        getTodaySignalsForManualExecute(),
-        getTotalDeployed(),
-        getMarketRegime(config),
-        calculateKellyMultiplier(config),
-        getDayTradeValidationReport(),
-        getSwingTradeValidationReport(),
-      ]);
-      setAllTrades(all);
-      setPerformance(perf);
-      setPersistedEvents(savedEvents);
-      setTodaysExecuted(todayEvents);
-      setCategoryPerf(catPerf);
-      setSourcePerf(srcPerf);
-      setVideoPerf(vidPerf);
-      setStrategyStatuses(signalStatuses);
-      setPendingSignals(pending);
-      setTodaySignalsForExecute(todayForExecute);
-      setTotalDeployed(deployed);
-      setMarketRegime(regime);
-      setKellyMultiplier(kelly);
-      setValidationReport(validation);
-      setSwingValidationReport(swingValidation);
-      // Fetch scheduler status (last cycle summary) from auto-trader
-      fetch('http://localhost:3001/api/scheduler/status')
-        .then((r) => r.json())
-        .then((d) => setLastCycleSummary(d.lastCycleSummary ?? []))
-        .catch(() => setLastCycleSummary([]));
-    } catch (err) {
-      console.error('Failed to load paper trading data:', err);
-    } finally {
-      setLoading(false);
-    }
-  }, [config]);
+  // Track which data groups have been fetched so we don't re-fetch on tab switch
+  const fetchedRef = useRef(new Set<string>(cached?.fetchedGroups ?? []));
+  const configRef = useRef(config);
+  useEffect(() => { configRef.current = config; }, [config]);
 
+  // Refs for cache snapshot on unmount
+  const stateRef = useRef({
+    performance, persistedEvents, todaysExecuted, ibPositions, ibOrders,
+    allTrades, pendingSignals, todaySignalsForExecute, categoryPerf,
+    sourcePerf, videoPerf, strategyStatuses, validationReport,
+    swingValidationReport, totalDeployed, marketRegime, kellyMultiplier, lastCycleSummary,
+  });
+  useEffect(() => {
+    stateRef.current = {
+      performance, persistedEvents, todaysExecuted, ibPositions, ibOrders,
+      allTrades, pendingSignals, todaySignalsForExecute, categoryPerf,
+      sourcePerf, videoPerf, strategyStatuses, validationReport,
+      swingValidationReport, totalDeployed, marketRegime, kellyMultiplier, lastCycleSummary,
+    };
+  });
+  useEffect(() => {
+    return () => {
+      _pageCache = { ts: Date.now(), ...stateRef.current, fetchedGroups: [...fetchedRef.current] };
+    };
+  }, []);
+
+  // ── Core data: header stats + activity log (always visible) ──
+  const loadCoreData = useCallback(async () => {
+    const [perf, savedEvents, todayEvents] = await Promise.all([
+      getPerformance(),
+      getAutoTradeEvents(100),
+      getTodaysExecutedEvents(),
+    ]);
+    setPerformance(perf);
+    setPersistedEvents(savedEvents);
+    setTodaysExecuted(todayEvents);
+    fetch('http://localhost:3001/api/scheduler/status')
+      .then((r) => r.json())
+      .then((d) => setLastCycleSummary(d.lastCycleSummary ?? []))
+      .catch(() => setLastCycleSummary([]));
+  }, []);
+
+  // ── IB data: positions + orders for header stats ──
   const loadIBData = useCallback(async () => {
     if (!connected) return;
     try {
@@ -169,24 +194,98 @@ export function PaperTrading() {
     }
   }, [connected, config.accountId]);
 
-  useEffect(() => { loadData(); }, [loadData]);
+  // ── Tab-specific data: loaded lazily on first visit, cached ──
+  const TAB_GROUPS: Record<Tab, string[]> = useMemo(() => ({
+    portfolio:   ['pendingSignals'],
+    today:       ['allTrades', 'todaySignals'],
+    history:     ['allTrades', 'pendingSignals'],
+    performance: ['categoryPerf', 'totalDeployed'],
+    strategies:  ['strategyPerf'],
+    validation:  ['validationReports'],
+    smart:       ['totalDeployed', 'smartTrading'],
+    settings:    [],
+  }), []);
+
+  const loadTabData = useCallback(async (t: Tab, force = false) => {
+    const groups = TAB_GROUPS[t];
+    const needed = force ? groups : groups.filter(g => !fetchedRef.current.has(g));
+    if (needed.length === 0) return;
+
+    setTabLoading(true);
+    try {
+      const promises: Promise<void>[] = [];
+      for (const group of needed) {
+        switch (group) {
+          case 'allTrades':
+            promises.push(getAllTrades(500).then(d => { setAllTrades(d); }));
+            break;
+          case 'pendingSignals':
+            promises.push(getPendingStrategySignals(300).then(d => { setPendingSignals(d); }));
+            break;
+          case 'todaySignals':
+            promises.push(getTodaySignalsForManualExecute().then(d => { setTodaySignalsForExecute(d); }));
+            break;
+          case 'categoryPerf':
+            promises.push(recalculatePerformanceByCategory().then(d => { setCategoryPerf(d); }));
+            break;
+          case 'totalDeployed':
+            promises.push(getTotalDeployed().then(d => { setTotalDeployed(d); }));
+            break;
+          case 'strategyPerf':
+            promises.push(Promise.all([
+              recalculatePerformanceByStrategySource().then(d => { setSourcePerf(d); }),
+              recalculatePerformanceByStrategyVideo().then(d => { setVideoPerf(d); }),
+              getStrategySignalStatusSummaries().then(d => { setStrategyStatuses(d); }),
+            ]).then(() => {}));
+            break;
+          case 'validationReports':
+            promises.push(Promise.all([
+              getDayTradeValidationReport().then(d => { setValidationReport(d); }),
+              getSwingTradeValidationReport().then(d => { setSwingValidationReport(d); }),
+            ]).then(() => {}));
+            break;
+          case 'smartTrading':
+            promises.push(Promise.all([
+              getMarketRegime(configRef.current).then(d => { setMarketRegime(d); }),
+              calculateKellyMultiplier(configRef.current).then(d => { setKellyMultiplier(d); }),
+            ]).then(() => {}));
+            break;
+        }
+        fetchedRef.current.add(group);
+      }
+      await Promise.all(promises);
+    } finally {
+      setTabLoading(false);
+    }
+  }, [TAB_GROUPS]);
+
+  // ── Mount: load core + IB + initial tab in parallel (skip if cache is fresh) ──
+  useEffect(() => {
+    if (cached) return;
+    let mounted = true;
+    (async () => {
+      setLoading(true);
+      try {
+        await Promise.all([loadCoreData(), loadIBData(), loadTabData('portfolio')]);
+      } catch (err) {
+        console.error('Failed to load paper trading data:', err);
+      } finally {
+        if (mounted) setLoading(false);
+      }
+    })();
+    return () => { mounted = false; };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Re-load IB data when connection or account changes
   useEffect(() => { loadIBData(); }, [loadIBData]);
 
-  useEffect(() => {
-    loadAutoTraderConfig().then(setConfig);
-  }, []);
+  useEffect(() => { loadAutoTraderConfig().then(setConfig); }, []);
 
+  // Load tab data lazily when the user switches tabs
   useEffect(() => {
-    analyzeUnreviewedTrades()
-      .then(count => {
-        if (count > 0) {
-          console.log(`[PaperTrading] Analyzed ${count} new trades`);
-          updatePerformancePatterns().catch(console.error);
-          loadData();
-        }
-      })
-      .catch(console.error);
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+    if (loading) return;
+    loadTabData(tab);
+  }, [tab]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     const unsub = onConnectionChange(setConnected);
@@ -224,20 +323,34 @@ export function PaperTrading() {
     setConfig(updated);
   };
 
+  // Full refresh: clear all caches, reload core + current tab
   const handleSync = async () => {
     setSyncing(true);
+    fetchedRef.current.clear();
+    clearSharedTradesCache();
+    _pageCache = null;
     try {
       if (config.accountId) {
         await syncPositions(config.accountId);
         await recalculatePerformance();
       }
-      await Promise.all([loadData(), loadIBData()]);
+      await Promise.all([loadCoreData(), loadIBData()]);
+      await loadTabData(tab, true);
     } catch (err) {
       console.error('Sync failed:', err);
     } finally {
       setSyncing(false);
     }
   };
+
+  // Refresh after executing a signal or action (reloads core + current tab data)
+  const refreshAfterAction = useCallback(async () => {
+    fetchedRef.current.delete('allTrades');
+    fetchedRef.current.delete('todaySignals');
+    clearSharedTradesCache();
+    await Promise.all([loadCoreData(), loadIBData()]);
+    await loadTabData(tab, true);
+  }, [loadCoreData, loadIBData, loadTabData, tab]);
 
   const updateConfig = async (updates: Partial<AutoTraderConfig>) => {
     const updated = await saveAutoTraderConfig(updates);
@@ -466,6 +579,10 @@ export function PaperTrading() {
         <div className="flex items-center justify-center py-12">
           <Spinner size="lg" />
         </div>
+      ) : tabLoading ? (
+        <div className="flex items-center justify-center py-12">
+          <Spinner size="md" />
+        </div>
       ) : (
         <>
           {tab === 'portfolio' && (
@@ -482,7 +599,7 @@ export function PaperTrading() {
               events={dedupedToday}
               trades={allTrades}
               todaySignalsForExecute={todaySignalsForExecute}
-              onExecuteSignal={loadData}
+              onExecuteSignal={refreshAfterAction}
             />
           )}
           {tab === 'smart' && (
@@ -497,13 +614,13 @@ export function PaperTrading() {
             />
           )}
           {tab === 'strategies' && (
-            <StrategyPerformanceTab sources={sourcePerf} videos={videoPerf} statuses={strategyStatuses} onRefresh={loadData} />
+            <StrategyPerformanceTab sources={sourcePerf} videos={videoPerf} statuses={strategyStatuses} onRefresh={() => loadTabData('strategies', true)} />
           )}
           {tab === 'validation' && (
             <ValidationTab
               dayReport={validationReport}
               swingReport={swingValidationReport}
-              onRefresh={loadData}
+              onRefresh={() => loadTabData('validation', true)}
             />
           )}
           {tab === 'history' && (

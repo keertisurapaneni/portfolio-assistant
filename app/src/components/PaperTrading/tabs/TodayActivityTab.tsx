@@ -502,8 +502,13 @@ export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], 
                 : event.mode === 'LONG_TERM' ? 'Long Term'
                 : isSystemClose ? 'Close' : '—';
 
-              const signalLabel = event.scanner_signal ?? (isSystemClose ? '—' : 'BUY');
-              const signalColor = event.scanner_signal === 'SELL' ? 'bg-red-100 text-red-700'
+              const SELL_SOURCES = new Set(['loss_cut', 'profit_take', 'lt_auto_sell']);
+              const inferredSignal = isSystemClose ? '—'
+                : SELL_SOURCES.has(event.source ?? '') ? 'SELL'
+                : 'BUY';
+              const signalLabel = event.scanner_signal ?? inferredSignal;
+              const isSell = signalLabel === 'SELL';
+              const signalColor = isSell ? 'bg-red-100 text-red-700'
                 : isSystemClose ? 'bg-slate-100 text-slate-600'
                 : 'bg-emerald-100 text-emerald-700';
 

@@ -6,6 +6,58 @@
 import { supabase } from './supabaseClient';
 import { getExemptFromAutoDeactivationSources } from './strategyVideosApi';
 
+// ── Shared cache: dedup parallel paper_trades fetches ────
+// The recalculate*() functions all query paper_trades independently.
+// This cache ensures only one round-trip happens when they run in parallel.
+
+let _sharedTradesInflight: Promise<PaperTrade[]> | null = null;
+let _sharedTradesCache: { data: PaperTrade[]; ts: number } | null = null;
+
+let _exemptInflight: Promise<Set<string>> | null = null;
+let _exemptCache: { data: Set<string>; ts: number } | null = null;
+
+const SHARED_CACHE_TTL = 30_000;
+
+async function getSharedTrades(): Promise<PaperTrade[]> {
+  if (_sharedTradesCache && Date.now() - _sharedTradesCache.ts < SHARED_CACHE_TTL) {
+    return _sharedTradesCache.data;
+  }
+  if (_sharedTradesInflight) return _sharedTradesInflight;
+  _sharedTradesInflight = (async () => {
+    const { data, error } = await supabase
+      .from('paper_trades')
+      .select('*')
+      .limit(2000);
+    _sharedTradesInflight = null;
+    if (error) throw new Error(`Failed to fetch trades: ${error.message}`);
+    const trades = (data ?? []) as PaperTrade[];
+    _sharedTradesCache = { data: trades, ts: Date.now() };
+    return trades;
+  })();
+  return _sharedTradesInflight;
+}
+
+async function getCachedExemptSources(): Promise<Set<string>> {
+  if (_exemptCache && Date.now() - _exemptCache.ts < SHARED_CACHE_TTL * 2) {
+    return _exemptCache.data;
+  }
+  if (_exemptInflight) return _exemptInflight;
+  _exemptInflight = (async () => {
+    const result = await getExemptFromAutoDeactivationSources();
+    _exemptInflight = null;
+    _exemptCache = { data: result, ts: Date.now() };
+    return result;
+  })();
+  return _exemptInflight;
+}
+
+export function clearSharedTradesCache(): void {
+  _sharedTradesCache = null;
+  _sharedTradesInflight = null;
+  _exemptCache = null;
+  _exemptInflight = null;
+}
+
 // ── Types ────────────────────────────────────────────────
 
 export type TradeStatus =
@@ -816,13 +868,12 @@ export interface PendingStrategySignal {
  * - profit_take: profit take trims (portfolio management)
  */
 export async function recalculatePerformanceByCategory(): Promise<CategoryPerformance[]> {
-  const { data: allTrades, error } = await supabase
-    .from('paper_trades')
-    .select('*')
-    .limit(2000);
-
-  if (error || !allTrades) return [];
-  const trades = allTrades as PaperTrade[];
+  let trades: PaperTrade[];
+  try {
+    trades = await getSharedTrades();
+  } catch {
+    return [];
+  }
 
   const categories: Array<{
     key: CategoryPerformance['category'];
@@ -924,14 +975,14 @@ export async function recalculatePerformanceByCategory(): Promise<CategoryPerfor
 }
 
 export async function recalculatePerformanceByStrategySource(): Promise<StrategySourcePerformance[]> {
-  const exemptSources = await getExemptFromAutoDeactivationSources();
-  const { data: allTrades, error } = await supabase
-    .from('paper_trades')
-    .select('*')
-    .not('strategy_source', 'is', null);
-
-  if (error || !allTrades) return [];
-  const trades = allTrades as PaperTrade[];
+  let allTrades: PaperTrade[];
+  let exemptSources: Set<string>;
+  try {
+    [allTrades, exemptSources] = await Promise.all([getSharedTrades(), getCachedExemptSources()]);
+  } catch {
+    return [];
+  }
+  const trades = allTrades.filter(t => t.strategy_source != null);
 
   const activeStatuses = new Set(['PENDING', 'SUBMITTED', 'FILLED', 'PARTIAL']);
   const closedStatuses = new Set(['STOPPED', 'TARGET_HIT', 'CLOSED']);
@@ -1028,14 +1079,14 @@ export async function recalculatePerformanceByStrategySource(): Promise<Strategy
 }
 
 export async function recalculatePerformanceByStrategyVideo(): Promise<StrategyVideoPerformance[]> {
-  const exemptSources = await getExemptFromAutoDeactivationSources();
-  const { data: allTrades, error } = await supabase
-    .from('paper_trades')
-    .select('*')
-    .not('strategy_source', 'is', null);
-
-  if (error || !allTrades) return [];
-  const trades = allTrades as PaperTrade[];
+  let allTrades: PaperTrade[];
+  let exemptSources: Set<string>;
+  try {
+    [allTrades, exemptSources] = await Promise.all([getSharedTrades(), getCachedExemptSources()]);
+  } catch {
+    return [];
+  }
+  const trades = allTrades.filter(t => t.strategy_source != null);
 
   const activeStatuses = new Set(['PENDING', 'SUBMITTED', 'FILLED', 'PARTIAL']);
   const closedStatuses = new Set(['STOPPED', 'TARGET_HIT', 'CLOSED']);
