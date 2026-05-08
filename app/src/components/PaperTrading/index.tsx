@@ -416,8 +416,11 @@ export function PaperTrading() {
   const totalCostBasis = longCostBasis + shortCostBasis;
   const totalMktValue  = longMktValue  + shortMktValue;
 
-  // Correct P&L: long gains (MV-CB) + short gains (CB-MV). This is the source of truth.
-  const totalUnrealizedPnl = pricedEquityPositions.reduce((sum, p) => sum + p.unrealizedPnl, 0);
+  // Use IB's own unrealized P&L (from reqPnL) when available — it includes all
+  // asset types (stocks + options) and matches what the IB mobile app shows.
+  // Fall back to equity-only calculation when IB data isn't available.
+  const equityUnrealizedPnl = pricedEquityPositions.reduce((sum, p) => sum + p.unrealizedPnl, 0);
+  const totalUnrealizedPnl = ibAccountPnl?.unrealizedPnL ?? equityUnrealizedPnl;
   const uniqueOrderTickers = new Set(ibOrders.map(o => o.ticker)).size;
 
   return (
@@ -530,7 +533,9 @@ export function PaperTrading() {
           icon={<TrendingUp className="w-4 h-4" />}
           label="Unrealized P&L"
           value={connected && totalMktValue > 0 ? fmtUsd(totalUnrealizedPnl, 0, true) : '—'}
-          subtitle={`Realized: ${fmtUsd(performance?.total_pnl ?? 0, 0, true)}`}
+          subtitle={ibAccountPnl?.realizedPnL != null
+            ? `Today Realized: ${fmtUsd(ibAccountPnl.realizedPnL, 0, true)}`
+            : `All-Time: ${fmtUsd(performance?.total_pnl ?? 0, 0, true)}`}
           color={totalUnrealizedPnl >= 0 ? 'green' : 'red'}
         />
         <StatCard
