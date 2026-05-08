@@ -143,6 +143,23 @@ export async function getAccounts(): Promise<string[]> {
   return data.accounts ?? [];
 }
 
+// ── Account P&L ──────────────────────────────────────────
+
+export interface AccountPnL {
+  dailyPnL: number | null;
+  unrealizedPnL: number | null;
+  realizedPnL: number | null;
+}
+
+/** Get IB's daily P&L (realized + unrealized) from the reqPnL subscription */
+export async function getAccountPnL(): Promise<AccountPnL> {
+  try {
+    return await ibFetch<AccountPnL>('/account-pnl');
+  } catch {
+    return { dailyPnL: null, unrealizedPnL: null, realizedPnL: null };
+  }
+}
+
 // ── Contract Search ──────────────────────────────────────
 
 /** Search for a stock contract by ticker symbol */

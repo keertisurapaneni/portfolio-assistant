@@ -757,9 +757,12 @@ export async function createAutoTradeEvent(
 ): Promise<void> {
   try {
     const sb = getSupabase();
-    await sb.from('auto_trade_events').insert(event);
-  } catch {
-    // fire-and-forget
+    const { error } = await sb.from('auto_trade_events').insert(event);
+    if (error) {
+      console.warn(`[Supabase] Failed to persist event for ${event.ticker}: ${error.message}`);
+    }
+  } catch (err) {
+    console.warn(`[Supabase] createAutoTradeEvent threw:`, err instanceof Error ? err.message : err);
   }
 }
 

@@ -28,6 +28,12 @@ let accounts: string[] = [];
 let nextOrderId = 0;
 let connectionListeners: Array<(state: boolean) => void> = [];
 
+// ── Account-level daily P&L (via reqPnL subscription) ───
+let _pnlReqId = 0;
+let _dailyPnL: number | null = null;
+let _unrealizedPnL: number | null = null;
+let _realizedPnL: number | null = null;
+
 // Per-request error routing: when IB sends error code 200 for a specific reqId,
 // resolve the pending promise immediately instead of waiting for timeout.
 const _pendingReqCallbacks = new Map<number, (code: number, msg: string) => void>();
@@ -89,6 +95,16 @@ export function onConnectionChange(fn: (state: boolean) => void): () => void {
   };
 }
 
+export interface AccountPnL {
+  dailyPnL: number | null;
+  unrealizedPnL: number | null;
+  realizedPnL: number | null;
+}
+
+export function getDailyPnL(): AccountPnL {
+  return { dailyPnL: _dailyPnL, unrealizedPnL: _unrealizedPnL, realizedPnL: _realizedPnL };
+}
+
 // ── Connect ──────────────────────────────────────────────
 
 export function connect(): void {
@@ -148,11 +164,32 @@ export function connect(): void {
   ib.on(EventName.managedAccounts, (accountsList: string) => {
     accounts = accountsList.split(',').map(a => a.trim()).filter(Boolean);
     console.log(`[IB] Managed accounts: ${accounts.join(', ')}`);
+
+    // Subscribe to account-level daily P&L once we have the account ID
+    if (accounts[0] && ib) {
+      _pnlReqId = getNextOrderId();
+      _dailyPnL = null;
+      _unrealizedPnL = null;
+      _realizedPnL = null;
+      try {
+        ib.reqPnL(_pnlReqId, accounts[0], '');
+        console.log(`[IB] Subscribed to account PnL (reqId=${_pnlReqId}, account=${accounts[0]})`);
+      } catch (err) {
+        console.warn(`[IB] reqPnL failed:`, err instanceof Error ? err.message : err);
+      }
+    }
   });
 
   ib.on(EventName.nextValidId, (orderId: number) => {
     nextOrderId = orderId;
     console.log(`[IB] Next valid order ID: ${nextOrderId}`);
+  });
+
+  ib.on(EventName.pnl, (reqId: number, dailyPnL: number, unrealizedPnL?: number, realizedPnL?: number) => {
+    if (reqId !== _pnlReqId) return;
+    _dailyPnL = dailyPnL;
+    _unrealizedPnL = unrealizedPnL ?? null;
+    _realizedPnL = realizedPnL ?? null;
   });
 
   // Connect
@@ -609,8 +646,14 @@ export function disconnect(): void {
     reconnectTimer = null;
   }
   if (ib) {
+    if (_pnlReqId) {
+      try { ib.cancelPnL(_pnlReqId); } catch { /* ignore */ }
+    }
     try { ib.disconnect(); } catch { /* ignore */ }
     ib = null;
   }
+  _dailyPnL = null;
+  _unrealizedPnL = null;
+  _realizedPnL = null;
   connected = false;
 }
