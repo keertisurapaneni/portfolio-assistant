@@ -38,7 +38,7 @@ import {
   syncPositions,
   scheduleDayTradeAutoClose,
 } from '../../lib/autoTrader';
-import { getAccounts, getPositions, getLiveOrders, type IBPosition, type IBLiveOrder } from '../../lib/ibClient';
+import { getAccounts, getPositions, getLiveOrders, getAccountPnL, type IBPosition, type IBLiveOrder, type AccountPnL } from '../../lib/ibClient';
 import {
   type PaperTrade,
   type TradePerformance,
@@ -104,6 +104,7 @@ interface PageCache {
   marketRegime: MarketRegime | null;
   kellyMultiplier: number;
   lastCycleSummary: string[];
+  ibAccountPnl: AccountPnL | null;
   fetchedGroups: string[];
 }
 let _pageCache: PageCache | null = null;
@@ -130,6 +131,7 @@ export function PaperTrading() {
   const [swingValidationReport, setSwingValidationReport] = useState<SwingTradeValidationReport | null>(cached?.swingValidationReport ?? null);
   const [totalDeployed, setTotalDeployed] = useState(cached?.totalDeployed ?? 0);
   const [lastCycleSummary, setLastCycleSummary] = useState<string[]>(cached?.lastCycleSummary ?? []);
+  const [ibAccountPnl, setIbAccountPnl] = useState<AccountPnL | null>(cached?.ibAccountPnl ?? null);
   const [marketRegime, setMarketRegime] = useState<MarketRegime | null>(cached?.marketRegime ?? null);
   const [kellyMultiplier, setKellyMultiplier] = useState<number>(cached?.kellyMultiplier ?? 1.0);
   const [tab, setTab] = useState<Tab>('portfolio');
@@ -148,6 +150,7 @@ export function PaperTrading() {
     allTrades, pendingSignals, todaySignalsForExecute, categoryPerf,
     sourcePerf, videoPerf, strategyStatuses, validationReport,
     swingValidationReport, totalDeployed, marketRegime, kellyMultiplier, lastCycleSummary,
+    ibAccountPnl,
   });
   useEffect(() => {
     stateRef.current = {
@@ -155,6 +158,7 @@ export function PaperTrading() {
       allTrades, pendingSignals, todaySignalsForExecute, categoryPerf,
       sourcePerf, videoPerf, strategyStatuses, validationReport,
       swingValidationReport, totalDeployed, marketRegime, kellyMultiplier, lastCycleSummary,
+      ibAccountPnl,
     };
   });
   useEffect(() => {
@@ -179,16 +183,18 @@ export function PaperTrading() {
       .catch(() => setLastCycleSummary([]));
   }, []);
 
-  // ── IB data: positions + orders for header stats ──
+  // ── IB data: positions + orders + account P&L for header stats ──
   const loadIBData = useCallback(async () => {
     if (!connected) return;
     try {
-      const [positions, orders] = await Promise.all([
+      const [positions, orders, pnl] = await Promise.all([
         getPositions(config.accountId ?? ''),
         getLiveOrders(),
+        getAccountPnL(),
       ]);
       setIbPositions(positions);
       setIbOrders(orders);
+      setIbAccountPnl(pnl);
     } catch (err) {
       console.error('Failed to load IB data:', err);
     }
@@ -600,6 +606,7 @@ export function PaperTrading() {
               trades={allTrades}
               todaySignalsForExecute={todaySignalsForExecute}
               onExecuteSignal={refreshAfterAction}
+              ibRealizedPnl={ibAccountPnl?.realizedPnL ?? null}
             />
           )}
           {tab === 'smart' && (

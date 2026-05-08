@@ -3,7 +3,7 @@
  */
 
 import { Router } from 'express';
-import { isConnected, getAccounts, getDefaultAccount } from '../ib-connection.js';
+import { isConnected, getAccounts, getDefaultAccount, getDailyPnL } from '../ib-connection.js';
 
 const router = Router();
 
@@ -13,9 +13,16 @@ router.get('/status', (_req, res) => {
     connected: isConnected(),
     accounts: getAccounts(),
     defaultAccount: account,
-    // Map to the shape the web app expects (IBAuthStatus)
     authenticated: isConnected(),
   });
+});
+
+router.get('/account-pnl', (_req, res) => {
+  if (!isConnected()) {
+    res.json({ dailyPnL: null, unrealizedPnL: null, realizedPnL: null });
+    return;
+  }
+  res.json(getDailyPnL());
 });
 
 export default router;
