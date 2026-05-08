@@ -288,8 +288,12 @@ export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], 
         : `All skipped:\n${skipReasons.slice(0, 5).join('\n')}${skipReasons.length > 5 ? '\n...' : ''}`);
     }
   };
+  const todayISO = todayStart.toISOString();
   const tradesByTicker = new Map<string, PaperTrade[]>();
   for (const t of trades) {
+    const openedToday = t.opened_at && t.opened_at >= todayISO;
+    const closedToday = t.closed_at && t.closed_at >= todayISO;
+    if (!openedToday && !closedToday) continue;
     const arr = tradesByTicker.get(t.ticker) || [];
     arr.push(t);
     tradesByTicker.set(t.ticker, arr);
