@@ -149,7 +149,7 @@ function parseTag(trade: PaperTrade): string | null {
 
 export interface LogContext {
   source: 'app' | 'scheduler';
-  trigger: 'EOD_CLOSE' | 'IB_POSITION_GONE' | 'EXPIRED_DAY_ORDER' | 'EXPIRED_SWING_BRACKET';
+  trigger: 'EOD_CLOSE' | 'IB_POSITION_GONE' | 'IB_FILL_CONFIRMED' | 'IB_POSITION_GONE_FALLBACK' | 'EXPIRED_DAY_ORDER' | 'EXPIRED_SWING_BRACKET';
 }
 
 /** Log a closed trade to trade_performance_log. Idempotent. */

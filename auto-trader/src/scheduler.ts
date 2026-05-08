@@ -22,6 +22,7 @@ import {
   placeMarketOrder,
   cancelOrder,
   getOrderFillPrice,
+  getOrderFillPriceWithFallback,
   type PositionData,
 } from './ib-connection.js';
 import {
@@ -75,6 +76,7 @@ import { runOptionsScan, autoTradeOption, getOptionsAutoTradeConfig } from './li
 import { runEarningsScan, closeExpiredEarningsPositions } from './lib/earnings-scanner.js';
 import { runWatchlistScreener } from './lib/watchlist-screener.js';
 import { runOptionsManageCycle } from './lib/options-manager.js';
+import { runEndOfDayReconciliation } from './lib/reconcile-executions.js';
 import { runDipWatcher } from './lib/dip-watcher.js';
 import { checkSpxLevelSetups } from './lib/spx-level-scanner.js';
 import { isInsideOrb } from './lib/orb.js';
@@ -312,6 +314,17 @@ export function startScheduler(): void {
       await closeAllDayTrades(config);
     }
   }, { timezone: 'America/New_York' });
+
+  // EOD reconciliation — 4:15 PM ET: compare today's IB executions against paper_trades,
+  // correct any fill_price / P&L discrepancies, and recalculate global performance.
+  cron.schedule('15 16 * * 1-5', async () => {
+    try {
+      await runEndOfDayReconciliation();
+    } catch (err) {
+      console.error('[EOD Reconcile] Failed:', err instanceof Error ? err.message : err);
+    }
+  }, { timezone: 'America/New_York' });
+  log('EOD reconciliation: 4:15 PM ET');
 
   // Earnings IV-crush scanner — 2:30 PM ET, enter calendar spreads for tonight's AMC
   // and tomorrow morning's BMO earnings announcements.
@@ -3746,6 +3759,11 @@ async function syncPositions(
     );
 
     if (ibPos && ibPos.position !== 0) {
+      // Position exists — clear missing_since if it was set (position reappeared)
+      if (trade.missing_since) {
+        await updatePaperTrade(trade.id, { missing_since: null });
+        log(`${trade.ticker}: Position reappeared — cleared missing_since`);
+      }
       if (trade.status === 'SUBMITTED' || trade.status === 'PENDING') {
         if (trade.mode === 'SWING_TRADE' && trade.entry_trigger_type === 'bracket_limit') {
           upsertSwingMetrics({ date: getETDateString(), swing_orders_filled: 1 }).catch(() => {});
@@ -3756,7 +3774,9 @@ async function syncPositions(
         // 3. avgCost — LAST RESORT only; blended across ALL shares in the position,
         //    so it's wrong when the account holds prior shares of the same ticker
         const ibOrderId = trade.ib_order_id ? parseInt(trade.ib_order_id, 10) : NaN;
-        const ibFill = !Number.isNaN(ibOrderId) ? getOrderFillPrice(ibOrderId) : undefined;
+        const ibFill = !Number.isNaN(ibOrderId)
+          ? (getOrderFillPrice(ibOrderId) ?? await getOrderFillPriceWithFallback(ibOrderId))
+          : undefined;
         const fillPrice = ibFill ?? trade.entry_price ?? ibPos.avgCost;
         const updates: Record<string, unknown> = {
           status: 'FILLED',
@@ -3809,13 +3829,40 @@ async function syncPositions(
       }
     } else if (trade.status === 'FILLED') {
       // Position gone — closed by bracket TP/SL or manual action.
-      // Try to get actual exit fill price from IB orderStatus events first.
+      // 2-cycle guard: don't auto-close on first detection. Set missing_since,
+      // wait 30 min (2 sync cycles) before confirming closure.
+      const MISSING_GUARD_MS = 30 * 60 * 1000; // 30 minutes
+
+      // Try to get actual exit fill price from IB fills (cache + DB fallback)
       const tpId = trade.ib_tp_order_id ? parseInt(trade.ib_tp_order_id, 10) : NaN;
       const slId = trade.ib_sl_order_id ? parseInt(trade.ib_sl_order_id, 10) : NaN;
-      const tpFill = !Number.isNaN(tpId) ? getOrderFillPrice(tpId) : undefined;
-      const slFill = !Number.isNaN(slId) ? getOrderFillPrice(slId) : undefined;
+      const tpFill = !Number.isNaN(tpId) ? await getOrderFillPriceWithFallback(tpId) : undefined;
+      const slFill = !Number.isNaN(slId) ? await getOrderFillPriceWithFallback(slId) : undefined;
       const ibExitFill = tpFill ?? slFill;
+
+      // If we have a confirmed IB exit fill, close immediately (no guard needed)
+      const hasConfirmedFill = ibExitFill !== undefined;
+
+      if (!hasConfirmedFill && !trade.missing_since) {
+        // First detection — mark as missing, don't close yet
+        await updatePaperTrade(trade.id, { missing_since: new Date().toISOString() });
+        log(`${trade.ticker}: Position missing — marking missing_since (will confirm in ~30 min)`);
+        continue;
+      }
+
+      if (!hasConfirmedFill && trade.missing_since) {
+        const missingFor = Date.now() - new Date(trade.missing_since).getTime();
+        if (missingFor < MISSING_GUARD_MS) {
+          log(`${trade.ticker}: Position still missing (${Math.round(missingFor / 60000)} min) — waiting for guard period`);
+          continue;
+        }
+        log(`${trade.ticker}: Position missing for ${Math.round(missingFor / 60000)} min — proceeding with closure (fallback)`);
+      }
+
       const closePrice = ibExitFill ?? (await getQuotePrice(trade.ticker));
+      if (!hasConfirmedFill) {
+        log(`[WARN] ${trade.ticker}: Closing with fallback quote price (no IB fill found) — close_price=${closePrice}`);
+      }
       const fillPrice = trade.fill_price ?? trade.entry_price ?? 0;
       const qty = trade.quantity ?? 1;
       const isLong = trade.signal === 'BUY';
@@ -3857,8 +3904,9 @@ async function syncPositions(
         pnl: pnlVal,
         pnl_percent: pnlPct,
         r_multiple: rMultiple,
+        missing_since: null,
       });
-      log(`${trade.ticker}: Closed (${closeReason}) — P&L $${pnl.toFixed(2)}`);
+      log(`${trade.ticker}: Closed (${closeReason}) — P&L $${pnl.toFixed(2)}${hasConfirmedFill ? '' : ' [fallback price]'}`);
       const closedTrade = {
         ...trade,
         status,
@@ -3883,7 +3931,7 @@ async function syncPositions(
       }
       logClosedTradePerformance(closedTrade as import('./lib/supabase.js').PaperTrade, {
         source: 'scheduler',
-        trigger: 'IB_POSITION_GONE',
+        trigger: hasConfirmedFill ? 'IB_FILL_CONFIRMED' : 'IB_POSITION_GONE_FALLBACK',
       }).catch(err => log(`Trade perf log failed for ${trade.ticker}: ${err instanceof Error ? err.message : 'unknown'}`));
     } else if (trade.status === 'SUBMITTED') {
       const tradeAge = Date.now() - new Date(trade.created_at).getTime();
