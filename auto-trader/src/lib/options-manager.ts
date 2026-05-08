@@ -2,8 +2,9 @@
  * Options Position Manager
  *
  * Monitors open options positions every 30 minutes and:
- *   - Auto-closes puts at 50% of max profit
- *   - Alerts when expiry ≤ 21 days (roll or close decision)
+ *   - Auto-closes puts at 50% of max profit (Check 3b)
+ *   - At 21 DTE: closes winners, rolls or closes deep losers (loss > premium),
+ *     holds mild losers to let theta decay work (Check 4)
  *   - Detects assignment and suggests covered call
  *   - Tracks P&L on open positions
  */
@@ -502,54 +503,88 @@ export async function runOptionsManageCycle(): Promise<ManageCycleResult> {
 
     // ── Check 4: 21 DTE — roll down-and-out, or close if roll isn't worth it ──
     // At 21 DTE gamma risk accelerates; risk/reward of holding degrades sharply.
-    // Strategy (from rolling-options video):
-    //   - Try to roll down and out to ~45 DTE for a credit (or acceptable small debit)
-    //   - If the roll math doesn't work, close to lock in P&L / cut exposure
-    // Winners with profit ≥50% already closed above (Check 3b) so positions reaching
-    // here are typically at-risk or just time-expired.
+    // ── Check 4: 21 DTE management ──
+    // At 21 DTE, theta decay accelerates — this is actually peak profitability territory.
+    // Only force-close if the position is deeply underwater (loss > premium collected).
+    // Mildly underwater or near-breakeven positions should ride the final theta curve.
+    // Winners: lock in profit. Losers within 1× premium: let theta work. Deep losers: try roll, then close.
     if (dte <= 21 && dte > 0) {
-      // Attempt to roll — only if IB is connected and stock price is available
-      if (isConnected() && stockPrice) {
-        const rollResult = await evaluateAndRollPut(pos, stockPrice, currentPremium);
-        console.log(`[Options Manager] 21 DTE roll eval: ${rollResult.logLine}`);
+      const isWinner = pnl >= 0;
+      const premiumInDollars = premiumCollected * 100;
+      const isDeepLoser = pnl < 0 && Math.abs(pnl) > premiumInDollars;
 
-        if (rollResult.rolled) {
-          result.rollAlerts.push(pos.ticker);
-          persistEvent(pos.ticker, 'info',
-            `↩️ ${pos.ticker} $${pos.option_strike} put rolled at 21 DTE — ${rollResult.logLine.split(': ')[1]}`,
-            { action: 'rolled', source: 'options', metadata: { reason: rollResult.reason, dte } }
-          );
+      if (isWinner) {
+        // Winner at 21 DTE — close to lock in profit
+        const closeReason = '21dte_profit';
+        const { error: closeError } = await sb.from('paper_trades').update({
+          status: 'CLOSED',
+          close_price: currentPremium,
+          pnl,
+          pnl_percent: (pnl / (pos.option_capital_req ?? pos.option_strike * 100)) * 100,
+          closed_at: new Date().toISOString(),
+          close_reason: closeReason,
+          option_close_pct: profitCapturePct,
+        }).eq('id', pos.id).eq('status', 'FILLED');
+
+        if (closeError) {
+          console.error(`[Options Manager] 21 DTE close failed for ${pos.ticker} ${pos.id}:`, closeError.message);
           continue;
         }
-        // Roll not viable — fall through to hard close
-        console.log(`[Options Manager] 21 DTE roll declined (${rollResult.reason}) — closing ${pos.ticker}`);
-      }
 
-      // Hard close fallback (roll declined or IB offline)
-      const isWinner = pnl >= 0;
-      const closeReason = isWinner ? '21dte_profit' : '21dte_close';
-      const { error: closeError } = await sb.from('paper_trades').update({
-        status: 'CLOSED',
-        close_price: currentPremium,
-        pnl,
-        pnl_percent: (pnl / (pos.option_capital_req ?? pos.option_strike * 100)) * 100,
-        closed_at: new Date().toISOString(),
-        close_reason: closeReason,
-        option_close_pct: profitCapturePct,
-      }).eq('id', pos.id).eq('status', 'FILLED');
-
-      if (closeError) {
-        console.error(`[Options Manager] 21 DTE close failed for ${pos.ticker} ${pos.id}:`, closeError.message);
+        result.rollAlerts.push(pos.ticker);
+        console.log(`[Options Manager] 21 DTE CLOSE (winner): ${pos.ticker} $${pos.option_strike}P — profit +$${pnl.toFixed(0)} (${dte}d left)`);
+        persistEvent(pos.ticker, 'success',
+          `⏱️ ${pos.ticker} $${pos.option_strike} put closed at 21 DTE — locked in +$${pnl.toFixed(0)} with ${dte} days remaining`,
+          { action: 'closed', source: 'options', metadata: { reason: closeReason, dte, pnl, profitCapturePct } }
+        );
         continue;
       }
 
-      result.rollAlerts.push(pos.ticker);
-      console.log(`[Options Manager] 21 DTE CLOSE: ${pos.ticker} $${pos.option_strike}P — ${isWinner ? `profit +$${pnl.toFixed(0)}` : `loss -$${Math.abs(pnl).toFixed(0)}`} (${dte}d left)`);
-      persistEvent(pos.ticker, isWinner ? 'success' : 'warning',
-        `${isWinner ? '⏱️' : '⚠️'} ${pos.ticker} $${pos.option_strike} put closed at 21 DTE — ${isWinner ? `locked in +$${pnl.toFixed(0)}` : `cut loss at -$${Math.abs(pnl).toFixed(0)}`} with ${dte} days remaining`,
-        { action: 'closed', source: 'options', metadata: { reason: closeReason, dte, pnl, profitCapturePct } }
-      );
-      continue;
+      if (isDeepLoser) {
+        // Deep loser (loss exceeds premium collected) — try to roll, then close as last resort
+        if (isConnected() && stockPrice) {
+          const rollResult = await evaluateAndRollPut(pos, stockPrice, currentPremium);
+          console.log(`[Options Manager] 21 DTE roll eval: ${rollResult.logLine}`);
+
+          if (rollResult.rolled) {
+            result.rollAlerts.push(pos.ticker);
+            persistEvent(pos.ticker, 'info',
+              `↩️ ${pos.ticker} $${pos.option_strike} put rolled at 21 DTE — ${rollResult.logLine.split(': ')[1]}`,
+              { action: 'rolled', source: 'options', metadata: { reason: rollResult.reason, dte } }
+            );
+            continue;
+          }
+          console.log(`[Options Manager] 21 DTE roll declined (${rollResult.reason}) — closing deep loser ${pos.ticker}`);
+        }
+
+        // Hard close deep loser
+        const closeReason = '21dte_close';
+        const { error: closeError } = await sb.from('paper_trades').update({
+          status: 'CLOSED',
+          close_price: currentPremium,
+          pnl,
+          pnl_percent: (pnl / (pos.option_capital_req ?? pos.option_strike * 100)) * 100,
+          closed_at: new Date().toISOString(),
+          close_reason: closeReason,
+          option_close_pct: profitCapturePct,
+        }).eq('id', pos.id).eq('status', 'FILLED');
+
+        if (closeError) {
+          console.error(`[Options Manager] 21 DTE close failed for ${pos.ticker} ${pos.id}:`, closeError.message);
+          continue;
+        }
+
+        result.rollAlerts.push(pos.ticker);
+        console.log(`[Options Manager] 21 DTE CLOSE (deep loser): ${pos.ticker} $${pos.option_strike}P — loss -$${Math.abs(pnl).toFixed(0)} exceeds premium $${premiumInDollars.toFixed(0)} (${dte}d left)`);
+        persistEvent(pos.ticker, 'warning',
+          `⚠️ ${pos.ticker} $${pos.option_strike} put closed at 21 DTE — cut deep loss at -$${Math.abs(pnl).toFixed(0)} (>${premiumInDollars.toFixed(0)} premium) with ${dte} days remaining`,
+          { action: 'closed', source: 'options', metadata: { reason: closeReason, dte, pnl, profitCapturePct } }
+        );
+        continue;
+      }
+
+      // Mild loser (loss within 1× premium collected) — let theta decay work
+      console.log(`[Options Manager] 21 DTE HOLD: ${pos.ticker} $${pos.option_strike}P — loss -$${Math.abs(pnl).toFixed(0)} within premium ($${premiumInDollars.toFixed(0)}), riding theta (${dte}d left)`);
     }
 
     // ── Check 5: Assignment detection (stock price below strike at/near expiry) ──
