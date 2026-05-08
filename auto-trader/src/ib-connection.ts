@@ -34,6 +34,10 @@ let _dailyPnL: number | null = null;
 let _unrealizedPnL: number | null = null;
 let _realizedPnL: number | null = null;
 
+// ── Order fill prices (from orderStatus events) ─────────
+// Maps orderId → avgFillPrice. Populated when IB reports a Filled status.
+const _orderFillPrices = new Map<number, number>();
+
 // Per-request error routing: when IB sends error code 200 for a specific reqId,
 // resolve the pending promise immediately instead of waiting for timeout.
 const _pendingReqCallbacks = new Map<number, (code: number, msg: string) => void>();
@@ -103,6 +107,14 @@ export interface AccountPnL {
 
 export function getDailyPnL(): AccountPnL {
   return { dailyPnL: _dailyPnL, unrealizedPnL: _unrealizedPnL, realizedPnL: _realizedPnL };
+}
+
+/**
+ * Get the actual IB fill price for an order. Returns undefined if no fill was
+ * received (order not yet filled, or filled before we started listening).
+ */
+export function getOrderFillPrice(orderId: number): number | undefined {
+  return _orderFillPrices.get(orderId);
 }
 
 // ── Connect ──────────────────────────────────────────────
@@ -190,6 +202,16 @@ export function connect(): void {
     _dailyPnL = dailyPnL;
     _unrealizedPnL = unrealizedPnL ?? null;
     _realizedPnL = realizedPnL ?? null;
+  });
+
+  ib.on(EventName.orderStatus, (
+    orderId: number, status: string, filled: number,
+    _remaining: number, avgFillPrice: number,
+  ) => {
+    if (status === 'Filled' && avgFillPrice > 0) {
+      _orderFillPrices.set(orderId, avgFillPrice);
+      console.log(`[IB] Order ${orderId} filled @ $${avgFillPrice.toFixed(4)}`);
+    }
   });
 
   // Connect

@@ -21,6 +21,7 @@ import {
   placeBracketOrder,
   placeMarketOrder,
   cancelOrder,
+  getOrderFillPrice,
   type PositionData,
 } from './ib-connection.js';
 import {
@@ -2791,6 +2792,8 @@ async function executeScannerTrade(
       quantity: sizing.quantity,
       position_size: sizing.dollarSize,
       ib_order_id: String(result.parentOrderId),
+      ib_tp_order_id: String(result.takeProfitOrderId),
+      ib_sl_order_id: String(result.stopLossOrderId),
       status: 'SUBMITTED',
       scanner_reason: idea.reason,
       fa_rationale: null,
@@ -3444,6 +3447,8 @@ async function executeExternalStrategySignal(
       ? ` | allocation ${allocationIndex}/${allocationSplit}`
       : '';
 
+    let ibTpOrderId: string | undefined;
+    let ibSlOrderId: string | undefined;
     if (hasBracketLevels) {
       const result = await placeBracketOrder({
         symbol: ticker,
@@ -3455,6 +3460,8 @@ async function executeExternalStrategySignal(
         tif: signal.mode === 'DAY_TRADE' ? 'DAY' : 'GTC',
       });
       ibOrderId = String(result.parentOrderId);
+      ibTpOrderId = String(result.takeProfitOrderId);
+      ibSlOrderId = String(result.stopLossOrderId);
       if (signal.mode === 'SWING_TRADE') {
         upsertSwingMetrics({ date: getETDateString(), swing_orders_placed: 1 }).catch(() => {});
       }
@@ -3492,6 +3499,8 @@ async function executeExternalStrategySignal(
       position_size: sizing.dollarSize,
       entry_trigger_type: effectiveEntryPrice != null ? 'bracket_limit' : 'market',
       ib_order_id: ibOrderId,
+      ib_tp_order_id: ibTpOrderId ?? null,
+      ib_sl_order_id: ibSlOrderId ?? null,
       status: 'SUBMITTED',
       scanner_reason: `External strategy signal from ${signal.source_name}`,
       notes: signal.notes ? `External signal${splitLabel} | ${signal.notes}` : `External signal${splitLabel}`,
@@ -3741,13 +3750,14 @@ async function syncPositions(
         if (trade.mode === 'SWING_TRADE' && trade.entry_trigger_type === 'bracket_limit') {
           upsertSwingMetrics({ date: getETDateString(), swing_orders_filled: 1 }).catch(() => {});
         }
-        // BUY fills: avgCost is a good proxy for the execution price (IB recalculates after each buy).
-        // SELL fills: avgCost is the cost of the REMAINING long shares — NOT the sale price. Use
-        // entry_price instead, which was set to ibPos.mktPrice at order creation time and closely
-        // approximates the actual execution price for a market sell.
-        const fillPrice = trade.signal === 'SELL'
-          ? (trade.entry_price ?? ibPos.mktPrice)
-          : ibPos.avgCost;
+        // Priority for fill price:
+        // 1. IB orderStatus avgFillPrice — the actual execution price from IB (definitive)
+        // 2. entry_price — the limit/stop price we sent to IB (close approximation)
+        // 3. avgCost — LAST RESORT only; blended across ALL shares in the position,
+        //    so it's wrong when the account holds prior shares of the same ticker
+        const ibOrderId = trade.ib_order_id ? parseInt(trade.ib_order_id, 10) : NaN;
+        const ibFill = !Number.isNaN(ibOrderId) ? getOrderFillPrice(ibOrderId) : undefined;
+        const fillPrice = ibFill ?? trade.entry_price ?? ibPos.avgCost;
         const updates: Record<string, unknown> = {
           status: 'FILLED',
           fill_price: fillPrice,
@@ -3798,8 +3808,14 @@ async function syncPositions(
         });
       }
     } else if (trade.status === 'FILLED') {
-      // Position gone — closed
-      const closePrice = await getQuotePrice(trade.ticker);
+      // Position gone — closed by bracket TP/SL or manual action.
+      // Try to get actual exit fill price from IB orderStatus events first.
+      const tpId = trade.ib_tp_order_id ? parseInt(trade.ib_tp_order_id, 10) : NaN;
+      const slId = trade.ib_sl_order_id ? parseInt(trade.ib_sl_order_id, 10) : NaN;
+      const tpFill = !Number.isNaN(tpId) ? getOrderFillPrice(tpId) : undefined;
+      const slFill = !Number.isNaN(slId) ? getOrderFillPrice(slId) : undefined;
+      const ibExitFill = tpFill ?? slFill;
+      const closePrice = ibExitFill ?? (await getQuotePrice(trade.ticker));
       const fillPrice = trade.fill_price ?? trade.entry_price ?? 0;
       const qty = trade.quantity ?? 1;
       const isLong = trade.signal === 'BUY';
