@@ -189,11 +189,14 @@ export async function saveConfigPartial(
   updates: Record<string, unknown>
 ): Promise<void> {
   const sb = getSupabase();
-  await sb.from('auto_trader_config').upsert({
+  const { error } = await sb.from('auto_trader_config').upsert({
     id: 'default',
     ...updates,
     updated_at: new Date().toISOString(),
   });
+  if (error) {
+    console.error(`[Supabase] saveConfigPartial failed: ${error.message}`);
+  }
 }
 
 // ── Paper Trades ─────────────────────────────────────────
@@ -246,6 +249,7 @@ export interface PaperTrade {
   // Long-term trailing stop tracking
   price_peak?: number | null;
   price_peak_date?: string | null;
+  missing_since?: string | null;
 }
 
 export type ExternalStrategySignalStatus =
@@ -839,13 +843,73 @@ export async function getAtRiskPositionEvents(): Promise<
   return (data ?? []) as { ticker: string; message: string; created_at: string; metadata: Record<string, unknown> }[];
 }
 
+// ── IB Fills (persistent fill price storage) ─────────────
+
+export interface IbFill {
+  order_id: number;
+  exec_id?: string | null;
+  ticker: string;
+  side: string;
+  quantity: number;
+  fill_price: number;
+  commission?: number | null;
+  filled_at: string;
+}
+
+export async function insertIbFill(fill: IbFill): Promise<void> {
+  const sb = getSupabase();
+  const { error } = await sb.from('ib_fills').insert(fill);
+  if (error) {
+    console.warn(`[Supabase] Failed to persist IB fill for order ${fill.order_id}: ${error.message}`);
+  }
+}
+
+export async function updateIbFillCommission(execId: string, commission: number): Promise<void> {
+  const sb = getSupabase();
+  const { error } = await sb.from('ib_fills').update({ commission }).eq('exec_id', execId);
+  if (error) {
+    console.warn(`[Supabase] Failed to update commission for exec ${execId}: ${error.message}`);
+  }
+}
+
+export async function getTodayFillPrices(): Promise<Map<number, number>> {
+  const sb = getSupabase();
+  const todayStart = new Date();
+  todayStart.setHours(0, 0, 0, 0);
+  const { data, error } = await sb
+    .from('ib_fills')
+    .select('order_id, fill_price')
+    .gte('filled_at', todayStart.toISOString());
+  if (error || !data) return new Map();
+  const map = new Map<number, number>();
+  for (const row of data) {
+    map.set(row.order_id, row.fill_price);
+  }
+  return map;
+}
+
+export async function getFillPriceByOrderId(orderId: number): Promise<number | undefined> {
+  const sb = getSupabase();
+  const { data } = await sb
+    .from('ib_fills')
+    .select('fill_price')
+    .eq('order_id', orderId)
+    .order('filled_at', { ascending: false })
+    .limit(1)
+    .single();
+  return data?.fill_price ?? undefined;
+}
+
 // ── Portfolio Snapshot ───────────────────────────────────
 
 export async function savePortfolioSnapshot(
   snapshot: Record<string, unknown>
 ): Promise<void> {
   const sb = getSupabase();
-  await sb.from('portfolio_snapshots').insert(snapshot);
+  const { error } = await sb.from('portfolio_snapshots').insert(snapshot);
+  if (error) {
+    console.error(`[Supabase] savePortfolioSnapshot failed: ${error.message}`);
+  }
 }
 
 // ── Performance ──────────────────────────────────────────
@@ -913,19 +977,22 @@ export async function writeScanEvaluations(
         Object.entries(evals).map(([ticker, ev]) => [ticker, { ...ev, evaluated_at }])
       ),
     };
-    await sb
+    const { error } = await sb
       .from('trade_scans')
       .update({ auto_evaluations: merged })
       .eq('id', scanId);
-  } catch {
-    // Non-critical — don't let UI sync failure impact trading
+    if (error) {
+      console.error(`[Supabase] writeScanEvaluations update failed for ${scanId}: ${error.message}`);
+    }
+  } catch (err) {
+    console.error(`[Supabase] writeScanEvaluations threw for ${scanId}:`, err instanceof Error ? err.message : err);
   }
 }
 
 export async function upsertHeartbeat(payload: HeartbeatPayload): Promise<void> {
   try {
     const sb = getSupabase();
-    await sb.from('system_heartbeats').upsert({
+    const { error } = await sb.from('system_heartbeats').upsert({
       id: 'auto-trader',
       last_seen_at: new Date().toISOString(),
       status: payload.status,
@@ -936,7 +1003,10 @@ export async function upsertHeartbeat(payload: HeartbeatPayload): Promise<void> 
       run_count: payload.runCount,
       updated_at: new Date().toISOString(),
     }, { onConflict: 'id' });
-  } catch {
-    // Intentionally silent — heartbeat failure must not impact trading
+    if (error) {
+      console.error(`[Supabase] upsertHeartbeat failed: ${error.message}`);
+    }
+  } catch (err) {
+    console.error(`[Supabase] upsertHeartbeat threw:`, err instanceof Error ? err.message : err);
   }
 }

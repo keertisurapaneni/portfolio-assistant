@@ -7,6 +7,7 @@
  */
 
 import { IBApi, EventName, Contract, Order, OrderAction, OrderType, SecType, TimeInForce, OptionType } from '@stoqey/ib';
+import { insertIbFill, updateIbFillCommission, getTodayFillPrices } from './lib/supabase.js';
 
 // ── Configuration ────────────────────────────────────────
 
@@ -110,11 +111,48 @@ export function getDailyPnL(): AccountPnL {
 }
 
 /**
- * Get the actual IB fill price for an order. Returns undefined if no fill was
- * received (order not yet filled, or filled before we started listening).
+ * Get the actual IB fill price for an order from the in-memory cache.
+ * For a DB fallback when the cache misses, use getOrderFillPriceWithFallback().
  */
 export function getOrderFillPrice(orderId: number): number | undefined {
   return _orderFillPrices.get(orderId);
+}
+
+/**
+ * Get fill price with DB fallback. Use this in non-hot paths where an async
+ * call is acceptable (e.g. syncPositions closure logic).
+ */
+export async function getOrderFillPriceWithFallback(orderId: number): Promise<number | undefined> {
+  const cached = _orderFillPrices.get(orderId);
+  if (cached !== undefined) return cached;
+  const { getFillPriceByOrderId } = await import('./lib/supabase.js');
+  const dbPrice = await getFillPriceByOrderId(orderId);
+  if (dbPrice !== undefined) {
+    _orderFillPrices.set(orderId, dbPrice);
+  }
+  return dbPrice;
+}
+
+/**
+ * Hydrate the in-memory fill price cache from the ib_fills DB table.
+ * Called on startup to survive restarts.
+ */
+async function hydrateOrderFillPrices(): Promise<void> {
+  try {
+    const fills = await getTodayFillPrices();
+    let count = 0;
+    for (const [orderId, price] of fills) {
+      if (!_orderFillPrices.has(orderId)) {
+        _orderFillPrices.set(orderId, price);
+        count++;
+      }
+    }
+    if (count > 0) {
+      console.log(`[IB] Hydrated ${count} fill prices from DB`);
+    }
+  } catch (err) {
+    console.warn('[IB] Failed to hydrate fill prices from DB:', err instanceof Error ? err.message : err);
+  }
 }
 
 // ── Connect ──────────────────────────────────────────────
@@ -211,8 +249,56 @@ export function connect(): void {
     if (status === 'Filled' && avgFillPrice > 0) {
       _orderFillPrices.set(orderId, avgFillPrice);
       console.log(`[IB] Order ${orderId} filled @ $${avgFillPrice.toFixed(4)}`);
+      insertIbFill({
+        order_id: orderId,
+        ticker: '',  // orderStatus doesn't include contract info; execDetails will fill this
+        side: '',
+        quantity: filled,
+        fill_price: avgFillPrice,
+        filled_at: new Date().toISOString(),
+      }).catch(err => console.warn(`[IB] Failed to persist orderStatus fill: ${err instanceof Error ? err.message : err}`));
     }
   });
+
+  // execDetails gives us the definitive per-fill record with contract info
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (ib as any).on(EventName.execDetails, (_reqId: number, contract: any, execution: any) => {
+    const orderId = execution?.orderId ?? execution?.order?.orderId;
+    const price = execution?.price ?? execution?.avgPrice;
+    const qty = execution?.shares ?? execution?.cumQty ?? 0;
+    const execId = execution?.execId ?? null;
+    const side = execution?.side ?? '';
+    const ticker = contract?.symbol ?? '';
+
+    if (orderId && price > 0) {
+      _orderFillPrices.set(orderId, price);
+      console.log(`[IB] ExecDetails: order ${orderId} ${side} ${qty}x ${ticker} @ $${price.toFixed(4)} (execId=${execId})`);
+      insertIbFill({
+        order_id: orderId,
+        exec_id: execId,
+        ticker,
+        side,
+        quantity: qty,
+        fill_price: price,
+        filled_at: new Date().toISOString(),
+      }).catch(err => console.warn(`[IB] Failed to persist execDetails fill: ${err instanceof Error ? err.message : err}`));
+    }
+  });
+
+  // commissionReport arrives after execDetails — update the matching fill row
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (ib as any).on(EventName.commissionReport, (report: any) => {
+    const execId = report?.execId;
+    const commission = report?.commission;
+    if (execId && commission != null && commission < 1e6) {
+      console.log(`[IB] Commission: execId=${execId} commission=$${commission.toFixed(4)}`);
+      updateIbFillCommission(execId, commission)
+        .catch(err => console.warn(`[IB] Failed to update commission: ${err instanceof Error ? err.message : err}`));
+    }
+  });
+
+  // Hydrate fill price cache from DB on connect so we survive restarts
+  hydrateOrderFillPrices().catch(() => {});
 
   // Connect
   console.log(`[IB] Connecting to ${IB_HOST}:${IB_PORT} (clientId=${IB_CLIENT_ID})...`);
