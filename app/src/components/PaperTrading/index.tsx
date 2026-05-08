@@ -606,7 +606,6 @@ export function PaperTrading() {
               trades={allTrades}
               todaySignalsForExecute={todaySignalsForExecute}
               onExecuteSignal={refreshAfterAction}
-              ibRealizedPnl={ibAccountPnl?.realizedPnL ?? null}
             />
           )}
           {tab === 'smart' && (
