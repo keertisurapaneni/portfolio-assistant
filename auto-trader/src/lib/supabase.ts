@@ -218,6 +218,8 @@ export interface PaperTrade {
   quantity: number | null;
   position_size: number | null;
   ib_order_id: string | null;
+  ib_tp_order_id: string | null;
+  ib_sl_order_id: string | null;
   status: string;
   fill_price: number | null;
   close_price: number | null;
