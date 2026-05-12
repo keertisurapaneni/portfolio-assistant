@@ -580,8 +580,8 @@ export interface AutoTradeEventRecord {
   id: string;
   ticker: string;
   event_type: 'info' | 'success' | 'warning' | 'error';
-  action: 'executed' | 'skipped' | 'failed' | null;
-  source: 'scanner' | 'suggested_finds' | 'manual' | 'system' | 'dip_buy' | 'profit_take' | 'loss_cut' | 'lt_auto_sell' | 'external_signal' | null;
+  action: 'executed' | 'skipped' | 'failed' | 'closed' | null;
+  source: 'scanner' | 'suggested_finds' | 'manual' | 'system' | 'dip_buy' | 'profit_take' | 'loss_cut' | 'lt_auto_sell' | 'swing_expiry' | 'capital_pressure' | 'external_signal' | null;
   mode: 'DAY_TRADE' | 'SWING_TRADE' | 'LONG_TERM' | 'OPTIONS_PUT' | 'OPTIONS_CALL' | null;
   message: string;
   strategy_source: string | null;
@@ -626,18 +626,17 @@ export async function getTodaysExecutedEvents(): Promise<AutoTradeEventRecord[]>
   const todayStart = new Date();
   todayStart.setHours(0, 0, 0, 0);
 
-  // Fetch executed trades + system close events (both profit and loss)
+  // Fetch executed trades, system close events, and auto-sell closes (lt_auto_sell, swing_expiry, capital_pressure)
   const { data, error } = await supabase
     .from('auto_trade_events')
     .select('*')
-    .in('action', ['executed', 'failed'])
+    .in('action', ['executed', 'failed', 'closed'])
     .gte('created_at', todayStart.toISOString())
     .order('created_at', { ascending: false });
 
   if (error) return [];
-  // Filter out non-system 'failed' events (only keep system closes + all executed)
   return ((data ?? []) as AutoTradeEventRecord[]).filter(
-    e => e.action === 'executed' || e.source === 'system'
+    e => e.action === 'executed' || e.action === 'closed' || e.source === 'system'
   );
 }
 

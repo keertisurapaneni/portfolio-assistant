@@ -401,6 +401,7 @@ export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], 
 
   const eventBasedPnl = (() => {
     const countedTradeIds = new Set<string>();
+    const AUTO_CLOSE = new Set(['system', 'lt_auto_sell', 'swing_expiry', 'capital_pressure']);
     let sum = 0;
     for (const ev of events) {
       const matched = tradesByTicker.get(ev.ticker)?.find(t =>
@@ -410,12 +411,13 @@ export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], 
       if (matched) {
         countedTradeIds.add(matched.id);
         sum += matched.pnl ?? 0;
-      } else {
-        const isSystemClose = ev.source === 'system' && !ev.mode;
-        if (isSystemClose && ev.metadata) {
-          const metaPnl = (ev.metadata as { pnl?: number }).pnl;
-          if (metaPnl != null) sum += metaPnl;
-        }
+      } else if (AUTO_CLOSE.has(ev.source ?? '') && ev.metadata) {
+        const meta = ev.metadata as { pnl?: number; realizedPnl?: number; gainPct?: number; qty?: number; entryPrice?: number };
+        const metaPnl = meta.pnl ?? meta.realizedPnl
+          ?? (meta.gainPct != null && meta.qty != null && meta.entryPrice != null
+            ? (meta.gainPct / 100) * meta.qty * meta.entryPrice
+            : undefined);
+        if (metaPnl != null) sum += metaPnl;
       }
     }
     return sum;
@@ -479,12 +481,14 @@ export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], 
               const matched = tradesByTicker.get(event.ticker)?.find(t =>
                 t.pnl != null || t.status === 'FILLED' || t.status === 'TARGET_HIT' || t.status === 'STOPPED' || t.status === 'CLOSED'
               );
-              const isSystemClose = event.source === 'system' && !event.mode;
-              const metaPnl = isSystemClose && event.metadata ? (event.metadata as { pnl?: number }).pnl : undefined;
+              const isPositionSync = event.source === 'system' && !event.mode;
+              const AUTO_CLOSE_SOURCES = new Set(['lt_auto_sell', 'swing_expiry', 'capital_pressure']);
+              const isAutoClose = AUTO_CLOSE_SOURCES.has(event.source ?? '');
+              const metaPnl = isPositionSync && event.metadata ? (event.metadata as { pnl?: number }).pnl : undefined;
               const eventPnl = metaPnl ?? matched?.pnl;
               const pnl = eventPnl ?? null;
               const CLOSED_STATUSES = ['CLOSED', 'TARGET_HIT', 'STOPPED', 'CANCELLED'];
-              const isClosed = isSystemClose || (matched?.close_price != null) || CLOSED_STATUSES.includes(matched?.status ?? '');
+              const isClosed = isPositionSync || isAutoClose || (matched?.close_price != null) || CLOSED_STATUSES.includes(matched?.status ?? '');
               const isActive = !isClosed && matched && ['FILLED', 'PARTIAL'].includes(matched.status);
               const msg = event.message;
               // Match "7 shares @ $675" OR "BUY 7 @ $675" (external signal format)
@@ -500,6 +504,9 @@ export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], 
                 : event.source === 'dip_buy' ? 'Dip buy'
                 : event.source === 'profit_take' ? 'Profit take'
                 : event.source === 'loss_cut' ? 'Loss cut'
+                : event.source === 'lt_auto_sell' ? 'LT auto-exit'
+                : event.source === 'swing_expiry' ? 'Swing expiry'
+                : event.source === 'capital_pressure' ? 'Capital freed'
                 : event.source === 'system' ? 'System'
                 : event.source === 'manual' ? 'Manual'
                 : 'Trade';
@@ -507,20 +514,20 @@ export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], 
               const modeLabel = event.mode === 'DAY_TRADE' ? 'Day'
                 : event.mode === 'SWING_TRADE' ? 'Swing'
                 : event.mode === 'LONG_TERM' ? 'Long Term'
-                : isSystemClose ? 'Close' : '—';
+                : isPositionSync ? 'Close' : '—';
 
-              const SELL_SOURCES = new Set(['loss_cut', 'profit_take', 'lt_auto_sell']);
-              const inferredSignal = isSystemClose ? '—'
+              const SELL_SOURCES = new Set(['loss_cut', 'profit_take', 'lt_auto_sell', 'swing_expiry', 'capital_pressure']);
+              const inferredSignal = isPositionSync ? '—'
                 : SELL_SOURCES.has(event.source ?? '') ? 'SELL'
                 : 'BUY';
               const signalLabel = event.scanner_signal ?? inferredSignal;
               const isSell = signalLabel === 'SELL';
               const signalColor = isSell ? 'bg-red-100 text-red-700'
-                : isSystemClose ? 'bg-slate-100 text-slate-600'
+                : isPositionSync ? 'bg-slate-100 text-slate-600'
                 : 'bg-emerald-100 text-emerald-700';
 
               return (
-                <tr key={event.id} className={cn('hover:bg-[hsl(var(--secondary))]/50', isSystemClose && 'bg-slate-50/50')}>
+                <tr key={event.id} className={cn('hover:bg-[hsl(var(--secondary))]/50', (isPositionSync || isAutoClose) && 'bg-slate-50/50')}>
                   <td className="px-4 py-3 font-bold">{event.ticker}</td>
                   <td className="px-4 py-3">
                     <span className={cn('inline-flex px-1.5 py-0.5 rounded text-[10px] font-bold', signalColor)}>
@@ -530,7 +537,7 @@ export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], 
                   <td className="px-4 py-3">
                     <span className={cn(
                       'text-[10px] px-1.5 py-0.5 rounded font-medium',
-                      isSystemClose ? 'bg-purple-50 text-purple-600' : 'bg-slate-100 text-slate-600'
+                      isPositionSync ? 'bg-purple-50 text-purple-600' : 'bg-slate-100 text-slate-600'
                     )}>
                       {modeLabel}
                     </span>
