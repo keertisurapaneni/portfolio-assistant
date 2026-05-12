@@ -758,8 +758,33 @@ export async function getRecentClosedStrategyOutcomes(params: {
 
 // ── Auto Trade Events ────────────────────────────────────
 
+export type AutoTradeAction = 'executed' | 'closed' | 'skipped' | 'failed' | 'proceeding' | 'health_check' | 'RECONCILIATION' | 'scan_complete';
+export type AutoTradeSource = 'scanner' | 'suggested_finds' | 'manual' | 'system' | 'dip_buy' | 'profit_take' | 'loss_cut' | 'lt_auto_sell' | 'swing_expiry' | 'capital_pressure' | 'external_signal' | 'spx_level_scanner' | 'earnings_scanner' | 'watchlist_screener' | 'compounder_health';
+export type AutoTradeMode = 'DAY_TRADE' | 'SWING_TRADE' | 'LONG_TERM' | 'OPTIONS_PUT' | 'OPTIONS_CALL' | 'EARNINGS_CALENDAR';
+
+export interface AutoTradeEventInput {
+  ticker: string;
+  event_type?: string;
+  message: string;
+  action?: AutoTradeAction;
+  source?: AutoTradeSource;
+  mode?: AutoTradeMode;
+  scanner_signal?: string | null;
+  scanner_confidence?: number | null;
+  fa_recommendation?: string | null;
+  fa_confidence?: number | null;
+  skip_reason?: string | null;
+  strategy_source?: string | null;
+  strategy_source_url?: string | null;
+  strategy_video_id?: string | null;
+  strategy_video_heading?: string | null;
+  metadata?: Record<string, unknown>;
+  candle_patterns?: string[];
+  [key: string]: unknown;
+}
+
 export async function createAutoTradeEvent(
-  event: Record<string, unknown>
+  event: AutoTradeEventInput
 ): Promise<void> {
   try {
     const sb = getSupabase();

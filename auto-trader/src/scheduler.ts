@@ -44,6 +44,7 @@ import {
   updatePaperTrade,
   upsertSwingMetrics,
   createAutoTradeEvent,
+  type AutoTradeEventInput,
   getRecentDipBuyEvents,
   getPastTrimEvents,
   getPastLossCutEvents,
@@ -782,9 +783,11 @@ export async function reconcileIBShorts(): Promise<{ closed: string[]; errors: s
       closed.push(pos.symbol);
       await createAutoTradeEvent({
         ticker: pos.symbol,
-        level: 'warn',
+        event_type: 'warning',
+        action: 'executed',
+        source: 'system',
         message: `[IBReconcile] Orphaned short covered: BUY ${qty} shares (avg cost ${pos.avgCost})`,
-        metadata: { action: 'ib_short_reconcile', qty, avg_cost: pos.avgCost },
+        metadata: { reconcile_type: 'ib_short_reconcile', qty, avg_cost: pos.avgCost },
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'unknown';
@@ -1887,7 +1890,7 @@ function persistEvent(
   ticker: string,
   eventType: string,
   message: string,
-  extra?: Record<string, unknown>
+  extra?: Omit<AutoTradeEventInput, 'ticker' | 'message'>
 ): void {
   createAutoTradeEvent({ ticker, event_type: eventType, message, ...extra });
 }

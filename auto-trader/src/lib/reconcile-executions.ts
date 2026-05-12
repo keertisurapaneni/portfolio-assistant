@@ -253,12 +253,13 @@ async function logReconciliationSummary(
     await createAutoTradeEvent({
       ticker: 'SYSTEM',
       action: 'RECONCILIATION',
-      status: corrected > 0 ? 'CORRECTED' : 'OK',
-      notes: [
-        `EOD reconciliation: ${matched} matched, ${corrected} corrected, ${orphaned} orphaned, ${flagged} flagged`,
-        ...(details ?? []),
-      ].join('\n'),
-      created_at: new Date().toISOString(),
+      source: 'system',
+      message: `EOD reconciliation: ${matched} matched, ${corrected} corrected, ${orphaned} orphaned, ${flagged} flagged`,
+      metadata: {
+        status: corrected > 0 ? 'CORRECTED' : 'OK',
+        matched, corrected, orphaned, flagged,
+        notes: (details ?? []).join('\n') || undefined,
+      },
     });
   } catch (err) {
     log(`Failed to log reconciliation summary: ${err instanceof Error ? err.message : err}`);

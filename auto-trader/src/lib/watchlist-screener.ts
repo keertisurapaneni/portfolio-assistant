@@ -227,6 +227,8 @@ export async function runWatchlistScreener(): Promise<void> {
   console.log(`[Watchlist Screener] Done. ${top.length} added, ${skipped.length} skipped.`);
 
   await createAutoTradeEvent({
+    ticker: 'SYSTEM',
+    message: `Watchlist scan complete: ${top.length} added, ${skipped.length} skipped`,
     action: 'scan_complete',
     source: 'watchlist_screener',
     metadata: {
