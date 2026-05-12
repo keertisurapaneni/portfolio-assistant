@@ -435,6 +435,43 @@ async function findBestPutStrike(
   return null;
 }
 
+/**
+ * Find the best OTM call strike for covered call writing, using delta targeting.
+ * Mirrors findBestPutStrike logic but for the call side.
+ */
+async function findBestCallStrike(
+  symbol: string,
+  strikes: number[],
+  expiry: string,
+  underlyingPrice: number,
+  deltaTarget = 0.20,
+): Promise<OptionGreeks | null> {
+  const deltaLow = Math.max(0.10, deltaTarget - 0.07);
+  const deltaHigh = deltaTarget + 0.07;
+
+  const targetPct = deltaTarget < 0.18 ? 0.08 : 0.06;
+  const targetStrike = underlyingPrice * (1 + targetPct);
+
+  const candidates = strikes
+    .filter(s => s > underlyingPrice * 1.02)
+    .sort((a, b) => Math.abs(a - targetStrike) - Math.abs(b - targetStrike))
+    .slice(0, 6);
+
+  for (const strike of candidates) {
+    const greeks = await getOptionGreeksForContract(symbol, strike, expiry, 'C', underlyingPrice);
+    if (!greeks) continue;
+    const absDelta = Math.abs(greeks.delta);
+    if (absDelta >= deltaLow && absDelta <= deltaHigh) return greeks;
+  }
+
+  for (const strike of candidates) {
+    const greeks = await getOptionGreeksForContract(symbol, strike, expiry, 'C', underlyingPrice);
+    if (greeks) return greeks;
+  }
+
+  return null;
+}
+
 // ── Main Export ──────────────────────────────────────────
 
 /**
@@ -477,12 +514,8 @@ export async function getOptionsChain(
   // If Greeks failed (e.g. market data not subscribed), fall back to synthetic.
   if (!bestPut) return syntheticFallback();
 
-  // Step 5: Optionally find best covered call (just above current price)
-  const callStrike = params.strikes.find(s => s > underlyingPrice * 1.05) ?? null;
-  let bestCall: OptionGreeks | null = null;
-  if (callStrike) {
-    bestCall = await getOptionGreeksForContract(symbol, callStrike, expiry, 'C', underlyingPrice);
-  }
+  // Step 5: Find best covered call via delta targeting (mirrors put logic)
+  const bestCall = await findBestCallStrike(symbol, params.strikes, expiry, underlyingPrice);
 
   const currentIV = bestPut?.impliedVol ?? bestCall?.impliedVol ?? 0;
 
@@ -507,4 +540,72 @@ export async function getBestPutOpportunity(
 ): Promise<OptionGreeks | null> {
   const chain = await getOptionsChain(symbol, underlyingPrice, storedIvRank);
   return chain?.bestPut ?? null;
+}
+
+// ── Strike Sniper ─────────────────────────────────────────
+
+export interface StrikeSniperResult {
+  expiry: string;
+  strike: number;
+  premium: number;
+  delta: number;
+  annualizedROI: number;
+  dte: number;
+  collateral: number;
+}
+
+/**
+ * Given a user-specified target strike price, find the best put contract
+ * across multiple expirations, ranked by annualized ROI.
+ */
+export async function findBestContractForStrike(
+  symbol: string,
+  targetStrike: number,
+  minAnnualizedReturn = 8,
+  underlyingPrice?: number,
+): Promise<StrikeSniperResult[]> {
+  const results: StrikeSniperResult[] = [];
+
+  const contractInfo = await searchContract(symbol);
+  if (!contractInfo) return results;
+
+  const spotPrice = underlyingPrice ?? targetStrike;
+
+  const params = await getOptionChainParams(contractInfo.conId, symbol);
+  if (!params || params.expirations.length === 0) return results;
+
+  // Find the strike closest to the user's target
+  const closestStrike = params.strikes.reduce((best, s) =>
+    Math.abs(s - targetStrike) < Math.abs(best - targetStrike) ? s : best,
+    params.strikes[0],
+  );
+
+  // Try each expiration in the 14–90 DTE window
+  const eligibleExpiries = params.expirations
+    .map(e => ({ e, dte: daysToExpiry(e) }))
+    .filter(x => x.dte >= 14 && x.dte <= 90)
+    .sort((a, b) => a.dte - b.dte);
+
+  for (const { e: expiry, dte } of eligibleExpiries) {
+    const greeks = await getOptionGreeksForContract(symbol, closestStrike, expiry, 'P', spotPrice);
+    if (!greeks || greeks.mid <= 0) continue;
+
+    const premium = greeks.mid;
+    const collateral = closestStrike * 100;
+    const annualizedROI = (premium / closestStrike) * (365 / dte) * 100;
+
+    if (annualizedROI < minAnnualizedReturn) continue;
+
+    results.push({
+      expiry,
+      strike: closestStrike,
+      premium,
+      delta: greeks.delta,
+      annualizedROI: Math.round(annualizedROI * 100) / 100,
+      dte,
+      collateral,
+    });
+  }
+
+  return results.sort((a, b) => b.annualizedROI - a.annualizedROI);
 }

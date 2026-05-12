@@ -5428,7 +5428,7 @@ async function runSchedulerCycle(): Promise<void> {
     // 13. Options wheel — manage open positions (every cycle, 30-min intervals)
     try {
       const optsMgr = await runOptionsManageCycle();
-      if (optsMgr.closed50Pct.length > 0) log(`Options: closed at 50% profit — ${optsMgr.closed50Pct.join(', ')}`);
+      if (optsMgr.closed50Pct.length > 0) log(`Options: closed at ${optsMgr.profitClosePct}% profit — ${optsMgr.closed50Pct.join(', ')}`);
       if (optsMgr.rollAlerts.length > 0) log(`Options: roll/close alerts — ${optsMgr.rollAlerts.join(', ')}`);
       if (optsMgr.assignmentAlerts.length > 0) log(`Options: assignment risk — ${optsMgr.assignmentAlerts.join(', ')}`);
       if (optsMgr.stopLossAlerts.length > 0) {
@@ -5438,7 +5438,7 @@ async function runSchedulerCycle(): Promise<void> {
             `🛑 Options Stop-Loss Triggered: ${ticker}`,
             `An options position stop-loss was triggered for ${ticker}.
 
-The premium exceeded 3× the original collected — the position was closed automatically to protect capital.
+The premium exceeded ${optsMgr.stopLossMultiplier}× the original collected — the position was closed automatically to protect capital.
 
 Check the Options Wheel → History tab for details.`,
             ticker,

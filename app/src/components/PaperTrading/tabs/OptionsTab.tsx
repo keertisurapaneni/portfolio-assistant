@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { RefreshCw, Plus, X, AlertTriangle, CheckCircle, Activity, Pencil, Check, TrendingUp, DollarSign } from 'lucide-react';
+import { RefreshCw, Plus, X, AlertTriangle, CheckCircle, Activity, Pencil, Check, TrendingUp, DollarSign, Crosshair, Search, Loader2 } from 'lucide-react';
 import { cn } from '../../../lib/utils';
 import { fmtUsd } from '../utils';
 import {
@@ -461,7 +461,7 @@ export function OptionsTab() {
   const [prices, setPrices] = useState<Map<string, TickerQuote>>(new Map());
   const [openPrices, setOpenPrices] = useState<Map<string, TickerQuote>>(new Map());
   const [maxAllocation, setMaxAllocation] = useState<number>(500_000);
-  const [activeSection, setActiveSection] = useState<'positions' | 'history' | 'watchlist' | 'log'>('positions');
+  const [activeSection, setActiveSection] = useState<'positions' | 'history' | 'watchlist' | 'log' | 'sniper'>('positions');
   const [tierFilter, setTierFilter]     = useState<'ALL' | 'STABLE' | 'GROWTH' | 'HIGH_VOL'>('ALL');
   const [sectorFilter, setSectorFilter] = useState<string>('ALL');
 
@@ -620,10 +620,51 @@ export function OptionsTab() {
     [[], []]
   );
 
+  // Strike Sniper state
+  const [sniperTicker, setSniperTicker] = useState('');
+  const [sniperTarget, setSniperTarget] = useState('');
+  const [sniperLoading, setSniperLoading] = useState(false);
+  const [sniperResults, setSniperResults] = useState<{
+    symbol: string;
+    currentPrice: number | null;
+    targetStrike: number;
+    fundamental: { grade: string; score: number };
+    contracts: Array<{
+      expiry: string;
+      strike: number;
+      premium: number;
+      delta: number;
+      annualizedROI: number;
+      dte: number;
+      collateral: number;
+    }>;
+  } | null>(null);
+  const [sniperError, setSniperError] = useState<string | null>(null);
+
+  async function handleSniperSearch() {
+    const ticker = sniperTicker.trim().toUpperCase();
+    const target = parseFloat(sniperTarget);
+    if (!ticker || !Number.isFinite(target) || target <= 0) return;
+    setSniperLoading(true);
+    setSniperError(null);
+    setSniperResults(null);
+    try {
+      const res = await fetch(`http://localhost:3001/api/options/strike-sniper?symbol=${ticker}&targetStrike=${target}`);
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? 'Request failed');
+      const data = await res.json();
+      setSniperResults(data);
+    } catch (err) {
+      setSniperError(err instanceof Error ? err.message : 'Failed to fetch');
+    } finally {
+      setSniperLoading(false);
+    }
+  }
+
   const sections = [
     { id: 'positions' as const, label: 'Open', count: openPositions.length },
     { id: 'history' as const, label: 'History', count: closedPositions.length },
     { id: 'watchlist' as const, label: 'Watchlist', count: watchlist.filter(w => w.active).length },
+    { id: 'sniper' as const, label: 'Sniper', count: 0 },
     { id: 'log' as const, label: 'Log', count: activityLog.length },
   ];
 
@@ -1055,6 +1096,136 @@ export function OptionsTab() {
             );
           })()}
 
+        </div>
+      )}
+
+      {/* Strike Sniper */}
+      {activeSection === 'sniper' && (
+        <div className="space-y-4">
+          <div className="rounded-xl border border-violet-200 bg-violet-50/60 px-4 py-3 space-y-2">
+            <div className="flex items-center gap-2">
+              <Crosshair className="w-4 h-4 text-violet-700" />
+              <span className="text-xs font-semibold text-violet-800">Strike Sniper</span>
+            </div>
+            <p className="text-[10px] text-violet-700 leading-relaxed">
+              Enter a stock and your target ownership price. The sniper finds the best put contract across all expirations, ranked by annualized return.
+            </p>
+            <div className="flex gap-2">
+              <input
+                type="text"
+                placeholder="Ticker"
+                value={sniperTicker}
+                onChange={e => setSniperTicker(e.target.value.toUpperCase())}
+                onKeyDown={e => e.key === 'Enter' && handleSniperSearch()}
+                className="w-24 text-sm px-3 py-2 rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--background))] focus:outline-none focus:ring-2 focus:ring-violet-500"
+              />
+              <input
+                type="number"
+                placeholder="Target price"
+                value={sniperTarget}
+                onChange={e => setSniperTarget(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && handleSniperSearch()}
+                className="w-32 text-sm px-3 py-2 rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--background))] focus:outline-none focus:ring-2 focus:ring-violet-500"
+              />
+              <button
+                onClick={handleSniperSearch}
+                disabled={sniperLoading || !sniperTicker.trim() || !sniperTarget}
+                className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-violet-600 text-white text-sm font-semibold hover:bg-violet-700 disabled:opacity-50 transition-colors"
+              >
+                {sniperLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
+                Find
+              </button>
+            </div>
+          </div>
+
+          {sniperError && (
+            <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3">
+              <p className="text-xs text-red-700">{sniperError}</p>
+            </div>
+          )}
+
+          {sniperResults && (
+            <div className="space-y-3">
+              <div className="rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] px-4 py-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-bold text-[hsl(var(--foreground))]">{sniperResults.symbol}</span>
+                    {sniperResults.currentPrice != null && (
+                      <span className="text-xs text-[hsl(var(--muted-foreground))]">
+                        Current: <span className="font-semibold">${sniperResults.currentPrice.toFixed(2)}</span>
+                      </span>
+                    )}
+                    <span className="text-xs text-[hsl(var(--muted-foreground))]">
+                      Target: <span className="font-semibold text-violet-700">${sniperResults.targetStrike}</span>
+                    </span>
+                  </div>
+                  <span className={cn(
+                    'text-[10px] px-2 py-0.5 rounded-full font-bold',
+                    sniperResults.fundamental.grade === 'A' && 'bg-emerald-100 text-emerald-700',
+                    sniperResults.fundamental.grade === 'B' && 'bg-blue-100 text-blue-700',
+                    sniperResults.fundamental.grade === 'C' && 'bg-amber-100 text-amber-700',
+                    (sniperResults.fundamental.grade === 'D' || sniperResults.fundamental.grade === 'F') && 'bg-red-100 text-red-700',
+                  )}>
+                    Grade: {sniperResults.fundamental.grade} ({sniperResults.fundamental.score})
+                  </span>
+                </div>
+              </div>
+
+              {sniperResults.contracts.length === 0 ? (
+                <div className="text-center py-8 text-sm text-[hsl(var(--muted-foreground))]">
+                  No contracts found meeting the minimum return threshold. Try a different target price.
+                </div>
+              ) : (
+                <div className="rounded-xl border border-[hsl(var(--border))] overflow-hidden">
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="bg-[hsl(var(--muted))]/50 text-[hsl(var(--muted-foreground))]">
+                        <th className="text-left px-3 py-2 font-semibold">Expiry</th>
+                        <th className="text-right px-3 py-2 font-semibold">DTE</th>
+                        <th className="text-right px-3 py-2 font-semibold">Strike</th>
+                        <th className="text-right px-3 py-2 font-semibold">Premium</th>
+                        <th className="text-right px-3 py-2 font-semibold">Delta</th>
+                        <th className="text-right px-3 py-2 font-semibold">Ann. ROI</th>
+                        <th className="text-right px-3 py-2 font-semibold">Collateral</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {sniperResults.contracts.map((c, i) => {
+                        const expiryFmt = c.expiry.length === 8
+                          ? `${c.expiry.slice(0, 4)}-${c.expiry.slice(4, 6)}-${c.expiry.slice(6, 8)}`
+                          : c.expiry;
+                        return (
+                          <tr
+                            key={i}
+                            className={cn(
+                              'border-t border-[hsl(var(--border))]',
+                              i === 0 && 'bg-emerald-50/60',
+                            )}
+                          >
+                            <td className="px-3 py-2 font-medium text-[hsl(var(--foreground))]">
+                              {new Date(expiryFmt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                              {i === 0 && <span className="ml-1.5 text-[9px] font-bold text-emerald-700 bg-emerald-100 px-1 py-0.5 rounded">BEST</span>}
+                            </td>
+                            <td className="text-right px-3 py-2 tabular-nums">{c.dte}d</td>
+                            <td className="text-right px-3 py-2 font-semibold tabular-nums">${c.strike}</td>
+                            <td className="text-right px-3 py-2 text-emerald-700 font-semibold tabular-nums">${c.premium.toFixed(2)}</td>
+                            <td className="text-right px-3 py-2 tabular-nums">{Math.abs(c.delta).toFixed(2)}</td>
+                            <td className={cn(
+                              'text-right px-3 py-2 font-bold tabular-nums',
+                              c.annualizedROI >= 20 ? 'text-emerald-700' : c.annualizedROI >= 10 ? 'text-blue-700' : 'text-[hsl(var(--foreground))]'
+                            )}>
+                              {c.annualizedROI.toFixed(1)}%
+                            </td>
+                            <td className="text-right px-3 py-2 tabular-nums text-[hsl(var(--muted-foreground))]">{fmtUsd(c.collateral, 0)}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
     </div>

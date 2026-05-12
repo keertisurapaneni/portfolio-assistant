@@ -318,6 +318,8 @@ export interface ManageCycleResult {
   assignmentAlerts: string[];
   expiredPositions: string[];
   stopLossAlerts: string[];
+  stopLossMultiplier: number;
+  profitClosePct: number;
 }
 
 export async function runOptionsManageCycle(): Promise<ManageCycleResult> {
@@ -328,12 +330,16 @@ export async function runOptionsManageCycle(): Promise<ManageCycleResult> {
     assignmentAlerts: [],
     expiredPositions: [],
     stopLossAlerts: [],
+    stopLossMultiplier: 3,
+    profitClosePct: 50,
   };
 
   // Load auto-tuned wheel parameters from DB
   const wheelConfig = await getOptionsAutoTradeConfig();
   const profitClosePct = wheelConfig.profitClosePct;
   const stopLossMultiplier = wheelConfig.stopLossMultiplier;
+  result.stopLossMultiplier = stopLossMultiplier;
+  result.profitClosePct = profitClosePct;
 
   // ── Check SUBMITTED orders for IB fills ──────────────────
   if (isConnected()) {
@@ -717,8 +723,8 @@ export async function runOptionsManageCycle(): Promise<ManageCycleResult> {
     const pnl = (premiumCollected - currentCallPremium) * 100;
     await sb.from('paper_trades').update({ pnl }).eq('id', pos.id);
 
-    // Check B: 50% profit — buy back cheap, free up the shares
-    if (profitCapturePct >= 50) {
+    // Check B: Profit capture threshold — auto close when target % reached (same as puts)
+    if (profitCapturePct >= profitClosePct) {
       await sb.from('paper_trades').update({
         status: 'CLOSED',
         close_price: currentCallPremium,
@@ -729,8 +735,8 @@ export async function runOptionsManageCycle(): Promise<ManageCycleResult> {
       }).eq('id', pos.id);
       result.closed50Pct.push(pos.ticker);
       persistEvent(pos.ticker, 'success',
-        `💰 ${pos.ticker} $${pos.option_strike} covered call closed at ${profitCapturePct.toFixed(0)}% profit — captured $${pnl.toFixed(0)}`,
-        { action: 'closed', source: 'options', metadata: { reason: '50pct_profit', pnl } }
+        `💰 ${pos.ticker} $${pos.option_strike} covered call closed at ${profitCapturePct.toFixed(0)}% profit (target ${profitClosePct}%) — captured $${pnl.toFixed(0)}`,
+        { action: 'closed', source: 'options', metadata: { reason: '50pct_profit', pnl, profitCapturePct, profitClosePct } }
       );
       continue;
     }
