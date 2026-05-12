@@ -15,6 +15,7 @@
  *   3.5 Stock trend — must be above 50-day SMA and not down >20% in 3 months
  *   3.6 Beta filter — skip high-beta (>1.5) stocks
  *   4.  Earnings blackout — skip if earnings within 7 days
+ *   4.2 Fundamental quality — grade A-F from Finnhub metrics; skip D/F
  *   4.5 News sentiment — block on red-flag headlines or score < -0.3
  *   4.6 Sector concentration — max 2 open put positions per sector
  *   4.7 Bear mode sector filter — only defensive sectors in bear mode
@@ -36,6 +37,7 @@ import { getSupabase, createAutoTradeEvent } from './supabase.js';
 import { getOptionsChain, type OptionGreeks } from './options-chain.js';
 import { isConnected, placeOptionsOrder, getDefaultAccount } from '../ib-connection.js';
 import { fetchDailyBars, fetchQuote, sma as calcSma, estimateHistoricalVol } from './yahoo-finance.js';
+import { getFundamentalGrade } from './fundamental-grader.js';
 
 // ── Constants ────────────────────────────────────────────
 
@@ -673,6 +675,13 @@ async function checkStock(
   const daysToEarnings = earningsDate ? daysUntil(earningsDate) : 999;
   checks.earningsBlackout = daysToEarnings > EARNINGS_BLACKOUT_DAYS;
   if (daysToEarnings <= EARNINGS_BLACKOUT_DAYS) return { ticker, skipped: true, reason: `earnings_in_${daysToEarnings}d` };
+
+  // Check 4.2: Fundamental quality — grade A-F from Finnhub metrics; skip D/F
+  const fundamental = await getFundamentalGrade(ticker, isIndexEtf);
+  checks.fundamentalGrade = `${fundamental.grade}(${fundamental.score})`;
+  if (fundamental.grade === 'D' || fundamental.grade === 'F') {
+    return { ticker, skipped: true, reason: `weak_fundamentals:${fundamental.grade}(${fundamental.score})` };
+  }
 
   // Check 4.5: News sentiment — block on red-flag headlines or strongly negative sentiment
   const newsSentiment = await getNewsSentiment(ticker);
