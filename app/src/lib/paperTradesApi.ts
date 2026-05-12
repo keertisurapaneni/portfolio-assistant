@@ -576,13 +576,17 @@ export async function getRecentLearnings(limit = 20): Promise<TradeLearning[]> {
 
 // ── Auto Trade Events ────────────────────────────────────
 
+/**
+ * Canonical action/source/mode values — must stay in sync with
+ * AutoTradeAction / AutoTradeSource / AutoTradeMode in auto-trader/src/lib/supabase.ts
+ */
 export interface AutoTradeEventRecord {
   id: string;
   ticker: string;
   event_type: 'info' | 'success' | 'warning' | 'error';
-  action: 'executed' | 'skipped' | 'failed' | 'closed' | null;
-  source: 'scanner' | 'suggested_finds' | 'manual' | 'system' | 'dip_buy' | 'profit_take' | 'loss_cut' | 'lt_auto_sell' | 'swing_expiry' | 'capital_pressure' | 'external_signal' | null;
-  mode: 'DAY_TRADE' | 'SWING_TRADE' | 'LONG_TERM' | 'OPTIONS_PUT' | 'OPTIONS_CALL' | null;
+  action: 'executed' | 'skipped' | 'failed' | 'closed' | 'proceeding' | 'health_check' | 'RECONCILIATION' | 'scan_complete' | null;
+  source: 'scanner' | 'suggested_finds' | 'manual' | 'system' | 'dip_buy' | 'profit_take' | 'loss_cut' | 'lt_auto_sell' | 'swing_expiry' | 'capital_pressure' | 'external_signal' | 'spx_level_scanner' | 'earnings_scanner' | 'watchlist_screener' | 'compounder_health' | null;
+  mode: 'DAY_TRADE' | 'SWING_TRADE' | 'LONG_TERM' | 'OPTIONS_PUT' | 'OPTIONS_CALL' | 'EARNINGS_CALENDAR' | null;
   message: string;
   strategy_source: string | null;
   strategy_source_url: string | null;

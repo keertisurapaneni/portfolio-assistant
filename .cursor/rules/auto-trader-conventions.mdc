@@ -1,6 +1,6 @@
 ---
 description: Auto-trader system conventions — IB integration, paper trades, and trading logic
-globs: "{app/src/lib/autoTrader.ts,app/src/lib/paperTradesApi.ts,app/src/lib/ibClient.ts,app/src/hooks/useAutoTradeScheduler.ts,app/src/components/PaperTrading.tsx,auto-trader/**}"
+globs: "{app/src/lib/autoTrader.ts,app/src/lib/paperTradesApi.ts,app/src/lib/ibClient.ts,app/src/hooks/useAutoTradeScheduler.ts,app/src/components/PaperTrading/**,auto-trader/**}"
 alwaysApply: false
 ---
 
@@ -23,9 +23,26 @@ Browser (React) → auto-trader service (localhost:3001) → IB Gateway (TWS API
 - `DAY_TRADE` — Scanner signals, bracket orders, auto-close EOD
 - `SWING_TRADE` — Scanner signals, bracket orders, GTC
 
-## Event Sources
+## Event Sources & Actions (auto_trade_events)
 
-`auto_trade_events.source` must be one of: `scanner`, `suggested_finds`, `manual`, `system`, `dip_buy`, `profit_take`, `spx_level_scanner`
+**When adding a new `action` or `source` value, you MUST grep the entire codebase and update all consumers.** This is the #1 source of UI bugs — a new value on the write side that no read-side query knows about.
+
+Producers (auto-trader) write events → Consumers (frontend) query them. Both must agree.
+
+### `action` values
+`executed`, `closed`, `skipped`, `failed`
+
+- Frontend type: `AutoTradeEventRecord.action` in `app/src/lib/paperTradesApi.ts`
+- Frontend query: `getTodaysExecutedEvents()` filters on action — update it
+- Parent dedup: `PaperTrading/index.tsx` `dedupedToday` — key includes action
+
+### `source` values
+`scanner`, `suggested_finds`, `manual`, `system`, `dip_buy`, `profit_take`, `loss_cut`, `lt_auto_sell`, `swing_expiry`, `capital_pressure`, `external_signal`, `spx_level_scanner`
+
+- Frontend type: `AutoTradeEventRecord.source` in `app/src/lib/paperTradesApi.ts`
+- Display labels: `TodayActivityTab.tsx` `sourceLabel` chain
+- Sell inference: `TodayActivityTab.tsx` `SELL_SOURCES` set
+- P&L aggregation: `TodayActivityTab.tsx` `eventBasedPnl` `AUTO_CLOSE` set
 
 ## SPX Key-Level Breakout-Retest Strategy
 
