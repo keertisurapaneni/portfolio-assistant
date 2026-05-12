@@ -464,6 +464,7 @@ export function OptionsTab() {
   const [activeSection, setActiveSection] = useState<'positions' | 'history' | 'watchlist' | 'log' | 'sniper'>('positions');
   const [tierFilter, setTierFilter]     = useState<'ALL' | 'STABLE' | 'GROWTH' | 'HIGH_VOL'>('ALL');
   const [sectorFilter, setSectorFilter] = useState<string>('ALL');
+  const [newOnly, setNewOnly] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -948,10 +949,14 @@ export function OptionsTab() {
             const active = watchlist.filter(w => w.active);
             const sectors = ['ALL', ...Array.from(new Set(active.map(w => w.sector).filter(Boolean) as string[])).sort()];
 
+            const isNew = (w: WatchlistTicker) =>
+              w.created_at ? Date.now() - new Date(w.created_at).getTime() < 7 * 24 * 60 * 60 * 1000 : false;
+            const newCount = active.filter(isNew).length;
+
             const filtered = active.filter(w => {
               if (tierFilter !== 'ALL' && w.tier !== tierFilter) return false;
-
               if (sectorFilter !== 'ALL' && w.sector !== sectorFilter) return false;
+              if (newOnly && !isNew(w)) return false;
               return true;
             });
 
@@ -988,6 +993,29 @@ export function OptionsTab() {
                       <Pill key={s} label={s === 'ALL' ? 'All' : s} active={sectorFilter === s} onClick={() => setSectorFilter(s)} />
                     ))}
                   </div>
+                  {/* New filter */}
+                  {newCount > 0 && (
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-[10px] text-[hsl(var(--muted-foreground))] font-medium w-10 shrink-0"></span>
+                      <button
+                        onClick={() => setNewOnly(v => !v)}
+                        className={cn(
+                          'text-[10px] font-semibold px-2 py-1 rounded-full border transition-colors whitespace-nowrap flex items-center gap-1',
+                          newOnly
+                            ? 'bg-emerald-600 text-white border-emerald-600'
+                            : 'bg-[hsl(var(--card))] text-[hsl(var(--muted-foreground))] border-[hsl(var(--border))] hover:border-emerald-400 hover:text-emerald-600'
+                        )}
+                      >
+                        ✦ New this week
+                        <span className={cn(
+                          'text-[9px] px-1 py-0.5 rounded-full font-bold',
+                          newOnly ? 'bg-emerald-700 text-emerald-100' : 'bg-emerald-100 text-emerald-700'
+                        )}>
+                          {newCount}
+                        </span>
+                      </button>
+                    </div>
+                  )}
                 </div>
 
                 {/* Count */}
@@ -999,9 +1027,7 @@ export function OptionsTab() {
                 <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
                   {filtered.map(w => {
                     const quote = prices.get(w.ticker);
-                    const isNewThisWeek = w.created_at
-                      ? Date.now() - new Date(w.created_at).getTime() < 7 * 24 * 60 * 60 * 1000
-                      : false;
+                    const isNewThisWeek = isNew(w);
                     return (
                       <div key={w.id} className="flex flex-col rounded-xl border px-3 py-2 gap-1 border-[hsl(var(--border))] bg-[hsl(var(--card))]">
                         <div className="flex items-start justify-between gap-1">
@@ -1018,8 +1044,8 @@ export function OptionsTab() {
                                 {w.tier === 'STABLE' ? 'Stable' : w.tier === 'HIGH_VOL' ? 'High Vol' : 'Growth'}
                               </span>
                               {isNewThisWeek && (
-                                <span className="text-[9px] font-semibold px-1 py-0.5 rounded uppercase tracking-wide bg-violet-100 text-violet-700">
-                                  New
+                                <span className="text-[9px] font-semibold px-1 py-0.5 rounded tracking-wide bg-emerald-100 text-emerald-700">
+                                  ✦ New
                                 </span>
                               )}
                             </div>
