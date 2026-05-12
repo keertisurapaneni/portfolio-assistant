@@ -72,6 +72,7 @@ Design sessions and multi-step implementation plans.
 | [Trade Scanner — Key Levels (2026-04-20)](./cursor/2026-04-20-trade-scanner-track1-key-levels.md) | Track 1 key levels enhancement design |
 | [SPX Breakout-Retest Strategy (2026-04-27)](./cursor/2026-04-27-spx-breakout-retest-strategy.md) | Somesh's $50 key-level strategy — design decisions and trade-offs |
 | [Options Wheel Bug Fixes (2026-05-04)](./cursor/2026-05-04-options-wheel-bugfixes.md) | fill_price SELL fix, repeated stop-out gate, leveraged ETF blocklist, naked short prevention, signal import constraint fix, trade date extraction |
+| [Options Wheel Improvements (2026-05-12)](./cursor/2026-05-12-options-wheel-improvements.md) | Fundamental quality gate (A-F grading), strike sniper feature, call delta targeting, configurable profit/stop-loss thresholds |
 
 ## Archive
 Historical planning artifacts and session notes — kept for reference, superseded by implementation.
