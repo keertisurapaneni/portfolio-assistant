@@ -880,6 +880,9 @@ export async function triggerManualRun(): Promise<string> {
 export async function triggerOptionsScan(): Promise<{ ok: boolean; opportunities: number; skipped: number; message: string }> {
   try {
     const config = await loadConfig();
+    if (!config.optionsWheelEnabled) {
+      return { ok: false, opportunities: 0, skipped: 0, message: 'Options Wheel module disabled' };
+    }
     const optionsCapitalBudget = config.maxTotalAllocation ?? 550_000;
     const scanResult = await runOptionsScan(optionsCapitalBudget);
 

@@ -148,7 +148,7 @@ async function preGenerateSuggestedFinds() {
 
     // Auto-trade qualifying Suggested Finds — only during market hours
     const config = await loadAutoTraderConfig();
-    if (config.enabled && config.accountId && isMarketHoursET()) {
+    if (config.enabled && config.suggestedFindsEnabled && config.accountId && isMarketHoursET()) {
       const allStocks = [...result.compounders, ...result.goldMines];
 
       // Identify top picks (first in each list that meets minSuggestedFindsConviction).
@@ -326,13 +326,14 @@ export function useAutoTradeScheduler() {
 
         }
 
-        const allIdeas = [...(data.dayTrades ?? []), ...(data.swingTrades ?? [])];
-        const newIdeas = allIdeas.filter(i => !processedTickersRef.current.has(i.ticker));
+        if (config.tradeSignalsEnabled) {
+          const allIdeas = [...(data.dayTrades ?? []), ...(data.swingTrades ?? [])];
+          const newIdeas = allIdeas.filter(i => !processedTickersRef.current.has(i.ticker));
 
-        if (newIdeas.length > 0) {
-          // Mark as processed
-          newIdeas.forEach(i => processedTickersRef.current.add(i.ticker));
-          await processTradeIdeas(newIdeas, config);
+          if (newIdeas.length > 0) {
+            newIdeas.forEach(i => processedTickersRef.current.add(i.ticker));
+            await processTradeIdeas(newIdeas, config);
+          }
         }
       } catch (err) {
         console.error('[AutoTradeScheduler] Scanner check failed:', err);
