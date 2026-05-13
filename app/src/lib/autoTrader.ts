@@ -661,6 +661,11 @@ export async function processTradeIdeas(
     return [];
   }
 
+  if (!cfg.tradeSignalsEnabled) {
+    logEvent('*', 'info', 'Trade Signals module disabled — skipping');
+    return [];
+  }
+
   if (!cfg.accountId) {
     logEvent('*', 'error', 'No IB account configured');
     return [];
@@ -2084,6 +2089,11 @@ export async function processSuggestedFinds(
 
   if (!cfg.enabled) {
     logEvent('*', 'warning', 'Auto-trading is disabled — skipping Suggested Finds');
+    return [];
+  }
+
+  if (!cfg.suggestedFindsEnabled) {
+    logEvent('*', 'info', 'Suggested Finds module disabled — skipping');
     return [];
   }
 
