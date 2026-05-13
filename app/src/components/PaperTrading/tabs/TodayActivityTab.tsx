@@ -203,7 +203,7 @@ export interface TodayActivityTabProps {
   ibRealizedPnl?: number | null;
 }
 
-export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], onExecuteSignal }: TodayActivityTabProps) {
+export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], onExecuteSignal, ibRealizedPnl }: TodayActivityTabProps) {
   const [executingId, setExecutingId] = useState<string | null>(null);
   const [executingAll, setExecutingAll] = useState(false);
   const [scannerTickers, setScannerTickers] = useState<Set<string>>(new Set());
@@ -423,13 +423,19 @@ export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], 
     return sum;
   })();
 
-  const todayPnl = eventBasedPnl;
+  const todayPnl = ibRealizedPnl ?? eventBasedPnl;
+  const pnlSource = ibRealizedPnl != null ? 'ib' : 'events';
 
   return (
     <div className="space-y-3">
       {todayPnl !== 0 && (
         <div className="flex items-center justify-between rounded-lg bg-[hsl(var(--secondary))] px-4 py-2.5">
-          <span className="text-sm font-medium text-[hsl(var(--muted-foreground))]">Today&apos;s Realized P&L</span>
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-medium text-[hsl(var(--muted-foreground))]">Today&apos;s Realized P&L</span>
+            {pnlSource === 'ib' && (
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 font-semibold">IB</span>
+            )}
+          </div>
           <span className={cn('text-sm font-bold tabular-nums', todayPnl > 0 ? 'text-emerald-600' : todayPnl < 0 ? 'text-red-600' : '')}>
             {fmtUsd(todayPnl, 2, true)}
           </span>
