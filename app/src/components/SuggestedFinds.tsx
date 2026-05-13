@@ -268,7 +268,7 @@ export function SuggestedFinds({ existingTickers }: SuggestedFindsProps) {
       />
 
       {/* Auto-trading indicator */}
-      {isAuthed && getAutoTraderConfig().enabled && (
+      {isAuthed && getAutoTraderConfig().enabled && getAutoTraderConfig().suggestedFindsEnabled && (
         <div className={cn(
           'flex items-center gap-2 px-3 py-2 rounded-lg text-sm',
           isAutoTrading

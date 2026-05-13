@@ -276,7 +276,7 @@ export function TradeIdeas({ onSelectTicker }: TradeIdeasProps) {
             </span>
           )}
           {loading && <Spinner size="xs" className="text-amber-500" />}
-          {getAutoTraderConfig().enabled && (
+          {getAutoTraderConfig().enabled && getAutoTraderConfig().tradeSignalsEnabled && (
             <span className="flex items-center gap-1 text-[10px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200 px-1.5 py-0.5 rounded-full">
               <Bot className="w-3 h-3" />
               AUTO
