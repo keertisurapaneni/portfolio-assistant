@@ -92,7 +92,7 @@ export function SuggestedFinds({ existingTickers }: SuggestedFindsProps) {
   // ── Auto-buy Suggested Finds ──
   useEffect(() => {
     const config = getAutoTraderConfig();
-    if (!config.enabled || !isAuthed) return;
+    if (!config.enabled || !config.suggestedFindsEnabled || !isAuthed) return;
 
     // Combine compounders and gold mines
     const allStocks = [...displayedCompounders, ...displayedGoldMines];
@@ -136,7 +136,7 @@ export function SuggestedFinds({ existingTickers }: SuggestedFindsProps) {
     if (!selectedGoldMineCategory || isGoldMineCategoryLoading) return;
     if (displayedGoldMines.length === 0) return;
     const config = getAutoTraderConfig();
-    if (!config.enabled || !isAuthed) return;
+    if (!config.enabled || !config.suggestedFindsEnabled || !isAuthed) return;
     // Only offer if we haven't already for this category
     if (catAutoTradedRef.current.has(selectedGoldMineCategory)) return;
     setCatAutoTradeOffer('offered');
