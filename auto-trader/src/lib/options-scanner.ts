@@ -1120,7 +1120,7 @@ export async function autoTradeOption(ticket: OptionsTradeTicket): Promise<{ tra
       mode: 'OPTIONS_PUT',
       message: `Paper trade opened — IB offline. Sold ${ticket.contracts ?? 1}x $${ticket.strike}P exp ${ticket.expiry}, premium $${ticket.premium.toFixed(2)}/contract`,
       metadata: { strike: ticket.strike, expiry: ticket.expiry, premium: ticket.premium, contracts: ticket.contracts ?? 1, paper: true },
-    });
+    }).catch(() => {});
     return { tradeId, ibOrderId: null, isLive: false };
   }
 
@@ -1145,7 +1145,7 @@ export async function autoTradeOption(ticket: OptionsTradeTicket): Promise<{ tra
       mode: 'OPTIONS_PUT',
       message: `Live order placed #${orderId} — Sold ${ticket.contracts ?? 1}x $${ticket.strike}P exp ${ticket.expiry}, limit $${ticket.premium.toFixed(2)}/contract`,
       metadata: { ibOrderId: orderId, strike: ticket.strike, expiry: ticket.expiry, premium: ticket.premium, contracts: ticket.contracts ?? 1 },
-    });
+    }).catch(() => {});
     return { tradeId, ibOrderId: orderId, isLive: true };
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
@@ -1158,8 +1158,8 @@ export async function autoTradeOption(ticket: OptionsTradeTicket): Promise<{ tra
       source: 'scanner',
       mode: 'OPTIONS_PUT',
       message: `IB order failed — paper fallback. $${ticket.strike}P exp ${ticket.expiry}. Error: ${errMsg}`,
-      metadata: { strike: ticket.strike, expiry: ticket.expiry, premium: ticket.premium, error: errMsg },
-    });
+      metadata: { strike: ticket.strike, expiry: ticket.expiry, premium: ticket.premium, error: errMsg } as Record<string, unknown>,
+    }).catch(() => {});
     return { tradeId, ibOrderId: null, isLive: false };
   }
 }

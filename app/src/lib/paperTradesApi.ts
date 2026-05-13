@@ -629,18 +629,58 @@ export async function getAutoTradeEvents(limit = 100): Promise<AutoTradeEventRec
 export async function getTodaysExecutedEvents(): Promise<AutoTradeEventRecord[]> {
   const todayStart = new Date();
   todayStart.setHours(0, 0, 0, 0);
+  const todayISO = todayStart.toISOString();
 
-  // Fetch executed trades, system close events, and auto-sell closes (lt_auto_sell, swing_expiry, capital_pressure)
-  const { data, error } = await supabase
-    .from('auto_trade_events')
-    .select('*')
-    .in('action', ['executed', 'failed', 'closed'])
-    .gte('created_at', todayStart.toISOString())
-    .order('created_at', { ascending: false });
+  const [eventsRes, tradesRes] = await Promise.all([
+    supabase
+      .from('auto_trade_events')
+      .select('*')
+      .in('action', ['executed', 'failed', 'closed'])
+      .gte('created_at', todayISO)
+      .order('created_at', { ascending: false }),
+    supabase
+      .from('paper_trades')
+      .select('id, ticker, mode, signal, scanner_confidence, fa_confidence, fa_recommendation, strategy_source, strategy_source_url, strategy_video_id, strategy_video_heading, quantity, fill_price, status, opened_at, filled_at, scanner_signal')
+      .in('status', ['FILLED', 'TARGET_HIT', 'STOPPED', 'CLOSED', 'PARTIAL'])
+      .gte('opened_at', todayISO)
+      .order('opened_at', { ascending: false }),
+  ]);
 
-  if (error) return [];
-  return ((data ?? []) as AutoTradeEventRecord[]).filter(
+  const events = ((eventsRes.data ?? []) as AutoTradeEventRecord[]).filter(
     e => e.action === 'executed' || e.action === 'closed' || e.source === 'system'
+  );
+
+  const eventTickers = new Set(
+    events.filter(e => e.action === 'executed').map(e => e.ticker.toUpperCase())
+  );
+
+  const fallbackTrades = (tradesRes.data ?? []).filter(
+    t => !eventTickers.has(t.ticker.toUpperCase())
+  );
+
+  const synthetic: AutoTradeEventRecord[] = fallbackTrades.map(t => ({
+    id: `synth-${t.id}`,
+    ticker: t.ticker,
+    event_type: 'success' as const,
+    action: 'executed' as const,
+    source: 'scanner' as const,
+    mode: t.mode as AutoTradeEventRecord['mode'],
+    message: `${t.signal} ${t.quantity ?? '?'} @ $${(t.fill_price ?? 0).toFixed(2)}`,
+    strategy_source: t.strategy_source ?? null,
+    strategy_source_url: t.strategy_source_url ?? null,
+    strategy_video_id: t.strategy_video_id ?? null,
+    strategy_video_heading: t.strategy_video_heading ?? null,
+    scanner_signal: t.scanner_signal ?? t.signal,
+    scanner_confidence: t.scanner_confidence ?? null,
+    fa_recommendation: t.fa_recommendation ?? null,
+    fa_confidence: t.fa_confidence ?? null,
+    skip_reason: null,
+    metadata: { synthetic: true },
+    created_at: t.filled_at ?? t.opened_at,
+  }));
+
+  return [...events, ...synthetic].sort(
+    (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
   );
 }
 

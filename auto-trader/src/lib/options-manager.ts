@@ -15,7 +15,8 @@ import { getOptionsChain } from './options-chain.js';
 import { isConnected, requestOpenOrders, placeOptionsOrder, getDefaultAccount } from '../ib-connection.js';
 
 function persistEvent(ticker: string, eventType: string, message: string, extra?: Record<string, unknown>): void {
-  createAutoTradeEvent({ ticker, event_type: eventType, message, ...extra });
+  createAutoTradeEvent({ ticker, event_type: eventType, message, ...extra })
+    .catch(err => console.warn(`[Options persistEvent] ${ticker}/${eventType} failed:`, err instanceof Error ? err.message : err));
 }
 
 // ── Types ────────────────────────────────────────────────
