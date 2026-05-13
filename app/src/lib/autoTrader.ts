@@ -177,6 +177,11 @@ export interface AutoTraderConfig {
   ltMaxHoldDays: number;            // long-term max hold days (0 = disabled)
   ltTrailingStopPct: number;        // trailing stop: sell if price falls this % from peak (only after profit peak)
 
+  // ── Module Toggles ──
+  tradeSignalsEnabled: boolean;      // enable/disable day/swing trade scanner
+  suggestedFindsEnabled: boolean;    // enable/disable Suggested Finds auto-buy
+  optionsWheelEnabled: boolean;      // enable/disable options wheel scanner
+
   // ── Suggested Finds ──
   suggestedFindPositionSize: number; // flat $ per Suggested Find (0 = use dynamic sizing)
 }
@@ -249,6 +254,11 @@ const DEFAULT_CONFIG: AutoTraderConfig = {
   ltProfitTakePct: 15,
   ltMaxHoldDays: 0,
   ltTrailingStopPct: 10,
+
+  // Module Toggles
+  tradeSignalsEnabled: true,
+  suggestedFindsEnabled: true,
+  optionsWheelEnabled: true,
 
   // Suggested Finds
   suggestedFindPositionSize: 2000,
@@ -341,6 +351,11 @@ export async function loadAutoTraderConfig(): Promise<AutoTraderConfig> {
         ltMaxHoldDays: Number(data.lt_max_hold_days ?? DEFAULT_CONFIG.ltMaxHoldDays),
         ltTrailingStopPct: Number(data.lt_trailing_stop_pct ?? DEFAULT_CONFIG.ltTrailingStopPct),
         suggestedFindPositionSize: Number(data.suggested_find_position_size ?? DEFAULT_CONFIG.suggestedFindPositionSize),
+
+        // Module Toggles
+        tradeSignalsEnabled: data.trade_signals_enabled ?? DEFAULT_CONFIG.tradeSignalsEnabled,
+        suggestedFindsEnabled: data.suggested_finds_enabled ?? DEFAULT_CONFIG.suggestedFindsEnabled,
+        optionsWheelEnabled: data.options_wheel_enabled ?? DEFAULT_CONFIG.optionsWheelEnabled,
       };
       localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
       return config;
@@ -425,6 +440,10 @@ export async function saveAutoTraderConfig(config: Partial<AutoTraderConfig>): P
         lt_max_hold_days: updated.ltMaxHoldDays,
         lt_trailing_stop_pct: updated.ltTrailingStopPct,
         suggested_find_position_size: updated.suggestedFindPositionSize,
+        // Module Toggles
+        trade_signals_enabled: updated.tradeSignalsEnabled,
+        suggested_finds_enabled: updated.suggestedFindsEnabled,
+        options_wheel_enabled: updated.optionsWheelEnabled,
         updated_at: new Date().toISOString(),
       });
   } catch (err) {

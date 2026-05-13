@@ -152,7 +152,7 @@ export async function runDipWatcher(): Promise<void> {
         aboveSma50: result.aboveSma50,
         trigger: result.trigger ?? 'dip_watcher',
       },
-    });
+    }).catch(() => {});
   }
 
   // If we found dip candidates, trigger a focused scan immediately

@@ -121,6 +121,38 @@ export function SettingsTab({ config, onUpdate }: SettingsTabProps) {
     <div className="rounded-xl border border-[hsl(var(--border))] bg-white p-6 space-y-6">
       <h3 className="text-lg font-semibold text-[hsl(var(--foreground))]">Auto-Trading Settings</h3>
 
+      <div className="rounded-lg border border-[hsl(var(--border))] bg-slate-50 p-4 space-y-3">
+        <h4 className="text-sm font-semibold text-[hsl(var(--foreground))]">Module Toggles</h4>
+        <p className="text-xs text-[hsl(var(--muted-foreground))] -mt-1">Enable or disable individual trading modules</p>
+
+        <div className="flex items-center gap-3">
+          <SettingsToggle enabled={config.tradeSignalsEnabled}
+            onToggle={() => onUpdate({ tradeSignalsEnabled: !config.tradeSignalsEnabled })} />
+          <div>
+            <p className="text-sm font-medium text-[hsl(var(--foreground))]">Trade Signals</p>
+            <p className="text-xs text-[hsl(var(--muted-foreground))]">Day & swing trade scanner — AI + technical analysis for short-term trades</p>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-3">
+          <SettingsToggle enabled={config.suggestedFindsEnabled}
+            onToggle={() => onUpdate({ suggestedFindsEnabled: !config.suggestedFindsEnabled })} />
+          <div>
+            <p className="text-sm font-medium text-[hsl(var(--foreground))]">Suggested Finds</p>
+            <p className="text-xs text-[hsl(var(--muted-foreground))]">Quiet Compounders & Gold Mines — auto-buy long-term positions</p>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-3">
+          <SettingsToggle enabled={config.optionsWheelEnabled}
+            onToggle={() => onUpdate({ optionsWheelEnabled: !config.optionsWheelEnabled })} />
+          <div>
+            <p className="text-sm font-medium text-[hsl(var(--foreground))]">Options Wheel</p>
+            <p className="text-xs text-[hsl(var(--muted-foreground))]">Sell cash-secured puts & covered calls for premium income</p>
+          </div>
+        </div>
+      </div>
+
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         <div>
           <label className="block text-sm font-medium text-[hsl(var(--foreground))] mb-1.5">

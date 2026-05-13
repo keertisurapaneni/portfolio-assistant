@@ -1886,13 +1886,28 @@ async function getEnrichedPositions(): Promise<EnrichedPosition[]> {
   });
 }
 
-function persistEvent(
+async function persistEvent(
   ticker: string,
   eventType: string,
   message: string,
   extra?: Omit<AutoTradeEventInput, 'ticker' | 'message'>
-): void {
-  createAutoTradeEvent({ ticker, event_type: eventType, message, ...extra });
+): Promise<void> {
+  const payload = { ticker, event_type: eventType, message, ...extra };
+  const delays = [1000, 2000];
+  for (let attempt = 0; attempt <= delays.length; attempt++) {
+    try {
+      await createAutoTradeEvent(payload);
+      return;
+    } catch (err) {
+      const label = `${ticker}/${eventType}`;
+      if (attempt < delays.length) {
+        log(`[persistEvent] ${label} attempt ${attempt + 1} failed, retrying in ${delays[attempt]}ms: ${err instanceof Error ? err.message : err}`);
+        await new Promise(r => setTimeout(r, delays[attempt]));
+      } else {
+        log(`[persistEvent] ${label} FAILED after ${attempt + 1} attempts: ${err instanceof Error ? err.message : err}`);
+      }
+    }
+  }
 }
 
 // ── Edge Function Calls ──────────────────────────────────
@@ -5051,6 +5066,7 @@ async function runTradeExecutionOnly(): Promise<void> {
 
   const config = await loadConfig();
   if (!config.enabled || !config.accountId) return;
+  if (!config.tradeSignalsEnabled) return;
 
   _running = true;
   const startTime = Date.now();
@@ -5287,7 +5303,11 @@ async function runSchedulerCycle(): Promise<void> {
     // 5. Pre-generate Suggested Finds (daily, after market open only)
     // Moved AFTER the market hours gate — belt-and-suspenders to prevent pre-market order placement.
     // Runs after sync+reset so SF trades are tracked in _pendingDeployedDollar for this cycle.
-    await preGenerateSuggestedFinds(config, positions);
+    if (config.suggestedFindsEnabled) {
+      await preGenerateSuggestedFinds(config, positions);
+    } else {
+      log('Suggested Finds module disabled — skipping');
+    }
 
     // 6. Position management: dip buy, profit take, loss cut, swing expiry
     await checkStaleDayTrades(positions);              // flag/close day trades stuck FILLED from a prior day
@@ -5301,79 +5321,82 @@ async function runSchedulerCycle(): Promise<void> {
     // Load scanner ideas once per cycle (used by generic-video queue + scanner execution)
     let allIdeas: TradeIdea[] = [];
     let scannerIdeasLoaded = false;
-    try {
-      const data = await fetchTradeIdeas();
-      allIdeas = [...(data.dayTrades ?? []), ...(data.swingTrades ?? [])];
-      scannerIdeasLoaded = true;
-    } catch (err) {
-      const msg = `Scanner fetch failed: ${err instanceof Error ? err.message : 'unknown'}`;
-      log(msg);
-      summaryLog(msg);
-    }
 
-    // 7. Auto-queue daily ticker/trigger signals from tracked strategy videos
-    await autoQueueDailySignalsFromTrackedVideos();
-
-    // 8. Auto-queue generic strategy videos via scanner candidates (paper-trading execution)
-    const genericQueuedTickers = await autoQueueGenericSignalsFromTrackedVideos(allIdeas, config);
-
-    // 9. Process externally supplied strategy signals (date/time gated)
-    await processExternalStrategySignals(config, positions);
-
-    // 10. Execute scanner ideas not already routed through generic strategies
-    const newIdeas = allIdeas.filter(i =>
-      !_processedTickers.has(i.ticker) &&
-      !genericQueuedTickers.has(i.ticker)
-    );
-    // Collect gate results per scan row for UI status badges
-    const dayEvals: Record<string, { status: ScanEvaluationStatus; reason: string }> = {};
-    const swingEvals: Record<string, { status: ScanEvaluationStatus; reason: string }> = {};
-    const recordEval = (idea: TradeIdea, result: string) => {
-      const ev = scanResultToEval(result);
-      if (idea.mode === 'DAY_TRADE') dayEvals[idea.ticker] = ev;
-      else swingEvals[idea.ticker] = ev;
-    };
-
-    if (newIdeas.length > 0) {
-      const activeCount = await countActivePositions();
-      const slots = config.maxPositions - activeCount;
-
-      if (slots > 0) {
-        const qualified = newIdeas
-          .filter(i => i.confidence >= config.minScannerConfidence)
-          .sort((a, b) => b.confidence - a.confidence)
-          .slice(0, slots);
-
-        for (const idea of qualified) {
-          const result = await executeScannerTrade(idea, config, positions);
-          log(`  ${idea.ticker}: ${result}`);
-          recordEval(idea, result);
-          // Don't mark time-dependent skips as processed — conditions change throughout the day.
-          if (!isRetryableSkip(result)) {
-            _processedTickers.add(idea.ticker);
-          }
-          await new Promise(r => setTimeout(r, 2000));
-        }
-      } else {
-        log(`Max positions reached (${config.maxPositions}) — skipping scanner ideas`);
-        // Mark all unprocessed ideas as blocked due to max positions
-        for (const idea of newIdeas) recordEval(idea, 'skipped:max_positions');
+    if (!config.tradeSignalsEnabled) {
+      log('Trade Signals module disabled — skipping scanner + video signals');
+    } else {
+      try {
+        const data = await fetchTradeIdeas();
+        allIdeas = [...(data.dayTrades ?? []), ...(data.swingTrades ?? [])];
+        scannerIdeasLoaded = true;
+      } catch (err) {
+        const msg = `Scanner fetch failed: ${err instanceof Error ? err.message : 'unknown'}`;
+        log(msg);
+        summaryLog(msg);
       }
-    } else if (scannerIdeasLoaded) {
-      const msg = allIdeas.length === 0 ? 'No scanner ideas' : `Scanner: ${allIdeas.length} ideas (all filtered or already processed)`;
-      log(msg);
-      summaryLog(msg);
-    }
 
-    // Write evaluation results to DB so the UI can show Armed/Watching/Blocked badges
-    if (Object.keys(dayEvals).length > 0)   writeScanEvaluations('day_trades', dayEvals).catch(() => {});
-    if (Object.keys(swingEvals).length > 0)  writeScanEvaluations('swing_trades', swingEvals).catch(() => {});
+      // 7. Auto-queue daily ticker/trigger signals from tracked strategy videos
+      await autoQueueDailySignalsFromTrackedVideos();
+
+      // 8. Auto-queue generic strategy videos via scanner candidates (paper-trading execution)
+      const genericQueuedTickers = await autoQueueGenericSignalsFromTrackedVideos(allIdeas, config);
+
+      // 9. Process externally supplied strategy signals (date/time gated)
+      await processExternalStrategySignals(config, positions);
+
+      // 10. Execute scanner ideas not already routed through generic strategies
+      const newIdeas = allIdeas.filter(i =>
+        !_processedTickers.has(i.ticker) &&
+        !genericQueuedTickers.has(i.ticker)
+      );
+      // Collect gate results per scan row for UI status badges
+      const dayEvals: Record<string, { status: ScanEvaluationStatus; reason: string }> = {};
+      const swingEvals: Record<string, { status: ScanEvaluationStatus; reason: string }> = {};
+      const recordEval = (idea: TradeIdea, result: string) => {
+        const ev = scanResultToEval(result);
+        if (idea.mode === 'DAY_TRADE') dayEvals[idea.ticker] = ev;
+        else swingEvals[idea.ticker] = ev;
+      };
+
+      if (newIdeas.length > 0) {
+        const activeCount = await countActivePositions();
+        const slots = config.maxPositions - activeCount;
+
+        if (slots > 0) {
+          const qualified = newIdeas
+            .filter(i => i.confidence >= config.minScannerConfidence)
+            .sort((a, b) => b.confidence - a.confidence)
+            .slice(0, slots);
+
+          for (const idea of qualified) {
+            const result = await executeScannerTrade(idea, config, positions);
+            log(`  ${idea.ticker}: ${result}`);
+            recordEval(idea, result);
+            if (!isRetryableSkip(result)) {
+              _processedTickers.add(idea.ticker);
+            }
+            await new Promise(r => setTimeout(r, 2000));
+          }
+        } else {
+          log(`Max positions reached (${config.maxPositions}) — skipping scanner ideas`);
+          for (const idea of newIdeas) recordEval(idea, 'skipped:max_positions');
+        }
+      } else if (scannerIdeasLoaded) {
+        const msg = allIdeas.length === 0 ? 'No scanner ideas' : `Scanner: ${allIdeas.length} ideas (all filtered or already processed)`;
+        log(msg);
+        summaryLog(msg);
+      }
+
+      // Write evaluation results to DB so the UI can show Armed/Watching/Blocked badges
+      if (Object.keys(dayEvals).length > 0)   writeScanEvaluations('day_trades', dayEvals).catch(() => {});
+      if (Object.keys(swingEvals).length > 0)  writeScanEvaluations('swing_trades', swingEvals).catch(() => {});
+    }
 
     // 11. SPX key-level breakout-retest scanner (Somesh's strategy)
     // Watches $50 SPX levels for the break → 2 independent candles → retest pattern.
     // Generates a SPY DAY_TRADE order when a clean retest is confirmed.
     // Runs every cycle during market hours; state machine persists in memory across cycles.
-    try {
+    if (config.tradeSignalsEnabled) try {
       const spxSetups = await checkSpxLevelSetups();
       for (const setup of spxSetups) {
         // Confidence: 9 base. Bump to 9.5 when QQQ confluence is detected
@@ -5426,6 +5449,9 @@ async function runSchedulerCycle(): Promise<void> {
     }
 
     // 13. Options wheel — manage open positions (every cycle, 30-min intervals)
+    if (!config.optionsWheelEnabled) {
+      log('Options Wheel module disabled — skipping management + scan');
+    } else {
     try {
       const optsMgr = await runOptionsManageCycle();
       if (optsMgr.closed50Pct.length > 0) log(`Options: closed at ${optsMgr.profitClosePct}% profit — ${optsMgr.closed50Pct.join(', ')}`);
@@ -5571,6 +5597,7 @@ No new options positions will be opened until next month. Existing positions con
       // day-trade contract lookups. Prevents no_contract failures after heavy scans.
       await new Promise(r => setTimeout(r, 5_000));
     }
+    } // end optionsWheelEnabled
 
     // 15. Daily rehydration (after 4:15 PM ET)
     await runDailyRehydration(config);
