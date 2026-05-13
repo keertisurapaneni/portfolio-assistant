@@ -252,6 +252,7 @@ async function logReconciliationSummary(
   try {
     await createAutoTradeEvent({
       ticker: 'SYSTEM',
+      event_type: 'info',
       action: 'RECONCILIATION',
       source: 'system',
       message: `EOD reconciliation: ${matched} matched, ${corrected} corrected, ${orphaned} orphaned, ${flagged} flagged`,

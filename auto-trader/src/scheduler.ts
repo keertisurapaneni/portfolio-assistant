@@ -1889,13 +1889,24 @@ async function getEnrichedPositions(): Promise<EnrichedPosition[]> {
   });
 }
 
+const VALID_EVENT_TYPES = new Set(['info', 'success', 'warning', 'error']);
+
+function isPermanentDbError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return msg.includes('violates check constraint')
+    || msg.includes('Could not find the')
+    || msg.includes('not-null constraint')
+    || msg.includes('duplicate key');
+}
+
 async function persistEvent(
   ticker: string,
   eventType: string,
   message: string,
   extra?: Omit<AutoTradeEventInput, 'ticker' | 'message'>
 ): Promise<void> {
-  const payload = { ticker, event_type: eventType, message, ...extra };
+  const safeType = VALID_EVENT_TYPES.has(eventType) ? eventType : 'info';
+  const payload = { ticker, event_type: safeType, message, ...extra };
   const delays = [1000, 2000];
   for (let attempt = 0; attempt <= delays.length; attempt++) {
     try {
@@ -1903,6 +1914,10 @@ async function persistEvent(
       return;
     } catch (err) {
       const label = `${ticker}/${eventType}`;
+      if (isPermanentDbError(err)) {
+        log(`[persistEvent] ${label} PERMANENT failure (no retry): ${err instanceof Error ? err.message : err}`);
+        return;
+      }
       if (attempt < delays.length) {
         log(`[persistEvent] ${label} attempt ${attempt + 1} failed, retrying in ${delays[attempt]}ms: ${err instanceof Error ? err.message : err}`);
         await new Promise(r => setTimeout(r, delays[attempt]));
@@ -2846,7 +2861,7 @@ async function executeScannerTrade(
       action: 'executed', source: 'scanner', mode,
       scanner_signal: signal, scanner_confidence: Math.round(effectiveScannerConf),
       fa_recommendation: faRec, fa_confidence: faConf != null ? Math.round(faConf) : null,
-      ...(candlePatternLog.length > 0 && { candle_patterns: candlePatternLog }),
+      ...(candlePatternLog.length > 0 && { metadata: { candle_patterns: candlePatternLog } }),
     });
     return 'executed';
   } catch (err) {
