@@ -316,6 +316,23 @@ export function startScheduler(): void {
     }
   }, { timezone: 'America/New_York' });
 
+  // 4:10 PM IB position-level reconciliation — queries IB directly to find any
+  // short positions that survived the EOD sweep (the sweep only checks paper_trades,
+  // so desynced records can leave orphaned shorts). Runs while extended hours still
+  // allow position queries, and logs critical alerts since MKT orders can't fill.
+  cron.schedule('10 16 * * 1-5', async () => {
+    try {
+      log('[EOD Position Check] Verifying no orphaned positions remain on IB...');
+      const result = await reconcileIBShorts();
+      if (result.errors.length > 0) {
+        log(`[EOD Position Check] ⚠️ Issues found: ${result.errors.join('; ')}`);
+      }
+    } catch (err) {
+      console.error('[EOD Position Check] Failed:', err instanceof Error ? err.message : err);
+    }
+  }, { timezone: 'America/New_York' });
+  log('EOD position check: 4:10 PM ET (IB-level short detection)');
+
   // EOD reconciliation — 4:15 PM ET: compare today's IB executions against paper_trades,
   // correct any fill_price / P&L discrepancies, and recalculate global performance.
   cron.schedule('15 16 * * 1-5', async () => {
@@ -445,10 +462,29 @@ Action needed: Check the auto-trader service and restart if necessary.`,
 
   // IB short reconciliation on startup (delayed 30s to let IB fully connect).
   // Catches any orphaned short positions left over from a prior EOD sweep failure.
-  setTimeout(() => {
-    reconcileIBShorts().catch(err => {
+  // If market is closed (pre-market boot), reconcileIBShorts defers and we schedule
+  // a retry at 9:31 AM ET so shorts don't sit uncovered all day.
+  setTimeout(async () => {
+    try {
+      const result = await reconcileIBShorts();
+      if (result.errors.length > 0 && result.closed.length === 0) {
+        // Deferred (market closed) — schedule retry at 9:31 AM ET if we're before open
+        const etNow = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }));
+        const etMins = etNow.getHours() * 60 + etNow.getMinutes();
+        const marketOpenMin = 9 * 60 + 31; // 9:31 AM ET
+        if (etMins < marketOpenMin) {
+          const delayMs = (marketOpenMin - etMins) * 60_000;
+          log(`[IBReconcile] Scheduling retry in ${Math.round(delayMs / 60_000)} min (at 9:31 AM ET)`);
+          setTimeout(() => {
+            reconcileIBShorts().catch(err => {
+              console.error('[Scheduler] 9:31 AM IB reconcile retry failed:', err instanceof Error ? err.message : err);
+            });
+          }, delayMs);
+        }
+      }
+    } catch (err) {
       console.error('[Scheduler] Startup IB reconcile failed:', err instanceof Error ? err.message : err);
-    });
+    }
   }, 30_000);
 
   // Run once on startup (delayed 10s to let IB connect)
@@ -551,11 +587,19 @@ async function closeAllDayTrades(config: AutoTraderConfig): Promise<void> {
         continue;
       }
 
+      let orderPlaced = false;
       try {
         await placeMarketOrder({ symbol: trade.ticker, side: closeSide, quantity: qty });
         log(`${trade.ticker}: EOD close order placed (${qty} shares ${closeSide})`);
+        orderPlaced = true;
       } catch (orderErr) {
-        log(`EOD sweep: ${trade.ticker} — IB order failed (${orderErr instanceof Error ? orderErr.message : 'unknown'}) — marking CLOSED in DB anyway`);
+        log(`EOD sweep: ${trade.ticker} — IB order failed (${orderErr instanceof Error ? orderErr.message : 'unknown'}) — will retry on next sweep`);
+      }
+
+      if (!orderPlaced) {
+        // Don't mark CLOSED if IB rejected the order — the position is still open.
+        // Leave status unchanged so the 4:05 safety sweep or IBReconcile picks it up.
+        continue;
       }
 
       const closePrice = await getQuotePrice(trade.ticker);
@@ -633,12 +677,16 @@ async function softCloseDayTrades(positions: EnrichedPosition[]): Promise<void> 
     if (qty <= 0) continue;
 
     try {
+      let orderPlaced = false;
       try {
         await placeMarketOrder({ symbol: trade.ticker, side: closeSide, quantity: qty });
         log(`${trade.ticker}: [SoftClose] close order placed at 3:45 PM — ${reason}`);
+        orderPlaced = true;
       } catch (orderErr) {
-        log(`${trade.ticker}: [SoftClose] IB order failed (${orderErr instanceof Error ? orderErr.message : 'unknown'}) — marking CLOSED in DB`);
+        log(`${trade.ticker}: [SoftClose] IB order failed (${orderErr instanceof Error ? orderErr.message : 'unknown'}) — will retry at 3:55 PM hard close`);
       }
+
+      if (!orderPlaced) continue;
 
       const pnl = unrealizedPnl;
       const costBasis = fillPrice * (trade.quantity ?? 1);
@@ -770,6 +818,34 @@ export async function reconcileIBShorts(): Promise<{ closed: string[]; errors: s
   }
 
   log(`[IBReconcile] Found ${shorts.length} short position(s): ${shorts.map(p => p.symbol).join(', ')}`);
+
+  // Market-hour gate: MKT orders with TIF=DAY are rejected outside RTH.
+  // If market is closed, log a critical alert and defer — the next startup
+  // during market hours (or the pre-close sweep) will handle it.
+  const etNow = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }));
+  const etDay = etNow.getDay();
+  const etMins = etNow.getHours() * 60 + etNow.getMinutes();
+  const marketOpenMin = 9 * 60 + 30;  // 9:30 AM ET
+  const marketCloseMin = 16 * 60;     // 4:00 PM ET
+  const isMarketOpen = etDay >= 1 && etDay <= 5 && etMins >= marketOpenMin && etMins < marketCloseMin;
+
+  if (!isMarketOpen) {
+    const tickers = shorts.map(p => `${p.symbol}(${Math.abs(p.position)})`).join(', ');
+    const alertMsg = `[IBReconcile] ⚠️ CRITICAL: ${shorts.length} orphaned short position(s) detected AFTER HOURS: ${tickers}. Cannot place cover orders — market is closed. Will retry at next startup during market hours.`;
+    log(alertMsg);
+    await createAutoTradeEvent({
+      ticker: 'SYSTEM',
+      event_type: 'error',
+      action: 'failed',
+      source: 'system',
+      message: alertMsg,
+      metadata: {
+        reconcile_type: 'ib_short_reconcile_deferred',
+        shorts: shorts.map(p => ({ symbol: p.symbol, qty: Math.abs(p.position), avgCost: p.avgCost })),
+      },
+    });
+    return { closed: [], errors: [`Market closed — ${shorts.length} short(s) deferred: ${tickers}`] };
+  }
 
   const closed: string[] = [];
   const errors: string[] = [];
