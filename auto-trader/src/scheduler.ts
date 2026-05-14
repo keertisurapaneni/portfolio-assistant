@@ -5091,25 +5091,31 @@ async function checkProfitTakeOpportunities(
     try {
       if (!isConnected()) continue;
 
-      await placeMarketOrder({
+      const { orderId, avgFillPrice } = await placeMarketOrder({
         symbol: trade.ticker, side: 'SELL', quantity: actualTrimQty,
       });
 
+      const realizedPnl = actualTrimQty * (avgFillPrice - ibPos.avgCost);
+
       await createPaperTrade({
         ticker: trade.ticker, mode: 'LONG_TERM', signal: 'SELL',
-        entry_price: ibPos.mktPrice,
+        entry_price: avgFillPrice,
+        fill_price: avgFillPrice,
         quantity: actualTrimQty,
-        position_size: actualTrimQty * ibPos.mktPrice,
-        status: 'SUBMITTED',
+        position_size: actualTrimQty * avgFillPrice,
+        status: 'FILLED',
+        ib_order_id: String(orderId),
+        pnl: realizedPnl,
+        close_reason: 'profit_take',
+        closed_at: new Date().toISOString(),
         notes: `Profit take ${triggered.label} at +${gainPct.toFixed(1)}%`,
         entry_trigger_type: 'profit_take',
       });
 
-      const realizedPnl = actualTrimQty * (ibPos.mktPrice - ibPos.avgCost);
-      log(`${trade.ticker}: PROFIT TAKE ${triggered.label} — sold ${actualTrimQty} shares at +${gainPct.toFixed(1)}% ($${realizedPnl.toFixed(2)})`);
-      persistEvent(trade.ticker, 'success', `Profit take ${triggered.label}: sold ${actualTrimQty} shares`, {
+      log(`${trade.ticker}: PROFIT TAKE ${triggered.label} — sold ${actualTrimQty} shares @ $${avgFillPrice.toFixed(2)}, +${gainPct.toFixed(1)}% ($${realizedPnl.toFixed(2)})`);
+      persistEvent(trade.ticker, 'success', `Profit take ${triggered.label}: sold ${actualTrimQty} shares @ $${avgFillPrice.toFixed(2)}`, {
         action: 'executed', source: 'profit_take', mode: 'LONG_TERM',
-        metadata: { tier: triggered.label, gainPct, trimQty: actualTrimQty, realizedPnl },
+        metadata: { tier: triggered.label, gainPct, trimQty: actualTrimQty, realizedPnl, fillPrice: avgFillPrice, orderId },
       });
     } catch (err) {
       log(`${trade.ticker}: Profit take failed — ${err instanceof Error ? err.message : 'unknown'}`);
