@@ -3240,12 +3240,9 @@ async function executeExternalStrategySignal(
 
   // Check if our own scanner also identified this ticker today.
   const alsoInScanner = await isTickerInTodayScan(ticker);
-  // Generic strategy signals use scanner-picked tickers with an influencer's execution rules.
-  // The ticker source is the scanner, not the influencer — attribute accordingly.
-  // Daily signals are influencer-picked tickers — always preserve their attribution.
-  const isGenericAutoSignal = (signal.notes ?? '').toLowerCase().includes('generic strategy auto');
-  const stripInfluencerAttribution = isGenericAutoSignal && alsoInScanner;
-  const resolvedSource: AutoTradeSource = stripInfluencerAttribution ? 'scanner' : 'external_signal';
+  // Generic strategy signals use scanner-picked tickers — attribute to scanner, not influencer.
+  const isGenericAuto = (signal.notes ?? '').toLowerCase().includes('generic strategy auto');
+  const resolvedSource: AutoTradeSource = (isGenericAuto && alsoInScanner) ? 'scanner' : 'external_signal';
   const allocationSplit = Math.max(1, Math.floor(options?.allocationSplit ?? 1));
   const allocationIndex = Math.max(1, Math.floor(options?.allocationIndex ?? 1));
   const allowDuplicateTicker = options?.allowDuplicateTicker === true;
