@@ -287,10 +287,17 @@ export function PaperTrading() {
 
   useEffect(() => { loadAutoTraderConfig().then(setConfig); }, []);
 
-  // Load tab data lazily when the user switches tabs
+  // Load tab data lazily when the user switches tabs.
+  // Today tab forces a refresh of trades, events, and IB P&L so the headline
+  // total is always current (trade P&L values change as prices move intraday).
   useEffect(() => {
     if (loading) return;
-    loadTabData(tab);
+    const forceRefresh = tab === 'today';
+    loadTabData(tab, forceRefresh);
+    if (forceRefresh) {
+      getTodaysExecutedEvents().then(setTodaysExecuted).catch(() => {});
+      loadIBData();
+    }
   }, [tab]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
