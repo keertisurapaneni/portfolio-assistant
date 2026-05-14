@@ -1,0 +1,77 @@
+---
+description: Hard invariants for the auto-trader — NEVER violate these, regardless of context
+globs: auto-trader/**
+alwaysApply: false
+---
+
+# Auto-Trader Invariants
+
+These are **hard rules** — product requirements that no single conversation may override.
+If a change would violate any of these, STOP and ask the user before proceeding.
+
+## 1. Position State Integrity
+
+- **Never mark a paper_trade as CLOSED unless the IB order was accepted.**
+  If `placeMarketOrder()` or `placeBracketOrder()` throws, the trade status MUST remain unchanged.
+  The next sweep or reconciliation will retry. "Marking CLOSED in DB anyway" is ALWAYS wrong.
+
+- **IB is the source of truth for position state, not paper_trades.**
+  If paper_trades says flat but IB says short, IB wins. Any reconciliation must check IB positions directly.
+
+- **Never null a field that was set at trade creation time.**
+  If `strategy_source`, `strategy_video_id`, `mode`, or `signal` was set when the trade was created,
+  no downstream code path may null it out. These are immutable attribution fields.
+
+## 2. Market Hours
+
+- **Never place MKT/DAY orders outside regular trading hours (9:30 AM – 4:00 PM ET).**
+  They will be rejected by IB. If a function detects an actionable condition after hours,
+  it must LOG AN ALERT and DEFER — not fire-and-forget a doomed order.
+
+- **Scanner trades must not execute before 9:35 AM ET** (first candle hasn't formed).
+  This gate exists in `executeScannerTrade()` — never remove it.
+
+- **External/influencer signals must not execute before 9:35 AM ET** either.
+  Same rationale: spreads are widest at open, fills are worst. Apply the same gate.
+
+## 3. Influencer Signal Attribution
+
+- **Always preserve influencer attribution.** `strategy_source`, `strategy_source_url`,
+  `strategy_video_id`, and `strategy_video_heading` must ALWAYS be set on both
+  `paper_trades` and `auto_trade_events` for influencer signals.
+  Scanner overlap (`alsoInScanner`) does NOT override attribution — record it in metadata only.
+
+- **Source must be `external_signal`** for all influencer/strategy video trades.
+  Never re-attribute them to `scanner` even if the ticker also appears in trade_scans.
+
+## 4. Safety & Notifications
+
+- **Orphaned positions must trigger a CRITICAL alert** in `auto_trade_events`
+  (event_type='error'). Silent failures that leave positions open are unacceptable.
+
+- **Autonomous trades not triggered by today's signals require elevated logging.**
+  If `reconcileIBShorts()` or any reconciliation function places orders that weren't
+  part of the normal signal flow, those MUST be logged as warnings with full context.
+
+## 5. EOD Pipeline Order
+
+```
+3:45 PM — softCloseDayTrades (losing + near-target)
+3:55 PM — closeAllDayTrades (hard backstop)
+4:05 PM — safety sweep (same function, catches 3:55–4:00 stragglers)
+4:10 PM — reconcileIBShorts (IB position-level check, alert-only after hours)
+4:15 PM — runEndOfDayReconciliation (fill price / P&L corrections)
+```
+
+Do not reorder these. Do not skip any. Each layer is a safety net for the one above.
+
+## How to Use This File
+
+**Before making ANY change to the auto-trader:**
+1. Read this file
+2. Check if your change would violate any invariant
+3. If yes → ask the user, do not proceed on your own judgment
+4. If adding new behavior → check if a new invariant should be added here
+
+**When reviewing AI-generated changes:**
+If a diff contradicts any rule above, the rule wins, not the diff.
