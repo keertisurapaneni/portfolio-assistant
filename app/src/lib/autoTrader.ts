@@ -2321,23 +2321,24 @@ export async function syncPositions(accountId: string): Promise<void> {
 
       } else if (trade.status === 'FILLED') {
         // ── Position was open but now gone — closed (stop/target/manual) ──
-        // Fetch current price to approximate close price
+        // Fetch current price to approximate close price.
+        // IMPORTANT: Only close if we have a real price. If getQuotePrice returns null,
+        // skip — the server-side scheduler handles this more reliably (checks ib_fills
+        // for actual bracket fill prices, has a 30-min guard). Using fillPrice as a
+        // fallback produces pnl=0 which corrupts the P&L record permanently.
         const closePrice = await getQuotePrice(trade.ticker);
+        if (!closePrice || closePrice <= 0) {
+          // No price available — defer to scheduler's position sync which has IB fill lookup
+          logEvent(trade.ticker, 'info', 'Position gone but no quote available — deferring to server sync');
+          continue;
+        }
+
         const fillPrice = trade.fill_price ?? trade.entry_price ?? 0;
         const qty = trade.quantity ?? 1;
         const isLong = trade.signal === 'BUY';
+        const actualClosePrice = closePrice;
 
-        let pnl: number;
-        let actualClosePrice: number;
-
-        if (closePrice) {
-          actualClosePrice = closePrice;
-        } else {
-          // Fallback: use target or stop based on position direction
-          actualClosePrice = fillPrice; // worst case: breakeven
-        }
-
-        pnl = isLong
+        const pnl = isLong
           ? (actualClosePrice - fillPrice) * qty
           : (fillPrice - actualClosePrice) * qty;
 

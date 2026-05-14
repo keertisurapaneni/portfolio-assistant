@@ -108,6 +108,39 @@ export async function runEndOfDayReconciliation(): Promise<void> {
     }
 
     if (!trade) {
+      // Before giving up, check if this is a cover buy for a reconcile_cover short.
+      // reconcileIBShorts stores the cover orderId in ib_order_id so we can match here.
+      const isCoverBuy = exec.side === 'BOT' || exec.side === 'BUY';
+      if (isCoverBuy) {
+        const { data: coverTrade } = await sb
+          .from('paper_trades')
+          .select('*')
+          .eq('ticker', exec.ticker)
+          .eq('close_reason', 'reconcile_cover')
+          .or('close_price.is.null,close_price.eq.0')
+          .order('opened_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        if (coverTrade) {
+          const ct = coverTrade as PaperTrade;
+          const fillPrice = ct.fill_price ?? ct.entry_price ?? 0;
+          const qty = ct.quantity ?? 1;
+          // For a covered short: entry was SELL (fill_price is the short entry), cover is BUY (exec.price)
+          const pnl = (fillPrice - exec.price) * qty;
+          await sb.from('paper_trades').update({
+            close_price: exec.price,
+            pnl: parseFloat(pnl.toFixed(2)),
+            pnl_percent: fillPrice > 0 ? parseFloat(((pnl / (fillPrice * qty)) * 100).toFixed(2)) : null,
+          }).eq('id', ct.id);
+          corrected++;
+          correctionDetails.push(`${exec.ticker}: reconcile_cover close_price → ${exec.price.toFixed(2)} (pnl $${pnl.toFixed(2)})`);
+          log(`Reconciled cover for ${exec.ticker}: close_price=$${exec.price.toFixed(2)}, pnl=$${pnl.toFixed(2)}`);
+          matched++;
+          continue;
+        }
+      }
+
       orphaned++;
       log(`Orphaned execution: order ${exec.orderId} ${exec.side} ${exec.shares}x ${exec.ticker} @ $${exec.price.toFixed(2)}`);
       continue;
@@ -139,9 +172,17 @@ export async function runEndOfDayReconciliation(): Promise<void> {
         log(`Corrected ${trade.ticker} fill_price: $${currentFill.toFixed(2)} → $${exec.price.toFixed(2)}`);
       }
     } else {
-      // TP or SL fill — check close price
-      if (['STOPPED', 'TARGET_HIT', 'CLOSED'].includes(trade.status) && trade.close_price != null) {
-        if (Math.abs(trade.close_price - exec.price) > 0.005) {
+      // TP, SL, or trailing-stop fill — correct close price.
+      // Also handles cases where close_price was null (e.g. trailing stop wrote CLOSED
+      // without close_price) or was set to fill_price with pnl=0 (browser sync fallback).
+      if (['STOPPED', 'TARGET_HIT', 'CLOSED'].includes(trade.status)) {
+        const currentClose = trade.close_price ?? 0;
+        const needsCorrection = currentClose === null
+          || currentClose === 0
+          || (trade.fill_price != null && Math.abs(currentClose - (trade.fill_price as number)) < 0.005 && (trade.pnl ?? 0) === 0)
+          || Math.abs(currentClose - exec.price) > 0.005;
+
+        if (needsCorrection) {
           const fillPrice = trade.fill_price ?? trade.entry_price ?? 0;
           const qty = trade.quantity ?? 1;
           const isLong = trade.signal === 'BUY';
@@ -155,8 +196,9 @@ export async function runEndOfDayReconciliation(): Promise<void> {
             pnl_percent: fillPrice > 0 ? parseFloat(((pnl / (fillPrice * qty)) * 100).toFixed(2)) : null,
           }).eq('id', trade.id);
           corrected++;
-          correctionDetails.push(`${trade.ticker}: close_price ${trade.close_price.toFixed(2)} → ${exec.price.toFixed(2)}`);
-          log(`Corrected ${trade.ticker} close_price: $${trade.close_price.toFixed(2)} → $${exec.price.toFixed(2)}`);
+          const prevStr = currentClose != null ? currentClose.toFixed(2) : 'null';
+          correctionDetails.push(`${trade.ticker}: close_price ${prevStr} → ${exec.price.toFixed(2)} (pnl $${pnl.toFixed(2)})`);
+          log(`Corrected ${trade.ticker} close_price: $${prevStr} → $${exec.price.toFixed(2)}, pnl: $${pnl.toFixed(2)}`);
         }
       }
     }
