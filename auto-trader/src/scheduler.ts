@@ -1421,7 +1421,19 @@ async function autoQueueGenericSignalsFromTrackedVideos(
 
   const todayET = getETDateString();
   const videos = await loadStrategyVideos();
-  const genericVideos = videos.filter(v => v.strategyType === 'generic_strategy');
+  const genericVideos = videos.filter(v => {
+    if (v.strategyType !== 'generic_strategy') return false;
+    // Guard: if a "generic_strategy" video has extracted_signals with concrete price
+    // levels, it's actually a daily_signal that got misclassified by the LLM.
+    // Don't use it as a generic strategy — it would incorrectly attribute every
+    // scanner ticker to the influencer who made the daily signal video.
+    const signals = v.extractedSignals ?? [];
+    if (signals.some(s => s.longTriggerAbove != null || s.shortTriggerBelow != null)) {
+      log(`Skipping video ${v.videoId} from generic queue — has concrete price levels (likely misclassified daily_signal)`);
+      return false;
+    }
+    return true;
+  });
   if (genericVideos.length === 0) return queuedTickers;
 
   // Load EV scores for all generic strategy videos
@@ -3227,11 +3239,13 @@ async function executeExternalStrategySignal(
   }
 
   // Check if our own scanner also identified this ticker today.
-  // Always preserve influencer attribution (strategy_source, strategy_video_id) so the
-  // activity log and Strategy Tracker correctly show the signal source. The scanner
-  // overlap is recorded in metadata for analytics but doesn't override the source.
   const alsoInScanner = await isTickerInTodayScan(ticker);
-  const resolvedSource: AutoTradeSource = 'external_signal';
+  // Generic strategy signals use scanner-picked tickers with an influencer's execution rules.
+  // The ticker source is the scanner, not the influencer — attribute accordingly.
+  // Daily signals are influencer-picked tickers — always preserve their attribution.
+  const isGenericAutoSignal = (signal.notes ?? '').toLowerCase().includes('generic strategy auto');
+  const stripInfluencerAttribution = isGenericAutoSignal && alsoInScanner;
+  const resolvedSource: AutoTradeSource = stripInfluencerAttribution ? 'scanner' : 'external_signal';
   const allocationSplit = Math.max(1, Math.floor(options?.allocationSplit ?? 1));
   const allocationIndex = Math.max(1, Math.floor(options?.allocationIndex ?? 1));
   const allowDuplicateTicker = options?.allowDuplicateTicker === true;
@@ -4197,6 +4211,75 @@ async function runCompoundersHealthCheck(): Promise<void> {
   }
 }
 
+// ── IB Position Reconciliation ───────────────────────────────────────────────
+// Detects IB positions with no active FILLED paper_trade and creates records
+// so position management modules (profit take, loss cut, auto-sell) can act on
+// them. Runs once per day to avoid churn.
+
+let _lastReconcileDate = '';
+
+async function reconcileOrphanedPositions(
+  positions: EnrichedPosition[],
+): Promise<void> {
+  const today = getETDateString();
+  if (_lastReconcileDate === today) return;
+
+  const sb = getSupabase();
+  const activeTrades = await getActiveTrades();
+  const filledTickers = new Set(
+    activeTrades
+      .filter(t => t.status === 'FILLED')
+      .map(t => t.ticker.toUpperCase())
+  );
+
+  // Load historical LONG_TERM records to identify SF tickers
+  const { data: historicalLT } = await sb
+    .from('paper_trades')
+    .select('ticker')
+    .eq('mode', 'LONG_TERM')
+    .eq('signal', 'BUY')
+    .in('status', ['CLOSED', 'STOPPED', 'TARGET_HIT']);
+  const knownLTTickers = new Set(
+    (historicalLT ?? []).map((r: { ticker: string }) => r.ticker.toUpperCase())
+  );
+
+  let reconciled = 0;
+  for (const ibPos of positions) {
+    const ticker = ibPos.symbol.toUpperCase();
+    if (ibPos.position <= 0) continue;
+    if (ibPos.mktPrice <= 0) continue;
+    if (ibPos.avgCost <= 0) continue;
+    if (filledTickers.has(ticker)) continue;
+    if (!knownLTTickers.has(ticker)) continue;
+
+    const qty = Math.abs(ibPos.position);
+    const posSize = qty * ibPos.avgCost;
+
+    await createPaperTrade({
+      ticker,
+      mode: 'LONG_TERM',
+      status: 'FILLED',
+      signal: 'BUY',
+      fill_price: ibPos.avgCost,
+      quantity: qty,
+      position_size: posSize,
+      filled_at: new Date().toISOString(),
+      notes: 'Reconciled: orphaned IB position (no active FILLED record)',
+      entry_trigger_type: 'reconciliation',
+    });
+
+    log(`[Reconcile] ${ticker}: created FILLED record — ${qty} shares @ $${ibPos.avgCost.toFixed(2)} ($${posSize.toFixed(0)})`);
+    reconciled++;
+    filledTickers.add(ticker);
+  }
+
+  _lastReconcileDate = today;
+  if (reconciled > 0) {
+    log(`[Reconcile] Created ${reconciled} FILLED records for orphaned IB positions`);
+    summaryLog(`Reconciled ${reconciled} orphaned IB positions`);
+  }
+}
+
 async function checkDipBuyOpportunities(
   config: AutoTraderConfig,
   positions: EnrichedPosition[],
@@ -4457,8 +4540,10 @@ async function checkLongTermAutoSell(
     if (!ibPos || ibPos.position === 0) continue;
 
     const currentPrice = ibPos.mktPrice;
+    if (currentPrice <= 0) continue; // IB data gap — skip, don't trigger false exits
     const entryPrice   = ibPos.avgCost;
-    const gainPct      = entryPrice > 0 ? (currentPrice - entryPrice) / entryPrice * 100 : 0;
+    if (entryPrice <= 0) continue;
+    const gainPct      = (currentPrice - entryPrice) / entryPrice * 100;
     const daysHeld     = trade.filled_at
       ? (Date.now() - new Date(trade.filled_at).getTime()) / 86400000
       : 0;
@@ -5343,16 +5428,16 @@ async function runSchedulerCycle(): Promise<void> {
     }
 
     const config = await loadConfig();
-    if (!config.enabled) {
-      log('Auto-trading disabled in config — skipping');
-      _lastRunResult = 'skipped: disabled';
-      return;
-    }
+    const newEntriesEnabled = config.enabled;
 
     if (!config.accountId) {
       log('No IB account configured — skipping');
       _lastRunResult = 'skipped: no account';
       return;
+    }
+
+    if (!newEntriesEnabled) {
+      log('Auto-trading disabled — position management will still run (no new entries)');
     }
 
     // Get current IB positions (used throughout the cycle)
@@ -5395,16 +5480,13 @@ async function runSchedulerCycle(): Promise<void> {
       return;
     }
 
-    // 5. Pre-generate Suggested Finds (daily, after market open only)
-    // Moved AFTER the market hours gate — belt-and-suspenders to prevent pre-market order placement.
-    // Runs after sync+reset so SF trades are tracked in _pendingDeployedDollar for this cycle.
-    if (config.suggestedFindsEnabled) {
-      await preGenerateSuggestedFinds(config, positions);
-    } else {
-      log('Suggested Finds module disabled — skipping');
-    }
+    // 5. Reconcile orphaned IB positions (once per day)
+    // Creates FILLED paper_trade records for IB positions that have no active record,
+    // so sell-side modules can manage them even when new entries are disabled.
+    await reconcileOrphanedPositions(positions);
 
     // 6. Position management: dip buy, profit take, loss cut, swing expiry
+    // These ALWAYS run regardless of config.enabled — existing positions must be actively managed.
     await checkStaleDayTrades(positions);              // flag/close day trades stuck FILLED from a prior day
     await checkDayTradeTrailingStops(positions);       // software trailing stop for day trades in profit (+1R)
     await checkDipBuyOpportunities(config, positions);
@@ -5412,6 +5494,21 @@ async function runSchedulerCycle(): Promise<void> {
     await checkLossCutOpportunities(config, positions);
     await checkSwingHoldExpiry(config, positions);     // free capital from stale swing trades
     await checkLongTermAutoSell(config, positions);    // stop-loss / profit-take / max-hold for Suggested Finds
+
+    // ── New entries below — only run when auto-trading is enabled ─────────────
+    if (!newEntriesEnabled) {
+      _lastRunResult = 'ok: position management only (new entries disabled)';
+      return;
+    }
+
+    // 6. Pre-generate Suggested Finds (daily, after market open only)
+    // Moved AFTER the market hours gate — belt-and-suspenders to prevent pre-market order placement.
+    // Runs after sync+reset so SF trades are tracked in _pendingDeployedDollar for this cycle.
+    if (config.suggestedFindsEnabled) {
+      await preGenerateSuggestedFinds(config, positions);
+    } else {
+      log('Suggested Finds module disabled — skipping');
+    }
 
     // Load scanner ideas once per cycle (used by generic-video queue + scanner execution)
     let allIdeas: TradeIdea[] = [];

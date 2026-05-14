@@ -255,7 +255,7 @@ Deno.serve(async (req) => {
 
   const extractedStrategyType = extracted.strategy_type === 'daily_signal' || extracted.strategy_type === 'generic_strategy'
     ? extracted.strategy_type : null;
-  const strategy_type = extractedStrategyType;
+  let strategy_type = extractedStrategyType;
   const video_heading = extracted.video_heading ? String(extracted.video_heading).trim() : null;
   // Only accept ISO date strings — reject relative values like "Friday", "tomorrow", etc.
   const rawTradeDate = extracted.trade_date ? String(extracted.trade_date).trim() : null;
@@ -323,6 +323,16 @@ Deno.serve(async (req) => {
     const ticker = String(s.ticker ?? '').trim().toUpperCase();
     return { ...s, ticker: TICKER_CORRECTIONS[ticker] ?? ticker };
   });
+  // Guard: if extracted_signals contain specific price levels (longTriggerAbove / shortTriggerBelow),
+  // this is a daily_signal by definition — generic strategies never have concrete entry levels.
+  // LLMs occasionally misclassify "gameplan for the day" videos as generic_strategy.
+  if (strategy_type === 'generic_strategy' && extracted_signals.some((s: Record<string, unknown>) =>
+    s.longTriggerAbove != null || s.shortTriggerBelow != null
+  )) {
+    console.warn(`[extract] Overriding strategy_type: generic_strategy → daily_signal (video has concrete price levels)`);
+    strategy_type = 'daily_signal';
+  }
+
   const summary = extracted.summary ? String(extracted.summary).trim() : null;
   const VALID_SETUP_TYPES = ['breakout', 'momentum', 'pullback_vwap', 'range'] as const;
   const setup_type = VALID_SETUP_TYPES.includes(extracted.setup_type as typeof VALID_SETUP_TYPES[number])
