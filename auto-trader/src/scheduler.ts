@@ -59,6 +59,8 @@ import {
   getPerformance,
   upsertHeartbeat,
   writeScanEvaluations,
+  upsertScannerWatchlistTicker,
+  resetScannerWatchlistStreak,
   type ScanEvaluationStatus,
   type AutoTraderConfig,
   type ExternalStrategySignal,
@@ -318,6 +320,17 @@ export function startScheduler(): void {
       await closeAllDayTrades(config);
     }
   }, { timezone: 'America/New_York' });
+
+  // 4:05 PM — promote today's profitable day-trade tickers to the scanner watchlist
+  // so they get re-scanned tomorrow. Runs after EOD close (3:55) settles.
+  cron.schedule('5 16 * * 1-5', async () => {
+    try {
+      await promoteDayTradeGainersToWatchlist();
+    } catch (err) {
+      console.error('[Scheduler] promoteDayTradeGainersToWatchlist failed:', err instanceof Error ? err.message : err);
+    }
+  }, { timezone: 'America/New_York' });
+  log('Day-trade gainer promotion: 4:05 PM ET (winners → scanner watchlist)');
 
   // 4:10 PM IB position-level reconciliation — queries IB directly to find any
   // short or long positions that survived the EOD sweep (the sweep only checks
@@ -817,6 +830,70 @@ async function checkStaleDayTrades(positions: EnrichedPosition[]): Promise<void>
 // naked short positions that will lose money tomorrow.
 //
 // This function pulls ACTUAL IB positions and BUYs to cover any shorts it finds.
+// ── Promote Day-Trade Gainers to Scanner Watchlist ───────────────────────────
+//
+// Runs at 4:05 PM ET after the EOD sweep settles. Queries today's closed
+// day trades, upserts winners into scanner_watchlist (10-day TTL, win streak
+// tracking), and resets consecutive_wins for losers already on the list.
+// The trade-scanner edge function reads this table to expand its universe.
+
+async function promoteDayTradeGainersToWatchlist(): Promise<void> {
+  const todayEt = getETDateString();
+  const sb = getSupabase();
+  const { data: closedToday } = await sb
+    .from('paper_trades')
+    .select('ticker, pnl, strategy_source')
+    .eq('mode', 'DAY_TRADE')
+    .in('status', [...CLOSED_STATUSES])
+    .not('pnl', 'is', null)
+    .gte('opened_at', `${todayEt}T00:00:00Z`);
+
+  if (!closedToday || closedToday.length === 0) {
+    log('[ScannerWatchlist] No closed day trades today — nothing to promote');
+    return;
+  }
+
+  const bestByTicker = new Map<string, { pnl: number; source: string }>();
+  for (const t of closedToday) {
+    const tk = t.ticker.toUpperCase();
+    const prev = bestByTicker.get(tk);
+    const pnl = Number(t.pnl);
+    if (!prev || pnl > prev.pnl) {
+      bestByTicker.set(tk, { pnl, source: t.strategy_source ?? 'scanner' });
+    }
+  }
+
+  const promoted: string[] = [];
+  const streakReset: string[] = [];
+
+  for (const [ticker, info] of bestByTicker) {
+    if (info.pnl > 0) {
+      try {
+        await upsertScannerWatchlistTicker(ticker, info.pnl, `day_trade_gainer:${info.source}`);
+        promoted.push(ticker);
+      } catch (err) {
+        log(`[ScannerWatchlist] Failed to upsert ${ticker}: ${err instanceof Error ? err.message : 'unknown'}`);
+      }
+    } else {
+      try {
+        await resetScannerWatchlistStreak(ticker);
+        streakReset.push(ticker);
+      } catch { /* no-op if ticker not on watchlist */ }
+    }
+  }
+
+  if (promoted.length > 0) {
+    log(`[ScannerWatchlist] Promoted ${promoted.length} gainer(s): ${promoted.join(', ')}`);
+    persistEvent('*', 'info', `Scanner watchlist: promoted ${promoted.length} day-trade gainer(s) — ${promoted.join(', ')}`, {
+      action: 'executed', source: 'system', mode: 'DAY_TRADE',
+      metadata: { promoted, streakReset },
+    });
+  }
+  if (streakReset.length > 0) {
+    log(`[ScannerWatchlist] Reset streak for ${streakReset.length} loser(s): ${streakReset.join(', ')}`);
+  }
+}
+
 // Safe to call at any time: it only acts on negative (short) stock positions.
 // Exposed via POST /api/scheduler/reconcile-ib so the user can trigger it from
 // the UI or curl without waiting for tomorrow's stale-trade check.
