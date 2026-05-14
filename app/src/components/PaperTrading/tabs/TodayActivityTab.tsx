@@ -579,9 +579,18 @@ export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], 
               const inferredSignal = isPositionSync ? '—'
                 : SELL_SOURCES.has(event.source ?? '') ? 'SELL'
                 : 'BUY';
-              const signalLabel = event.scanner_signal ?? inferredSignal;
-              const isSell = signalLabel === 'SELL';
-              const signalColor = isSell ? 'bg-red-100 text-red-700'
+              const entrySignal = event.scanner_signal ?? inferredSignal;
+              const isSell = entrySignal === 'SELL';
+              // For closed trades, show the closing action so it matches what IB shows:
+              //   BUY (long) closed → "SOLD"
+              //   SELL (short) closed → "COVERED"
+              // For open/active trades, show the entry direction (BUY / SELL).
+              const signalLabel = isClosed && !isPositionSync
+                ? (isSell ? 'COVERED' : 'SOLD')
+                : entrySignal;
+              const signalColor = isClosed && !isPositionSync
+                ? 'bg-slate-100 text-slate-500'
+                : isSell ? 'bg-red-100 text-red-700'
                 : isPositionSync ? 'bg-slate-100 text-slate-600'
                 : 'bg-emerald-100 text-emerald-700';
 
