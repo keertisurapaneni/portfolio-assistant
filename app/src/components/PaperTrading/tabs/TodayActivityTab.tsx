@@ -204,7 +204,7 @@ export interface TodayActivityTabProps {
   ibRealizedPnl?: number | null;
 }
 
-type FilterMode = 'all' | 'day' | 'long_term';
+type FilterMode = 'all' | 'day' | 'long_term' | 'gainers' | 'losers';
 type SortKey = 'ticker' | 'pnl' | 'time' | null;
 type SortDir = 'asc' | 'desc';
 
@@ -437,6 +437,12 @@ export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], 
         const mode = ev.mode;
         if (filterMode === 'day') return mode === 'DAY_TRADE';
         if (filterMode === 'long_term') return mode === 'LONG_TERM' || mode === 'SWING_TRADE';
+        if (filterMode === 'gainers' || filterMode === 'losers') {
+          const trade = tradesByTicker.get(ev.ticker)?.find(t => t.pnl != null);
+          const pnl = trade?.pnl ?? null;
+          if (filterMode === 'gainers') return pnl != null && pnl > 0;
+          if (filterMode === 'losers') return pnl != null && pnl < 0;
+        }
         return true;
       });
     }
@@ -486,7 +492,7 @@ export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], 
       )}
 
       {/* Filter + count bar */}
-      <div className="flex items-center gap-1.5">
+      <div className="flex items-center gap-1.5 flex-wrap">
         {(['all', 'day', 'long_term'] as FilterMode[]).map(f => (
           <button
             key={f}
@@ -501,6 +507,28 @@ export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], 
             {f === 'all' ? 'All' : f === 'day' ? 'Day Trades' : 'LT / Swing'}
           </button>
         ))}
+        <button
+          onClick={() => setFilterMode(filterMode === 'gainers' ? 'all' : 'gainers')}
+          className={cn(
+            'px-2.5 py-1 text-[11px] font-medium rounded-md border transition-colors',
+            filterMode === 'gainers'
+              ? 'bg-emerald-600 text-white border-emerald-700'
+              : 'bg-white text-emerald-700 border-emerald-200 hover:border-emerald-400'
+          )}
+        >
+          Gainers
+        </button>
+        <button
+          onClick={() => setFilterMode(filterMode === 'losers' ? 'all' : 'losers')}
+          className={cn(
+            'px-2.5 py-1 text-[11px] font-medium rounded-md border transition-colors',
+            filterMode === 'losers'
+              ? 'bg-red-600 text-white border-red-700'
+              : 'bg-white text-red-700 border-red-200 hover:border-red-400'
+          )}
+        >
+          Losers
+        </button>
         {filterMode !== 'all' && (
           <span className="text-[10px] text-[hsl(var(--muted-foreground))] ml-1">
             {filteredSortedEvents.length} of {events.length}
