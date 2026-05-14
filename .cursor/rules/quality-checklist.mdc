@@ -82,3 +82,11 @@ If a table holds user-specific data, use `auth.uid() = user_id` instead of `true
 If it's a system/log table (single-user app), `USING (true)` is fine.
 
 Missing RLS = table is publicly readable and writable by anyone with the project URL.
+
+## 9. Auto-Trader Invariant Check
+
+Before committing any change to `auto-trader/`:
+1. Read `.cursor/rules/auto-trader-invariants.mdc`
+2. Verify your change does not violate any hard rule
+3. If changing user-visible behavior (activity log, trade execution, attribution), confirm with the user first
+4. If unsure whether your change is a behavior change, it is — ask before proceeding

@@ -22,6 +22,20 @@ Signals from tracked strategy videos (Somesh / Kay Capitals, etc.) are identifie
 - ❌ Duplicate active trade (same ticker/direction/video already open)
 - ❌ Strategy marked X (consecutive losses threshold)
 
+## Attribution — NEVER strip
+
+- `strategy_source`, `strategy_source_url`, `strategy_video_id`, `strategy_video_heading`
+  must ALWAYS be preserved on both `paper_trades` AND `auto_trade_events`.
+- If the ticker also appears in `trade_scans` (scanner overlap), record that fact in
+  `metadata.also_in_scanner` — do NOT null out the attribution fields.
+- Source must be `external_signal`, never re-attributed to `scanner`.
+- This was broken on April 22 (commit 0af5475) and had to be reverted. Don't repeat it.
+
+## Execution timing
+
+- Influencer signals must NOT execute before 9:35 AM ET (same as scanner trades).
+  Spreads are widest at open; executing at 9:30 gets the worst fills.
+
 ## The reason
 
 Drawdown/allocation/sector checks exist to protect against our own AI-generated (scanner) trades going bad. Influencer signals come from a human expert with their own risk management — our system should not second-guess them. When the portfolio is in critical drawdown, blocking Somesh's signals just means we miss his recovery plays.

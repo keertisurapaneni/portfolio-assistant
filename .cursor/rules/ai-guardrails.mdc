@@ -1,0 +1,89 @@
+---
+description: Guardrails for AI agents working on financial/trading code
+globs: auto-trader/**
+alwaysApply: false
+---
+
+# AI Guardrails for Trading Code
+
+This system trades real money. Every change has financial consequences.
+Follow these rules to prevent the recurring pattern of confident-but-wrong changes.
+
+## 1. Classify Your Change Before Making It
+
+Before editing any auto-trader code, determine what kind of change you're making:
+
+| Type | Examples | Required |
+|------|----------|----------|
+| **Bug fix** | Null check, typo, wrong variable | Just fix it |
+| **Behavior change** | Different execution timing, new gates, changed attribution | ASK THE USER first |
+| **Product decision** | Who sees what, when trades execute, what gets logged | ASK THE USER first |
+| **Safety-critical** | Order placement, position closing, reconciliation | Read `auto-trader-invariants.mdc` first, ASK if any doubt |
+
+**If you're not sure whether something is a behavior change, it is.** Ask.
+
+## 2. Check Existing Rules Before Deciding
+
+Before making any design decision in the auto-trader:
+
+1. Read `auto-trader-invariants.mdc` — hard rules that cannot be violated
+2. Read `influencer-signals.mdc` — rules specific to influencer/strategy signals
+3. Read `auto-trader-conventions.mdc` — architecture and event system conventions
+4. Read `quality-checklist.mdc` — formatting, data sources, edge cases
+5. Check `docs/cursor/` for any relevant design docs or ADRs
+
+**If a rule file answers your question, follow it. Don't re-derive the answer.**
+
+## 3. Never Silently Change User-Visible Behavior
+
+If your change affects what the user sees in:
+- Activity log (event attribution, source labels, status)
+- Strategy Tracker (influencer names, win rates, P&L)
+- Trade notifications (what gets executed, when)
+- Portfolio display (positions, P&L calculations)
+
+Then you MUST tell the user what will change and get confirmation.
+A confident commit message is not a substitute for user approval.
+
+## 4. The "Mark CLOSED Anyway" Anti-Pattern
+
+Never write code that marks a position as closed/completed/done when the underlying
+action (IB order, API call, etc.) actually failed. This applies to:
+
+- `paper_trades.status` — only set to CLOSED after confirmed execution
+- `external_strategy_signals.status` — only set to EXECUTED after confirmed placement
+- Any state transition that implies "done" — verify the action succeeded first
+
+If the action fails, leave the state unchanged and log the failure.
+The next retry cycle will pick it up.
+
+## 5. Grep Before You Fix
+
+When fixing a bug, ALWAYS grep the entire codebase for the same pattern.
+The scheduler.ts file is 5,700+ lines — the same anti-pattern likely exists
+in multiple places. Fix ALL instances, not just the one the user reported.
+
+Specific patterns to audit:
+- `catch.*marking.*anyway` or `catch.*CLOSED` — state changes on failure
+- `alsoInScanner.*null` — attribution stripping
+- `placeMarketOrder` without market-hour checks
+- `status: 'CLOSED'` without fill confirmation
+
+## 6. Document Design Decisions
+
+When you make a non-obvious design choice, add it to `docs/cursor/` as a short ADR:
+
+```
+docs/cursor/YYYY-MM-DD-decision-name.md
+```
+
+Include: what was decided, why, what alternatives were considered.
+This prevents the next AI session from re-deriving (and getting wrong) the same decision.
+
+## 7. scheduler.ts Is a Monolith — Be Extra Careful
+
+At 5,700+ lines, changes have unpredictable blast radius. When editing:
+- Read at least 50 lines of context around your change
+- Check if the function you're editing is called from multiple places
+- Check if other functions have the same pattern you're fixing
+- Run `npx tsc --noEmit` after every substantive edit
