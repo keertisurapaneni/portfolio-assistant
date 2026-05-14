@@ -602,13 +602,15 @@ async function closeAllDayTrades(config: AutoTraderConfig): Promise<void> {
             log(`${trade.ticker}: EOD — cancel IB order #${orderId} failed (${cancelErr instanceof Error ? cancelErr.message : 'unknown'}) — continuing`);
           }
         }
-        // SUBMITTED = entry never filled, so there's no position to close. Mark CLOSED and skip.
+        // SUBMITTED = entry never filled, so there is no position to close in IB.
+        // Mark CANCELLED (not CLOSED) so it doesn't pollute the P&L activity log
+        // with $0 entries. CANCELLED trades are excluded from win/loss calculations.
         await updatePaperTrade(trade.id, {
-          status: 'CLOSED',
-          close_reason: 'eod_close',
+          status: 'CANCELLED',
+          close_reason: 'never_filled',
           closed_at: new Date().toISOString(),
         });
-        log(`${trade.ticker}: EOD closed (unfilled SUBMITTED order cancelled)`);
+        log(`${trade.ticker}: EOD cancelled (unfilled SUBMITTED order — no IB position to close)`);
         continue;
       }
 
@@ -1005,6 +1007,50 @@ export async function reconcileIBLongs(): Promise<{ closed: string[]; errors: st
       .map((t: { ticker: string }) => t.ticker.toUpperCase())
   );
 
+  // Find which untracked longs have a ghost paper_trade from TODAY with null fill_price.
+  // These are positions where EOD swept a never-filled BUY order but IB still holds
+  // a residual long (possible only if the entry was partially filled or if two orders
+  // interleaved). These are the ONLY ones safe to auto-close — anything else could be a
+  // legitimate long-term portfolio holding not tracked in paper_trades.
+  const todayEt = getETDateString();
+  const { data: todayGhostTrades } = await sb
+    .from('paper_trades')
+    .select('ticker')
+    .eq('signal', 'BUY')
+    .eq('mode', 'DAY_TRADE')
+    .is('fill_price', null)
+    .in('status', ['CLOSED', 'CANCELLED'])
+    .gte('opened_at', `${todayEt}T00:00:00Z`);
+  const todayGhostTickers = new Set(
+    (todayGhostTrades ?? []).map((t: { ticker: string }) => t.ticker.toUpperCase())
+  );
+
+  const untracked = longs.filter(p => !activeLongTickers.has(p.symbol.toUpperCase()));
+
+  // Split into: confirmed EOD ghosts (auto-closeable) vs unrecognised portfolio positions (warn only)
+  const confirmedGhosts = untracked.filter(p => todayGhostTickers.has(p.symbol.toUpperCase()));
+  const unknownPositions = untracked.filter(p => !todayGhostTickers.has(p.symbol.toUpperCase()));
+
+  if (unknownPositions.length > 0) {
+    const symbols = unknownPositions.map(p => `${p.symbol}(${Math.round(p.position)})`).join(', ');
+    log(`[IBLongReconcile] ⚠️ ${unknownPositions.length} unrecognised IB long position(s) — NOT auto-closing (could be portfolio holdings): ${symbols}`);
+    await createAutoTradeEvent({
+      ticker: '*',
+      event_type: 'warning',
+      action: 'skipped',
+      source: 'system',
+      message: `[IBLongReconcile] ${unknownPositions.length} IB long position(s) have no active paper_trade but are NOT ghost orders — manual review required: ${symbols}`,
+      metadata: { symbols: unknownPositions.map(p => p.symbol) },
+    });
+  }
+
+  if (confirmedGhosts.length === 0) {
+    log('[IBLongReconcile] No confirmed ghost day-trade longs to close');
+    return { closed: [], errors: [] };
+  }
+
+  log(`[IBLongReconcile] ${confirmedGhosts.length} confirmed ghost long(s) to close: ${confirmedGhosts.map(p => `${p.symbol}(${p.position})`).join(', ')}`);
+
   // Market-hour gate: MKT SELL orders require market to be open
   const etNow = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }));
   const etDay  = etNow.getDay();
@@ -1013,40 +1059,18 @@ export async function reconcileIBLongs(): Promise<{ closed: string[]; errors: st
     && etMins >= (9 * 60 + 30)
     && etMins < (16 * 60);
 
-  const orphanedLongs = longs.filter(p => {
-    if (activeLongTickers.has(p.symbol.toUpperCase())) {
-      return false; // tracked — leave it alone
-    }
-    return true;
-  });
-
-  if (orphanedLongs.length === 0) {
-    log('[IBLongReconcile] All long positions are tracked — no orphans');
-    return { closed: [], errors: [] };
-  }
-
-  log(`[IBLongReconcile] Found ${orphanedLongs.length} orphaned long(s): ${orphanedLongs.map(p => `${p.symbol}(${p.position})`).join(', ')}`);
-
   if (!isMarketOpen) {
-    const symbols = orphanedLongs.map(p => `${p.symbol}(${Math.round(p.position)})`).join(', ');
-    log(`[IBLongReconcile] ⚠️ CRITICAL: ${orphanedLongs.length} orphaned long position(s) detected AFTER HOURS: ${symbols}. Cannot place sell orders — market is closed. Will retry at next startup during market hours.`);
-      await createAutoTradeEvent({
-        ticker: '*',
-        event_type: 'warning',
-        action: 'skipped',
-        source: 'system',
-        message: `[IBLongReconcile] ⚠️ CRITICAL: ${orphanedLongs.length} orphaned long(s) detected AFTER HOURS: ${symbols}. Cannot place cover orders — market is closed. Will retry at next startup during market hours.`,
-        metadata: { symbols: orphanedLongs.map(p => p.symbol) },
-      });
-    return { closed: [], errors: [`Market closed — ${orphanedLongs.length} long(s) deferred: ${symbols}`] };
+    const symbols = confirmedGhosts.map(p => `${p.symbol}(${Math.round(p.position)})`).join(', ');
+    log(`[IBLongReconcile] Market closed — deferring ghost close for: ${symbols}`);
+    return { closed: [], errors: [`Market closed — deferred: ${symbols}`] };
   }
 
   const closed: string[] = [];
   const errors: string[] = [];
 
-  for (const pos of orphanedLongs) {
+  for (const pos of confirmedGhosts) {
     const qty = Math.round(pos.position);
-    log(`[IBLongReconcile] Selling orphaned long: ${pos.symbol} × ${qty} @ avg ${pos.avgCost}`);
+    log(`[IBLongReconcile] Selling ghost long: ${pos.symbol} × ${qty} @ avg ${pos.avgCost}`);
     try {
       const fillResult = await placeMarketOrder({ symbol: pos.symbol, side: 'SELL', quantity: qty });
       log(`[IBLongReconcile] ✓ ${pos.symbol}: SELL ${qty} filled @ $${fillResult.avgFillPrice.toFixed(2)}`);
@@ -1058,7 +1082,7 @@ export async function reconcileIBLongs(): Promise<{ closed: string[]; errors: st
         event_type: 'warning',
         action: 'executed',
         source: 'system',
-        message: `[IBLongReconcile] Orphaned long sold: SELL ${qty} shares (avg cost ${pos.avgCost.toFixed(2)}, fill ${fillResult.avgFillPrice.toFixed(2)}, P&L $${pnl.toFixed(2)})`,
+        message: `[IBLongReconcile] Ghost long sold: SELL ${qty} shares (avg cost ${pos.avgCost.toFixed(2)}, fill ${fillResult.avgFillPrice.toFixed(2)}, P&L $${pnl.toFixed(2)})`,
         metadata: { reconcile_type: 'ib_long_reconcile', qty, avg_cost: pos.avgCost, fill_price: fillResult.avgFillPrice, pnl },
       });
     } catch (err) {
@@ -2761,6 +2785,33 @@ async function executeScannerTrade(
   // Options positions on the same ticker don't block stock day/swing trades —
   // they are different instruments and managed by a separate pipeline.
   if (await hasActiveTrade(ticker, { excludeOptions: true })) return 'skipped:duplicate';
+
+  // ── Same-day re-entry cooldown (DAY_TRADE only) ───────────────────────
+  // hasActiveTrade only checks SUBMITTED/FILLED/PARTIAL — once a day trade hits
+  // its target or stop (TARGET_HIT / STOPPED / CLOSED) the ticker is "free" again
+  // and the scanner will re-enter it the same afternoon. This creates ghost BUY
+  // orders that IB rejects (or fills into a second untracked position), polluting
+  // the activity log with $0 P&L entries. Confirmed: WOLF re-entered 28 min after
+  // TARGET_HIT on 2026-05-14; NVDA re-entered 36 min after TARGET_HIT same day.
+  if (mode === 'DAY_TRADE') {
+    const todayEt = getETDateString();
+    const sb = getSupabase();
+    const { count: todayResolvedCount } = await sb
+      .from('paper_trades')
+      .select('id', { count: 'exact', head: true })
+      .eq('ticker', ticker)
+      .eq('mode', 'DAY_TRADE')
+      .not('mode', 'in', '(OPTIONS_PUT,OPTIONS_CALL)')
+      .in('status', ['TARGET_HIT', 'STOPPED', 'CLOSED'])
+      .gte('opened_at', `${todayEt}T00:00:00Z`);
+    if ((todayResolvedCount ?? 0) > 0) {
+      log(`${ticker}: DAY_TRADE skipped — already resolved a day trade on this ticker today`);
+      persistEvent(ticker, 'skipped', 'Same-day re-entry blocked — day trade already resolved today', {
+        action: 'skipped', source: 'scanner', mode, skip_reason: 'same_day_reentry',
+      });
+      return 'skipped:same_day_reentry';
+    }
+  }
 
   // ── Recent-loss cooldown gate ─────────────────────────────────────────
   // Block re-entry on any ticker that lost money in the last N days.
