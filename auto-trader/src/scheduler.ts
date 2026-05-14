@@ -590,40 +590,37 @@ async function closeAllDayTrades(config: AutoTraderConfig): Promise<void> {
         continue;
       }
 
-      let orderPlaced = false;
+      let fillResult: { avgFillPrice: number } | null = null;
       try {
-        await placeMarketOrder({ symbol: trade.ticker, side: closeSide, quantity: qty });
-        log(`${trade.ticker}: EOD close order placed (${qty} shares ${closeSide})`);
-        orderPlaced = true;
+        fillResult = await placeMarketOrder({ symbol: trade.ticker, side: closeSide, quantity: qty });
+        log(`${trade.ticker}: EOD close filled (${qty} shares ${closeSide}) @ $${fillResult.avgFillPrice.toFixed(2)}`);
       } catch (orderErr) {
         log(`EOD sweep: ${trade.ticker} — IB order failed (${orderErr instanceof Error ? orderErr.message : 'unknown'}) — will retry on next sweep`);
       }
 
-      if (!orderPlaced) {
+      if (!fillResult) {
         // Don't mark CLOSED if IB rejected the order — the position is still open.
         // Leave status unchanged so the 4:05 safety sweep or IBReconcile picks it up.
         continue;
       }
 
-      const closePrice = await getQuotePrice(trade.ticker);
-      const fillPrice = trade.fill_price ?? trade.entry_price ?? 0;
+      const entryFillPrice = trade.fill_price ?? trade.entry_price ?? 0;
       const isLong = trade.signal === 'BUY';
-      const actual = closePrice ?? fillPrice;
       const pnl = isLong
-        ? (actual - fillPrice) * qty
-        : (fillPrice - actual) * qty;
-      const costBasis = fillPrice * qty;
+        ? (fillResult.avgFillPrice - entryFillPrice) * qty
+        : (entryFillPrice - fillResult.avgFillPrice) * qty;
+      const costBasis = entryFillPrice * qty;
       const pnlPct = costBasis > 0 ? (pnl / costBasis) * 100 : 0;
 
       await updatePaperTrade(trade.id, {
         status: 'CLOSED',
         close_reason: 'eod_close',
-        close_price: actual,
+        close_price: fillResult.avgFillPrice,
         pnl: parseFloat(pnl.toFixed(2)),
         pnl_percent: parseFloat(pnlPct.toFixed(2)),
         closed_at: new Date().toISOString(),
       });
-      log(`${trade.ticker}: EOD closed (${qty} shares ${closeSide}) — P&L $${pnl.toFixed(2)}`);
+      log(`${trade.ticker}: EOD closed (${qty} shares ${closeSide}) @ $${fillResult.avgFillPrice.toFixed(2)} — P&L $${pnl.toFixed(2)}`);
     } catch (err) {
       log(`EOD sweep: ${trade.ticker} — close failed: ${err instanceof Error ? err.message : 'unknown'}`);
     }
@@ -769,20 +766,19 @@ async function checkStaleDayTrades(positions: EnrichedPosition[]): Promise<void>
     if (qty <= 0) continue;
 
     try {
-      await placeMarketOrder({ symbol: trade.ticker, side: closeSide, quantity: qty });
-      const staleActual = ibPos.mktPrice > 0 ? ibPos.mktPrice : fillPrice;
-      const stalePnl = isLong ? (staleActual - fillPrice) * qty : (fillPrice - staleActual) * qty;
+      const { avgFillPrice } = await placeMarketOrder({ symbol: trade.ticker, side: closeSide, quantity: qty });
+      const stalePnl = isLong ? (avgFillPrice - fillPrice) * qty : (fillPrice - avgFillPrice) * qty;
       const staleCost = fillPrice * qty;
       const stalePnlPct = staleCost > 0 ? (stalePnl / staleCost) * 100 : 0;
       await updatePaperTrade(trade.id, {
         status:       'CLOSED',
         close_reason: 'stale_eod_close',
-        close_price:  staleActual,
+        close_price:  avgFillPrice,
         pnl:          parseFloat(stalePnl.toFixed(2)),
         pnl_percent:  parseFloat(stalePnlPct.toFixed(2)),
         closed_at:    new Date().toISOString(),
       });
-      log(`  ${trade.ticker}: stale position closed via market order — P&L $${stalePnl.toFixed(2)}`);
+      log(`  ${trade.ticker}: stale position closed via market order @ $${avgFillPrice.toFixed(2)} — P&L $${stalePnl.toFixed(2)}`);
     } catch (err) {
       log(`  ${trade.ticker}: stale close failed — ${err instanceof Error ? err.message : 'unknown'}`);
     }
@@ -4767,17 +4763,23 @@ async function checkLongTermAutoSell(
     const side: 'BUY' | 'SELL' = ibPos.position > 0 ? 'SELL' : 'BUY';
 
     try {
-      await placeMarketOrder({ symbol: trade.ticker, side, quantity: qty });
+      const { avgFillPrice } = await placeMarketOrder({ symbol: trade.ticker, side, quantity: qty });
+      const fillPnl = ibPos.position > 0
+        ? (avgFillPrice - ibPos.avgCost) * qty
+        : (ibPos.avgCost - avgFillPrice) * qty;
+      const fillPnlPct = ibPos.avgCost > 0
+        ? ((avgFillPrice - ibPos.avgCost) / ibPos.avgCost) * 100
+        : gainPct;
       await updatePaperTrade(trade.id, {
         status: 'CLOSED',
-        close_price: currentPrice,
-        pnl: ibPos.unrealizedPnl,
-        pnl_percent: gainPct,
+        close_price: avgFillPrice,
+        pnl: fillPnl,
+        pnl_percent: fillPnlPct,
         close_reason: reason,
         closed_at: new Date().toISOString(),
       });
 
-      const emoji = gainPct >= 0 ? '✅' : '🛑';
+      const emoji = fillPnlPct >= 0 ? '✅' : '🛑';
       const label = reason.startsWith('dd_profit_take') ? 'Dip Discovery profit-take'
         : reason.startsWith('dd_stop_loss')    ? 'Dip Discovery stop-loss'
         : reason.startsWith('dd_max_hold')     ? 'Dip Discovery max-hold exit'
@@ -4790,11 +4792,11 @@ async function checkLongTermAutoSell(
         : reason.startsWith('trailing_stop')   ? 'trailing stop'
         : reason.startsWith('stop_loss')       ? 'stop-loss'
         : 'max-hold exit';
-      log(`${trade.ticker}: LT AUTO-SELL (${label}) — ${gainPct.toFixed(1)}% P&L, peak $${effectivePeak.toFixed(2)}, held ${daysHeld.toFixed(0)}d`);
+      log(`${trade.ticker}: LT AUTO-SELL (${label}) — ${fillPnlPct.toFixed(1)}% P&L, fill $${avgFillPrice.toFixed(2)}, peak $${effectivePeak.toFixed(2)}, held ${daysHeld.toFixed(0)}d`);
       persistEvent(trade.ticker, 'success',
-        `${emoji} ${trade.ticker} long-term auto-closed (${label}) — ${gainPct.toFixed(1)}% P&L — capital freed`,
+        `${emoji} ${trade.ticker} long-term auto-closed (${label}) — ${fillPnlPct.toFixed(1)}% P&L @ $${avgFillPrice.toFixed(2)} — capital freed`,
         { action: 'closed', source: 'lt_auto_sell', mode: 'LONG_TERM',
-          metadata: { reason, gainPct, daysHeld, qty, effectivePeak, entryPrice } }
+          metadata: { reason, gainPct: fillPnlPct, daysHeld, qty, effectivePeak, entryPrice, avgFillPrice } }
       );
     } catch (err) {
       log(`${trade.ticker}: Long-term auto-sell failed — ${err instanceof Error ? err.message : 'unknown'}`);
@@ -5005,17 +5007,17 @@ async function checkDayTradeTrailingStops(
     if (qty <= 0) continue;
 
     try {
-      await placeMarketOrder({ symbol: trade.ticker, side: closeSide, quantity: qty });
+      const { avgFillPrice } = await placeMarketOrder({ symbol: trade.ticker, side: closeSide, quantity: qty });
       const pnl = isBuy
-        ? parseFloat(((currentPrice - fillPrice) * qty).toFixed(2))
-        : parseFloat(((fillPrice - currentPrice) * qty).toFixed(2));
+        ? parseFloat(((avgFillPrice - fillPrice) * qty).toFixed(2))
+        : parseFloat(((fillPrice - avgFillPrice) * qty).toFixed(2));
       const pnlPct = fillPrice > 0
         ? parseFloat(((pnl / (fillPrice * qty)) * 100).toFixed(2))
         : null;
       await updatePaperTrade(trade.id, {
         status:       'CLOSED',
         close_reason: 'trailing_stop',
-        close_price:  currentPrice,
+        close_price:  avgFillPrice,
         pnl,
         pnl_percent:  pnlPct,
         closed_at:    new Date().toISOString(),
