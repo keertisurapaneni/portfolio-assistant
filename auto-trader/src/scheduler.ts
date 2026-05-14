@@ -813,14 +813,45 @@ export async function reconcileIBShorts(): Promise<{ closed: string[]; errors: s
     return { closed: [], errors: [`IB unavailable: ${msg}`] };
   }
 
-  const shorts = ibPositions.filter(p => p.position < 0 && p.secType === 'STK');
+  const allShorts = ibPositions.filter(p => p.position < 0 && p.secType === 'STK');
 
-  if (shorts.length === 0) {
+  if (allShorts.length === 0) {
     log('[IBReconcile] No short stock positions found — all clear');
     return { closed: [], errors: [] };
   }
 
-  log(`[IBReconcile] Found ${shorts.length} short position(s): ${shorts.map(p => p.symbol).join(', ')}`);
+  // Only cover OVERNIGHT orphaned shorts — NOT same-day intraday shorts.
+  // Same-day shorts (opened after today's 9:30 AM ET market open) are intentional
+  // DAY_TRADE shorts from scanner/influencer signals. Covering them here would close
+  // perfectly valid trades (e.g. a Somesh SELL signal that went short at 9:30 AM).
+  const todayOpenET = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }));
+  todayOpenET.setHours(9, 30, 0, 0);
+  const todayOpenUTC = new Date(todayOpenET.toLocaleString('en-US', { timeZone: 'UTC' }));
+
+  // Query active SELL paper_trades opened today — these are known same-day shorts
+  const { data: sameDaySellTrades } = await getSupabase()
+    .from('paper_trades')
+    .select('ticker')
+    .eq('signal', 'SELL')
+    .in('status', ['SUBMITTED', 'FILLED', 'PARTIAL'])
+    .gte('opened_at', todayOpenUTC.toISOString());
+
+  const sameDaySellTickers = new Set((sameDaySellTrades ?? []).map((t: { ticker: string }) => t.ticker.toUpperCase()));
+
+  const shorts = allShorts.filter(p => {
+    if (sameDaySellTickers.has(p.symbol.toUpperCase())) {
+      log(`[IBReconcile] Skipping ${p.symbol} — active same-day SELL trade exists (intraday short, not an orphan)`);
+      return false;
+    }
+    return true;
+  });
+
+  if (shorts.length === 0) {
+    log('[IBReconcile] No overnight orphaned short positions found (same-day shorts excluded) — all clear');
+    return { closed: [], errors: [] };
+  }
+
+  log(`[IBReconcile] Found ${shorts.length} overnight orphaned short(s): ${shorts.map(p => p.symbol).join(', ')}`);
 
   // Market-hour gate: MKT orders with TIF=DAY are rejected outside RTH.
   // If market is closed, log a critical alert and defer — the next startup
@@ -4077,6 +4108,56 @@ async function syncPositions(
         trigger: hasConfirmedFill ? 'IB_FILL_CONFIRMED' : 'IB_POSITION_GONE_FALLBACK',
       }).catch(err => log(`Trade perf log failed for ${trade.ticker}: ${err instanceof Error ? err.message : 'unknown'}`));
     } else if (trade.status === 'SUBMITTED') {
+      // ── Fill detection for SUBMITTED orders ───────────────────────────────
+      // Market/limit orders (no bracket) don't get monitored via TP/SL fill lookup.
+      // Check ib_fills directly using the entry order ID. If IB recorded a fill,
+      // update to FILLED so the position sync can manage it going forward.
+      // This catches cases like influencer SELL signals that close long positions —
+      // the long position disappears from IB immediately, so position-based detection
+      // misses the fill, leaving the paper_trade stuck as SUBMITTED.
+      if (trade.ib_order_id && !trade.ib_tp_order_id && !trade.ib_sl_order_id) {
+        const orderId = parseInt(trade.ib_order_id, 10);
+        if (!Number.isNaN(orderId)) {
+          const fill = await getOrderFillPriceWithFallback(orderId);
+          if (fill != null) {
+            const isSell = trade.signal === 'SELL';
+            const qty = trade.quantity ?? 1;
+            const fillPrice = fill;
+
+            // For a SELL that closes a long position, we can also try to compute
+            // the realized P&L if we know the original long entry.
+            // For now just mark as FILLED — the position sync loop will handle the rest.
+            await updatePaperTrade(trade.id, {
+              status: 'FILLED',
+              fill_price: fillPrice,
+              filled_at: new Date().toISOString(),
+            });
+            log(`${trade.ticker}: SUBMITTED → FILLED (fill detected in ib_fills: orderId=${orderId} @ $${fillPrice})`);
+
+            // For plain SELL orders (closing a long with no further management),
+            // immediately close the trade — there's no open position to monitor.
+            if (isSell) {
+              const originalFillPrice = trade.fill_price ?? trade.entry_price ?? fillPrice;
+              const pnl = (fillPrice - originalFillPrice) * qty;
+              let closeReason: import('../../shared/trade-types.js').CloseReason = 'manual';
+              if (pnl > 0) closeReason = 'target_hit';
+              if (pnl < 0) closeReason = 'stop_loss';
+              const closedAt = new Date().toISOString();
+              await updatePaperTrade(trade.id, {
+                status: pnl > 0 ? 'TARGET_HIT' : pnl < 0 ? 'STOPPED' : 'CLOSED',
+                close_price: fillPrice,
+                close_reason: closeReason,
+                pnl: parseFloat(pnl.toFixed(2)),
+                pnl_percent: originalFillPrice > 0 ? parseFloat(((pnl / (originalFillPrice * qty)) * 100).toFixed(2)) : null,
+                closed_at: closedAt,
+              });
+              log(`${trade.ticker}: SELL closed immediately — fill @ $${fillPrice}, P&L $${pnl.toFixed(2)}`);
+              continue;
+            }
+          }
+        }
+      }
+
       const tradeAge = Date.now() - new Date(trade.created_at).getTime();
       // Stale day trades — expire at market close (4:15 PM ET) if created today,
       // or after 24h as a safety net for any that slip through.
@@ -4248,6 +4329,19 @@ async function reconcileOrphanedPositions(
       .map(t => t.ticker.toUpperCase())
   );
 
+  // Also skip tickers that were closed/sold today — prevents the
+  // reconcile→auto-sell→reconcile loop (CSCO/AMAT bug 2026-05-14).
+  const todayStart = `${today}T00:00:00`;
+  const { data: closedToday } = await sb
+    .from('paper_trades')
+    .select('ticker')
+    .eq('mode', 'LONG_TERM')
+    .in('status', [...CLOSED_STATUSES])
+    .gte('closed_at', todayStart);
+  const closedTodayTickers = new Set(
+    (closedToday ?? []).map((r: { ticker: string }) => r.ticker.toUpperCase())
+  );
+
   // Load historical LONG_TERM records to identify SF tickers
   const { data: historicalLT } = await sb
     .from('paper_trades')
@@ -4266,6 +4360,7 @@ async function reconcileOrphanedPositions(
     if (ibPos.mktPrice <= 0) continue;
     if (ibPos.avgCost <= 0) continue;
     if (filledTickers.has(ticker)) continue;
+    if (closedTodayTickers.has(ticker)) continue;
     if (!knownLTTickers.has(ticker)) continue;
 
     const qty = Math.abs(ibPos.position);
