@@ -1384,9 +1384,36 @@ async function runKeyLevelScan(
       .filter(Boolean);
     for (const s of liquidMovers) {
       if (!universe.includes(s)) universe.push(s);
-      if (universe.length >= 45) break;
+      if (universe.length >= 50) break;
     }
   } catch { /* movers optional */ }
+
+  // Layer 3: scanner_watchlist — past day-trade gainers with TTL
+  try {
+    const { data: watchlistRows } = await sb
+      .from('scanner_watchlist')
+      .select('ticker')
+      .eq('active', true)
+      .gte('expires_at', new Date().toISOString());
+    for (const row of watchlistRows ?? []) {
+      if (!universe.includes(row.ticker)) universe.push(row.ticker);
+    }
+  } catch { /* watchlist optional */ }
+
+  // Layer 4: recent influencer/strategy signals for day trades
+  try {
+    const fiveDaysAgo = new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString();
+    const { data: signals } = await sb
+      .from('external_strategy_signals')
+      .select('ticker')
+      .eq('mode', 'DAY_TRADE')
+      .in('status', ['EXECUTED', 'PENDING'])
+      .gte('created_at', fiveDaysAgo);
+    for (const row of signals ?? []) {
+      const tk = row.ticker?.toUpperCase();
+      if (tk && !universe.includes(tk)) universe.push(tk);
+    }
+  } catch { /* signals optional */ }
 
   // Fetch quotes with full OHLCV bars
   const quotes = await fetchSwingQuotes([...new Set(universe)]);
@@ -2140,6 +2167,44 @@ Deno.serve(async (req) => {
           }
           console.log(`[Trade Scanner] Pre-market gappers injected: ${gapTickers.join(', ')}`);
         }
+      }
+
+      // Inject scanner_watchlist (past day-trade gainers) + recent influencer signals
+      const extraTickers: string[] = [];
+      try {
+        const { data: watchlistRows } = await sb
+          .from('scanner_watchlist')
+          .select('ticker')
+          .eq('active', true)
+          .gte('expires_at', new Date().toISOString());
+        for (const row of watchlistRows ?? []) {
+          if (!deduped.has(row.ticker)) extraTickers.push(row.ticker);
+        }
+      } catch { /* optional */ }
+      try {
+        const fiveDaysAgo = new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString();
+        const { data: signals } = await sb
+          .from('external_strategy_signals')
+          .select('ticker')
+          .eq('mode', 'DAY_TRADE')
+          .in('status', ['EXECUTED', 'PENDING'])
+          .gte('created_at', fiveDaysAgo);
+        for (const row of signals ?? []) {
+          const tk = row.ticker?.toUpperCase();
+          if (tk && !deduped.has(tk) && !extraTickers.includes(tk)) extraTickers.push(tk);
+        }
+      } catch { /* optional */ }
+      if (extraTickers.length > 0) {
+        const extraQuotes = await fetchSwingQuotes(extraTickers);
+        for (const q of extraQuotes) {
+          if (!q.symbol) continue;
+          const price = rawVal(q.regularMarketPrice);
+          const volume = rawVal(q.regularMarketVolume);
+          if (price >= 10 && volume >= 500_000) {
+            deduped.set(q.symbol, q);
+          }
+        }
+        console.log(`[Trade Scanner] Watchlist+signals injected: ${extraTickers.join(', ')}`);
       }
 
       let candidates = [...deduped.values()];

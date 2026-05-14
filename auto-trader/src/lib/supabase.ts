@@ -859,6 +859,85 @@ export async function writeScanEvaluations(
   }
 }
 
+// ── Scanner Watchlist helpers ──────────────────────────────────────────────
+
+const SCANNER_WATCHLIST_TTL_DAYS = 10;
+
+export interface ScannerWatchlistRow {
+  ticker: string;
+  added_at: string;
+  expires_at: string;
+  last_win_at: string;
+  win_count: number;
+  consecutive_wins: number;
+  avg_pnl: number | null;
+  source: string;
+  notes: string | null;
+  active: boolean;
+}
+
+export async function upsertScannerWatchlistTicker(
+  ticker: string,
+  pnl: number,
+  source = 'day_trade_gainer',
+): Promise<void> {
+  const sb = getSupabase();
+  const now = new Date().toISOString();
+  const expiresAt = new Date(Date.now() + SCANNER_WATCHLIST_TTL_DAYS * 24 * 60 * 60 * 1000).toISOString();
+
+  const { data: existing } = await sb
+    .from('scanner_watchlist')
+    .select('win_count, consecutive_wins, avg_pnl')
+    .eq('ticker', ticker.toUpperCase())
+    .maybeSingle();
+
+  if (existing) {
+    const newWinCount = existing.win_count + 1;
+    const newConsec = existing.consecutive_wins + 1;
+    const oldAvg = existing.avg_pnl ?? 0;
+    const newAvg = (oldAvg * existing.win_count + pnl) / newWinCount;
+    await sb.from('scanner_watchlist').update({
+      last_win_at: now,
+      expires_at: expiresAt,
+      win_count: newWinCount,
+      consecutive_wins: newConsec,
+      avg_pnl: newAvg,
+      active: true,
+      source,
+    }).eq('ticker', ticker.toUpperCase());
+  } else {
+    await sb.from('scanner_watchlist').insert({
+      ticker: ticker.toUpperCase(),
+      added_at: now,
+      expires_at: expiresAt,
+      last_win_at: now,
+      win_count: 1,
+      consecutive_wins: 1,
+      avg_pnl: pnl,
+      source,
+      active: true,
+    });
+  }
+}
+
+export async function getActiveScannerWatchlist(): Promise<ScannerWatchlistRow[]> {
+  const sb = getSupabase();
+  const now = new Date().toISOString();
+  const { data } = await sb
+    .from('scanner_watchlist')
+    .select('*')
+    .eq('active', true)
+    .gte('expires_at', now);
+  return (data ?? []) as ScannerWatchlistRow[];
+}
+
+export async function resetScannerWatchlistStreak(ticker: string): Promise<void> {
+  const sb = getSupabase();
+  await sb.from('scanner_watchlist')
+    .update({ consecutive_wins: 0 })
+    .eq('ticker', ticker.toUpperCase());
+}
+
 export async function upsertHeartbeat(payload: HeartbeatPayload): Promise<void> {
   try {
     const sb = getSupabase();
