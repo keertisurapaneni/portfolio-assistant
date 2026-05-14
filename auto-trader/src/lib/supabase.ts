@@ -727,9 +727,16 @@ export async function insertIbFill(fill: IbFill): Promise<void> {
   }
 }
 
-export async function updateIbFillCommission(execId: string, commission: number): Promise<void> {
+export async function updateIbFillCommission(execId: string, commission: number, realizedPnl?: number | null): Promise<void> {
   const sb = getSupabase();
-  const { error } = await sb.from('ib_fills').update({ commission }).eq('exec_id', execId);
+  const updates: Record<string, unknown> = { commission };
+  // Store IB's FIFO-based realized P&L alongside the commission. This is the source of
+  // truth for P&L when IB's FIFO cost basis differs from our tracked fill_price
+  // (e.g. orphaned prior-day lots). The EOD reconciler reads this to correct paper_trades.
+  if (realizedPnl != null && isFinite(realizedPnl) && Math.abs(realizedPnl) < 1e6) {
+    updates.realized_pnl = realizedPnl;
+  }
+  const { error } = await sb.from('ib_fills').update(updates).eq('exec_id', execId);
   if (error) {
     console.warn(`[Supabase] Failed to update commission for exec ${execId}: ${error.message}`);
   }

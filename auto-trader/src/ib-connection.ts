@@ -326,14 +326,19 @@ export function connect(): void {
     }
   });
 
-  // commissionReport arrives after execDetails — update the matching fill row
+  // commissionReport arrives after execDetails — update the matching fill row with
+  // commission AND IB's realizedPNL. realizedPNL uses IB's FIFO cost basis, so it's
+  // the authoritative P&L when orphaned prior-day lots exist (TSLA/AAPL-style issues).
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (ib as any).on(EventName.commissionReport, (report: any) => {
     const execId = report?.execId;
     const commission = report?.commission;
+    const realizedPnl: number | undefined = report?.realizedPNL ?? report?.realizedPnl;
     if (execId && commission != null && commission < 1e6) {
-      console.log(`[IB] Commission: execId=${execId} commission=$${commission.toFixed(4)}`);
-      updateIbFillCommission(execId, commission)
+      const rpnlStr = realizedPnl != null && isFinite(realizedPnl) && Math.abs(realizedPnl) < 1e6
+        ? ` realizedPnl=$${realizedPnl.toFixed(2)}` : '';
+      console.log(`[IB] Commission: execId=${execId} commission=$${commission.toFixed(4)}${rpnlStr}`);
+      updateIbFillCommission(execId, commission, realizedPnl != null && isFinite(realizedPnl) && Math.abs(realizedPnl) < 1e6 ? realizedPnl : null)
         .catch(err => console.warn(`[IB] Failed to update commission: ${err instanceof Error ? err.message : err}`));
     }
   });
