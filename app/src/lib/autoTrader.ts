@@ -395,74 +395,16 @@ export function stopSessionPing() {
 let _autoCloseTimeout: ReturnType<typeof setTimeout> | null = null;
 
 /** Schedule auto-close for day trades at 3:55 PM ET */
-export function scheduleDayTradeAutoClose(config: AutoTraderConfig) {
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+export function scheduleDayTradeAutoClose(_config: AutoTraderConfig) {
+  // DISABLED: The server-side scheduler (auto-trader/src/scheduler.ts) runs the
+  // authoritative closeAllDayTrades cron at 3:55 PM ET. Having the browser also
+  // fire EOD close orders causes DOUBLE orders — every position gets sold twice,
+  // creating unintended short positions in IB (confirmed 2026-05-14).
+  // The server-side close is more reliable (no tab/browser dependency) and is
+  // the only EOD close that should run.
   if (_autoCloseTimeout) clearTimeout(_autoCloseTimeout);
-  if (!config.dayTradeAutoClose || !config.accountId) return;
-
-  const now = new Date();
-  const et = new Date(now.toLocaleString('en-US', { timeZone: 'America/New_York' }));
-  const closeHour = 15; // 3 PM
-  const closeMin = 55;  // 3:55 PM
-
-  const closeTime = new Date(et);
-  closeTime.setHours(closeHour, closeMin, 0, 0);
-
-  if (et > closeTime) return; // already past close time today
-
-  const msUntilClose = closeTime.getTime() - et.getTime();
-  logEvent('*', 'info', `Day trade auto-close scheduled in ${Math.round(msUntilClose / 60000)} minutes`);
-
-  _autoCloseTimeout = setTimeout(async () => {
-    logEvent('*', 'info', 'Closing all day trade positions (3:55 PM ET)...');
-    await closeAllDayTrades(config.accountId!);
-  }, msUntilClose);
-}
-
-/** Close all open day trade positions */
-async function closeAllDayTrades(accountId: string) {
-  try {
-    const activeTrades = await getActiveTrades();
-    const dayTrades = activeTrades.filter(t => t.mode === 'DAY_TRADE' && t.status === 'FILLED');
-
-    for (const trade of dayTrades) {
-      try {
-        const contract = await searchContract(trade.ticker);
-        if (!contract) {
-          logEvent(trade.ticker, 'error', 'Cannot find contract for EOD close');
-          continue;
-        }
-
-        const closeSide = trade.signal === 'BUY' ? 'SELL' : 'BUY';
-        const result = await placeMarketOrder({
-          accountId,
-          conid: contract.conid,
-          symbol: trade.ticker,
-          side: closeSide as 'BUY' | 'SELL',
-          quantity: trade.quantity ?? 0,
-        });
-
-        // Handle confirmation if needed
-        await handleOrderConfirmations(result);
-
-        await updatePaperTrade(trade.id, {
-          status: 'CLOSED',
-          close_reason: 'eod_close',
-          closed_at: new Date().toISOString(),
-        });
-        fetch(TRADE_PERF_LOG_EDGE, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${SUPABASE_KEY}` },
-          body: JSON.stringify({ tradeId: trade.id, trigger: 'EOD_CLOSE' }),
-        }).catch(err => console.warn('[closeAllDayTrades] Performance log failed:', err));
-
-        logEvent(trade.ticker, 'success', 'Day trade closed at EOD');
-      } catch (err) {
-        logEvent(trade.ticker, 'error', `EOD close failed: ${err instanceof Error ? err.message : 'Unknown'}`);
-      }
-    }
-  } catch (err) {
-    logEvent('*', 'error', `EOD close sweep failed: ${err instanceof Error ? err.message : 'Unknown'}`);
-  }
+  logEvent('*', 'info', 'Browser EOD auto-close disabled — server-side scheduler handles 3:55 PM close');
 }
 
 // ── Order Confirmation Helper ────────────────────────────

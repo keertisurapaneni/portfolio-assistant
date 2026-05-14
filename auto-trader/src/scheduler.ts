@@ -566,6 +566,20 @@ async function closeAllDayTrades(config: AutoTraderConfig): Promise<void> {
         continue;
       }
 
+      // ── Double-close guard ────────────────────────────────────────────────
+      // Mark as CLOSED (with null price) BEFORE placing the IB order. This
+      // prevents any concurrent process (a second cron firing, another
+      // scheduler cycle, or a leftover browser closeAllDayTrades call) from
+      // seeing the trade as FILLED and placing a duplicate close order.
+      // The EOD reconciler at 4:15 PM will write the correct close_price/pnl.
+      if (trade.status === 'FILLED') {
+        await updatePaperTrade(trade.id, {
+          status: 'CLOSED',
+          close_reason: 'eod_close',
+          closed_at: new Date().toISOString(),
+        });
+      }
+
       // Cancel the original IB entry order first (SUBMITTED/PARTIAL trades that haven't filled).
       // This is the root-cause fix for pre-market fills: without cancellation, IB holds the open
       // entry order overnight and fills it the next morning. DAY tif should auto-expire, but
