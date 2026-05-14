@@ -320,21 +320,22 @@ export function startScheduler(): void {
   }, { timezone: 'America/New_York' });
 
   // 4:10 PM IB position-level reconciliation — queries IB directly to find any
-  // short positions that survived the EOD sweep (the sweep only checks paper_trades,
-  // so desynced records can leave orphaned shorts). Runs while extended hours still
-  // allow position queries, and logs critical alerts since MKT orders can't fill.
+  // short or long positions that survived the EOD sweep (the sweep only checks
+  // paper_trades, so desynced records can leave orphaned positions). Runs while
+  // extended hours still allow position queries.
   cron.schedule('10 16 * * 1-5', async () => {
     try {
       log('[EOD Position Check] Verifying no orphaned positions remain on IB...');
-      const result = await reconcileIBShorts();
-      if (result.errors.length > 0) {
-        log(`[EOD Position Check] ⚠️ Issues found: ${result.errors.join('; ')}`);
+      const [shortResult, longResult] = await Promise.all([reconcileIBShorts(), reconcileIBLongs()]);
+      const issues = [...shortResult.errors, ...longResult.errors];
+      if (issues.length > 0) {
+        log(`[EOD Position Check] ⚠️ Issues found: ${issues.join('; ')}`);
       }
     } catch (err) {
       console.error('[EOD Position Check] Failed:', err instanceof Error ? err.message : err);
     }
   }, { timezone: 'America/New_York' });
-  log('EOD position check: 4:10 PM ET (IB-level short detection)');
+  log('EOD position check: 4:10 PM ET (IB-level short + long detection)');
 
   // EOD reconciliation — 4:15 PM ET: compare today's IB executions against paper_trades,
   // correct any fill_price / P&L discrepancies, and recalculate global performance.
@@ -463,14 +464,16 @@ Action needed: Check the auto-trader service and restart if necessary.`,
   // Realtime: execute trades immediately when scanner refreshes (e.g. from TradeIdeas UI)
   subscribeToTradeScans();
 
-  // IB short reconciliation on startup (delayed 30s to let IB fully connect).
-  // Catches any orphaned short positions left over from a prior EOD sweep failure.
-  // If market is closed (pre-market boot), reconcileIBShorts defers and we schedule
-  // a retry at 9:31 AM ET so shorts don't sit uncovered all day.
+  // IB position reconciliation on startup (delayed 30s to let IB fully connect).
+  // Catches any orphaned short OR long positions left over from a prior EOD sweep
+  // failure. If market is closed (pre-market boot), both reconcilers defer and we
+  // schedule a retry at 9:31 AM ET so positions don't accumulate all day.
   setTimeout(async () => {
     try {
-      const result = await reconcileIBShorts();
-      if (result.errors.length > 0 && result.closed.length === 0) {
+      const [shortResult, longResult] = await Promise.all([reconcileIBShorts(), reconcileIBLongs()]);
+      const deferred = shortResult.errors.length > 0 && shortResult.closed.length === 0
+        || longResult.errors.length > 0 && longResult.closed.length === 0;
+      if (deferred) {
         // Deferred (market closed) — schedule retry at 9:31 AM ET if we're before open
         const etNow = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }));
         const etMins = etNow.getHours() * 60 + etNow.getMinutes();
@@ -479,9 +482,14 @@ Action needed: Check the auto-trader service and restart if necessary.`,
           const delayMs = (marketOpenMin - etMins) * 60_000;
           log(`[IBReconcile] Scheduling retry in ${Math.round(delayMs / 60_000)} min (at 9:31 AM ET)`);
           setTimeout(() => {
-            reconcileIBShorts().catch(err => {
-              console.error('[Scheduler] 9:31 AM IB reconcile retry failed:', err instanceof Error ? err.message : err);
-            });
+            Promise.all([
+              reconcileIBShorts().catch(err => {
+                console.error('[Scheduler] 9:31 AM short reconcile retry failed:', err instanceof Error ? err.message : err);
+              }),
+              reconcileIBLongs().catch(err => {
+                console.error('[Scheduler] 9:31 AM long reconcile retry failed:', err instanceof Error ? err.message : err);
+              }),
+            ]);
           }, delayMs);
         }
       }
@@ -942,6 +950,120 @@ export async function reconcileIBShorts(): Promise<{ closed: string[]; errors: s
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'unknown';
       log(`[IBReconcile] ✗ ${pos.symbol}: BUY failed — ${msg}`);
+      errors.push(`${pos.symbol}: ${msg}`);
+    }
+  }
+
+  return { closed, errors };
+}
+
+// ── IB Long Reconciliation ────────────────────────────────────────────────────
+//
+// Mirror of reconcileIBShorts for orphaned LONG positions.
+//
+// How orphaned longs accumulate: the EOD sweep marks paper_trades as CLOSED in
+// the DB, but if the IB close order failed silently (disconnection, rejection),
+// the actual IB position stays LONG. The next day the auto-trader sees no open
+// record for that ticker and re-enters — IB now holds 2x shares. When EOD fires
+// both lots, IB uses FIFO (older cheaper lot first), showing a different P&L
+// than what our DB expects. Confirmed to affect TSLA, AAPL, SMH on 2026-05-14.
+//
+// This function: queries IB for all live LONG stock positions, cross-references
+// against active paper_trades, and SELLS any position that has no open record.
+
+export async function reconcileIBLongs(): Promise<{ closed: string[]; errors: string[] }> {
+  log('[IBLongReconcile] Fetching live IB positions…');
+
+  let ibPositions: import('./ib-connection.js').PositionData[];
+  try {
+    ibPositions = await requestPositions();
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'unknown';
+    log(`[IBLongReconcile] Cannot fetch IB positions — ${msg}`);
+    return { closed: [], errors: [`IB unavailable: ${msg}`] };
+  }
+
+  const longs = ibPositions.filter(p => p.position > 0 && p.secType === 'STK');
+
+  if (longs.length === 0) {
+    log('[IBLongReconcile] No long stock positions found — all clear');
+    return { closed: [], errors: [] };
+  }
+
+  // Get all active paper_trades (FILLED, SUBMITTED, PARTIAL) so we know which
+  // long positions are legitimately tracked by the auto-trader.
+  const sb = getSupabase();
+  const { data: activeTrades } = await sb
+    .from('paper_trades')
+    .select('ticker, signal, status, quantity')
+    .in('status', ['FILLED', 'SUBMITTED', 'PARTIAL']);
+
+  // Build a set of tickers with active LONG (BUY) paper_trades
+  const activeLongTickers = new Set(
+    (activeTrades ?? [])
+      .filter((t: { signal: string }) => t.signal === 'BUY')
+      .map((t: { ticker: string }) => t.ticker.toUpperCase())
+  );
+
+  // Market-hour gate: MKT SELL orders require market to be open
+  const etNow = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }));
+  const etDay  = etNow.getDay();
+  const etMins = etNow.getHours() * 60 + etNow.getMinutes();
+  const isMarketOpen = etDay >= 1 && etDay <= 5
+    && etMins >= (9 * 60 + 30)
+    && etMins < (16 * 60);
+
+  const orphanedLongs = longs.filter(p => {
+    if (activeLongTickers.has(p.symbol.toUpperCase())) {
+      return false; // tracked — leave it alone
+    }
+    return true;
+  });
+
+  if (orphanedLongs.length === 0) {
+    log('[IBLongReconcile] All long positions are tracked — no orphans');
+    return { closed: [], errors: [] };
+  }
+
+  log(`[IBLongReconcile] Found ${orphanedLongs.length} orphaned long(s): ${orphanedLongs.map(p => `${p.symbol}(${p.position})`).join(', ')}`);
+
+  if (!isMarketOpen) {
+    const symbols = orphanedLongs.map(p => `${p.symbol}(${Math.round(p.position)})`).join(', ');
+    log(`[IBLongReconcile] ⚠️ CRITICAL: ${orphanedLongs.length} orphaned long position(s) detected AFTER HOURS: ${symbols}. Cannot place sell orders — market is closed. Will retry at next startup during market hours.`);
+      await createAutoTradeEvent({
+        ticker: '*',
+        event_type: 'warning',
+        action: 'skipped',
+        source: 'system',
+        message: `[IBLongReconcile] ⚠️ CRITICAL: ${orphanedLongs.length} orphaned long(s) detected AFTER HOURS: ${symbols}. Cannot place cover orders — market is closed. Will retry at next startup during market hours.`,
+        metadata: { symbols: orphanedLongs.map(p => p.symbol) },
+      });
+    return { closed: [], errors: [`Market closed — ${orphanedLongs.length} long(s) deferred: ${symbols}`] };
+  }
+
+  const closed: string[] = [];
+  const errors: string[] = [];
+
+  for (const pos of orphanedLongs) {
+    const qty = Math.round(pos.position);
+    log(`[IBLongReconcile] Selling orphaned long: ${pos.symbol} × ${qty} @ avg ${pos.avgCost}`);
+    try {
+      const fillResult = await placeMarketOrder({ symbol: pos.symbol, side: 'SELL', quantity: qty });
+      log(`[IBLongReconcile] ✓ ${pos.symbol}: SELL ${qty} filled @ $${fillResult.avgFillPrice.toFixed(2)}`);
+      closed.push(pos.symbol);
+
+      const pnl = (fillResult.avgFillPrice - pos.avgCost) * qty;
+      await createAutoTradeEvent({
+        ticker: pos.symbol,
+        event_type: 'warning',
+        action: 'executed',
+        source: 'system',
+        message: `[IBLongReconcile] Orphaned long sold: SELL ${qty} shares (avg cost ${pos.avgCost.toFixed(2)}, fill ${fillResult.avgFillPrice.toFixed(2)}, P&L $${pnl.toFixed(2)})`,
+        metadata: { reconcile_type: 'ib_long_reconcile', qty, avg_cost: pos.avgCost, fill_price: fillResult.avgFillPrice, pnl },
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'unknown';
+      log(`[IBLongReconcile] ✗ ${pos.symbol}: SELL failed — ${msg}`);
       errors.push(`${pos.symbol}: ${msg}`);
     }
   }
