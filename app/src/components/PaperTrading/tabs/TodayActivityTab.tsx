@@ -206,32 +206,11 @@ export interface TodayActivityTabProps {
 export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], onExecuteSignal, ibRealizedPnl }: TodayActivityTabProps) {
   const [executingId, setExecutingId] = useState<string | null>(null);
   const [executingAll, setExecutingAll] = useState(false);
-  const [scannerTickers, setScannerTickers] = useState<Set<string>>(new Set());
-
   const todayStart = (() => {
     const d = new Date();
     d.setHours(0, 0, 0, 0);
     return d;
   })();
-
-  // Load today's trade scan tickers from DB to correctly attribute source
-  useEffect(() => {
-    supabase
-      .from('trade_scans')
-      .select('data')
-      .in('id', ['day_trades', 'swing_trades'])
-      .then(({ data }) => {
-        if (!data) return;
-        const tickers = new Set<string>();
-        for (const row of data) {
-          const ideas = row.data as Array<{ ticker: string }> | null;
-          if (Array.isArray(ideas)) {
-            ideas.forEach(i => { if (i.ticker) tickers.add(i.ticker.toUpperCase()); });
-          }
-        }
-        setScannerTickers(tickers);
-      });
-  }, []);
 
   const handleExecuteSignal = async (signal: PendingStrategySignal) => {
     setExecutingId(signal.id);
@@ -457,36 +436,11 @@ export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], 
           </thead>
           <tbody className="divide-y divide-[hsl(var(--border))]">
             {events.map((event) => {
-              // Signal generators pick their own tickers with their own entry/exit levels.
-              // Even if our scanner also has the ticker, it's coincidental — don't conflate.
-              // EXCEPTION: if the signal is from a stale video (heading references a different
-              // date), treat it like an execution strategy and fall back to scannerTickers.
-              const SIGNAL_GENERATORS = new Set([
-                'Somesh | Day Trader | Investor',
-                'Kay Capitals',
-              ]);
-              // Execution strategies apply rules ON TOP of our scanner signals.
-              // Their tickers come from us — should show as "Trade signal + [strategy]".
-              const EXECUTION_STRATEGIES = new Set([
-                'Casper Clipping',
-                'Casper SMC Wisdom',
-              ]);
-              const stratSource = event.strategy_source ?? '';
-
-              // Detect stale rescheduled videos — heading must contain today's date (e.g. "April 22")
-              const todayMonths = ['january','february','march','april','may','june','july','august','september','october','november','december'];
-              const todayMonth = todayMonths[new Date().getMonth()];
-              const todayDay = new Date().getDate().toString();
-              const heading = (event.strategy_video_heading ?? '').toLowerCase();
-              const isFromTodayVideo = !heading || (heading.includes(todayMonth) && heading.includes(todayDay));
-
-              const isPureExternal = SIGNAL_GENERATORS.has(stratSource) && isFromTodayVideo;
-              const isExecutionStrategy = EXECUTION_STRATEGIES.has(stratSource);
-              const isOurScan = event.source === 'scanner'
-                || (!isPureExternal && (isExecutionStrategy || scannerTickers.has(event.ticker.toUpperCase())));
               const matched = tradesByTicker.get(event.ticker)?.find(t =>
                 t.pnl != null || t.status === 'FILLED' || t.status === 'TARGET_HIT' || t.status === 'STOPPED' || t.status === 'CLOSED'
               );
+              const isGenericAuto = (matched?.notes ?? '').toLowerCase().includes('generic strategy auto');
+              const isInfluencer = event.source === 'external_signal' && !!event.strategy_source && !isGenericAuto;
               const isPositionSync = event.source === 'system' && !event.mode;
               const AUTO_CLOSE_SOURCES = new Set(['lt_auto_sell', 'swing_expiry', 'capital_pressure']);
               const isAutoClose = AUTO_CLOSE_SOURCES.has(event.source ?? '');
@@ -503,9 +457,8 @@ export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], 
               const qtyMatch = sharesMatch ?? externalMatch;
 
               const sourceLabel = event.source === 'scanner' ? 'Trade signal'
-                : (event.source === 'external_signal' && isOurScan)
-                  ? (event.strategy_source ? `Trade signal + ${event.strategy_source}` : 'Trade signal + External')
-                : event.source === 'external_signal' ? 'External signal'
+                : isInfluencer ? `Trade signal + ${event.strategy_source}`
+                : event.source === 'external_signal' ? 'Trade signal'
                 : event.source === 'suggested_finds' ? 'Suggested find'
                 : event.source === 'dip_buy' ? 'Dip buy'
                 : event.source === 'profit_take' ? 'Profit take'
@@ -550,11 +503,6 @@ export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], 
                   </td>
                   <td className="px-4 py-3 text-xs text-[hsl(var(--muted-foreground))]">
                     <span className="font-medium text-[hsl(var(--foreground))]">{sourceLabel}</span>
-                    {event.strategy_source && (event.source !== 'scanner') && (!isOurScan || isPureExternal) && (
-                      <span className="ml-1 px-1 py-0.5 rounded text-[10px] font-semibold bg-indigo-50 text-indigo-600 border border-indigo-200">
-                        {event.strategy_source}
-                      </span>
-                    )}
                     {qtyMatch
                       ? <span> · {qtyMatch[1]} shares @ ${qtyMatch[2]}</span>
                       : <span> · {msg.replace(/^External signal executed:\s*/i, '').slice(0, 45)}</span>
