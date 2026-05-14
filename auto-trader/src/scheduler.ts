@@ -45,6 +45,7 @@ import {
   upsertSwingMetrics,
   createAutoTradeEvent,
   type AutoTradeEventInput,
+  type AutoTradeSource,
   getRecentDipBuyEvents,
   getPastTrimEvents,
   getPastLossCutEvents,
@@ -3225,11 +3226,12 @@ async function executeExternalStrategySignal(
     return 'skipped';
   }
 
-  // If the ticker was also identified by our trade scanner today, attribute the event
-  // to 'scanner' so the activity log shows "Trade signal" rather than "External signal".
-  // The strategy_source badge will still display the influencer name.
+  // Check if our own scanner also identified this ticker today.
+  // Always preserve influencer attribution (strategy_source, strategy_video_id) so the
+  // activity log and Strategy Tracker correctly show the signal source. The scanner
+  // overlap is recorded in metadata for analytics but doesn't override the source.
   const alsoInScanner = await isTickerInTodayScan(ticker);
-  const resolvedSource = alsoInScanner ? 'scanner' : 'external_signal';
+  const resolvedSource: AutoTradeSource = 'external_signal';
   const allocationSplit = Math.max(1, Math.floor(options?.allocationSplit ?? 1));
   const allocationIndex = Math.max(1, Math.floor(options?.allocationIndex ?? 1));
   const allowDuplicateTicker = options?.allowDuplicateTicker === true;
@@ -3644,12 +3646,10 @@ async function executeExternalStrategySignal(
       action: 'executed',
       source: resolvedSource,
       mode: signal.mode,
-      // If the ticker was identified by our scanner, don't attribute to the influencer —
-      // the trade idea came from us, not from them.
-      strategy_source: alsoInScanner ? null : signal.source_name,
-      strategy_source_url: alsoInScanner ? null : signal.source_url,
-      strategy_video_id: alsoInScanner ? null : signal.strategy_video_id,
-      strategy_video_heading: alsoInScanner ? null : signal.strategy_video_heading,
+      strategy_source: signal.source_name,
+      strategy_source_url: signal.source_url,
+      strategy_video_id: signal.strategy_video_id,
+      strategy_video_heading: signal.strategy_video_heading,
       scanner_signal: side,
       scanner_confidence: signal.confidence,
       metadata: {
@@ -3658,6 +3658,7 @@ async function executeExternalStrategySignal(
         allocation_index: allocationIndex,
         entry_time_et: getETTimeString(),
         spy_change_pct: spyChangePct,
+        also_in_scanner: alsoInScanner,
       },
     });
     return 'executed';
