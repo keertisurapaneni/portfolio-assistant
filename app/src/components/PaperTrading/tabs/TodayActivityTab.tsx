@@ -5,6 +5,7 @@ import type { AutoTradeEventRecord, PaperTrade, PendingStrategySignal } from '..
 import { executeSignal } from '../../../lib/paperTradesApi';
 import { fmtUsd } from '../utils';
 import { supabase } from '../../../lib/supabaseClient';
+import { CLOSED_STATUSES, EXCLUDED_STATUSES } from '../../../../../shared/trade-status-sets.ts';
 
 // ── Options Wheel section ─────────────────────────────────
 
@@ -446,8 +447,8 @@ export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], 
               const metaPnl = isPositionSync && event.metadata ? (event.metadata as { pnl?: number }).pnl : undefined;
               const eventPnl = metaPnl ?? matched?.pnl;
               const pnl = eventPnl ?? null;
-              const CLOSED_STATUSES = ['CLOSED', 'TARGET_HIT', 'STOPPED', 'CANCELLED'];
-              const isClosed = isPositionSync || isAutoClose || (matched?.close_price != null) || CLOSED_STATUSES.includes(matched?.status ?? '');
+              const terminalStatuses = [...CLOSED_STATUSES, ...EXCLUDED_STATUSES] as string[];
+              const isClosed = isPositionSync || isAutoClose || (matched?.close_price != null) || terminalStatuses.includes(matched?.status ?? '');
               const isActive = !isClosed && matched && ['FILLED', 'PARTIAL'].includes(matched.status);
               const msg = event.message;
               // Match "7 shares @ $675" OR "BUY 7 @ $675" (external signal format)

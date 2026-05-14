@@ -34,6 +34,7 @@
  */
 
 import { getSupabase, createAutoTradeEvent } from './supabase.js';
+import { ACTIVE_STATUSES } from '../../../shared/trade-status-sets.js';
 import { getOptionsChain, type OptionGreeks } from './options-chain.js';
 import { isConnected, placeOptionsOrder, getDefaultAccount } from '../ib-connection.js';
 import { fetchDailyBars, fetchQuote, sma as calcSma, estimateHistoricalVol } from './yahoo-finance.js';
@@ -505,7 +506,7 @@ async function buildScanContext(
     sb.from('paper_trades')
       .select('ticker, mode, position_size')
       .eq('mode', 'OPTIONS_PUT')
-      .in('status', ['PENDING', 'SUBMITTED', 'FILLED', 'PARTIAL']),
+      .in('status', [...ACTIVE_STATUSES]),
   ]);
 
   const sectorByTicker = new Map<string, string>();

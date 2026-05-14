@@ -6,6 +6,7 @@
  */
 
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import { ACTIVE_STATUSES, CLOSED_STATUSES } from '../../../shared/trade-status-sets.js';
 
 const SUPABASE_URL = process.env.SUPABASE_URL ?? '';
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY ?? '';
@@ -32,97 +33,10 @@ export function isConfigured(): boolean {
   return !!(SUPABASE_URL && SUPABASE_SERVICE_KEY && SUPABASE_ANON_KEY);
 }
 
-// ── Auto-Trader Config ──────────────────────────────────
-
-export interface AutoTraderConfig {
-  enabled: boolean;
-  maxPositions: number;
-  positionSize: number;
-  minScannerConfidence: number;
-  minFAConfidence: number;
-  minSuggestedFindsConviction: number;
-  accountId: string | null;
-  dayTradeAutoClose: boolean;
-  maxTotalAllocation: number;
-  maxDailyDeployment: number;
-  useDynamicSizing: boolean;
-  portfolioValue: number;
-  baseAllocationPct: number;
-  maxPositionPct: number;
-  riskPerTradePct: number;
-  dipBuyEnabled: boolean;
-  dipBuyTier1Pct: number; dipBuyTier1SizePct: number;
-  dipBuyTier2Pct: number; dipBuyTier2SizePct: number;
-  dipBuyTier3Pct: number; dipBuyTier3SizePct: number;
-  dipBuyCooldownHours: number;
-  profitTakeEnabled: boolean;
-  profitTakeTier1Pct: number; profitTakeTier1TrimPct: number;
-  profitTakeTier2Pct: number; profitTakeTier2TrimPct: number;
-  profitTakeTier3Pct: number; profitTakeTier3TrimPct: number;
-  minHoldPct: number;
-  lossCutEnabled: boolean;
-  lossCutTier1Pct: number; lossCutTier1SellPct: number;
-  lossCutTier2Pct: number; lossCutTier2SellPct: number;
-  lossCutTier3Pct: number; lossCutTier3SellPct: number;
-  lossCutMinHoldDays: number;
-  marketRegimeEnabled: boolean;
-  maxSectorPct: number;
-  earningsAvoidEnabled: boolean;
-  earningsBlackoutDays: number;
-  kellyAdaptiveEnabled: boolean;
-  longTermBucketPct: number;
-  /** Flat dollar size for influencer daily signal trades. 0 = use dynamic sizing. */
-  externalSignalPositionSize: number;
-  swingMaxHoldDays: number;        // auto-exit filled swing trades after N days (0 = off)
-  capitalPressureEnabled: boolean; // when at cap, auto-close best swing to make room
-  ltStopLossPct: number;           // long-term fixed stop-loss (0 = disabled, replaced by trailing)
-  ltProfitTakePct: number;         // long-term profit-take: close if PnL% > this (e.g. 15)
-  ltMaxHoldDays: number;           // long-term max hold days (0 = disabled)
-  ltTrailingStopPct: number;       // trailing stop: sell if price falls this % from peak (only after being in profit)
-  dayTradeMaxDailyLoss: number;    // stop new day-trade entries when session realized P&L < -$X (0 = disabled)
-  tradeSignalsEnabled: boolean;    // enable/disable day/swing trade scanner
-  suggestedFindsEnabled: boolean;  // enable/disable Suggested Finds auto-buy
-  optionsWheelEnabled: boolean;    // enable/disable options wheel scanner
-}
-
-const DEFAULT_CONFIG: AutoTraderConfig = {
-  enabled: false, maxPositions: 3, positionSize: 1000,
-  minScannerConfidence: 7, minFAConfidence: 7, minSuggestedFindsConviction: 8,
-  accountId: null, dayTradeAutoClose: true,
-  maxTotalAllocation: 500_000, maxDailyDeployment: 50_000,
-  useDynamicSizing: true, portfolioValue: 1_000_000,
-  baseAllocationPct: 2.0, maxPositionPct: 5.0, riskPerTradePct: 1.0,
-  dipBuyEnabled: true,
-  dipBuyTier1Pct: 10, dipBuyTier1SizePct: 25,
-  dipBuyTier2Pct: 20, dipBuyTier2SizePct: 50,
-  dipBuyTier3Pct: 30, dipBuyTier3SizePct: 75,
-  dipBuyCooldownHours: 72,
-  profitTakeEnabled: true,
-  profitTakeTier1Pct: 8, profitTakeTier1TrimPct: 25,
-  profitTakeTier2Pct: 15, profitTakeTier2TrimPct: 30,
-  profitTakeTier3Pct: 25, profitTakeTier3TrimPct: 30,
-  minHoldPct: 15,
-  lossCutEnabled: true,
-  lossCutTier1Pct: 6, lossCutTier1SellPct: 30,
-  lossCutTier2Pct: 12, lossCutTier2SellPct: 50,
-  lossCutTier3Pct: 20, lossCutTier3SellPct: 100,
-  lossCutMinHoldDays: 1,
-  marketRegimeEnabled: true, maxSectorPct: 30,
-  earningsAvoidEnabled: true, earningsBlackoutDays: 3,
-  kellyAdaptiveEnabled: false,
-  longTermBucketPct: 50,
-  externalSignalPositionSize: 5000,
-  swingMaxHoldDays: 5,
-  capitalPressureEnabled: true,
-  ltStopLossPct: -12,
-  ltProfitTakePct: 15,
-  ltMaxHoldDays: 0,
-  ltTrailingStopPct: 10,
-  dayTradeMaxDailyLoss: 500,
-  tradeSignalsEnabled: true,
-  suggestedFindsEnabled: true,
-  optionsWheelEnabled: true,
-};
+// ── Auto-Trader Config (shared single source of truth) ──
+export type { AutoTraderConfig } from '../../../shared/config-defaults.js';
+import { type AutoTraderConfig, DEFAULT_CONFIG as SHARED_DEFAULTS } from '../../../shared/config-defaults.js';
+const DEFAULT_CONFIG = SHARED_DEFAULTS;
 
 export async function loadConfig(): Promise<AutoTraderConfig> {
   const sb = getSupabase();
@@ -210,56 +124,8 @@ export async function saveConfigPartial(
 
 // ── Paper Trades ─────────────────────────────────────────
 
-export interface PaperTrade {
-  id: string;
-  ticker: string;
-  mode: 'DAY_TRADE' | 'SWING_TRADE' | 'LONG_TERM' | 'OPTIONS_PUT' | 'OPTIONS_CALL';
-  signal: 'BUY' | 'SELL';
-  strategy_source: string | null;
-  strategy_source_url: string | null;
-  strategy_video_id: string | null;
-  strategy_video_heading: string | null;
-  scanner_confidence: number | null;
-  fa_confidence: number | null;
-  fa_recommendation: string | null;
-  entry_price: number | null;
-  stop_loss: number | null;
-  target_price: number | null;
-  target_price2: number | null;
-  risk_reward: string | null;
-  quantity: number | null;
-  position_size: number | null;
-  ib_order_id: string | null;
-  ib_tp_order_id: string | null;
-  ib_sl_order_id: string | null;
-  status: string;
-  fill_price: number | null;
-  close_price: number | null;
-  pnl: number | null;
-  pnl_percent: number | null;
-  opened_at: string;
-  filled_at: string | null;
-  closed_at: string | null;
-  close_reason: string | null;
-  scanner_reason: string | null;
-  fa_rationale: Record<string, string> | null;
-  notes: string | null;
-  created_at: string;
-  in_play_score?: number | null;
-  pass1_confidence?: number | null;
-  entry_trigger_type?: string | null;
-  r_multiple?: number | null;
-  market_condition?: string | null;
-  // Swing entry log (post-trade metrics — collect only)
-  pct_distance_sma20_at_entry?: number | null;
-  macd_histogram_slope_at_entry?: string | null;
-  volume_vs_10d_avg_at_entry?: number | null;
-  regime_alignment_at_entry?: string | null;
-  // Long-term trailing stop tracking
-  price_peak?: number | null;
-  price_peak_date?: string | null;
-  missing_since?: string | null;
-}
+export type { PaperTrade, TradeStatus, TradeMode, CloseReason, TradeSignal } from '../../../shared/trade-types.js';
+import type { PaperTrade } from '../../../shared/trade-types.js';
 
 export type ExternalStrategySignalStatus =
   | 'PENDING'
@@ -313,25 +179,14 @@ export interface StrategyClosedTradeOutcome {
   opened_at: string | null;
 }
 
-function formatDateToEtIso(date: Date): string {
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: 'America/New_York',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).formatToParts(date);
-  const year = parts.find(p => p.type === 'year')?.value ?? '0000';
-  const month = parts.find(p => p.type === 'month')?.value ?? '00';
-  const day = parts.find(p => p.type === 'day')?.value ?? '00';
-  return `${year}-${month}-${day}`;
-}
+import { formatDateToEtIso } from '../../../shared/date-helpers.js';
 
 export async function getActiveTrades(): Promise<PaperTrade[]> {
   const sb = getSupabase();
   const { data, error } = await sb
     .from('paper_trades')
     .select('*')
-    .in('status', ['PENDING', 'SUBMITTED', 'FILLED', 'PARTIAL'])
+    .in('status', [...ACTIVE_STATUSES])
     .order('opened_at', { ascending: false });
   if (error) throw new Error(`getActiveTrades: ${error.message}`);
   return (data ?? []) as PaperTrade[];
@@ -392,7 +247,7 @@ export async function hasActiveTrade(
     .from('paper_trades')
     .select('id', { count: 'exact', head: true })
     .eq('ticker', ticker)
-    .in('status', ['PENDING', 'SUBMITTED', 'FILLED', 'PARTIAL']);
+    .in('status', [...ACTIVE_STATUSES]);
   if (opts?.excludeMode) {
     query = query.neq('mode', opts.excludeMode);
   }
@@ -492,7 +347,7 @@ export async function countActivePositions(): Promise<number> {
   const { count } = await sb
     .from('paper_trades')
     .select('id', { count: 'exact', head: true })
-    .in('status', ['PENDING', 'SUBMITTED', 'FILLED', 'PARTIAL'])
+    .in('status', [...ACTIVE_STATUSES])
     .not('mode', 'in', '(OPTIONS_PUT,OPTIONS_CALL)');
   return count ?? 0;
 }
@@ -677,8 +532,8 @@ export async function getStrategySourcePerformance(): Promise<StrategySourcePerf
     activeUnrealizedPnl: number;
   }>();
 
-  const activeStatuses = new Set(['PENDING', 'SUBMITTED', 'FILLED', 'PARTIAL']);
-  const closedStatuses = new Set(['STOPPED', 'TARGET_HIT', 'CLOSED']);
+  const activeStatuses = new Set<string>(ACTIVE_STATUSES);
+  const closedStatuses = new Set<string>(CLOSED_STATUSES);
 
   for (const trade of trades) {
     const source = (trade.strategy_source ?? '').trim();
@@ -747,7 +602,7 @@ export async function getRecentClosedStrategyOutcomes(params: {
     .from('paper_trades')
     .select('pnl, closed_at, opened_at')
     .eq('strategy_source', params.sourceName)
-    .in('status', ['STOPPED', 'TARGET_HIT', 'CLOSED'])
+    .in('status', [...CLOSED_STATUSES])
     .not('fill_price', 'is', null)
     .order('closed_at', { ascending: false, nullsFirst: false })
     .order('opened_at', { ascending: false });
@@ -767,30 +622,8 @@ export async function getRecentClosedStrategyOutcomes(params: {
 
 // ── Auto Trade Events ────────────────────────────────────
 
-export type AutoTradeAction = 'executed' | 'closed' | 'skipped' | 'failed' | 'proceeding' | 'health_check' | 'RECONCILIATION' | 'scan_complete';
-export type AutoTradeSource = 'scanner' | 'suggested_finds' | 'manual' | 'system' | 'dip_buy' | 'profit_take' | 'loss_cut' | 'lt_auto_sell' | 'swing_expiry' | 'capital_pressure' | 'external_signal' | 'spx_level_scanner' | 'earnings_scanner' | 'watchlist_screener' | 'compounder_health';
-export type AutoTradeMode = 'DAY_TRADE' | 'SWING_TRADE' | 'LONG_TERM' | 'OPTIONS_PUT' | 'OPTIONS_CALL' | 'EARNINGS_CALENDAR';
-
-export interface AutoTradeEventInput {
-  ticker: string;
-  event_type?: string;
-  message: string;
-  action?: AutoTradeAction;
-  source?: AutoTradeSource;
-  mode?: AutoTradeMode;
-  scanner_signal?: string | null;
-  scanner_confidence?: number | null;
-  fa_recommendation?: string | null;
-  fa_confidence?: number | null;
-  skip_reason?: string | null;
-  strategy_source?: string | null;
-  strategy_source_url?: string | null;
-  strategy_video_id?: string | null;
-  strategy_video_heading?: string | null;
-  metadata?: Record<string, unknown>;
-  candle_patterns?: string[];
-  [key: string]: unknown;
-}
+export type { AutoTradeAction, AutoTradeSource, AutoTradeEventInput, AutoTradeEventRecord } from '../../../shared/auto-trade-events.js';
+import type { AutoTradeAction, AutoTradeSource, AutoTradeEventInput } from '../../../shared/auto-trade-events.js';
 
 export async function createAutoTradeEvent(
   event: AutoTradeEventInput

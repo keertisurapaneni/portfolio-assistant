@@ -1,6 +1,7 @@
 // POST — log closed trade to trade_performance_log. Replaces localhost:3001/api/trade-performance-log/close.
 
 import { createClient } from 'jsr:@supabase/supabase-js@2';
+import { EQUITY_MODES } from '../../../shared/trade-status-sets.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -67,7 +68,7 @@ Deno.serve(async (req) => {
     }
 
     const strategy = trade.mode as string;
-    if (!['DAY_TRADE', 'SWING_TRADE', 'LONG_TERM'].includes(strategy)) {
+    if (!(EQUITY_MODES as readonly string[]).includes(strategy)) {
       return new Response(JSON.stringify({ ok: true }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
     }
 

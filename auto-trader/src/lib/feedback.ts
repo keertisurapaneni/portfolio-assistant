@@ -8,6 +8,7 @@
  */
 
 import { getSupabase } from './supabase.js';
+import { CLOSED_STATUSES } from '../../../shared/trade-status-sets.js';
 
 const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions';
 const GROQ_MODEL = 'meta-llama/llama-4-scout-17b-16e-instruct';
@@ -234,7 +235,7 @@ export async function recalculatePerformance(): Promise<boolean> {
   const { data: trades, error } = await sb
     .from('paper_trades')
     .select('*')
-    .in('status', ['STOPPED', 'TARGET_HIT', 'CLOSED']);
+    .in('status', [...CLOSED_STATUSES]);
 
   if (error || !trades || trades.length === 0) return false;
 
@@ -330,7 +331,7 @@ export async function analyzeUnreviewedTrades(): Promise<number> {
   const { data: closedTrades, error: tErr } = await sb
     .from('paper_trades')
     .select('*')
-    .in('status', ['STOPPED', 'TARGET_HIT', 'CLOSED'])
+    .in('status', [...CLOSED_STATUSES])
     .order('closed_at', { ascending: false })
     .limit(20);
 

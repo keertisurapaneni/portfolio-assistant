@@ -63,15 +63,17 @@ interface ConfigRow {
   options_max_contracts_per_scan: number | null;
 }
 
-// ── Defaults (must match auto-trader DEFAULT_CONFIG) ──────
+// ── Defaults (derived from shared single source of truth) ──────
+import { DEFAULT_CONFIG } from '../../../shared/config-defaults.ts';
+import { CLOSED_STATUSES } from '../../../shared/trade-status-sets.ts';
 
 const DEFAULTS = {
-  external_signal_position_size: 5000,
-  min_scanner_confidence: 7,
-  base_allocation_pct: 2.0,
-  long_term_bucket_pct: 40,
-  kelly_adaptive_enabled: false,
-  max_positions: 3,
+  external_signal_position_size: DEFAULT_CONFIG.externalSignalPositionSize,
+  min_scanner_confidence: DEFAULT_CONFIG.minScannerConfidence,
+  base_allocation_pct: DEFAULT_CONFIG.baseAllocationPct,
+  long_term_bucket_pct: DEFAULT_CONFIG.longTermBucketPct,
+  kelly_adaptive_enabled: DEFAULT_CONFIG.kellyAdaptiveEnabled,
+  max_positions: DEFAULT_CONFIG.maxPositions,
 };
 
 // ── Bounds (hard limits on what auto-tune can change) ─────
@@ -146,7 +148,7 @@ Deno.serve(async (req) => {
     const { data: tradesData, error: tradesError } = await supabase
       .from('paper_trades')
       .select('id, mode, pnl, pnl_percent, fill_price, strategy_video_id, notes, status, closed_at')
-      .in('status', ['STOPPED', 'TARGET_HIT', 'CLOSED'])
+      .in('status', [...CLOSED_STATUSES])
       .not('fill_price', 'is', null)
       .not('closed_at', 'is', null)
       .gte('closed_at', since.toISOString())

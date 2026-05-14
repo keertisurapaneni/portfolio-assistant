@@ -38,6 +38,7 @@ import {
   formatIndicatorsForPrompt,
 } from '../_shared/indicators.ts';
 import { buildFeedbackContext } from '../_shared/feedback.ts';
+import { getETNow as sharedGetETNow, formatDateToEtIso as sharedFormatDateToEtIso, isMarketOpen as sharedIsMarketOpen } from '../../../shared/date-helpers.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -413,31 +414,9 @@ const YAHOO_HEADERS = {
 
 // ── Market hours check (ET) ─────────────────────────────
 
-function getETNow(): { hour: number; minute: number; dayOfWeek: number } {
-  const now = new Date();
-  const et = new Date(now.toLocaleString('en-US', { timeZone: 'America/New_York' }));
-  return { hour: et.getHours(), minute: et.getMinutes(), dayOfWeek: et.getDay() };
-}
-
-function formatDateToEtIso(date: Date): string {
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: 'America/New_York',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).formatToParts(date);
-  const year = parts.find(p => p.type === 'year')?.value ?? '0000';
-  const month = parts.find(p => p.type === 'month')?.value ?? '00';
-  const day = parts.find(p => p.type === 'day')?.value ?? '00';
-  return `${year}-${month}-${day}`;
-}
-
-function isMarketOpen(): boolean {
-  const { hour, minute, dayOfWeek } = getETNow();
-  if (dayOfWeek === 0 || dayOfWeek === 6) return false;
-  const mins = hour * 60 + minute;
-  return mins >= 9 * 60 + 30 && mins <= 16 * 60;
-}
+const getETNow = sharedGetETNow;
+const formatDateToEtIso = sharedFormatDateToEtIso;
+const isMarketOpen = sharedIsMarketOpen;
 
 function isSwingRefreshWindow(): boolean {
   const { hour, minute, dayOfWeek } = getETNow();

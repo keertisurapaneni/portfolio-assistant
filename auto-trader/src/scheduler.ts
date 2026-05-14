@@ -64,6 +64,8 @@ import {
   type ExternalStrategySignal,
   type PaperTrade,
 } from './lib/supabase.js';
+import { ACTIVE_STATUSES, CLOSED_STATUSES } from '../../shared/trade-status-sets.js';
+import type { AutoTradeEventType } from '../../shared/auto-trade-events.js';
 import {
   recalculatePerformance,
   analyzeCompletedTrade,
@@ -1086,22 +1088,7 @@ function getETMinutes(): number {
   return et.getHours() * 60 + et.getMinutes();
 }
 
-function formatDateToEtIso(date: Date): string {
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: 'America/New_York',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).formatToParts(date);
-  const year = parts.find(p => p.type === 'year')?.value ?? '0000';
-  const month = parts.find(p => p.type === 'month')?.value ?? '00';
-  const day = parts.find(p => p.type === 'day')?.value ?? '00';
-  return `${year}-${month}-${day}`;
-}
-
-function getETDateString(): string {
-  return formatDateToEtIso(new Date());
-}
+import { formatDateToEtIso, getETDateString } from '../../shared/date-helpers.js';
 
 /** Returns current ET time as "HH:MM" (24h) — used for entry-time pattern analysis */
 function getETTimeString(): string {
@@ -1372,7 +1359,7 @@ async function getGenericStrategyEVScores(): Promise<
     const { data, error } = await sb
       .from('paper_trades')
       .select('strategy_video_id, pnl, pnl_percent, fill_price')
-      .in('status', ['STOPPED', 'TARGET_HIT', 'CLOSED'])
+      .in('status', [...CLOSED_STATUSES])
       .not('strategy_video_id', 'is', null)
       .not('fill_price', 'is', null)
       .not('pnl', 'is', null)
@@ -1978,7 +1965,7 @@ async function getEnrichedPositions(): Promise<EnrichedPosition[]> {
   });
 }
 
-const VALID_EVENT_TYPES = new Set(['info', 'success', 'warning', 'error']);
+const VALID_EVENT_TYPES = new Set<AutoTradeEventType>(['info', 'success', 'warning', 'error']);
 
 function isPermanentDbError(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err);
@@ -1994,8 +1981,8 @@ async function persistEvent(
   message: string,
   extra?: Omit<AutoTradeEventInput, 'ticker' | 'message'>
 ): Promise<void> {
-  const safeType = VALID_EVENT_TYPES.has(eventType) ? eventType : 'info';
-  const payload = { ticker, event_type: safeType, message, ...extra };
+  const safeType = (VALID_EVENT_TYPES.has(eventType as AutoTradeEventType) ? eventType : 'info') as AutoTradeEventType;
+  const payload: AutoTradeEventInput = { ticker, event_type: safeType, message, ...extra };
   const delays = [1000, 2000];
   for (let attempt = 0; attempt <= delays.length; attempt++) {
     try {
@@ -2285,25 +2272,27 @@ async function checkAllocationCap(
     return false;
   }
 
-  // Bucket cap — long-term gets longTermBucketPct, day/swing gets the rest
+  // Bucket cap — long-term gets longTermBucketPct, day/swing gets the rest.
+  // When suggestedFindsEnabled=false, LT bucket allocation flows to day/swing automatically.
+  const effectiveLtPct = config.suggestedFindsEnabled ? config.longTermBucketPct : 0;
   const buckets = await getDeployedByBucket(positions);
   if (mode === 'LONG_TERM') {
-    const ltCap = cap * (config.longTermBucketPct / 100);
+    const ltCap = cap * (effectiveLtPct / 100);
     if (buckets.longTerm + positionSize > ltCap) {
-      log(`Long-term bucket cap for ${ticker}: $${buckets.longTerm.toFixed(0)} + $${positionSize.toFixed(0)} > $${ltCap.toFixed(0)} (${config.longTermBucketPct}% of $${cap})`);
-      persistEvent(ticker, 'warning', `Long-term bucket full (${config.longTermBucketPct}% cap)`, {
+      log(`Long-term bucket cap for ${ticker}: $${buckets.longTerm.toFixed(0)} + $${positionSize.toFixed(0)} > $${ltCap.toFixed(0)} (${effectiveLtPct}% of $${cap})`);
+      persistEvent(ticker, 'warning', `Long-term bucket full (${effectiveLtPct}% cap)`, {
         action: 'skipped', source: 'system',
-        skip_reason: `Long-term bucket cap: ${config.longTermBucketPct}% of allocation`,
+        skip_reason: `Long-term bucket cap: ${effectiveLtPct}% of allocation`,
       });
       return false;
     }
   } else {
-    const dsCap = cap * ((100 - config.longTermBucketPct) / 100);
+    const dsCap = cap * ((100 - effectiveLtPct) / 100);
     if (buckets.daySwing + positionSize > dsCap) {
-      log(`Day/swing bucket cap for ${ticker}: $${buckets.daySwing.toFixed(0)} + $${positionSize.toFixed(0)} > $${dsCap.toFixed(0)} (${100 - config.longTermBucketPct}% of $${cap})`);
-      persistEvent(ticker, 'warning', `Day/swing bucket full (${100 - config.longTermBucketPct}% cap)`, {
+      log(`Day/swing bucket cap for ${ticker}: $${buckets.daySwing.toFixed(0)} + $${positionSize.toFixed(0)} > $${dsCap.toFixed(0)} (${100 - effectiveLtPct}% of $${cap})`);
+      persistEvent(ticker, 'warning', `Day/swing bucket full (${100 - effectiveLtPct}% cap)`, {
         action: 'skipped', source: 'system',
-        skip_reason: `Day/swing bucket cap: ${100 - config.longTermBucketPct}% of allocation`,
+        skip_reason: `Day/swing bucket cap: ${100 - effectiveLtPct}% of allocation`,
       });
       return false;
     }
@@ -2339,7 +2328,7 @@ async function calculateKellyMultiplier(config: AutoTraderConfig): Promise<numbe
     const { data, error } = await sb
       .from('paper_trades')
       .select('pnl_percent, fill_price, mode')
-      .in('status', ['CLOSED', 'STOPPED', 'TARGET_HIT'])
+      .in('status', [...CLOSED_STATUSES])
       .in('mode', ['DAY_TRADE', 'SWING_TRADE'])
       .not('pnl_percent', 'is', null)
       .not('fill_price', 'is', null)
@@ -3995,7 +3984,7 @@ async function syncPositions(
         ? (actual - fillPrice) * qty
         : (fillPrice - actual) * qty;
 
-      let closeReason: string = 'manual';
+      let closeReason: import('../../shared/trade-types.js').CloseReason = 'manual';
       if (trade.stop_loss && trade.target_price) {
         if (isLong) {
           if (actual >= trade.target_price) closeReason = 'target_hit';
@@ -4008,7 +3997,7 @@ async function syncPositions(
       if (closeReason === 'manual' && pnl > 0) closeReason = 'target_hit';
       if (closeReason === 'manual' && pnl < 0) closeReason = 'stop_loss';
 
-      const status = closeReason === 'stop_loss' ? 'STOPPED'
+      const status: import('../../shared/trade-types.js').TradeStatus = closeReason === 'stop_loss' ? 'STOPPED'
         : closeReason === 'target_hit' ? 'TARGET_HIT' : 'CLOSED';
 
       const closedAt = new Date().toISOString();
@@ -4046,10 +4035,10 @@ async function syncPositions(
         })
         .catch(err => log(`Trade analysis failed for ${trade.ticker}: ${err instanceof Error ? err.message : 'unknown'}`));
       if (trade.mode === 'LONG_TERM' && !(trade.notes ?? '').startsWith('Dip buy')) {
-        const tradeForLog: import('./lib/supabase.js').PaperTrade = {
+        const tradeForLog = {
           ...closedTrade,
           opened_at: trade.opened_at ?? trade.created_at ?? closedAt,
-        };
+        } as import('./lib/supabase.js').PaperTrade;
         logLongTermPerformance(tradeForLog)
           .catch(err => log(`Performance log failed for ${trade.ticker}: ${err instanceof Error ? err.message : 'unknown'}`));
       }
@@ -4235,7 +4224,7 @@ async function reconcileOrphanedPositions(
     .select('ticker')
     .eq('mode', 'LONG_TERM')
     .eq('signal', 'BUY')
-    .in('status', ['CLOSED', 'STOPPED', 'TARGET_HIT']);
+    .in('status', [...CLOSED_STATUSES]);
   const knownLTTickers = new Set(
     (historicalLT ?? []).map((r: { ticker: string }) => r.ticker.toUpperCase())
   );
@@ -5723,7 +5712,7 @@ Check the Options Wheel → Open tab to review the covered call position.`,
           .select('id')
           .eq('mode', 'OPTIONS_PUT')
           .gte('created_at', todayStart)
-          .in('status', ['PENDING', 'SUBMITTED', 'FILLED', 'PARTIAL']);
+          .in('status', [...ACTIVE_STATUSES]);
         const newPositionsToday = (openedToday ?? []).length;
 
         if (newPositionsToday >= OPTIONS_MAX_NEW_PER_DAY) {
