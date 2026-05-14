@@ -6,14 +6,8 @@
  * Runs entirely in the browser. No backend polling needed.
  */
 
-/** Returns true only during regular US market hours: 9:30 AM – 4:00 PM ET, Mon–Fri. */
-function isMarketOpen(): boolean {
-  const et = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }));
-  const day = et.getDay();
-  if (day === 0 || day === 6) return false;
-  const mins = et.getHours() * 60 + et.getMinutes();
-  return mins >= 9 * 60 + 30 && mins <= 16 * 60;
-}
+import { isMarketOpen } from '../../../shared/date-helpers.ts';
+import { fmtUsdCompact } from '../../../shared/format.ts';
 
 import type { TradeIdea } from './tradeScannerApi';
 import type { EnhancedSuggestedStock } from '../data/suggestedFinds';
@@ -108,159 +102,20 @@ async function getQuotePrice(ticker: string): Promise<number | null> {
   }
 }
 
-// ── Configuration ────────────────────────────────────────
+// ── Configuration (shared defaults + frontend-only extensions) ──
+import {
+  type AutoTraderConfig as SharedAutoTraderConfig,
+  DEFAULT_CONFIG as SHARED_DEFAULTS,
+} from '../../../shared/config-defaults.ts';
 
-export interface AutoTraderConfig {
-  enabled: boolean;
-  maxPositions: number;          // max concurrent positions
-  positionSize: number;          // $ per position (paper money) — fallback when dynamic sizing off
-  minScannerConfidence: number;  // min scanner confidence to consider
-  minFAConfidence: number;       // min FA confidence to execute
-  minSuggestedFindsConviction: number; // min conviction for Suggested Finds auto-buy
-  accountId: string | null;      // IB paper account ID
-  dayTradeAutoClose: boolean;    // auto-close day trades at 3:55 PM ET
-
-  // ── Allocation Cap ──
-  maxTotalAllocation: number;    // hard cap on total deployed capital ($400K default)
-  maxDailyDeployment: number;    // max NEW capital deployed in a single day ($50K default)
-
-  // ── Layer 1: Dynamic Position Sizing ──
-  useDynamicSizing: boolean;     // use conviction-weighted + risk-based sizing
-  portfolioValue: number;        // total portfolio value (auto-updated from IB)
-  baseAllocationPct: number;     // base % of portfolio per long-term position
-  maxPositionPct: number;        // max single-position % of portfolio
-  riskPerTradePct: number;       // max risk % per scanner trade
-
-  // ── Layer 2: Dip Buying ──
-  dipBuyEnabled: boolean;
-  dipBuyTier1Pct: number;        // dip % to trigger tier 1
-  dipBuyTier1SizePct: number;    // add-on % of original qty
-  dipBuyTier2Pct: number;
-  dipBuyTier2SizePct: number;
-  dipBuyTier3Pct: number;
-  dipBuyTier3SizePct: number;
-  dipBuyCooldownHours: number;   // min hours between dip buys for same ticker
-
-  // ── Layer 3: Profit Taking ──
-  profitTakeEnabled: boolean;
-  profitTakeTier1Pct: number;    // gain % to trigger tier 1
-  profitTakeTier1TrimPct: number;// trim % of position
-  profitTakeTier2Pct: number;
-  profitTakeTier2TrimPct: number;
-  profitTakeTier3Pct: number;
-  profitTakeTier3TrimPct: number;
-  minHoldPct: number;            // never sell below this % of original qty
-
-  // ── Layer 3b: Loss Cutting ──
-  lossCutEnabled: boolean;       // auto-sell losers to protect capital
-  lossCutTier1Pct: number;       // loss % to trigger tier 1 (e.g. 8%)
-  lossCutTier1SellPct: number;   // sell % of position at tier 1
-  lossCutTier2Pct: number;       // loss % for tier 2
-  lossCutTier2SellPct: number;
-  lossCutTier3Pct: number;       // loss % for tier 3 (full exit)
-  lossCutTier3SellPct: number;
-  lossCutMinHoldDays: number;    // minimum days held before loss-cutting (avoid intraday noise)
-
-  // ── Layer 4: Risk Management ──
-  marketRegimeEnabled: boolean;  // adjust sizing for VIX/SPY conditions
-  maxSectorPct: number;          // max portfolio % in one sector
-  earningsAvoidEnabled: boolean; // skip trades near earnings
-  earningsBlackoutDays: number;  // days before earnings to blackout
-  kellyAdaptiveEnabled: boolean; // use Half-Kelly from trade history win rate
-  longTermBucketPct: number;     // % of maxTotalAllocation reserved for long-term positions
-
-  // ── Layer 5: Capital Recycling ──
-  swingMaxHoldDays: number;         // auto-exit filled swing trades after N days (0 = off)
-  capitalPressureEnabled: boolean;  // when at cap, auto-close best swing to make room
-  ltStopLossPct: number;            // long-term fixed stop-loss (0 = disabled, replaced by trailing)
-  ltProfitTakePct: number;          // long-term profit-take threshold (e.g. 15 = +15%)
-  ltMaxHoldDays: number;            // long-term max hold days (0 = disabled)
-  ltTrailingStopPct: number;        // trailing stop: sell if price falls this % from peak (only after profit peak)
-
-  // ── Module Toggles ──
-  tradeSignalsEnabled: boolean;      // enable/disable day/swing trade scanner
-  suggestedFindsEnabled: boolean;    // enable/disable Suggested Finds auto-buy
-  optionsWheelEnabled: boolean;      // enable/disable options wheel scanner
-
-  // ── Suggested Finds ──
-  suggestedFindPositionSize: number; // flat $ per Suggested Find (0 = use dynamic sizing)
+export interface AutoTraderConfig extends SharedAutoTraderConfig {
+  suggestedFindPositionSize: number;
 }
 
 const CONFIG_KEY = 'auto-trader-config';
 
 const DEFAULT_CONFIG: AutoTraderConfig = {
-  enabled: false,
-  maxPositions: 3,
-  positionSize: 1000,
-  minScannerConfidence: 7,
-  minFAConfidence: 7,
-  minSuggestedFindsConviction: 8,
-  accountId: null,
-  dayTradeAutoClose: true,
-
-  // Allocation Cap
-  maxTotalAllocation: 500_000,
-  maxDailyDeployment: 50_000,
-
-  // Layer 1: Dynamic Sizing
-  useDynamicSizing: true,
-  portfolioValue: 1_000_000,
-  baseAllocationPct: 2.0,
-  maxPositionPct: 5.0,
-  riskPerTradePct: 1.0,
-
-  // Layer 2: Dip Buying (conservative — don't throw good money after bad)
-  dipBuyEnabled: true,
-  dipBuyTier1Pct: 10,
-  dipBuyTier1SizePct: 25,
-  dipBuyTier2Pct: 20,
-  dipBuyTier2SizePct: 50,
-  dipBuyTier3Pct: 30,
-  dipBuyTier3SizePct: 75,
-  dipBuyCooldownHours: 72,
-
-  // Layer 3: Profit Taking (aggressive — generate income, trim winners early)
-  profitTakeEnabled: true,
-  profitTakeTier1Pct: 8,
-  profitTakeTier1TrimPct: 25,
-  profitTakeTier2Pct: 15,
-  profitTakeTier2TrimPct: 30,
-  profitTakeTier3Pct: 25,
-  profitTakeTier3TrimPct: 30,
-  minHoldPct: 15,
-
-  // Layer 3b: Loss Cutting (protect capital — sell losers before they get worse)
-  lossCutEnabled: true,
-  lossCutTier1Pct: 8,
-  lossCutTier1SellPct: 30,
-  lossCutTier2Pct: 15,
-  lossCutTier2SellPct: 50,
-  lossCutTier3Pct: 25,
-  lossCutTier3SellPct: 100,
-  lossCutMinHoldDays: 2,
-
-  // Layer 4: Risk Management
-  marketRegimeEnabled: true,
-  maxSectorPct: 30,
-  earningsAvoidEnabled: true,
-  earningsBlackoutDays: 3,
-  kellyAdaptiveEnabled: false,
-  longTermBucketPct: 50, // matches DB default: 50% of maxTotalAllocation for long-term sleeve
-
-  // Layer 5: Capital Recycling
-  swingMaxHoldDays: 5,
-  capitalPressureEnabled: true,
-  ltStopLossPct: 0,
-  ltProfitTakePct: 15,
-  ltMaxHoldDays: 0,
-  ltTrailingStopPct: 10,
-
-  // Module Toggles
-  tradeSignalsEnabled: true,
-  suggestedFindsEnabled: true,
-  optionsWheelEnabled: true,
-
-  // Suggested Finds
+  ...SHARED_DEFAULTS,
   suggestedFindPositionSize: 2000,
 };
 
@@ -351,6 +206,8 @@ export async function loadAutoTraderConfig(): Promise<AutoTraderConfig> {
         ltMaxHoldDays: Number(data.lt_max_hold_days ?? DEFAULT_CONFIG.ltMaxHoldDays),
         ltTrailingStopPct: Number(data.lt_trailing_stop_pct ?? DEFAULT_CONFIG.ltTrailingStopPct),
         suggestedFindPositionSize: Number(data.suggested_find_position_size ?? DEFAULT_CONFIG.suggestedFindPositionSize),
+        externalSignalPositionSize: Number(data.external_signal_position_size ?? DEFAULT_CONFIG.externalSignalPositionSize),
+        dayTradeMaxDailyLoss: Number(data.day_trade_max_daily_loss ?? DEFAULT_CONFIG.dayTradeMaxDailyLoss),
 
         // Module Toggles
         tradeSignalsEnabled: data.trade_signals_enabled ?? DEFAULT_CONFIG.tradeSignalsEnabled,
@@ -1715,7 +1572,7 @@ export async function checkLossCutOpportunities(
       });
 
       const realizedLoss = sellQty * (ibPos.mktPrice - ibPos.avgCost);
-      const msg = `Loss cut ${triggered.label}: sold ${sellQty} shares at $${ibPos.mktPrice.toFixed(2)} (-${lossPct.toFixed(1)}%, ~${fmtUsdSimple(realizedLoss)})`;
+      const msg = `Loss cut ${triggered.label}: sold ${sellQty} shares at $${ibPos.mktPrice.toFixed(2)} (-${lossPct.toFixed(1)}%, ~${fmtUsdCompact(realizedLoss)})`;
       logEvent(trade.ticker, 'success', msg);
       persistEvent(trade.ticker, 'success', msg, {
         action: 'executed', source: 'loss_cut', mode: trade.mode as 'LONG_TERM',
@@ -1737,12 +1594,6 @@ export async function checkLossCutOpportunities(
   }
 
   return results;
-}
-
-/** Simple USD format for log messages */
-function fmtUsdSimple(val: number): string {
-  const sign = val >= 0 ? '+' : '-';
-  return `${sign}$${Math.abs(val).toFixed(0)}`;
 }
 
 // ── Smart Trading: Pre-Trade Checks ──────────────────────

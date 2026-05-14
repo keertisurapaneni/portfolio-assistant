@@ -12,6 +12,7 @@
  */
 
 import { useEffect, useRef } from 'react';
+import { isMarketOpen } from '../../../shared/date-helpers.ts';
 import { fetchTradeIdeas } from '../lib/tradeScannerApi';
 import {
   loadAutoTraderConfig,
@@ -62,15 +63,7 @@ async function isServerSchedulerRunning(): Promise<boolean> {
   }
 }
 
-/** Check if we're in US market hours (9:30 AM - 4:00 PM ET, weekdays) */
-function isMarketHoursET(): boolean {
-  const now = new Date();
-  const et = new Date(now.toLocaleString('en-US', { timeZone: 'America/New_York' }));
-  const day = et.getDay();
-  if (day === 0 || day === 6) return false;
-  const mins = et.getHours() * 60 + et.getMinutes();
-  return mins >= 9 * 60 + 30 && mins <= 16 * 60;
-}
+// isMarketOpen imported from shared/date-helpers.ts above.
 
 /** Interval between scanner checks (15 minutes, matches server scheduler) */
 const SCANNER_INTERVAL_MS = 15 * 60 * 1000;
@@ -131,7 +124,7 @@ async function preGenerateSuggestedFinds() {
   if (_lastSuggestedFindsDate === todayEt) return;
 
   // Discovery (page population) runs any time after 9:30 AM so the /finds page is
-  // always populated after login. Trading execution inside is further gated by isMarketHoursET().
+  // always populated after login. Trading execution inside is further gated by isMarketOpen().
   const now = new Date();
   const et = new Date(now.toLocaleString('en-US', { timeZone: 'America/New_York' }));
   const mins = et.getHours() * 60 + et.getMinutes();
@@ -148,7 +141,7 @@ async function preGenerateSuggestedFinds() {
 
     // Auto-trade qualifying Suggested Finds — only during market hours
     const config = await loadAutoTraderConfig();
-    if (config.enabled && config.suggestedFindsEnabled && config.accountId && isMarketHoursET()) {
+    if (config.enabled && config.suggestedFindsEnabled && config.accountId && isMarketOpen()) {
       const allStocks = [...result.compounders, ...result.goldMines];
 
       // Identify top picks (first in each list that meets minSuggestedFindsConviction).
@@ -262,7 +255,7 @@ export function useAutoTradeScheduler() {
         runDailyRehydration(config.accountId).catch(() => {});
       }
 
-      if (!isMarketHoursET()) return;
+      if (!isMarketOpen()) return;
 
       // Throttle: don't run more than once per 15 minutes
       const now = Date.now();

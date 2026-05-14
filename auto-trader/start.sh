@@ -58,7 +58,7 @@ if [ -n "$listener_pids" ]; then
   while IFS= read -r pid; do
     [ -z "$pid" ] && continue
     cmd="$(ps -p "$pid" -o command= 2>/dev/null || true)"
-    if echo "$cmd" | grep -Eq "portfolio-assistant/auto-trader.*dist/index\\.js|node( .*)?dist/index\\.js"; then
+    if echo "$cmd" | grep -Eq "portfolio-assistant/auto-trader.*dist/(auto-trader/src/)?index\\.js|node( .*)?dist/(auto-trader/src/)?index\\.js"; then
       running_our_service="yes"
       break
     fi

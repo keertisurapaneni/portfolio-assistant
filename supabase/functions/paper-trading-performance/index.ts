@@ -3,6 +3,7 @@
 // GET ?window=7d|30d|90d — returns aggregated metrics for deployed website (no localhost).
 
 import { createClient } from 'jsr:@supabase/supabase-js@2';
+import { EQUITY_MODES } from '../../../shared/trade-status-sets.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -194,9 +195,8 @@ Deno.serve(async (req) => {
     // Exclude dip-buy add-ons (same as trade_performance_log)
     const filteredTrades = trades.filter(t => !(t.notes ?? '').startsWith('Dip buy'));
 
-    // Only include DAY_TRADE, SWING_TRADE, LONG_TERM (same as log)
     const validTrades = filteredTrades.filter(t =>
-      ['DAY_TRADE', 'SWING_TRADE', 'LONG_TERM'].includes(t.mode)
+      (EQUITY_MODES as readonly string[]).includes(t.mode)
     );
 
     if (validTrades.length === 0) {

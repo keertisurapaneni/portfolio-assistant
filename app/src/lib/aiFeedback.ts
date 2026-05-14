@@ -19,6 +19,7 @@ import {
   type TradeLearning,
   type TradePerformance,
 } from './paperTradesApi';
+import { CLOSED_STATUSES } from '../../../shared/trade-status-sets.ts';
 
 // ── Trade Analysis ───────────────────────────────────────
 
@@ -225,7 +226,7 @@ export async function analyzeUnreviewedTrades(): Promise<number> {
   const { data: closedTrades, error: tErr } = await supabase
     .from('paper_trades')
     .select('*')
-    .in('status', ['STOPPED', 'TARGET_HIT', 'CLOSED'])
+    .in('status', [...CLOSED_STATUSES])
     .order('closed_at', { ascending: false })
     .limit(20);
 

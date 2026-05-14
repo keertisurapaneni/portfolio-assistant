@@ -6,6 +6,19 @@
 import { supabase } from './supabaseClient';
 import { getExemptFromAutoDeactivationSources } from './strategyVideosApi';
 
+import type { PaperTrade, TradeStatus, CloseReason, TradeMode } from '../../../shared/trade-types.ts';
+export type { PaperTrade, TradeStatus, CloseReason, TradeMode };
+
+import type { AutoTradeEventRecord, AutoTradeAction, AutoTradeSource } from '../../../shared/auto-trade-events.ts';
+export type { AutoTradeEventRecord, AutoTradeAction, AutoTradeSource };
+
+import {
+  ACTIVE_STATUSES,
+  CLOSED_STATUSES,
+  EXCLUDED_STATUSES,
+  ALL_TERMINAL_STATUSES,
+} from '../../../shared/trade-status-sets.ts';
+
 // ── Shared cache: dedup parallel paper_trades fetches ────
 // The recalculate*() functions all query paper_trades independently.
 // This cache ensures only one round-trip happens when they run in parallel.
@@ -59,71 +72,7 @@ export function clearSharedTradesCache(): void {
 }
 
 // ── Types ────────────────────────────────────────────────
-
-export type TradeStatus =
-  | 'PENDING'
-  | 'SUBMITTED'
-  | 'FILLED'
-  | 'PARTIAL'
-  | 'STOPPED'
-  | 'TARGET_HIT'
-  | 'CLOSED'
-  | 'CANCELLED'
-  | 'REJECTED';
-
-export type CloseReason =
-  | 'stop_loss'
-  | 'target_hit'
-  | 'eod_close'
-  | 'manual'
-  | 'cancelled';
-
-export interface PaperTrade {
-  id: string;
-  ticker: string;
-  mode: 'DAY_TRADE' | 'SWING_TRADE' | 'LONG_TERM' | 'OPTIONS_PUT' | 'OPTIONS_CALL';
-  signal: 'BUY' | 'SELL';
-  strategy_source: string | null;
-  strategy_source_url: string | null;
-  strategy_video_id: string | null;
-  strategy_video_heading: string | null;
-  scanner_confidence: number | null;
-  fa_confidence: number | null;
-  fa_recommendation: string | null;
-  entry_price: number | null;
-  stop_loss: number | null;
-  target_price: number | null;
-  target_price2: number | null;
-  risk_reward: string | null;
-  quantity: number | null;
-  position_size: number | null;
-  ib_order_id: string | null;
-  ib_parent_order_id: string | null;
-  status: TradeStatus;
-  fill_price: number | null;
-  close_price: number | null;
-  pnl: number | null;
-  pnl_percent: number | null;
-  opened_at: string;
-  filled_at: string | null;
-  closed_at: string | null;
-  close_reason: CloseReason | null;
-  scanner_reason: string | null;
-  fa_rationale: { technical?: string; sentiment?: string; risk?: string } | null;
-  notes: string | null;
-  created_at: string;
-  // Validation log (day-trade analysis)
-  in_play_score?: number | null;
-  pass1_confidence?: number | null;
-  entry_trigger_type?: string | null;
-  r_multiple?: number | null;
-  market_condition?: string | null;
-  // Swing entry log (post-trade metrics — collect only)
-  pct_distance_sma20_at_entry?: number | null;
-  macd_histogram_slope_at_entry?: string | null;
-  volume_vs_10d_avg_at_entry?: number | null;
-  regime_alignment_at_entry?: string | null;
-}
+// PaperTrade, TradeStatus, CloseReason, TradeMode imported from shared/trade-types.ts above.
 
 export interface TradeLearning {
   id: string;
@@ -212,7 +161,7 @@ export async function getActiveTrades(): Promise<PaperTrade[]> {
   const { data, error } = await supabase
     .from('paper_trades')
     .select('*')
-    .in('status', ['PENDING', 'SUBMITTED', 'FILLED', 'PARTIAL'])
+    .in('status', [...ACTIVE_STATUSES])
     .order('opened_at', { ascending: false });
 
   if (error) throw new Error(`Failed to fetch active trades: ${error.message}`);
@@ -424,7 +373,7 @@ export async function getSwingTradeValidationReport(): Promise<SwingTradeValidat
   funnel.signalsPerWeek = days >= 1 ? Math.round((funnel.signals / days) * 5) : 0; // ~5 trading days/week
 
   const closed = trades.filter(
-    t => t.fill_price != null && ['STOPPED', 'TARGET_HIT', 'CLOSED'].includes(t.status)
+    t => t.fill_price != null && (CLOSED_STATUSES as readonly string[]).includes(t.status)
   );
   const bracketOrders = trades.filter(t => t.entry_trigger_type === 'bracket_limit');
   const filled = bracketOrders.filter(t => t.fill_price != null);
@@ -531,7 +480,7 @@ export async function hasActiveTrade(ticker: string): Promise<boolean> {
     .from('paper_trades')
     .select('id', { count: 'exact', head: true })
     .eq('ticker', ticker)
-    .in('status', ['PENDING', 'SUBMITTED', 'FILLED', 'PARTIAL']);
+    .in('status', [...ACTIVE_STATUSES]);
 
   if (error) return false;
   return (count ?? 0) > 0;
@@ -542,7 +491,7 @@ export async function countActivePositions(): Promise<number> {
   const { count, error } = await supabase
     .from('paper_trades')
     .select('id', { count: 'exact', head: true })
-    .in('status', ['PENDING', 'SUBMITTED', 'FILLED', 'PARTIAL']);
+    .in('status', [...ACTIVE_STATUSES]);
 
   if (error) return 0;
   return count ?? 0;
@@ -576,30 +525,7 @@ export async function getRecentLearnings(limit = 20): Promise<TradeLearning[]> {
 
 // ── Auto Trade Events ────────────────────────────────────
 
-/**
- * Canonical action/source/mode values — must stay in sync with
- * AutoTradeAction / AutoTradeSource / AutoTradeMode in auto-trader/src/lib/supabase.ts
- */
-export interface AutoTradeEventRecord {
-  id: string;
-  ticker: string;
-  event_type: 'info' | 'success' | 'warning' | 'error';
-  action: 'executed' | 'skipped' | 'failed' | 'closed' | 'proceeding' | 'health_check' | 'RECONCILIATION' | 'scan_complete' | null;
-  source: 'scanner' | 'suggested_finds' | 'manual' | 'system' | 'dip_buy' | 'profit_take' | 'loss_cut' | 'lt_auto_sell' | 'swing_expiry' | 'capital_pressure' | 'external_signal' | 'spx_level_scanner' | 'earnings_scanner' | 'watchlist_screener' | 'compounder_health' | null;
-  mode: 'DAY_TRADE' | 'SWING_TRADE' | 'LONG_TERM' | 'OPTIONS_PUT' | 'OPTIONS_CALL' | 'EARNINGS_CALENDAR' | null;
-  message: string;
-  strategy_source: string | null;
-  strategy_source_url: string | null;
-  strategy_video_id: string | null;
-  strategy_video_heading: string | null;
-  scanner_signal: string | null;
-  scanner_confidence: number | null;
-  fa_recommendation: string | null;
-  fa_confidence: number | null;
-  skip_reason: string | null;
-  metadata: Record<string, unknown> | null;
-  created_at: string;
-}
+// AutoTradeEventRecord, AutoTradeAction, AutoTradeSource imported from shared/auto-trade-events.ts above.
 
 /** Persist an auto-trade event to Supabase */
 export async function createAutoTradeEvent(
@@ -763,7 +689,7 @@ export async function recalculatePerformance(): Promise<TradePerformance | null>
   const { data: trades, error } = await supabase
     .from('paper_trades')
     .select('*')
-    .in('status', ['STOPPED', 'TARGET_HIT', 'CLOSED']);
+    .in('status', [...CLOSED_STATUSES]);
 
   if (error || !trades || trades.length === 0) return null;
 
@@ -958,17 +884,11 @@ export async function recalculatePerformanceByCategory(): Promise<CategoryPerfor
 
   for (const cat of categories) {
     const catTrades = trades.filter(cat.filter);
-    // Exclude cancelled/rejected — these never executed, no money at risk
-    const excludedStatuses = ['CANCELLED', 'REJECTED'];
-    const meaningful = catTrades.filter(t => !excludedStatuses.includes(t.status));
+    const meaningful = catTrades.filter(t => !(EXCLUDED_STATUSES as readonly string[]).includes(t.status));
 
-    const activeStatuses = ['PENDING', 'SUBMITTED', 'FILLED', 'PARTIAL'];
-    const closedStatuses = ['STOPPED', 'TARGET_HIT', 'CLOSED'];
-
-    const active = meaningful.filter(t => activeStatuses.includes(t.status));
-    // Only count completed trades that actually filled
+    const active = meaningful.filter(t => (ACTIVE_STATUSES as readonly string[]).includes(t.status));
     const completed = meaningful.filter(
-      t => closedStatuses.includes(t.status) && t.fill_price != null
+      t => (CLOSED_STATUSES as readonly string[]).includes(t.status) && t.fill_price != null
     );
     const wins = completed.filter(t => (t.pnl ?? 0) > 0);
     const losses = completed.filter(t => (t.pnl ?? 0) < 0);
@@ -1027,8 +947,8 @@ export async function recalculatePerformanceByStrategySource(): Promise<Strategy
   }
   const trades = allTrades.filter(t => t.strategy_source != null);
 
-  const activeStatuses = new Set(['PENDING', 'SUBMITTED', 'FILLED', 'PARTIAL']);
-  const closedStatuses = new Set(['STOPPED', 'TARGET_HIT', 'CLOSED']);
+  const activeStatusSet = new Set(ACTIVE_STATUSES);
+  const closedStatusSet = new Set(CLOSED_STATUSES);
 
   const groups = new Map<string, {
     sourceUrl: string | null;
@@ -1063,14 +983,14 @@ export async function recalculatePerformanceByStrategySource(): Promise<Strategy
     }
 
     curr.totalTrades += 1;
-    if (activeStatuses.has(trade.status)) {
+    if (activeStatusSet.has(trade.status)) {
       curr.activeTrades += 1;
       if (trade.status === 'FILLED' && trade.pnl != null) {
         curr.activeUnrealizedPnl += trade.pnl;
       }
     }
 
-    if (closedStatuses.has(trade.status) && trade.fill_price != null) {
+    if (closedStatusSet.has(trade.status) && trade.fill_price != null) {
       curr.closedCount += 1;
       const pnl = trade.pnl ?? 0;
       curr.closedPnl += pnl;
@@ -1131,8 +1051,8 @@ export async function recalculatePerformanceByStrategyVideo(): Promise<StrategyV
   }
   const trades = allTrades.filter(t => t.strategy_source != null);
 
-  const activeStatuses = new Set(['PENDING', 'SUBMITTED', 'FILLED', 'PARTIAL']);
-  const closedStatuses = new Set(['STOPPED', 'TARGET_HIT', 'CLOSED']);
+  const activeStatusSet = new Set(ACTIVE_STATUSES);
+  const closedStatusSet = new Set(CLOSED_STATUSES);
 
   const groups = new Map<string, {
     source: string;
@@ -1205,14 +1125,14 @@ export async function recalculatePerformanceByStrategyVideo(): Promise<StrategyV
     });
 
     curr.totalTrades += 1;
-    if (activeStatuses.has(trade.status)) {
+    if (activeStatusSet.has(trade.status)) {
       curr.activeTrades += 1;
       if (trade.status === 'FILLED' && trade.pnl != null) {
         curr.activeUnrealizedPnl += trade.pnl;
       }
     }
 
-    if (closedStatuses.has(trade.status) && trade.fill_price != null) {
+    if (closedStatusSet.has(trade.status) && trade.fill_price != null) {
       curr.closedCount += 1;
       const pnl = trade.pnl ?? 0;
       curr.closedPnl += pnl;
@@ -1716,10 +1636,11 @@ export async function fetchInfluencerTradePatterns(): Promise<InfluencerTradePat
   const spyAligned = { wins: 0, losses: 0, total: 0 };
   const spyAgainst = { wins: 0, losses: 0, total: 0 };
 
-  const CLOSED_STATUSES = ['CLOSED', 'STOPPED', 'TARGET_HIT', 'CANCELLED', 'EXPIRED', 'REJECTED'];
+  // All terminal statuses + 'EXPIRED' (not a formal TradeStatus but can appear in data)
+  const ALL_TERMINAL_WITH_EXPIRED = [...ALL_TERMINAL_STATUSES, 'EXPIRED'] as string[];
 
   for (const trade of trades) {
-    const isClosed = CLOSED_STATUSES.includes(trade.status);
+    const isClosed = ALL_TERMINAL_WITH_EXPIRED.includes(trade.status);
     const isWin = isClosed && (trade.pnl ?? 0) > 0;
     const isLoss = isClosed && (trade.pnl ?? 0) <= 0;
 
@@ -1763,7 +1684,7 @@ export async function fetchInfluencerTradePatterns(): Promise<InfluencerTradePat
     };
   });
 
-  const closedTrades = trades.filter(t => CLOSED_STATUSES.includes(t.status)).length;
+  const closedTrades = trades.filter(t => ALL_TERMINAL_WITH_EXPIRED.includes(t.status)).length;
 
   return {
     timeBuckets,

@@ -10,11 +10,14 @@
  */
 
 import { getSupabase, createAutoTradeEvent } from './supabase.js';
+import { ACTIVE_STATUSES, CLOSED_STATUSES, OPTIONS_MODES } from '../../../shared/trade-status-sets.js';
 import { getOptionsAutoTradeConfig, autoTradeOption, type OptionsTradeTicket } from './options-scanner.js';
 import { getOptionsChain } from './options-chain.js';
 import { isConnected, requestOpenOrders, placeOptionsOrder, getDefaultAccount } from '../ib-connection.js';
 
-function persistEvent(ticker: string, eventType: string, message: string, extra?: Record<string, unknown>): void {
+import type { AutoTradeEventType } from '../../../shared/auto-trade-events.js';
+
+function persistEvent(ticker: string, eventType: AutoTradeEventType, message: string, extra?: Record<string, unknown>): void {
   createAutoTradeEvent({ ticker, event_type: eventType, message, ...extra })
     .catch(err => console.warn(`[Options persistEvent] ${ticker}/${eventType} failed:`, err instanceof Error ? err.message : err));
 }
@@ -267,8 +270,8 @@ export async function getOpenOptionsPositions(): Promise<OpenOptionsPosition[]> 
   const { data, error } = await sb
     .from('paper_trades')
     .select('id, ticker, mode, option_strike, option_expiry, option_premium, option_capital_req, option_assigned, fill_price, status, pnl')
-    .in('mode', ['OPTIONS_PUT', 'OPTIONS_CALL'])
-    .in('status', ['PENDING', 'SUBMITTED', 'FILLED', 'PARTIAL']);
+    .in('mode', [...OPTIONS_MODES])
+    .in('status', [...ACTIVE_STATUSES]);
 
   if (error || !data) return [];
 
@@ -347,7 +350,7 @@ export async function runOptionsManageCycle(): Promise<ManageCycleResult> {
     const { data: submitted } = await sb
       .from('paper_trades')
       .select('id, ticker, option_strike, option_premium, ib_order_id')
-      .in('mode', ['OPTIONS_PUT', 'OPTIONS_CALL'])
+      .in('mode', [...OPTIONS_MODES])
       .eq('status', 'SUBMITTED')
       .not('ib_order_id', 'is', null);
 
@@ -377,7 +380,7 @@ export async function runOptionsManageCycle(): Promise<ManageCycleResult> {
   const { data, error } = await sb
     .from('paper_trades')
     .select('id, ticker, mode, option_strike, option_expiry, option_premium, option_capital_req, option_assigned, fill_price, status, ib_order_id, roll_count, rolled_from_id')
-    .in('mode', ['OPTIONS_PUT', 'OPTIONS_CALL'])
+    .in('mode', [...OPTIONS_MODES])
     .in('status', ['FILLED', 'PARTIAL']);
 
   if (error || !data) return result;
@@ -1010,15 +1013,15 @@ export async function getOptionsMonthlyStats(): Promise<{
   const { data: closed } = await sb
     .from('paper_trades')
     .select('pnl, option_capital_req')
-    .in('mode', ['OPTIONS_PUT', 'OPTIONS_CALL'])
-    .in('status', ['CLOSED', 'TARGET_HIT', 'STOPPED'])
+    .in('mode', [...OPTIONS_MODES])
+    .in('status', [...CLOSED_STATUSES])
     .gte('closed_at', monthStart.toISOString());
 
   const { data: open } = await sb
     .from('paper_trades')
     .select('id')
-    .in('mode', ['OPTIONS_PUT', 'OPTIONS_CALL'])
-    .in('status', ['FILLED', 'PARTIAL', 'PENDING', 'SUBMITTED']);
+    .in('mode', [...OPTIONS_MODES])
+    .in('status', [...ACTIVE_STATUSES]);
 
   const trades = closed ?? [];
   // Filter out phantom $0 closes (data integrity guard)

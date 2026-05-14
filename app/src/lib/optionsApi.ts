@@ -4,6 +4,7 @@
  */
 
 import { createClient } from '@supabase/supabase-js';
+import { ACTIVE_STATUSES, CLOSED_STATUSES } from '../../../shared/trade-status-sets.ts';
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL as string;
 const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY as string;
@@ -258,7 +259,7 @@ export async function getOpenOptionsPositions(): Promise<OpenOptionsPosition[]> 
     .from('paper_trades')
     .select('id, ticker, mode, option_strike, option_expiry, option_premium, option_contracts, option_capital_req, option_prob_profit, option_iv_rank, option_annual_yield, option_net_price, option_delta, option_assigned, status, close_reason, pnl, opened_at, closed_at, notes, scanner_reason')
     .in('mode', ['OPTIONS_PUT', 'OPTIONS_CALL'])
-    .in('status', ['PENDING', 'SUBMITTED', 'FILLED', 'PARTIAL'])
+    .in('status', [...ACTIVE_STATUSES])
     .order('option_expiry', { ascending: true });
   if (error) throw error;
   return (data ?? []) as OpenOptionsPosition[];
@@ -281,7 +282,7 @@ export async function getClosedOptionsPositions(limit = 50): Promise<OpenOptions
     .from('paper_trades')
     .select('id, ticker, mode, option_strike, option_expiry, option_premium, option_capital_req, option_prob_profit, option_iv_rank, option_annual_yield, option_net_price, option_delta, option_assigned, status, close_reason, pnl, opened_at, closed_at, notes, scanner_reason')
     .in('mode', ['OPTIONS_PUT', 'OPTIONS_CALL'])
-    .in('status', ['CLOSED', 'TARGET_HIT', 'STOPPED'])
+    .in('status', [...CLOSED_STATUSES])
     .order('closed_at', { ascending: false })
     .limit(limit);
   if (error) throw error;
@@ -300,13 +301,13 @@ export async function getOptionsMonthlyStats(): Promise<OptionsMonthlyStats> {
       .from('paper_trades')
       .select('pnl, option_capital_req')
       .in('mode', ['OPTIONS_PUT', 'OPTIONS_CALL'])
-      .in('status', ['CLOSED', 'TARGET_HIT', 'STOPPED'])
+      .in('status', [...CLOSED_STATUSES])
       .gte('closed_at', monthStart.toISOString()),
     supabase
       .from('paper_trades')
       .select('id, option_premium, option_contracts')
       .in('mode', ['OPTIONS_PUT', 'OPTIONS_CALL'])
-      .in('status', ['FILLED', 'PARTIAL', 'PENDING', 'SUBMITTED']),
+      .in('status', [...ACTIVE_STATUSES]),
   ]);
 
   // Only count trades with meaningful P&L (> $1) — excludes spurious $0 closes
