@@ -18,6 +18,10 @@ interface IBExecution {
   shares: number;
   price: number;
   time: string;
+  /** IB's FIFO-based realized P&L from the commissionReport event.
+   *  Available for SELL/SLD executions. Already commission-inclusive (matches IB app display).
+   *  Undefined if IB didn't send a commission report for this execution. */
+  realizedPnl?: number;
 }
 
 function log(msg: string): void {
@@ -172,7 +176,7 @@ export async function runEndOfDayReconciliation(): Promise<void> {
         log(`Corrected ${trade.ticker} fill_price: $${currentFill.toFixed(2)} → $${exec.price.toFixed(2)}`);
       }
     } else {
-      // TP, SL, or trailing-stop fill — correct close price.
+      // TP, SL, trailing-stop, or EOD close fill — correct close price and P&L.
       // Also handles cases where close_price was null (e.g. trailing stop wrote CLOSED
       // without close_price) or was set to fill_price with pnl=0 (browser sync fallback).
       if (['STOPPED', 'TARGET_HIT', 'CLOSED'].includes(trade.status)) {
@@ -186,19 +190,35 @@ export async function runEndOfDayReconciliation(): Promise<void> {
           const fillPrice = trade.fill_price ?? trade.entry_price ?? 0;
           const qty = trade.quantity ?? 1;
           const isLong = trade.signal === 'BUY';
-          const pnl = isLong
-            ? (exec.price - fillPrice) * qty
-            : (fillPrice - exec.price) * qty;
+
+          // Prefer IB's own realizedPnl from the commissionReport — it uses IB's FIFO
+          // cost basis which may differ from our fill_price when orphaned prior-day lots
+          // exist. Without this, a trade where IB FIFO used a cheaper old lot would show
+          // as a loss in our system while IB shows it as a gain.
+          let pnl: number;
+          let pnlSource: string;
+          if (exec.realizedPnl != null) {
+            pnl = exec.realizedPnl;
+            pnlSource = 'ib_realized_pnl';
+          } else {
+            pnl = isLong
+              ? (exec.price - fillPrice) * qty
+              : (fillPrice - exec.price) * qty;
+            pnlSource = 'calculated';
+          }
+
+          const costBasis = fillPrice * qty;
+          const pnlPct = costBasis > 0 ? (pnl / costBasis) * 100 : 0;
 
           await sb.from('paper_trades').update({
             close_price: exec.price,
             pnl: parseFloat(pnl.toFixed(2)),
-            pnl_percent: fillPrice > 0 ? parseFloat(((pnl / (fillPrice * qty)) * 100).toFixed(2)) : null,
+            pnl_percent: parseFloat(pnlPct.toFixed(2)),
           }).eq('id', trade.id);
           corrected++;
           const prevStr = currentClose != null ? currentClose.toFixed(2) : 'null';
-          correctionDetails.push(`${trade.ticker}: close_price ${prevStr} → ${exec.price.toFixed(2)} (pnl $${pnl.toFixed(2)})`);
-          log(`Corrected ${trade.ticker} close_price: $${prevStr} → $${exec.price.toFixed(2)}, pnl: $${pnl.toFixed(2)}`);
+          correctionDetails.push(`${trade.ticker}: close_price ${prevStr} → ${exec.price.toFixed(2)} (pnl $${pnl.toFixed(2)} via ${pnlSource})`);
+          log(`Corrected ${trade.ticker} close_price: $${prevStr} → $${exec.price.toFixed(2)}, pnl: $${pnl.toFixed(2)} [${pnlSource}]`);
         }
       }
     }
@@ -242,14 +262,36 @@ function requestExecutions(
   return new Promise((resolve) => {
     const reqId = getNextOrderId();
     const executions: IBExecution[] = [];
+    // execId → realizedPnl from IB's commissionReport. IB fires commissionReport for each
+    // execution, usually shortly after execDetails, but may arrive after execDetailsEnd.
+    const realizedPnlByExecId = new Map<string, number>();
     let resolved = false;
 
-    const timeout = setTimeout(() => {
-      if (!resolved) {
-        resolved = true;
-        resolve(executions);
-      }
+    // Hard timeout — ensures we always resolve even if commissionReports are slow.
+    const hardTimeout = setTimeout(() => {
+      if (!resolved) finalize();
     }, 15_000);
+
+    function finalize() {
+      if (resolved) return;
+      resolved = true;
+      clearTimeout(hardTimeout);
+      clearTimeout(commissionWaitTimer);
+      ib.off(EventName.execDetails, detailHandler);
+      ib.off(EventName.execDetailsEnd, endHandler);
+      ib.off(EventName.commissionReport, commissionHandler);
+      // Merge commissionReport realizedPnl into executions
+      for (const exec of executions) {
+        const rpnl = realizedPnlByExecId.get(exec.execId);
+        if (rpnl != null && isFinite(rpnl) && Math.abs(rpnl) < 1e6) {
+          exec.realizedPnl = rpnl;
+        }
+      }
+      resolve(executions);
+    }
+
+    // After execDetailsEnd, wait 2 s for any lagging commissionReport events, then finalize.
+    let commissionWaitTimer: ReturnType<typeof setTimeout>;
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const detailHandler = (rId: number, contract: any, execution: any) => {
@@ -267,15 +309,25 @@ function requestExecutions(
 
     const endHandler = (rId: number) => {
       if (rId !== reqId || resolved) return;
-      resolved = true;
-      clearTimeout(timeout);
       ib.off(EventName.execDetails, detailHandler);
       ib.off(EventName.execDetailsEnd, endHandler);
-      resolve(executions);
+      // Give commission reports 2 s to arrive before finalizing
+      commissionWaitTimer = setTimeout(finalize, 2_000);
+    };
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const commissionHandler = (report: any) => {
+      if (resolved) return;
+      const execId: string | undefined = report?.execId;
+      const rpnl: number | undefined = report?.realizedPNL ?? report?.realizedPnl;
+      if (execId && rpnl != null && isFinite(rpnl) && Math.abs(rpnl) < 1e6) {
+        realizedPnlByExecId.set(execId, rpnl);
+      }
     };
 
     ib.on(EventName.execDetails, detailHandler);
     ib.on(EventName.execDetailsEnd, endHandler);
+    ib.on(EventName.commissionReport, commissionHandler);
 
     ib.reqExecutions(reqId, {
       acctCode: account,
