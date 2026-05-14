@@ -439,8 +439,7 @@ export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], 
               const matched = tradesByTicker.get(event.ticker)?.find(t =>
                 t.pnl != null || t.status === 'FILLED' || t.status === 'TARGET_HIT' || t.status === 'STOPPED' || t.status === 'CLOSED'
               );
-              const isGenericAuto = (matched?.notes ?? '').toLowerCase().includes('generic strategy auto');
-              const isInfluencer = event.source === 'external_signal' && !!event.strategy_source && !isGenericAuto;
+
               const isPositionSync = event.source === 'system' && !event.mode;
               const AUTO_CLOSE_SOURCES = new Set(['lt_auto_sell', 'swing_expiry', 'capital_pressure']);
               const isAutoClose = AUTO_CLOSE_SOURCES.has(event.source ?? '');
@@ -457,8 +456,7 @@ export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], 
               const qtyMatch = sharesMatch ?? externalMatch;
 
               const sourceLabel = event.source === 'scanner' ? 'Trade signal'
-                : isInfluencer ? `Trade signal + ${event.strategy_source}`
-                : event.source === 'external_signal' ? 'Trade signal'
+                : event.source === 'external_signal' ? `External signal + ${event.strategy_source}`
                 : event.source === 'suggested_finds' ? 'Suggested find'
                 : event.source === 'dip_buy' ? 'Dip buy'
                 : event.source === 'profit_take' ? 'Profit take'
