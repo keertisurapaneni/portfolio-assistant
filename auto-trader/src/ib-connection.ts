@@ -43,6 +43,17 @@ const _orderFillPrices = new Map<number, number>();
 // resolve the pending promise immediately instead of waiting for timeout.
 const _pendingReqCallbacks = new Map<number, (code: number, msg: string) => void>();
 
+// Pending order callbacks: resolves/rejects order promises when IB sends
+// fill confirmation (orderStatus Filled) or rejection (error/Cancelled/Inactive).
+// Prevents the fire-and-forget bug where callers assumed success without confirmation.
+interface PendingOrder {
+  resolve: (result: { orderId: number; avgFillPrice: number; filledQty: number }) => void;
+  reject: (err: Error) => void;
+  timer: ReturnType<typeof setTimeout>;
+  symbol: string;
+}
+const _pendingOrderCallbacks = new Map<number, PendingOrder>();
+
 // Semaphore to limit concurrent IB API requests and prevent flooding
 let _activeRequests = 0;
 const _requestQueue: Array<() => void> = [];
@@ -203,6 +214,18 @@ export function connect(): void {
       return;
     }
 
+    // Route order-level errors (code 200 = no security def, 201 = rejected,
+    // 202 = cancelled, 110 = price cap, etc.) to the pending order promise.
+    if (reqId != null && _pendingOrderCallbacks.has(reqId)) {
+      const pending = _pendingOrderCallbacks.get(reqId)!;
+      clearTimeout(pending.timer);
+      _pendingOrderCallbacks.delete(reqId);
+      const msg = `IB order ${reqId} (${pending.symbol}) rejected: code=${code} ${err.message}`;
+      console.error(`[IB] ${msg}`);
+      pending.reject(new Error(msg));
+      return;
+    }
+
     console.error(`[IB] Error (code=${code}, reqId=${reqId}): ${err.message}`);
 
     if (code === 1100) {
@@ -249,6 +272,15 @@ export function connect(): void {
     if (status === 'Filled' && avgFillPrice > 0) {
       _orderFillPrices.set(orderId, avgFillPrice);
       console.log(`[IB] Order ${orderId} filled @ $${avgFillPrice.toFixed(4)}`);
+
+      // Resolve the pending order promise with fill confirmation
+      if (_pendingOrderCallbacks.has(orderId)) {
+        const pending = _pendingOrderCallbacks.get(orderId)!;
+        clearTimeout(pending.timer);
+        _pendingOrderCallbacks.delete(orderId);
+        pending.resolve({ orderId, avgFillPrice, filledQty: filled });
+      }
+
       insertIbFill({
         order_id: orderId,
         ticker: '',  // orderStatus doesn't include contract info; execDetails will fill this
@@ -257,6 +289,15 @@ export function connect(): void {
         fill_price: avgFillPrice,
         filled_at: new Date().toISOString(),
       }).catch(err => console.warn(`[IB] Failed to persist orderStatus fill: ${err instanceof Error ? err.message : err}`));
+    }
+
+    // Reject on terminal non-fill statuses
+    if ((status === 'Cancelled' || status === 'Inactive') && _pendingOrderCallbacks.has(orderId)) {
+      const pending = _pendingOrderCallbacks.get(orderId)!;
+      clearTimeout(pending.timer);
+      _pendingOrderCallbacks.delete(orderId);
+      console.error(`[IB] Order ${orderId} (${pending.symbol}) ${status}`);
+      pending.reject(new Error(`IB order ${orderId} (${pending.symbol}) ${status}`));
     }
   });
 
@@ -527,7 +568,11 @@ export interface MarketOrderParams {
 
 export interface MarketOrderResult {
   orderId: number;
+  avgFillPrice: number;
+  filledQty: number;
 }
+
+const MKT_ORDER_TIMEOUT_MS = 30_000;
 
 export function placeMarketOrder(params: MarketOrderParams): Promise<MarketOrderResult> {
   return new Promise((resolve, reject) => {
@@ -547,10 +592,21 @@ export function placeMarketOrder(params: MarketOrderParams): Promise<MarketOrder
       transmit: true,
     };
 
+    const timer = setTimeout(() => {
+      _pendingOrderCallbacks.delete(orderId);
+      const msg = `IB order ${orderId} (${symbol} ${side} ${quantity}) timed out after ${MKT_ORDER_TIMEOUT_MS / 1000}s — no fill/error received`;
+      console.error(`[IB] ${msg}`);
+      reject(new Error(msg));
+    }, MKT_ORDER_TIMEOUT_MS);
+
+    _pendingOrderCallbacks.set(orderId, { resolve, reject, timer, symbol });
+
     try {
       ib.placeOrder(orderId, contract, order);
-      resolve({ orderId });
+      console.log(`[IB] Market order dispatched: ${side} ${quantity}x ${symbol} (orderId=${orderId}) — awaiting fill...`);
     } catch (err) {
+      clearTimeout(timer);
+      _pendingOrderCallbacks.delete(orderId);
       reject(err);
     }
   });
