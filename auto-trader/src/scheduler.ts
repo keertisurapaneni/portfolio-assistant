@@ -853,20 +853,50 @@ export async function reconcileIBShorts(): Promise<{ closed: string[]; errors: s
   const closed: string[] = [];
   const errors: string[] = [];
 
+  const sb = getSupabase();
   for (const pos of shorts) {
     const qty = Math.abs(pos.position);
     log(`[IBReconcile] Covering short: ${pos.symbol} × ${qty} @ avg ${pos.avgCost}`);
     try {
-      await placeMarketOrder({ symbol: pos.symbol, side: 'BUY', quantity: qty });
-      log(`[IBReconcile] ✓ ${pos.symbol}: BUY ${qty} order placed`);
+      const { orderId: coverOrderId } = await placeMarketOrder({ symbol: pos.symbol, side: 'BUY', quantity: qty });
+      log(`[IBReconcile] ✓ ${pos.symbol}: BUY ${qty} order placed (orderId=${coverOrderId})`);
       closed.push(pos.symbol);
+
+      // Find the orphaned SELL paper_trade for this ticker and mark it for EOD reconciliation.
+      // The actual cover fill price will be written by runEndOfDayReconciliation (4:15 PM)
+      // once the IB execution is available. We store the cover orderId so the reconciler
+      // can match the fill by orderId in ib_fills.
+      const since = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString();
+      const { data: orphanTrades } = await sb
+        .from('paper_trades')
+        .select('id, fill_price, quantity')
+        .eq('ticker', pos.symbol)
+        .eq('signal', 'SELL')
+        .in('status', ['CLOSED'])
+        .or('close_price.is.null,close_price.eq.0')
+        .gte('opened_at', since)
+        .order('opened_at', { ascending: false })
+        .limit(1);
+
+      const orphan = (orphanTrades ?? [])[0] as { id: string; fill_price: number | null; quantity: number | null } | undefined;
+      if (orphan) {
+        await sb.from('paper_trades').update({
+          close_reason: 'reconcile_cover',
+          ib_order_id: String(coverOrderId), // overwrite with cover orderId so EOD reconciler can match the fill
+          notes: `Cover orderId=${coverOrderId} placed by reconcileIBShorts at ${new Date().toISOString()}`,
+        }).eq('id', orphan.id);
+        log(`[IBReconcile] Linked cover orderId=${coverOrderId} to paper_trade ${orphan.id} for ${pos.symbol}`);
+      } else {
+        log(`[IBReconcile] No orphaned SELL paper_trade found for ${pos.symbol} — EOD reconciler will log as orphaned execution`);
+      }
+
       await createAutoTradeEvent({
         ticker: pos.symbol,
         event_type: 'warning',
         action: 'executed',
         source: 'system',
         message: `[IBReconcile] Orphaned short covered: BUY ${qty} shares (avg cost ${pos.avgCost})`,
-        metadata: { reconcile_type: 'ib_short_reconcile', qty, avg_cost: pos.avgCost },
+        metadata: { reconcile_type: 'ib_short_reconcile', qty, avg_cost: pos.avgCost, cover_order_id: coverOrderId },
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'unknown';
@@ -4881,15 +4911,24 @@ async function checkDayTradeTrailingStops(
 
     try {
       await placeMarketOrder({ symbol: trade.ticker, side: closeSide, quantity: qty });
+      const pnl = isBuy
+        ? parseFloat(((currentPrice - fillPrice) * qty).toFixed(2))
+        : parseFloat(((fillPrice - currentPrice) * qty).toFixed(2));
+      const pnlPct = fillPrice > 0
+        ? parseFloat(((pnl / (fillPrice * qty)) * 100).toFixed(2))
+        : null;
       await updatePaperTrade(trade.id, {
         status:       'CLOSED',
         close_reason: 'trailing_stop',
+        close_price:  currentPrice,
+        pnl,
+        pnl_percent:  pnlPct,
         closed_at:    new Date().toISOString(),
       });
       log(
         `${trade.ticker}: DAY_TRADE trailing stop closed — peak ${newPeak.toFixed(2)}, ` +
         `current ${currentPrice.toFixed(2)}, trail stop ${trailStop.toFixed(2)}, ` +
-        `locked in ~${((newPeak - fillPrice) * (TRAIL_RETRACE_PCT)).toFixed(2)} of peak gain`,
+        `P&L $${pnl.toFixed(2)}`,
       );
     } catch (err) {
       log(`${trade.ticker}: trailing stop close failed — ${err instanceof Error ? err.message : 'unknown'}`);

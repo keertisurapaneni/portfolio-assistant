@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react';
-import { Zap, Play, Clock, PlayCircle, AlertCircle } from 'lucide-react';
+import { useState, useEffect, useMemo } from 'react';
+import { Zap, Play, Clock, PlayCircle, AlertCircle, ChevronUp, ChevronDown, ChevronsUpDown } from 'lucide-react';
 import { cn } from '../../../lib/utils';
 import type { AutoTradeEventRecord, PaperTrade, PendingStrategySignal } from '../../../lib/paperTradesApi';
 import { executeSignal } from '../../../lib/paperTradesApi';
@@ -204,9 +204,16 @@ export interface TodayActivityTabProps {
   ibRealizedPnl?: number | null;
 }
 
+type FilterMode = 'all' | 'day' | 'long_term';
+type SortKey = 'ticker' | 'pnl' | 'time' | null;
+type SortDir = 'asc' | 'desc';
+
 export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], onExecuteSignal, ibRealizedPnl }: TodayActivityTabProps) {
   const [executingId, setExecutingId] = useState<string | null>(null);
   const [executingAll, setExecutingAll] = useState(false);
+  const [filterMode, setFilterMode] = useState<FilterMode>('all');
+  const [sortKey, setSortKey] = useState<SortKey>(null);
+  const [sortDir, setSortDir] = useState<SortDir>('desc');
   const todayStart = (() => {
     const d = new Date();
     d.setHours(0, 0, 0, 0);
@@ -406,6 +413,62 @@ export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], 
   const todayPnl = ibRealizedPnl ?? eventBasedPnl;
   const pnlSource = ibRealizedPnl != null ? 'ib' : 'events';
 
+  function handleSort(key: SortKey) {
+    if (sortKey === key) {
+      setSortDir(d => d === 'asc' ? 'desc' : 'asc');
+    } else {
+      setSortKey(key);
+      setSortDir(key === 'pnl' ? 'desc' : 'asc');
+    }
+  }
+
+  function SortIcon({ col }: { col: SortKey }) {
+    if (sortKey !== col) return <ChevronsUpDown className="inline w-3 h-3 ml-0.5 opacity-40" />;
+    return sortDir === 'asc'
+      ? <ChevronUp className="inline w-3 h-3 ml-0.5 opacity-80" />
+      : <ChevronDown className="inline w-3 h-3 ml-0.5 opacity-80" />;
+  }
+
+  const filteredSortedEvents = useMemo(() => {
+    let filtered = events;
+
+    if (filterMode !== 'all') {
+      filtered = events.filter(ev => {
+        const mode = ev.mode;
+        if (filterMode === 'day') return mode === 'DAY_TRADE';
+        if (filterMode === 'long_term') return mode === 'LONG_TERM' || mode === 'SWING_TRADE';
+        return true;
+      });
+    }
+
+    if (!sortKey) return filtered;
+
+    return [...filtered].sort((a, b) => {
+      let aVal: string | number | null = null;
+      let bVal: string | number | null = null;
+
+      if (sortKey === 'ticker') {
+        aVal = a.ticker;
+        bVal = b.ticker;
+      } else if (sortKey === 'time') {
+        aVal = a.created_at;
+        bVal = b.created_at;
+      } else if (sortKey === 'pnl') {
+        const matchA = tradesByTicker.get(a.ticker)?.find(t => t.pnl != null);
+        const matchB = tradesByTicker.get(b.ticker)?.find(t => t.pnl != null);
+        aVal = matchA?.pnl ?? null;
+        bVal = matchB?.pnl ?? null;
+      }
+
+      if (aVal === null && bVal === null) return 0;
+      if (aVal === null) return 1;
+      if (bVal === null) return -1;
+
+      const cmp = aVal < bVal ? -1 : aVal > bVal ? 1 : 0;
+      return sortDir === 'asc' ? cmp : -cmp;
+    });
+  }, [events, filterMode, sortKey, sortDir, tradesByTicker]);
+
   return (
     <div className="space-y-3">
       {todayPnl !== 0 && (
@@ -422,21 +485,59 @@ export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], 
         </div>
       )}
 
+      {/* Filter + count bar */}
+      <div className="flex items-center gap-1.5">
+        {(['all', 'day', 'long_term'] as FilterMode[]).map(f => (
+          <button
+            key={f}
+            onClick={() => setFilterMode(f)}
+            className={cn(
+              'px-2.5 py-1 text-[11px] font-medium rounded-md border transition-colors',
+              filterMode === f
+                ? 'bg-[hsl(var(--foreground))] text-[hsl(var(--background))] border-[hsl(var(--foreground))]'
+                : 'bg-white text-[hsl(var(--muted-foreground))] border-[hsl(var(--border))] hover:border-[hsl(var(--foreground))]/40'
+            )}
+          >
+            {f === 'all' ? 'All' : f === 'day' ? 'Day Trades' : 'LT / Swing'}
+          </button>
+        ))}
+        {filterMode !== 'all' && (
+          <span className="text-[10px] text-[hsl(var(--muted-foreground))] ml-1">
+            {filteredSortedEvents.length} of {events.length}
+          </span>
+        )}
+      </div>
+
       <div className="rounded-xl border border-[hsl(var(--border))] bg-white overflow-hidden">
         <table className="w-full text-sm">
           <thead>
             <tr className="bg-[hsl(var(--secondary))] text-[hsl(var(--muted-foreground))] text-xs">
-              <th className="text-left px-4 py-2.5 font-medium">Ticker</th>
+              <th
+                className="text-left px-4 py-2.5 font-medium cursor-pointer select-none hover:text-[hsl(var(--foreground))]"
+                onClick={() => handleSort('ticker')}
+              >
+                Ticker <SortIcon col="ticker" />
+              </th>
               <th className="text-left px-4 py-2.5 font-medium">Signal</th>
               <th className="text-left px-4 py-2.5 font-medium">Type</th>
               <th className="text-left px-4 py-2.5 font-medium">Details</th>
-              <th className="text-right px-4 py-2.5 font-medium">P&L</th>
+              <th
+                className="text-right px-4 py-2.5 font-medium cursor-pointer select-none hover:text-[hsl(var(--foreground))]"
+                onClick={() => handleSort('pnl')}
+              >
+                P&L <SortIcon col="pnl" />
+              </th>
               <th className="text-left px-4 py-2.5 font-medium">Status</th>
-              <th className="text-right px-4 py-2.5 font-medium">Time</th>
+              <th
+                className="text-right px-4 py-2.5 font-medium cursor-pointer select-none hover:text-[hsl(var(--foreground))]"
+                onClick={() => handleSort('time')}
+              >
+                Time <SortIcon col="time" />
+              </th>
             </tr>
           </thead>
           <tbody className="divide-y divide-[hsl(var(--border))]">
-            {events.map((event) => {
+            {filteredSortedEvents.map((event) => {
               const matched = tradesByTicker.get(event.ticker)?.find(t =>
                 t.pnl != null || t.status === 'FILLED' || t.status === 'TARGET_HIT' || t.status === 'STOPPED' || t.status === 'CLOSED'
               );
