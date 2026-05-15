@@ -19,7 +19,7 @@ export interface StrategyVideoQueueItem {
   processed_at: string | null;
 }
 
-const INSTAGRAM_REEL = /instagram\.com\/(?:[^/]+\/)?reel\/([A-Za-z0-9_-]+)/i;
+const INSTAGRAM_REEL = /instagram\.com\/(?:[^/]+\/)?reels?\/([A-Za-z0-9_-]+)/i;
 const TWITTER_STATUS = /(?:twitter|x)\.com\/(?:[^/]+\/)?status\/(\d+)/i;
 const YOUTUBE = /(?:youtube\.com\/watch\?v=|youtu\.be\/)([A-Za-z0-9_-]{11})/i;
 
