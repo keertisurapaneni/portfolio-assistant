@@ -5,6 +5,7 @@ import type { AutoTradeEventRecord, PaperTrade, PendingStrategySignal } from '..
 import { executeSignal } from '../../../lib/paperTradesApi';
 import { fmtUsd } from '../utils';
 import { CLOSED_STATUSES, EXCLUDED_STATUSES } from '../../../../../shared/trade-status-sets.ts';
+import { StreakBoard } from '../shared';
 
 /** Convert raw failure_reason codes into human-readable labels. */
 function formatSkipReason(reason: string | null | undefined): string | null {
@@ -320,6 +321,8 @@ export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], 
 
   return (
     <div className="space-y-3">
+      <StreakBoard />
+
       {displayPnl !== 0 && (
         <div className="flex items-center justify-between rounded-lg bg-[hsl(var(--secondary))] px-4 py-2.5">
           <div className="flex items-center gap-2">
