@@ -217,6 +217,7 @@ export async function loadAutoTraderConfig(): Promise<AutoTraderConfig> {
         pennyPositionSize: Number(data.penny_position_size ?? DEFAULT_CONFIG.pennyPositionSize),
         pennyMaxDailyLoss: Number(data.penny_max_daily_loss ?? DEFAULT_CONFIG.pennyMaxDailyLoss),
         pennyMaxDailyTrades: Number(data.penny_max_daily_trades ?? DEFAULT_CONFIG.pennyMaxDailyTrades),
+        trendFilterEnabled: data.trend_filter_enabled ?? DEFAULT_CONFIG.trendFilterEnabled,
       };
       localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
       return config;
@@ -309,6 +310,7 @@ export async function saveAutoTraderConfig(config: Partial<AutoTraderConfig>): P
         penny_position_size: updated.pennyPositionSize,
         penny_max_daily_loss: updated.pennyMaxDailyLoss,
         penny_max_daily_trades: updated.pennyMaxDailyTrades,
+        trend_filter_enabled: updated.trendFilterEnabled,
         updated_at: new Date().toISOString(),
       });
   } catch (err) {

@@ -59,6 +59,7 @@ export interface AutoTraderConfig {
   pennyPositionSize: number;
   pennyMaxDailyLoss: number;
   pennyMaxDailyTrades: number;
+  trendFilterEnabled: boolean;
 }
 
 export const DEFAULT_CONFIG: AutoTraderConfig = {
@@ -113,4 +114,5 @@ export const DEFAULT_CONFIG: AutoTraderConfig = {
   pennyPositionSize: 200,
   pennyMaxDailyLoss: 200,
   pennyMaxDailyTrades: 10,
+  trendFilterEnabled: true,
 };

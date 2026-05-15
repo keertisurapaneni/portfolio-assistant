@@ -87,6 +87,7 @@ import { runDipWatcher } from './lib/dip-watcher.js';
 import { checkSpxLevelSetups } from './lib/spx-level-scanner.js';
 import { isInsideOrb } from './lib/orb.js';
 import { evaluateVwapAlignment, detectVwapReclaim } from './lib/vwap.js';
+import { checkTrendFilter } from './lib/trend-filter.js';
 import { getEconDayProfile } from './lib/econ-calendar.js';
 import { warmPositionPriceCache } from './routes/positions.js';
 import { generateMorningBrief } from './lib/morning-brief.js';
@@ -2982,6 +2983,24 @@ async function executeScannerTrade(
   if (mode === 'DAY_TRADE' && await isDayTradeLossGateActive(config)) {
     log(`${ticker}: day-trade skipped — daily loss gate active`);
     return 'skipped:daily_loss_gate';
+  }
+
+  // ── 4H 100 EMA trend filter (Trade by Pat) ──────────────────────────
+  // Day trades only. Reject entries where the higher-timeframe trend is against
+  // the signal direction. Non-blocking on data failure.
+  if (mode === 'DAY_TRADE' && config.trendFilterEnabled) {
+    const tf = await checkTrendFilter(ticker, signal as 'BUY' | 'SELL');
+    if (!tf.pass) {
+      log(`${ticker}: skipped — ${tf.reason}`);
+      persistEvent(ticker, 'skipped', `Trend filter: ${tf.reason}`, {
+        action: 'skipped', source: 'scanner', mode, skip_reason: 'trend_filter',
+        ema100: tf.ema100, slope: tf.slope,
+      });
+      return 'skipped:trend_filter';
+    }
+    if (tf.ema100 != null) {
+      log(`${ticker}: trend filter passed — ${tf.reason}`);
+    }
   }
 
   // ── ORB (Opening Range Breakout) chop gate ───────────────────────────
