@@ -88,6 +88,7 @@ import { checkSpxLevelSetups } from './lib/spx-level-scanner.js';
 import { isInsideOrb } from './lib/orb.js';
 import { evaluateVwapAlignment, detectVwapReclaim } from './lib/vwap.js';
 import { checkTrendFilter } from './lib/trend-filter.js';
+import { getStreakMultiplier } from './lib/streak-tracker.js';
 import { getEconDayProfile } from './lib/econ-calendar.js';
 import { warmPositionPriceCache } from './routes/positions.js';
 import { generateMorningBrief } from './lib/morning-brief.js';
@@ -2477,11 +2478,12 @@ function calculatePositionSize(
     stopLoss?: number;
     regimeMultiplier?: number;
     drawdownMultiplier?: number;
+    streakMultiplier?: number;
   }
 ): { quantity: number; dollarSize: number } {
   const {
     price, mode, conviction, suggestedFindTag, entryPrice, stopLoss,
-    regimeMultiplier = 1.0, drawdownMultiplier = 1.0,
+    regimeMultiplier = 1.0, drawdownMultiplier = 1.0, streakMultiplier = 1.0,
   } = params;
   const alloc = config.maxTotalAllocation;
   const hardMaxDollar = alloc * 0.10;
@@ -2523,7 +2525,7 @@ function calculatePositionSize(
     dollarSize = alloc * (config.baseAllocationPct / 100);
   }
 
-  dollarSize = dollarSize * regimeMultiplier * drawdownMultiplier;
+  dollarSize = dollarSize * regimeMultiplier * drawdownMultiplier * streakMultiplier;
   dollarSize = Math.min(dollarSize, maxDollar);
   dollarSize = Math.max(dollarSize, 100);
   const quantity = Math.max(1, Math.floor(dollarSize / price));
@@ -3215,9 +3217,13 @@ async function executeScannerTrade(
     log(`${ticker}: high-impact econ day — position size ×${econMult} (${econProfile.events.map(e => e.event).join(', ')})`);
   }
 
+  const streakMult = await getStreakMultiplier(mode);
+  if (streakMult < 1.0) log(`${ticker}: cold streak active for ${mode} — sizing ×${streakMult}`);
+
   const sizingRaw = calculatePositionSize(config, {
     price: entryPrice, mode, entryPrice, stopLoss,
     drawdownMultiplier: dd.multiplier * kellyMult * vixMult * econMult,
+    streakMultiplier: streakMult,
   });
   // Scanner trades (AI-generated, not expert-vetted) must be capped at positionSize.
   // Dynamic sizing can produce 200-400 share positions when the stop is very tight —
@@ -3860,11 +3866,14 @@ async function executeExternalStrategySignal(
   // Don't let Kelly/drawdown from unrelated scanner trades shrink their position size.
   const isInfluencerSignalForSizing = signal.strategy_video_id != null;
 
+  const extStreakMult = await getStreakMultiplier(signal.mode);
+  if (extStreakMult < 1.0) log(`${ticker}: cold streak active for ${signal.mode} — sizing ×${extStreakMult}`);
+
   const baseSizing = flatDollarSize
     ? (() => {
       const adjusted = isInfluencerSignalForSizing
         ? flatDollarSize
-        : flatDollarSize * sizingMultiplier;
+        : flatDollarSize * sizingMultiplier * extStreakMult;
       const quantity = Math.max(1, Math.floor(adjusted / referencePrice));
       return { quantity, dollarSize: quantity * referencePrice };
     })()
@@ -3874,9 +3883,8 @@ async function executeExternalStrategySignal(
       conviction: signal.confidence,
       entryPrice: effectiveEntryPrice ?? undefined,
       stopLoss: effectiveStopLoss ?? undefined,
-      // Influencer signals skip Kelly/drawdown dampening even in the dynamic path —
-      // consistent with the flat-dollar path above.
       drawdownMultiplier: isInfluencerSignalForSizing ? 1.0 : sizingMultiplier,
+      streakMultiplier: extStreakMult,
     });
 
   const splitDollarSize = baseSizing.dollarSize / allocationSplit;
