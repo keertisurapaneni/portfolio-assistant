@@ -157,7 +157,7 @@ export function SettingsTab({ config, onUpdate }: SettingsTabProps) {
             onToggle={() => onUpdate({ pennyEnabled: !config.pennyEnabled })} />
           <div>
             <p className="text-sm font-medium text-[hsl(var(--foreground))]">Penny Scanner</p>
-            <p className="text-xs text-[hsl(var(--muted-foreground))]">Momentum penny stocks ($2-$20) — mechanical rules, 9:35-10:00 AM ET</p>
+            <p className="text-xs text-[hsl(var(--muted-foreground))]">Low-priced momentum stocks ($2-$20, low float) — first pullback strategy, 9:35-10:00 AM ET</p>
           </div>
         </div>
       </div>
@@ -166,7 +166,7 @@ export function SettingsTab({ config, onUpdate }: SettingsTabProps) {
         <div className="rounded-lg border border-green-200 bg-green-50/50 p-4 space-y-3">
           <h4 className="text-sm font-semibold text-[hsl(var(--foreground))]">Penny Scanner Settings</h4>
           <p className="text-xs text-[hsl(var(--muted-foreground))] -mt-1">
-            Ross Cameron's rules: first pullback entry, MACD + volume confirmation, streak-based sizing
+            Ross Cameron's first pullback strategy for low-float momentum stocks — MACD + volume confirmation, streak-based sizing
           </p>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div>
