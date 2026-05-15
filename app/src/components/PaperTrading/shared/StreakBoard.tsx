@@ -8,9 +8,9 @@ import { fmtUsd } from '../utils';
 type StrategyRow = 'DAY_TRADE' | 'DAY_PENNY' | 'SWING_TRADE' | 'OVERALL';
 
 interface DayCell {
-  date: string;        // YYYY-MM-DD
-  label: string;       // "5/12" or "Today"
-  dayOfWeek: string;   // "Mon", "Tue", etc.
+  date: string;
+  label: string;
+  dayOfWeek: string;
   pnl: number;
   tradeCount: number;
   isToday: boolean;
@@ -154,6 +154,16 @@ export function StreakBoard() {
     return info;
   }, [grid, streakStates]);
 
+  const visibleRows = useMemo(() => {
+    if (!grid) return [];
+    const strategyRows = ROW_CONFIG.filter(r => r.key !== 'OVERALL');
+    const activeRows = strategyRows.filter(r =>
+      grid[r.key].some(c => c.tradeCount > 0)
+    );
+    const showOverall = activeRows.length > 1;
+    return [...activeRows, ...(showOverall ? [ROW_CONFIG.find(r => r.key === 'OVERALL')!] : [])];
+  }, [grid]);
+
   if (loading && !grid) {
     return (
       <div className="rounded-xl border border-[hsl(var(--border))] bg-white px-4 py-3">
@@ -165,32 +175,31 @@ export function StreakBoard() {
     );
   }
 
-  if (!grid) return null;
+  if (!grid || visibleRows.length === 0) return null;
 
   return (
     <div className="rounded-xl border border-[hsl(var(--border))] bg-white overflow-hidden">
       {/* Header */}
       <button
         onClick={() => setCollapsed(c => !c)}
-        className="w-full flex items-center justify-between px-4 py-2.5 bg-[hsl(var(--secondary))] border-b border-[hsl(var(--border))] hover:bg-[hsl(var(--secondary))]/80 transition-colors"
+        className="w-full flex items-center justify-between px-4 py-2 bg-[hsl(var(--secondary))] border-b border-[hsl(var(--border))] hover:bg-[hsl(var(--secondary))]/80 transition-colors"
       >
         <div className="flex items-center gap-2">
           <TrendingUp className="w-4 h-4 text-[hsl(var(--muted-foreground))]" />
           <span className="text-sm font-semibold text-[hsl(var(--foreground))]">Strategy Streak</span>
-          <span className="text-xs text-[hsl(var(--muted-foreground))]">Last {DAYS} days</span>
+          <span className="text-[11px] text-[hsl(var(--muted-foreground))]">Last {DAYS} days</span>
         </div>
         <div className="flex items-center gap-3">
-          {/* Streak badges inline in header */}
-          {!collapsed && streakInfo.map(s => (
+          {streakInfo.map(s => (
             s.streak >= 2 ? (
-              <span key={s.label} className="flex items-center gap-1 text-[10px] font-medium text-emerald-700">
+              <span key={s.label} className="flex items-center gap-1 text-[10px] font-semibold text-emerald-600">
                 <Flame className="w-3 h-3 text-orange-500" />
-                {s.label}: {s.streak}-day
+                {s.label}: {s.streak}-day streak
               </span>
             ) : s.cold ? (
-              <span key={s.label} className="flex items-center gap-1 text-[10px] font-medium text-amber-600">
+              <span key={s.label} className="flex items-center gap-1 text-[10px] font-semibold text-amber-600">
                 <AlertTriangle className="w-3 h-3" />
-                {s.label}: 50% sizing
+                {s.label}: half size
               </span>
             ) : null
           ))}
@@ -199,103 +208,99 @@ export function StreakBoard() {
       </button>
 
       {!collapsed && (
-        <div className="px-3 py-3 overflow-x-auto">
-          <table className="w-full border-collapse">
-            <thead>
-              <tr>
-                <th className="text-left text-[10px] font-medium text-[hsl(var(--muted-foreground))] pb-1.5 pr-2 w-20" />
-                {tradingDays.map(date => {
-                  const isToday = date === todayStr;
-                  return (
-                    <th key={date} className="text-center pb-1.5 px-0.5">
-                      <div className={cn(
-                        'text-[9px] font-medium leading-tight',
-                        isToday ? 'text-[hsl(var(--primary))] font-bold' : 'text-[hsl(var(--muted-foreground))]'
-                      )}>
-                        {toDow(date)}
-                      </div>
-                      <div className={cn(
-                        'text-[10px] leading-tight',
-                        isToday ? 'text-[hsl(var(--primary))] font-bold' : 'text-[hsl(var(--muted-foreground))]'
-                      )}>
-                        {toDateLabel(date, isToday)}
-                      </div>
-                    </th>
-                  );
-                })}
-              </tr>
-            </thead>
-            <tbody>
-              {(() => {
-                const strategyRows = ROW_CONFIG.filter(r => r.key !== 'OVERALL');
-                const activeRows = strategyRows.filter(r =>
-                  grid[r.key].some(c => c.tradeCount > 0)
+        <div className="px-4 py-3 space-y-2">
+          {/* Date headers */}
+          <div className="flex items-end gap-0">
+            <div className="w-[72px] flex-shrink-0" />
+            <div className="flex-1 grid gap-1" style={{ gridTemplateColumns: `repeat(${DAYS}, 1fr)` }}>
+              {tradingDays.map(date => {
+                const isToday = date === todayStr;
+                return (
+                  <div key={date} className="text-center">
+                    <div className={cn(
+                      'text-[9px] leading-none',
+                      isToday ? 'text-[hsl(var(--primary))] font-bold' : 'text-[hsl(var(--muted-foreground))]'
+                    )}>
+                      {toDow(date)}
+                    </div>
+                    <div className={cn(
+                      'text-[10px] leading-tight mt-0.5',
+                      isToday ? 'text-[hsl(var(--primary))] font-bold' : 'text-[hsl(var(--muted-foreground))]'
+                    )}>
+                      {toDateLabel(date, isToday)}
+                    </div>
+                  </div>
                 );
-                const showOverall = activeRows.length > 1;
-                const visibleRows = [...activeRows, ...(showOverall ? [ROW_CONFIG.find(r => r.key === 'OVERALL')!] : [])];
+              })}
+            </div>
+            <div className="w-[60px] flex-shrink-0" />
+          </div>
 
-                return visibleRows.map((row) => {
-                  const isOverall = row.key === 'OVERALL';
-                  const coldState = streakStates.find(s => s.mode === row.key);
-                  return (
-                    <tr key={row.key} className={cn(isOverall && 'border-t border-[hsl(var(--border))]')}>
-                      <td className={cn(
-                        'text-[11px] pr-2 py-1 whitespace-nowrap',
-                        isOverall ? 'font-bold text-[hsl(var(--foreground))]' : 'font-medium text-[hsl(var(--muted-foreground))]'
-                      )}>
-                        <div className="flex items-center gap-1">
-                          {row.label}
-                          {coldState?.is_cold && (
-                            <AlertTriangle className="w-3 h-3 text-amber-500" />
-                          )}
-                        </div>
-                      </td>
-                      {grid[row.key].map(cell => (
-                        <td key={cell.date} className="text-center px-0.5 py-1">
-                          <Cell cell={cell} bold={isOverall} isToday={cell.isToday} />
-                        </td>
-                      ))}
-                    </tr>
-                  );
-                });
-              })()}
-            </tbody>
-          </table>
+          {/* Strategy rows */}
+          {visibleRows.map((row) => {
+            const isOverall = row.key === 'OVERALL';
+            const coldState = streakStates.find(s => s.mode === row.key);
+            const cells = grid[row.key];
+            const periodTotal = cells.reduce((sum, c) => sum + c.pnl, 0);
+
+            return (
+              <div key={row.key} className={cn(isOverall && 'pt-1.5 border-t border-[hsl(var(--border))]')}>
+                <div className="flex items-center gap-0">
+                  {/* Row label */}
+                  <div className={cn(
+                    'w-[72px] flex-shrink-0 text-[11px] pr-2 truncate',
+                    isOverall ? 'font-bold text-[hsl(var(--foreground))]' : 'font-medium text-[hsl(var(--muted-foreground))]'
+                  )}>
+                    <span className="flex items-center gap-1">
+                      {row.label}
+                      {coldState?.is_cold && <AlertTriangle className="w-3 h-3 text-amber-500 flex-shrink-0" />}
+                    </span>
+                  </div>
+
+                  {/* Cells grid */}
+                  <div className="flex-1 grid gap-1" style={{ gridTemplateColumns: `repeat(${DAYS}, 1fr)` }}>
+                    {cells.map(cell => (
+                      <Cell key={cell.date} cell={cell} bold={isOverall} />
+                    ))}
+                  </div>
+
+                  {/* Period total */}
+                  <div className={cn(
+                    'w-[60px] flex-shrink-0 text-right text-[10px] tabular-nums font-semibold pl-2',
+                    periodTotal > 0 ? 'text-emerald-600' : periodTotal < 0 ? 'text-red-600' : 'text-[hsl(var(--muted-foreground))]'
+                  )}>
+                    {fmtUsd(periodTotal, 0, true)}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
         </div>
       )}
     </div>
   );
 }
 
-function Cell({ cell, bold, isToday }: { cell: DayCell; bold?: boolean; isToday?: boolean }) {
-  if (cell.tradeCount === 0) {
-    return (
-      <div className={cn(
-        'mx-auto w-full min-w-[52px] max-w-[64px] rounded-md py-1 text-[10px] tabular-nums',
-        'bg-[hsl(var(--secondary))] text-[hsl(var(--muted-foreground))]/50',
-        isToday && 'ring-1 ring-[hsl(var(--primary))]/30'
-      )}>
-        —
-      </div>
-    );
-  }
-
+function Cell({ cell, bold }: { cell: DayCell; bold?: boolean }) {
+  const noTrades = cell.tradeCount === 0;
   const isPositive = cell.pnl > 0;
   const isNegative = cell.pnl < 0;
 
   return (
     <div
       className={cn(
-        'mx-auto w-full min-w-[52px] max-w-[64px] rounded-md py-1 text-[10px] tabular-nums transition-all',
-        isPositive && 'bg-emerald-50 text-emerald-700 border border-emerald-200',
-        isNegative && 'bg-red-50 text-red-700 border border-red-200',
-        !isPositive && !isNegative && 'bg-[hsl(var(--secondary))] text-[hsl(var(--muted-foreground))]',
-        bold && 'font-bold text-[11px]',
-        isToday && 'ring-2 ring-[hsl(var(--primary))]/40 shadow-sm'
+        'rounded-md py-1.5 text-center text-[10px] tabular-nums transition-all',
+        noTrades && 'bg-slate-50 text-slate-300',
+        isPositive && 'bg-emerald-100 text-emerald-800 font-medium',
+        isNegative && 'bg-red-100 text-red-800 font-medium',
+        !noTrades && !isPositive && !isNegative && 'bg-slate-100 text-slate-500',
+        bold && 'font-bold',
+        cell.isToday && !noTrades && 'ring-2 ring-[hsl(var(--primary))]/30',
+        cell.isToday && noTrades && 'ring-1 ring-[hsl(var(--primary))]/20',
       )}
-      title={`${cell.tradeCount} trade${cell.tradeCount !== 1 ? 's' : ''} on ${cell.date}`}
+      title={noTrades ? `No trades on ${cell.date}` : `${cell.tradeCount} trade${cell.tradeCount !== 1 ? 's' : ''} on ${cell.date}`}
     >
-      {fmtUsd(cell.pnl, 0, true)}
+      {noTrades ? '·' : fmtUsd(cell.pnl, 0, true)}
     </div>
   );
 }
