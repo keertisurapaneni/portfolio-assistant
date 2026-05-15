@@ -162,6 +162,44 @@ export function SettingsTab({ config, onUpdate }: SettingsTabProps) {
         </div>
       </div>
 
+      {config.pennyEnabled && (
+        <div className="rounded-lg border border-green-200 bg-green-50/50 p-4 space-y-3">
+          <h4 className="text-sm font-semibold text-[hsl(var(--foreground))]">Penny Scanner Settings</h4>
+          <p className="text-xs text-[hsl(var(--muted-foreground))] -mt-1">
+            Ross Cameron's rules: first pullback entry, MACD + volume confirmation, streak-based sizing
+          </p>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div>
+              <label className="block text-xs font-medium text-[hsl(var(--foreground))] mb-1">Position Size ($)</label>
+              <div className="flex items-center gap-1.5">
+                <span className="text-xs text-[hsl(var(--muted-foreground))]">$</span>
+                <NumInput value={config.pennyPositionSize} onCommit={v => onUpdate({ pennyPositionSize: v })}
+                  className="w-full px-2 py-1.5 border border-[hsl(var(--border))] rounded-lg text-xs"
+                  min={50} max={2000} step={50} />
+              </div>
+              <p className="text-[10px] text-[hsl(var(--muted-foreground))] mt-0.5">Full size after a winner; half after a loss or first trade of day</p>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-[hsl(var(--foreground))] mb-1">Max Daily Loss ($)</label>
+              <div className="flex items-center gap-1.5">
+                <span className="text-xs text-[hsl(var(--muted-foreground))]">$</span>
+                <NumInput value={config.pennyMaxDailyLoss} onCommit={v => onUpdate({ pennyMaxDailyLoss: v })}
+                  className="w-full px-2 py-1.5 border border-[hsl(var(--border))] rounded-lg text-xs"
+                  min={50} max={1000} step={50} />
+              </div>
+              <p className="text-[10px] text-[hsl(var(--muted-foreground))] mt-0.5">Stop penny trading for the day if losses exceed this</p>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-[hsl(var(--foreground))] mb-1">Max Daily Trades</label>
+              <NumInput value={config.pennyMaxDailyTrades} onCommit={v => onUpdate({ pennyMaxDailyTrades: v })}
+                className="w-full px-2 py-1.5 border border-[hsl(var(--border))] rounded-lg text-xs"
+                min={1} max={30} step={1} />
+              <p className="text-[10px] text-[hsl(var(--muted-foreground))] mt-0.5">Max penny trades per day (also stops after 3 consecutive losses)</p>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         <div>
           <label className="block text-sm font-medium text-[hsl(var(--foreground))] mb-1.5">

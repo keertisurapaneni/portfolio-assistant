@@ -41,6 +41,7 @@ export function PerformanceTab({
   const sf = categories.find(c => c.category === 'suggested_finds');
   const scannerDt = categories.find(c => c.category === 'scanner_day_trade');
   const influencerDt = categories.find(c => c.category === 'influencer_day_trade');
+  const pennyDt = categories.find(c => c.category === 'day_penny');
   const sw = categories.find(c => c.category === 'swing_trade');
   const dipBuy = categories.find(c => c.category === 'dip_buy');
   const profitTake = categories.find(c => c.category === 'profit_take');
@@ -102,6 +103,7 @@ export function PerformanceTab({
           <SignalScorecard title="Suggested Finds" subtitle="Long-term picks" data={sf} color="indigo" />
           <SignalScorecard title="Scanner Day Trades" subtitle="Trade signals only" data={scannerDt} color="blue" />
           <SignalScorecard title="Influencer Day Trades" subtitle="Strategy video signals" data={influencerDt} color="emerald" />
+          <SignalScorecard title="Penny Day Trades" subtitle="Momentum scanner" data={pennyDt} color="green" />
           <SignalScorecard title="Swing Trades" subtitle="Scanner signals" data={sw} color="violet" />
         </div>
 

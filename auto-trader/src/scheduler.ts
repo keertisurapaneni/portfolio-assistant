@@ -809,7 +809,7 @@ async function checkStaleDayTrades(positions: EnrichedPosition[]): Promise<void>
   const todayEt = getETDateString();
 
   const stale = activeTrades.filter(t => {
-    if (t.mode !== 'DAY_TRADE' || t.status !== 'FILLED') return false;
+    if ((t.mode !== 'DAY_TRADE' && t.mode !== 'DAY_PENNY') || t.status !== 'FILLED') return false;
     const tradeDate = t.filled_at
       ? new Date(t.filled_at).toLocaleDateString('en-CA', { timeZone: 'America/New_York' })
       : null;
@@ -4492,7 +4492,7 @@ async function syncPositions(
       // or after 24h as a safety net for any that slip through.
       const tradeDateET = new Date(trade.created_at).toLocaleDateString('en-US', { timeZone: 'America/New_York' });
       const todayET = new Date().toLocaleDateString('en-US', { timeZone: 'America/New_York' });
-      const dayOrderExpired = trade.mode === 'DAY_TRADE' && (
+      const dayOrderExpired = (trade.mode === 'DAY_TRADE' || trade.mode === 'DAY_PENNY') && (
         (tradeDateET === todayET && isPastMarketCloseET()) || tradeAge > 86400000
       );
       if (dayOrderExpired) {
@@ -5299,7 +5299,7 @@ async function checkDayTradeTrailingStops(
 ): Promise<void> {
   const activeTrades = await getActiveTrades();
   const dayTrades = activeTrades.filter(
-    t => t.mode === 'DAY_TRADE' && (t.status === 'FILLED' || t.status === 'PARTIAL'),
+    t => (t.mode === 'DAY_TRADE' || t.mode === 'DAY_PENNY') && (t.status === 'FILLED' || t.status === 'PARTIAL'),
   );
   if (dayTrades.length === 0) return;
 

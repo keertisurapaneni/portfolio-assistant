@@ -6,7 +6,7 @@ export interface SignalScorecardProps {
   title: string;
   subtitle: string;
   data: CategoryPerformance | undefined;
-  color: 'indigo' | 'blue' | 'emerald' | 'violet';
+  color: 'indigo' | 'blue' | 'emerald' | 'violet' | 'green';
 }
 
 const colorClasses = {
@@ -14,6 +14,7 @@ const colorClasses = {
   blue: 'border-blue-200 bg-blue-50',
   emerald: 'border-emerald-200 bg-emerald-50',
   violet: 'border-violet-200 bg-violet-50',
+  green: 'border-green-200 bg-green-50',
 };
 
 const textColors = {
@@ -21,6 +22,7 @@ const textColors = {
   blue: 'text-blue-700',
   emerald: 'text-emerald-700',
   violet: 'text-violet-700',
+  green: 'text-green-700',
 };
 
 export function SignalScorecard({ title, subtitle, data, color }: SignalScorecardProps) {
