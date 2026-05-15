@@ -151,6 +151,15 @@ export function SettingsTab({ config, onUpdate }: SettingsTabProps) {
             <p className="text-xs text-[hsl(var(--muted-foreground))]">Sell cash-secured puts & covered calls for premium income</p>
           </div>
         </div>
+
+        <div className="flex items-center gap-3">
+          <SettingsToggle enabled={config.pennyEnabled}
+            onToggle={() => onUpdate({ pennyEnabled: !config.pennyEnabled })} />
+          <div>
+            <p className="text-sm font-medium text-[hsl(var(--foreground))]">Penny Scanner</p>
+            <p className="text-xs text-[hsl(var(--muted-foreground))]">Momentum penny stocks ($2-$20) — mechanical rules, 9:35-10:00 AM ET</p>
+          </div>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
