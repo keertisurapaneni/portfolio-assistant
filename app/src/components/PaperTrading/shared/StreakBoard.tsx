@@ -226,30 +226,39 @@ export function StreakBoard() {
               </tr>
             </thead>
             <tbody>
-              {ROW_CONFIG.map((row) => {
-                const isOverall = row.key === 'OVERALL';
-                const coldState = streakStates.find(s => s.mode === row.key);
-                return (
-                  <tr key={row.key} className={cn(isOverall && 'border-t border-[hsl(var(--border))]')}>
-                    <td className={cn(
-                      'text-[11px] pr-2 py-1 whitespace-nowrap',
-                      isOverall ? 'font-bold text-[hsl(var(--foreground))]' : 'font-medium text-[hsl(var(--muted-foreground))]'
-                    )}>
-                      <div className="flex items-center gap-1">
-                        {row.label}
-                        {coldState?.is_cold && (
-                          <AlertTriangle className="w-3 h-3 text-amber-500" />
-                        )}
-                      </div>
-                    </td>
-                    {grid[row.key].map(cell => (
-                      <td key={cell.date} className="text-center px-0.5 py-1">
-                        <Cell cell={cell} bold={isOverall} isToday={cell.isToday} />
-                      </td>
-                    ))}
-                  </tr>
+              {(() => {
+                const strategyRows = ROW_CONFIG.filter(r => r.key !== 'OVERALL');
+                const activeRows = strategyRows.filter(r =>
+                  grid[r.key].some(c => c.tradeCount > 0)
                 );
-              })}
+                const showOverall = activeRows.length > 1;
+                const visibleRows = [...activeRows, ...(showOverall ? [ROW_CONFIG.find(r => r.key === 'OVERALL')!] : [])];
+
+                return visibleRows.map((row) => {
+                  const isOverall = row.key === 'OVERALL';
+                  const coldState = streakStates.find(s => s.mode === row.key);
+                  return (
+                    <tr key={row.key} className={cn(isOverall && 'border-t border-[hsl(var(--border))]')}>
+                      <td className={cn(
+                        'text-[11px] pr-2 py-1 whitespace-nowrap',
+                        isOverall ? 'font-bold text-[hsl(var(--foreground))]' : 'font-medium text-[hsl(var(--muted-foreground))]'
+                      )}>
+                        <div className="flex items-center gap-1">
+                          {row.label}
+                          {coldState?.is_cold && (
+                            <AlertTriangle className="w-3 h-3 text-amber-500" />
+                          )}
+                        </div>
+                      </td>
+                      {grid[row.key].map(cell => (
+                        <td key={cell.date} className="text-center px-0.5 py-1">
+                          <Cell cell={cell} bold={isOverall} isToday={cell.isToday} />
+                        </td>
+                      ))}
+                    </tr>
+                  );
+                });
+              })()}
             </tbody>
           </table>
         </div>
