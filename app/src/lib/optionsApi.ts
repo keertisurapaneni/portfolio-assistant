@@ -409,10 +409,59 @@ export async function getOptionsActivityLog(limit = 50): Promise<OptionsActivity
   const { data, error } = await supabase
     .from('auto_trade_events')
     .select('id, ticker, event_type, message, metadata, created_at')
-    .in('mode', ['OPTIONS_PUT', 'OPTIONS_CALL'])
+    .in('mode', ['OPTIONS_PUT', 'OPTIONS_CALL', 'CREDIT_SPREAD'])
     .order('created_at', { ascending: false })
     .limit(limit);
 
   if (error) return [];
   return (data ?? []) as OptionsActivityEvent[];
+}
+
+// ── Credit Spreads ───────────────────────────────────────
+
+export interface CreditSpreadPosition {
+  id: string;
+  ticker: string;
+  mode: string;
+  status: string;
+  spread_type: string | null;
+  spread_short_strike: number | null;
+  spread_long_strike: number | null;
+  spread_width: number | null;
+  spread_net_credit: number | null;
+  spread_credit_pct: number | null;
+  spread_max_loss: number | null;
+  spread_max_gain: number | null;
+  option_expiry: string | null;
+  option_contracts: number | null;
+  option_delta: number | null;
+  pnl: number | null;
+  opened_at: string;
+  closed_at: string | null;
+  close_reason: string | null;
+  notes: string | null;
+  scanner_reason: string | null;
+}
+
+export async function getOpenCreditSpreads(): Promise<CreditSpreadPosition[]> {
+  const { data, error } = await supabase
+    .from('paper_trades')
+    .select('id, ticker, mode, status, spread_type, spread_short_strike, spread_long_strike, spread_width, spread_net_credit, spread_credit_pct, spread_max_loss, spread_max_gain, option_expiry, option_contracts, option_delta, pnl, opened_at, closed_at, close_reason, notes, scanner_reason')
+    .eq('mode', 'CREDIT_SPREAD')
+    .in('status', [...ACTIVE_STATUSES])
+    .order('option_expiry', { ascending: true });
+  if (error) throw error;
+  return (data ?? []) as CreditSpreadPosition[];
+}
+
+export async function getClosedCreditSpreads(limit = 20): Promise<CreditSpreadPosition[]> {
+  const { data, error } = await supabase
+    .from('paper_trades')
+    .select('id, ticker, mode, status, spread_type, spread_short_strike, spread_long_strike, spread_width, spread_net_credit, spread_credit_pct, spread_max_loss, spread_max_gain, option_expiry, option_contracts, option_delta, pnl, opened_at, closed_at, close_reason, notes, scanner_reason')
+    .eq('mode', 'CREDIT_SPREAD')
+    .in('status', [...CLOSED_STATUSES])
+    .order('closed_at', { ascending: false })
+    .limit(limit);
+  if (error) throw error;
+  return (data ?? []) as CreditSpreadPosition[];
 }

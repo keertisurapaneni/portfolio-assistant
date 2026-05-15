@@ -13,6 +13,7 @@ export type TradeMode =
   | 'OPTIONS_PUT'
   | 'OPTIONS_CALL'
   | 'CALENDAR_SPREAD'
+  | 'CREDIT_SPREAD'
   | 'EARNINGS_CALENDAR';
 
 export type TradeSignal = 'BUY' | 'SELL';
@@ -33,7 +34,10 @@ export type CloseReason =
   | 'target_hit'
   | 'eod_close'
   | 'manual'
-  | 'cancelled';
+  | 'cancelled'
+  | 'profit_take_50pct'
+  | 'stop_loss_100pct'
+  | 'time_exit_21dte';
 
 /**
  * Full paper_trades row — superset of all columns used by any consumer.

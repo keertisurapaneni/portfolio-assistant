@@ -14,11 +14,14 @@ import {
   updateOptionsWatchlistNotes,
   lookupTickerDescription,
   fetchWatchlistQuotes,
+  getOpenCreditSpreads,
+  getClosedCreditSpreads,
   type TickerQuote,
   type WatchlistTicker,
   type OpenOptionsPosition,
   type OptionsMonthlyStats,
   type OptionsActivityEvent,
+  type CreditSpreadPosition,
 } from '../../../lib/optionsApi';
 
 // ── Helpers ──────────────────────────────────────────────
@@ -443,6 +446,112 @@ function StatsHeader({
   );
 }
 
+// ── Credit Spread Card ────────────────────────────────────
+
+function SpreadCard({ spread, closed }: { spread: CreditSpreadPosition; closed?: boolean }) {
+  const dte = spread.option_expiry ? daysUntil(spread.option_expiry) : 0;
+  const totalCredit = (spread.spread_net_credit ?? 0) * 100 * (spread.option_contracts ?? 1);
+  const creditPctDisplay = ((spread.spread_credit_pct ?? 0) * 100).toFixed(0);
+  const pnl = spread.pnl ?? 0;
+  const maxGain = spread.spread_max_gain ?? totalCredit;
+  const pnlPctOfMax = maxGain > 0 ? (pnl / maxGain) * 100 : 0;
+
+  const borderClass = closed
+    ? pnl >= 0 ? 'border-emerald-200 bg-emerald-50/40' : 'border-red-200 bg-red-50/40'
+    : dte <= 21 ? 'border-amber-200 bg-amber-50' : 'border-[hsl(var(--border))] bg-[hsl(var(--card))]';
+
+  return (
+    <div className={cn('rounded-xl border p-3', borderClass)}>
+      <div className="flex items-center justify-between mb-2">
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-bold text-[hsl(var(--foreground))]">{spread.ticker}</span>
+          <span className={cn(
+            'text-[10px] px-1.5 py-0.5 rounded font-medium',
+            spread.spread_type === 'BULL_PUT'
+              ? 'bg-emerald-100 text-emerald-700'
+              : 'bg-red-100 text-red-700'
+          )}>
+            {spread.spread_type === 'BULL_PUT' ? 'Bull Put' : 'Bear Call'}
+          </span>
+          {closed && spread.close_reason && (
+            <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 font-medium">
+              {spread.close_reason.replace(/_/g, ' ')}
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-1.5">
+          {!closed && (
+            <span className={cn('text-[10px] px-2 py-0.5 rounded-full font-semibold', dteBadgeColor(dte))}>
+              {dte}d left
+            </span>
+          )}
+          <span className={cn(
+            'text-[10px] px-2 py-0.5 rounded-full font-semibold',
+            pnl >= 0 ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'
+          )}>
+            {fmtUsd(pnl, 0, true)}
+          </span>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-5 gap-1 text-center">
+        <div>
+          <p className="text-xs font-bold text-[hsl(var(--foreground))]">
+            ${spread.spread_short_strike}/{spread.spread_long_strike}
+          </p>
+          <p className="text-[9px] text-[hsl(var(--muted-foreground))] mt-0.5">Strikes</p>
+        </div>
+        <div>
+          <p className="text-xs font-bold text-emerald-600">
+            +${totalCredit.toFixed(0)}
+          </p>
+          <p className="text-[9px] text-[hsl(var(--muted-foreground))] mt-0.5">Credit</p>
+        </div>
+        <div>
+          <p className="text-xs font-bold text-violet-700">
+            {creditPctDisplay}%
+          </p>
+          <p className="text-[9px] text-[hsl(var(--muted-foreground))] mt-0.5">Cr/Width</p>
+        </div>
+        <div>
+          <p className="text-xs font-bold text-red-600">
+            ${(spread.spread_max_loss ?? 0).toFixed(0)}
+          </p>
+          <p className="text-[9px] text-[hsl(var(--muted-foreground))] mt-0.5">Max Risk</p>
+        </div>
+        <div>
+          <p className="text-xs font-bold text-[hsl(var(--foreground))]">
+            {spread.option_expiry ? formatExpiry(spread.option_expiry) : '—'}
+          </p>
+          <p className="text-[9px] text-[hsl(var(--muted-foreground))] mt-0.5">Expiry</p>
+        </div>
+      </div>
+
+      {/* Progress towards max gain */}
+      {!closed && maxGain > 0 && (
+        <div className="mt-2">
+          <div className="flex items-center justify-between text-[10px] text-[hsl(var(--muted-foreground))] mb-1">
+            <span>P&L: {pnlPctOfMax.toFixed(0)}% of max</span>
+            <span>Target: 50%</span>
+          </div>
+          <div className="h-1.5 rounded-full bg-[hsl(var(--muted))]/40 overflow-hidden">
+            <div
+              className={cn('h-full rounded-full transition-all', pnl >= 0 ? 'bg-emerald-500' : 'bg-red-400')}
+              style={{ width: `${Math.min(100, Math.abs(pnlPctOfMax))}%` }}
+            />
+          </div>
+        </div>
+      )}
+
+      {spread.scanner_reason && (
+        <p className="mt-2 text-[10px] text-[hsl(var(--muted-foreground))] leading-snug">
+          {spread.scanner_reason}
+        </p>
+      )}
+    </div>
+  );
+}
+
 // ── Main Tab ─────────────────────────────────────────────
 
 export function OptionsTab() {
@@ -461,7 +570,9 @@ export function OptionsTab() {
   const [prices, setPrices] = useState<Map<string, TickerQuote>>(new Map());
   const [openPrices, setOpenPrices] = useState<Map<string, TickerQuote>>(new Map());
   const [maxAllocation, setMaxAllocation] = useState<number>(500_000);
-  const [activeSection, setActiveSection] = useState<'positions' | 'history' | 'watchlist' | 'log' | 'sniper'>('positions');
+  const [openSpreads, setOpenSpreads] = useState<CreditSpreadPosition[]>([]);
+  const [closedSpreads, setClosedSpreads] = useState<CreditSpreadPosition[]>([]);
+  const [activeSection, setActiveSection] = useState<'positions' | 'history' | 'watchlist' | 'log' | 'sniper' | 'spreads'>('positions');
   const [tierFilter, setTierFilter]     = useState<'ALL' | 'STABLE' | 'GROWTH' | 'HIGH_VOL'>('ALL');
   const [sectorFilter, setSectorFilter] = useState<string>('ALL');
   const [newOnly, setNewOnly] = useState(false);
@@ -469,18 +580,22 @@ export function OptionsTab() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [openPos, closedPos, wl, monthStats, log] = await Promise.all([
+      const [openPos, closedPos, wl, monthStats, log, openSpr, closedSpr] = await Promise.all([
         getOpenOptionsPositions(),
         getClosedOptionsPositions(20),
         getOptionsWatchlist(),
         getOptionsMonthlyStats(),
         getOptionsActivityLog(50),
+        getOpenCreditSpreads(),
+        getClosedCreditSpreads(20),
       ]);
       setOpenPositions(openPos);
       setClosedPositions(closedPos);
       setWatchlist(wl);
       setStats(monthStats);
       setActivityLog(log);
+      setOpenSpreads(openSpr);
+      setClosedSpreads(closedSpr);
     } catch (err) {
       console.error('Options tab load error:', err);
     } finally {
@@ -663,6 +778,7 @@ export function OptionsTab() {
 
   const sections = [
     { id: 'positions' as const, label: 'Open', count: openPositions.length },
+    { id: 'spreads' as const, label: 'Spreads', count: openSpreads.length },
     { id: 'history' as const, label: 'History', count: closedPositions.length },
     { id: 'watchlist' as const, label: 'Watchlist', count: watchlist.filter(w => w.active).length },
     { id: 'sniper' as const, label: 'Sniper', count: 0 },
@@ -763,6 +879,44 @@ export function OptionsTab() {
                       pos={pos}
                       currentPrice={openPrices.get(pos.ticker)}
                     />
+                  ))}
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
+
+      {/* Credit Spreads */}
+      {activeSection === 'spreads' && (
+        <div className="space-y-4">
+          {/* Open spreads */}
+          {openSpreads.length === 0 && closedSpreads.length === 0 ? (
+            <div className="text-center py-8 text-sm text-[hsl(var(--muted-foreground))]">
+              No credit spread positions yet. Scans run Tue/Thu 10:30 AM ET.
+            </div>
+          ) : (
+            <>
+              {openSpreads.length > 0 && (
+                <div className="space-y-2">
+                  <div className="flex items-center gap-2 px-1">
+                    <span className="text-xs font-bold text-emerald-700">Open Spreads</span>
+                    <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-700 font-bold">
+                      {openSpreads.length}
+                    </span>
+                  </div>
+                  {openSpreads.map(sp => (
+                    <SpreadCard key={sp.id} spread={sp} />
+                  ))}
+                </div>
+              )}
+              {closedSpreads.length > 0 && (
+                <div className="space-y-2">
+                  <div className="flex items-center gap-2 px-1">
+                    <span className="text-xs font-bold text-[hsl(var(--muted-foreground))]">Closed Spreads</span>
+                  </div>
+                  {closedSpreads.map(sp => (
+                    <SpreadCard key={sp.id} spread={sp} closed />
                   ))}
                 </div>
               )}
