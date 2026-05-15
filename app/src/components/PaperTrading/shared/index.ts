@@ -5,3 +5,4 @@ export { SignalScorecard } from './SignalScorecard';
 export type { SignalScorecardProps } from './SignalScorecard';
 export { MetricsTable } from './MetricsTable';
 export type { MetricsTableProps } from './MetricsTable';
+export { StreakBoard } from './StreakBoard';
