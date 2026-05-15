@@ -177,6 +177,8 @@ const SWING_CORE = [
   'XOM', 'CAT',
   // Top growth
   'CRWD', 'PLTR',
+  // LatAm & emerging market growth
+  'SE', 'NU', 'MELI',
 ];
 
 // Sector ETFs for momentum rotation
