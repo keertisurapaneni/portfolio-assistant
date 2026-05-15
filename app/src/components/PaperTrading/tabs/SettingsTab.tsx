@@ -486,6 +486,15 @@ export function SettingsTab({ config, onUpdate }: SettingsTabProps) {
         <h4 className="text-sm font-semibold text-[hsl(var(--foreground))] mb-4">Risk Management</h4>
         <div className="space-y-4">
           <div className="flex items-center gap-3">
+            <SettingsToggle enabled={config.trendFilterEnabled}
+              onToggle={() => onUpdate({ trendFilterEnabled: !config.trendFilterEnabled })} />
+            <div>
+              <p className="text-sm font-medium text-[hsl(var(--foreground))]">4H Trend Filter</p>
+              <p className="text-xs text-[hsl(var(--muted-foreground))]">Skip day trade entries when the 4H 100 EMA trend is against the signal direction</p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-3">
             <SettingsToggle enabled={config.marketRegimeEnabled}
               onToggle={() => onUpdate({ marketRegimeEnabled: !config.marketRegimeEnabled })} />
             <div>

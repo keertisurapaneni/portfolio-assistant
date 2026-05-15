@@ -109,6 +109,7 @@ export async function loadConfig(): Promise<AutoTraderConfig> {
     pennyPositionSize: Number(data.penny_position_size ?? DEFAULT_CONFIG.pennyPositionSize),
     pennyMaxDailyLoss: Number(data.penny_max_daily_loss ?? DEFAULT_CONFIG.pennyMaxDailyLoss),
     pennyMaxDailyTrades: Number(data.penny_max_daily_trades ?? DEFAULT_CONFIG.pennyMaxDailyTrades),
+    trendFilterEnabled: data.trend_filter_enabled ?? DEFAULT_CONFIG.trendFilterEnabled,
   };
 }
 
