@@ -128,10 +128,13 @@ async function getSyntheticOptionsChain(
   underlyingPrice: number,
   deltaTarget = 0.22,
   dteDays?: number,
+  constraints?: ExpiryConstraints,
 ): Promise<OptionsChainSummary | null> {
   const iv       = await estimateIV(symbol);
   const expiries = getMonthlyExpiries(4);
-  const expiry   = dteDays ? pickBestExpiryForDte(expiries, dteDays) : pickBestExpiry(expiries);
+  const expiry   = dteDays
+    ? pickBestExpiryForDte(expiries, dteDays, constraints?.avoidWeeks, constraints?.earningsBefore)
+    : pickBestExpiry(expiries, constraints?.avoidWeeks, constraints?.earningsBefore);
   if (!expiry) return null;
 
   const dte = daysToExpiry(expiry);
@@ -193,25 +196,53 @@ function daysToExpiry(expiryYYYYMMDD: string): number {
   return Math.ceil((exp.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
 }
 
-function pickBestExpiry(expirations: string[]): string | null {
-  // Target 30–45 DTE for optimal theta decay.
-  // Prefer the closest to 38 DTE that's at least 14 days away (avoid expiry-week chop).
+function pickBestExpiry(expirations: string[], avoidWeeks?: Set<string>, earningsBefore?: string): string | null {
+  // Target 30–45 DTE for optimal theta decay (sweet spot per Brad Castro / OptionsPlay).
+  // Minimum 21 DTE — if the nearest monthly is < 21 DTE, roll to the next monthly.
+  // If earningsBefore is set (YYYYMMDD), skip expiries that fall on or after earnings.
+  // If avoidWeeks is set, prefer expiries in non-crowded weeks (still allow as last resort).
   const valid = expirations
-    .map(e => ({ e, dte: daysToExpiry(e) }))
-    .filter(x => x.dte >= 14)
-    .sort((a, b) => Math.abs(a.dte - 38) - Math.abs(b.dte - 38));
-  return valid[0]?.e ?? null;
+    .map(e => ({ e, dte: daysToExpiry(e), wk: expiryYYYYMMDDtoWeekKey(e) }))
+    .filter(x => x.dte >= 21)
+    .filter(x => !earningsBefore || x.e < earningsBefore);
+
+  if (valid.length === 0) {
+    const relaxed = expirations
+      .map(e => ({ e, dte: daysToExpiry(e) }))
+      .filter(x => x.dte >= 14)
+      .sort((a, b) => Math.abs(a.dte - 38) - Math.abs(b.dte - 38));
+    return relaxed[0]?.e ?? null;
+  }
+
+  const preferred = avoidWeeks?.size
+    ? valid.filter(x => !avoidWeeks.has(x.wk))
+    : valid;
+  const pool = preferred.length > 0 ? preferred : valid;
+  pool.sort((a, b) => Math.abs(a.dte - 38) - Math.abs(b.dte - 38));
+  return pool[0]?.e ?? null;
 }
 
 /** Pick expiry closest to a specific DTE target (e.g. 21 for bear mode). */
-function pickBestExpiryForDte(expirations: string[], targetDte: number): string | null {
+function pickBestExpiryForDte(expirations: string[], targetDte: number, avoidWeeks?: Set<string>, earningsBefore?: string): string | null {
   const minDte = Math.max(7, targetDte - 10);
   const maxDte = targetDte + 14;
-  const candidates = expirations
-    .map(e => ({ e, dte: daysToExpiry(e) }))
+  let candidates = expirations
+    .map(e => ({ e, dte: daysToExpiry(e), wk: expiryYYYYMMDDtoWeekKey(e) }))
     .filter(x => x.dte >= minDte && x.dte <= maxDte)
-    .sort((a, b) => Math.abs(a.dte - targetDte) - Math.abs(b.dte - targetDte));
-  return candidates[0]?.e ?? null;
+    .filter(x => !earningsBefore || x.e < earningsBefore);
+
+  if (candidates.length === 0) {
+    candidates = expirations
+      .map(e => ({ e, dte: daysToExpiry(e), wk: expiryYYYYMMDDtoWeekKey(e) }))
+      .filter(x => x.dte >= minDte && x.dte <= maxDte);
+  }
+
+  const preferred = avoidWeeks?.size
+    ? candidates.filter(x => !avoidWeeks.has(x.wk))
+    : candidates;
+  const pool = preferred.length > 0 ? preferred : candidates;
+  pool.sort((a, b) => Math.abs(a.dte - targetDte) - Math.abs(b.dte - targetDte));
+  return pool[0]?.e ?? null;
 }
 
 // ── Get Option Chain Parameters ───────────────────────────
@@ -479,42 +510,53 @@ async function findBestCallStrike(
  * Uses live IB data when connected; falls back to a Black-Scholes synthetic
  * chain (Finnhub HV-derived IV) so the scanner can run without IB Gateway.
  */
+export interface ExpiryConstraints {
+  avoidWeeks?: Set<string>;     // ISO week keys (YYYY-MM-DD Monday) with too many positions
+  earningsBefore?: string;      // YYYYMMDD — don't pick expiries on or after this date
+}
+
+function expiryYYYYMMDDtoWeekKey(yyyymmdd: string): string {
+  const y = parseInt(yyyymmdd.slice(0, 4), 10);
+  const m = parseInt(yyyymmdd.slice(4, 6), 10) - 1;
+  const d = parseInt(yyyymmdd.slice(6, 8), 10);
+  const date = new Date(y, m, d);
+  const day = date.getUTCDay();
+  const monday = new Date(date);
+  monday.setUTCDate(date.getUTCDate() - ((day + 6) % 7));
+  return monday.toISOString().slice(0, 10);
+}
+
 export async function getOptionsChain(
   symbol: string,
   underlyingPrice: number,
   storedIvRank: number | null = null,
-  deltaTarget?: number,   // override delta target (bear mode uses 0.15)
-  dteDays?: number,       // override DTE window center (bear mode uses 21)
+  deltaTarget?: number,
+  dteDays?: number,
+  constraints?: ExpiryConstraints,
 ): Promise<OptionsChainSummary | null> {
   const syntheticFallback = async () => {
-    const s = await getSyntheticOptionsChain(symbol, underlyingPrice, deltaTarget, dteDays);
+    const s = await getSyntheticOptionsChain(symbol, underlyingPrice, deltaTarget, dteDays, constraints);
     if (s) s.ivRank = storedIvRank;
     return s;
   };
 
   if (!isConnected()) return syntheticFallback();
 
-  // Step 1–4: Try live IB data. Fall back to synthetic at any failure point so the
-  // scanner keeps running even when market data subscriptions are missing.
   const contractInfo = await searchContract(symbol);
   if (!contractInfo) return syntheticFallback();
 
   const params = await getOptionChainParams(contractInfo.conId, symbol);
   if (!params || params.expirations.length === 0) return syntheticFallback();
 
-  // Step 3: Pick the best expiry — bear mode targets 21 DTE, normal 30-45 DTE
   const expiry = dteDays
-    ? pickBestExpiryForDte(params.expirations, dteDays)
-    : pickBestExpiry(params.expirations);
+    ? pickBestExpiryForDte(params.expirations, dteDays, constraints?.avoidWeeks, constraints?.earningsBefore)
+    : pickBestExpiry(params.expirations, constraints?.avoidWeeks, constraints?.earningsBefore);
   if (!expiry) return syntheticFallback();
 
-  // Step 4: Find best put strike — use caller-specified delta target if provided
   const bestPut = await findBestPutStrike(symbol, params.strikes, expiry, underlyingPrice, deltaTarget);
 
-  // If Greeks failed (e.g. market data not subscribed), fall back to synthetic.
   if (!bestPut) return syntheticFallback();
 
-  // Step 5: Find best covered call via delta targeting (mirrors put logic)
   const bestCall = await findBestCallStrike(symbol, params.strikes, expiry, underlyingPrice);
 
   const currentIV = bestPut?.impliedVol ?? bestCall?.impliedVol ?? 0;

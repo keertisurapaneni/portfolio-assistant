@@ -12,6 +12,7 @@ export type TradeMode =
   | 'LONG_TERM'
   | 'OPTIONS_PUT'
   | 'OPTIONS_CALL'
+  | 'CALENDAR_SPREAD'
   | 'EARNINGS_CALENDAR';
 
 export type TradeSignal = 'BUY' | 'SELL';

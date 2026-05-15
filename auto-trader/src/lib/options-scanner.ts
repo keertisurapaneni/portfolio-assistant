@@ -35,7 +35,7 @@
 
 import { getSupabase, createAutoTradeEvent } from './supabase.js';
 import { ACTIVE_STATUSES } from '../../../shared/trade-status-sets.js';
-import { getOptionsChain, type OptionGreeks } from './options-chain.js';
+import { getOptionsChain, type OptionGreeks, type ExpiryConstraints } from './options-chain.js';
 import { isConnected, placeOptionsOrder, getDefaultAccount } from '../ib-connection.js';
 import { fetchDailyBars, fetchQuote, sma as calcSma, estimateHistoricalVol } from './yahoo-finance.js';
 import { getFundamentalGrade } from './fundamental-grader.js';
@@ -188,6 +188,20 @@ function parseLeverageFactor(notes: string | null): number {
   return m ? parseInt(m[1]) : 1;
 }
 
+/** Map a date to its ISO week key (Monday-start) for expiry concentration tracking. */
+function expiryWeekKey(dateStr: string): string {
+  const d = new Date(dateStr);
+  const day = d.getUTCDay();
+  const monday = new Date(d);
+  monday.setUTCDate(d.getUTCDate() - ((day + 6) % 7));
+  return monday.toISOString().slice(0, 10);
+}
+
+/** Convert YYYYMMDD to ISO date string. */
+function expiryToIso(yyyymmdd: string): string {
+  return `${yyyymmdd.slice(0, 4)}-${yyyymmdd.slice(4, 6)}-${yyyymmdd.slice(6, 8)}`;
+}
+
 interface ScanContext {
   spyAboveSma200: boolean;
   bearMode: boolean;           // true when SPY < SMA200 — applies conservative params
@@ -197,10 +211,13 @@ interface ScanContext {
   deployedCapitalByTicker: Map<string, number>;
   sectorByTicker: Map<string, string>;
   openCountBySector: Map<string, number>;
+  openExpiryWeekCount: Map<string, number>; // ISO week key → count of open positions expiring that week
   freeCapital: number;
   minIvRank: number;           // auto-tuned: minimum IV rank floor (default 50)
   deltaTarget: number;         // auto-tuned: base delta target for put selection (default 0.30)
 }
+
+const MAX_POSITIONS_SAME_EXPIRY_WEEK = 3;
 
 // ── Finnhub Helpers ──────────────────────────────────────
 
@@ -500,11 +517,8 @@ async function buildScanContext(
   const [spyData, vix, openPositions] = await Promise.all([
     getSpySma200(),
     getVix(),
-    // Only count PUT positions for sector concentration and open-position limits.
-    // Covered calls (OPTIONS_CALL) are assigned-stock management — they don't consume
-    // new capital and shouldn't block fresh put entries in the same sector.
     sb.from('paper_trades')
-      .select('ticker, mode, position_size')
+      .select('ticker, mode, position_size, option_expiry')
       .eq('mode', 'OPTIONS_PUT')
       .in('status', [...ACTIVE_STATUSES]),
   ]);
@@ -521,8 +535,13 @@ async function buildScanContext(
     openCountBySector.set(sector, (openCountBySector.get(sector) ?? 0) + 1);
   }));
 
+  const openExpiryWeekCount = new Map<string, number>();
   for (const pos of openPositions.data ?? []) {
     deployedByTicker.set(pos.ticker, (deployedByTicker.get(pos.ticker) ?? 0) + (pos.position_size ?? 0));
+    if (pos.option_expiry) {
+      const wk = expiryWeekKey(pos.option_expiry);
+      openExpiryWeekCount.set(wk, (openExpiryWeekCount.get(wk) ?? 0) + 1);
+    }
   }
 
   const spyAboveSma200 = spyData ? spyData.price > spyData.sma200 : true;
@@ -537,6 +556,7 @@ async function buildScanContext(
     deployedCapitalByTicker: deployedByTicker,
     sectorByTicker,
     openCountBySector,
+    openExpiryWeekCount,
     freeCapital,
     minIvRank,
     deltaTarget,
@@ -798,15 +818,41 @@ async function checkStock(
     }
   }
 
+  // Build expiry constraints: avoid crowded expiry weeks + don't sell through earnings.
+  // Earnings-through-expiry is different from the 7-day blackout above — the blackout
+  // prevents entry when earnings are imminent; this prevents picking an expiry that
+  // straddles earnings (e.g. earnings in 20d but expiry is 38 DTE = selling through).
+  const expiryConstraints: ExpiryConstraints = {};
+  const crowdedWeeks = new Set<string>();
+  for (const [wk, count] of ctx.openExpiryWeekCount) {
+    if (count >= MAX_POSITIONS_SAME_EXPIRY_WEEK) {
+      crowdedWeeks.add(wk);
+    }
+  }
+  if (crowdedWeeks.size > 0) expiryConstraints.avoidWeeks = crowdedWeeks;
+
+  if (earningsDate) {
+    const ey = earningsDate.getFullYear();
+    const em = String(earningsDate.getMonth() + 1).padStart(2, '0');
+    const ed = String(earningsDate.getDate()).padStart(2, '0');
+    expiryConstraints.earningsBefore = `${ey}${em}${ed}`;
+    checks.earningsThroughExpiry = `earnings_${ey}${em}${ed}_constraining_expiry`;
+  }
+
   const chain = await getOptionsChain(
     ticker,
     price,
     null,
     deltaTarget,
     targetDte,
+    (expiryConstraints.avoidWeeks || expiryConstraints.earningsBefore) ? expiryConstraints : undefined,
   );
   if (!chain?.bestPut) return { ticker, skipped: true, reason: 'no_options_chain' };
   const put = chain.bestPut;
+
+  checks.expiryDiversification = crowdedWeeks.size > 0
+    ? `avoided_${crowdedWeeks.size}_crowded_weeks→${put.expiry}`
+    : `no_crowding→${put.expiry}`;
 
   // Check 6a: SMA20 strike floor (Henry "Invest with Henry" insight)
   // The put strike must be at or below the 20-day SMA (= Bollinger Band middle).
@@ -986,7 +1032,11 @@ export async function runOptionsScan(freeCapital = 100_000): Promise<OptionsScan
   const skipped: Array<{ ticker: string; reason: string }> = [];
 
   const total = watchlist.length;
-  console.log(`\n[Options Scanner] ━━━ Starting scan — ${total} tickers | VIX ${ctx.vix.toFixed(1)} | ${ctx.spyAboveSma200 ? 'Bull' : 'Bear'} mode | δ target ${ctx.deltaTarget} | free capital $${(freeCapital / 1000).toFixed(0)}k ━━━`);
+  const crowdedWeeksSummary = [...ctx.openExpiryWeekCount.entries()]
+    .filter(([, c]) => c >= MAX_POSITIONS_SAME_EXPIRY_WEEK)
+    .map(([wk, c]) => `${wk}(${c})`)
+    .join(', ') || 'none';
+  console.log(`\n[Options Scanner] ━━━ Starting scan — ${total} tickers | VIX ${ctx.vix.toFixed(1)} | ${ctx.spyAboveSma200 ? 'Bull' : 'Bear'} mode | δ target ${ctx.deltaTarget} | free capital $${(freeCapital / 1000).toFixed(0)}k | crowded weeks: ${crowdedWeeksSummary} ━━━`);
 
   // Scan each ticker (sequential to avoid IB request flooding)
   for (const [i, entry] of (watchlist as WatchlistEntry[]).entries()) {
@@ -1001,12 +1051,15 @@ export async function runOptionsScan(freeCapital = 100_000): Promise<OptionsScan
         console.log(`[Options Scanner] ${num} ${entry.ticker.padEnd(5)} ✗  ${result.reason}`);
         skipped.push({ ticker: result.ticker, reason: result.reason });
       } else {
-        console.log(`[Options Scanner] ${num} ${entry.ticker.padEnd(5)} ✅ QUALIFIED — $${result.strike} put | δ${result.delta.toFixed(2)} | ${result.annualYield.toFixed(0)}% ann. yield`);
+        console.log(`[Options Scanner] ${num} ${entry.ticker.padEnd(5)} ✅ QUALIFIED — $${result.strike} put | δ${result.delta.toFixed(2)} | ${result.annualYield.toFixed(0)}% ann. yield | exp ${result.expiryFormatted}`);
         opportunities.push(result);
 
-        // Increment open count and decrement free capital to respect limits within this scan
+        // Update running scan context so subsequent tickers respect limits
         ctx.openPutCount += 1;
         ctx.freeCapital = Math.max(0, ctx.freeCapital - result.capitalRequired);
+        const newExpIso = expiryToIso(result.expiry);
+        const newWk = expiryWeekKey(newExpIso);
+        ctx.openExpiryWeekCount.set(newWk, (ctx.openExpiryWeekCount.get(newWk) ?? 0) + 1);
       }
     } catch (err) {
       // Don't let one bad ticker crash the entire scan — record the error and continue

@@ -807,6 +807,132 @@ export function placeOptionsOrder(params: OptionsOrderParams): Promise<OptionsOr
   });
 }
 
+// ── Place Calendar Spread Order (combo / BAG) ────────────
+
+export interface CalendarSpreadOrderParams {
+  symbol: string;
+  right: 'P' | 'C';
+  strike: number;
+  frontExpiry: string;   // YYYYMMDD — sell (short) leg
+  backExpiry: string;    // YYYYMMDD — buy (long) leg
+  contracts: number;
+  limitPrice: number;    // net debit per spread (positive = pay)
+  account?: string;
+}
+
+export interface CalendarSpreadOrderResult {
+  orderId: number;
+}
+
+/**
+ * Resolve an option contract to its IB conId.
+ * Required for building combo leg definitions.
+ */
+async function resolveOptionConId(
+  symbol: string, right: 'P' | 'C', strike: number, expiry: string,
+): Promise<number | null> {
+  if (!ib || !connected) return null;
+  await acquireRequestSlot();
+  try {
+    return await new Promise<number | null>((resolve) => {
+      const reqId = getNextOrderId();
+      const emitter = ib! as unknown as NodeJS.EventEmitter;
+      let resolved = false;
+      const timeout = setTimeout(() => {
+        if (resolved) return;
+        resolved = true;
+        emitter.removeAllListeners(`contractDetails-${reqId}`);
+        resolve(null);
+      }, 8_000);
+
+      emitter.once(EventName.contractDetails, (_rId: number, details: any) => {
+        if (resolved) return;
+        resolved = true;
+        clearTimeout(timeout);
+        resolve(details?.contract?.conId ?? null);
+      });
+
+      const err = registerReqErrorCallback(reqId, () => {
+        if (resolved) return;
+        resolved = true;
+        clearTimeout(timeout);
+        resolve(null);
+      });
+
+      ib!.reqContractDetails(reqId, {
+        symbol: symbol.toUpperCase(),
+        secType: SecType.OPT,
+        exchange: 'SMART',
+        currency: 'USD',
+        strike,
+        right: right === 'P' ? OptionType.Put : OptionType.Call,
+        lastTradeDateOrContractMonth: expiry,
+        multiplier: 100,
+      });
+    });
+  } finally {
+    releaseRequestSlot();
+  }
+}
+
+/**
+ * Place a calendar spread as an IB combo (BAG) order.
+ * Sells the front-month leg, buys the back-month leg at the same strike.
+ * Net debit = back premium - front premium (you pay the difference).
+ */
+export async function placeCalendarSpreadOrder(
+  params: CalendarSpreadOrderParams,
+): Promise<CalendarSpreadOrderResult> {
+  if (!ib || !connected) {
+    throw new Error('Not connected to IB Gateway');
+  }
+
+  const { symbol, right, strike, frontExpiry, backExpiry, contracts, account } = params;
+
+  // Resolve conIds for both legs
+  const [frontConId, backConId] = await Promise.all([
+    resolveOptionConId(symbol, right, strike, frontExpiry),
+    resolveOptionConId(symbol, right, strike, backExpiry),
+  ]);
+  if (!frontConId || !backConId) {
+    throw new Error(`Could not resolve conIds for ${symbol} ${strike}${right} ${frontExpiry}/${backExpiry}`);
+  }
+
+  const tick = params.limitPrice >= 3.0 ? 0.05 : 0.01;
+  const limitPrice = Math.round(params.limitPrice / tick) * tick;
+
+  const contract: Contract = {
+    symbol: symbol.toUpperCase(),
+    secType: SecType.BAG,
+    exchange: 'SMART',
+    currency: 'USD',
+    comboLegs: [
+      { conId: frontConId, ratio: 1, action: OrderAction.SELL, exchange: 'SMART' },
+      { conId: backConId,  ratio: 1, action: OrderAction.BUY,  exchange: 'SMART' },
+    ],
+  };
+
+  const orderId = getNextOrderId();
+
+  const order: Order = {
+    action: OrderAction.BUY,
+    orderType: OrderType.LMT,
+    totalQuantity: contracts,
+    lmtPrice: limitPrice,
+    tif: TimeInForce.DAY,
+    transmit: true,
+    ...(account ? { account } : {}),
+  };
+
+  try {
+    ib.placeOrder(orderId, contract, order);
+    console.log(`[IB] Calendar spread placed: ${symbol} ${strike}${right} sell ${frontExpiry} / buy ${backExpiry} x${contracts} @ $${limitPrice} net debit (orderId=${orderId})`);
+    return { orderId };
+  } catch (err) {
+    throw err;
+  }
+}
+
 // ── Disconnect ───────────────────────────────────────────
 
 export function disconnect(): void {
