@@ -1,0 +1,38 @@
+---
+description: IB paper account context — no manual trades, auto-trader is sole operator
+alwaysApply: true
+---
+
+# IB Paper Account — Single Operator
+
+## Context
+
+- We are using an **IB paper trading account** (not a live account).
+- **All trades are placed by the auto-trader.** No manual trades are ever placed.
+- The auto-trader is the **sole operator** of this IB account.
+
+## Implications
+
+1. **IB and paper_trades should always agree.** There is no legitimate reason for
+   a position to exist in IB without a corresponding `paper_trades` record, or vice
+   versa. Any discrepancy is a bug in the auto-trader, not a manual trade.
+
+2. **Orphaned positions are always bugs.** When `reconcileIBShorts()` or
+   `reconcileIBLongs()` finds an IB position with no matching paper_trade, that
+   means the auto-trader created it (accidental short from overselling, duplicate
+   order, etc.). Treat the root cause as a bug to fix, not just a reconciliation
+   event to log.
+
+3. **IB's realized P&L is the source of truth** for today's total P&L. The
+   `reqPnL` subscription returns the exact same number as the IB mobile app.
+   When IB is connected, always prefer `ibRealizedPnl` over event-based
+   calculations. The event-based fallback exists only for when IB is disconnected.
+
+4. **Every IB execution was initiated by our code.** When debugging fill price
+   discrepancies, check the auto-trader logs — the order ID, fill price, and
+   quantity are all logged. No external party is placing orders.
+
+5. **Position quantity must match exactly.** If the auto-trader intends to close
+   a position of N shares, it must verify IB holds exactly N shares before selling.
+   Selling more than held creates an accidental short. This has happened with CSCO
+   and AMAT (May 15, 2026) where two separate sell orders fired for the same ticker.

@@ -1027,8 +1027,10 @@ export async function reconcileIBShorts(): Promise<{ closed: string[]; errors: s
     const qty = Math.abs(pos.position);
     log(`[IBReconcile] Covering short: ${pos.symbol} × ${qty} @ avg ${pos.avgCost}`);
     try {
-      const { orderId: coverOrderId } = await placeMarketOrder({ symbol: pos.symbol, side: 'BUY', quantity: qty });
-      log(`[IBReconcile] ✓ ${pos.symbol}: BUY ${qty} order placed (orderId=${coverOrderId})`);
+      const { orderId: coverOrderId, avgFillPrice } = await placeMarketOrder({ symbol: pos.symbol, side: 'BUY', quantity: qty });
+      // Short P&L: sold at avgCost, covered at avgFillPrice
+      const coverPnl = parseFloat(((pos.avgCost - avgFillPrice) * qty).toFixed(2));
+      log(`[IBReconcile] ✓ ${pos.symbol}: BUY ${qty} filled @ $${avgFillPrice.toFixed(2)} (orderId=${coverOrderId}), est P&L: $${coverPnl.toFixed(2)}`);
       closed.push(pos.symbol);
 
       // Find the orphaned SELL paper_trade for this ticker and mark it for EOD reconciliation.
@@ -1051,10 +1053,13 @@ export async function reconcileIBShorts(): Promise<{ closed: string[]; errors: s
       if (orphan) {
         await sb.from('paper_trades').update({
           close_reason: 'reconcile_cover',
-          ib_order_id: String(coverOrderId), // overwrite with cover orderId so EOD reconciler can match the fill
-          notes: `Cover orderId=${coverOrderId} placed by reconcileIBShorts at ${new Date().toISOString()}`,
+          close_price: avgFillPrice,
+          pnl: coverPnl,
+          pnl_percent: pos.avgCost > 0 ? parseFloat(((coverPnl / (pos.avgCost * qty)) * 100).toFixed(2)) : null,
+          ib_order_id: String(coverOrderId),
+          notes: `Cover orderId=${coverOrderId} filled @ $${avgFillPrice.toFixed(2)} by reconcileIBShorts at ${new Date().toISOString()}`,
         }).eq('id', orphan.id);
-        log(`[IBReconcile] Linked cover orderId=${coverOrderId} to paper_trade ${orphan.id} for ${pos.symbol}`);
+        log(`[IBReconcile] Linked cover orderId=${coverOrderId} to paper_trade ${orphan.id} for ${pos.symbol} (pnl $${coverPnl.toFixed(2)})`);
       } else {
         log(`[IBReconcile] No orphaned SELL paper_trade found for ${pos.symbol} — EOD reconciler will log as orphaned execution`);
       }
@@ -1062,10 +1067,10 @@ export async function reconcileIBShorts(): Promise<{ closed: string[]; errors: s
       await createAutoTradeEvent({
         ticker: pos.symbol,
         event_type: 'warning',
-        action: 'executed',
+        action: 'closed',
         source: 'system',
-        message: `[IBReconcile] Orphaned short covered: BUY ${qty} shares (avg cost ${pos.avgCost})`,
-        metadata: { reconcile_type: 'ib_short_reconcile', qty, avg_cost: pos.avgCost, cover_order_id: coverOrderId },
+        message: `[IBReconcile] Orphaned short covered: BUY ${qty} @ $${avgFillPrice.toFixed(2)} (avg cost $${pos.avgCost.toFixed(2)})`,
+        metadata: { reconcile_type: 'ib_short_reconcile', qty, avg_cost: pos.avgCost, cover_order_id: coverOrderId, fillPrice: avgFillPrice, pnl: coverPnl },
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'unknown';
