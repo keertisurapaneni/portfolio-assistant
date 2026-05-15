@@ -933,6 +933,84 @@ export async function placeCalendarSpreadOrder(
   }
 }
 
+// ── Place Vertical Spread Order (credit spread combo / BAG) ──
+
+export interface VerticalSpreadOrderParams {
+  symbol: string;
+  right: 'P' | 'C';
+  sellStrike: number;    // ATM — income leg
+  buyStrike: number;     // OTM — protection leg
+  expiry: string;        // YYYYMMDD (same for both legs)
+  contracts: number;
+  limitPrice: number;    // net credit per share (positive = you receive)
+  account?: string;
+}
+
+export interface VerticalSpreadOrderResult {
+  orderId: number;
+}
+
+/**
+ * Place a vertical credit spread as an IB combo (BAG) order.
+ * Bull put spread: sell higher put + buy lower put at same expiry.
+ * Bear call spread: sell lower call + buy higher call at same expiry.
+ * Net credit = you receive premium upfront.
+ */
+export async function placeVerticalSpreadOrder(
+  params: VerticalSpreadOrderParams,
+): Promise<VerticalSpreadOrderResult> {
+  if (!ib || !connected) {
+    throw new Error('Not connected to IB Gateway');
+  }
+
+  const { symbol, right, sellStrike, buyStrike, expiry, contracts, account } = params;
+
+  const [sellConId, buyConId] = await Promise.all([
+    resolveOptionConId(symbol, right, sellStrike, expiry),
+    resolveOptionConId(symbol, right, buyStrike, expiry),
+  ]);
+  if (!sellConId || !buyConId) {
+    throw new Error(`Could not resolve conIds for ${symbol} ${sellStrike}/${buyStrike}${right} ${expiry}`);
+  }
+
+  // IB credit spread: SELL the income leg, BUY the protection leg.
+  // Order action = SELL (selling the spread for a net credit).
+  // Limit price = positive net credit per share.
+  const tick = params.limitPrice >= 3.0 ? 0.05 : 0.01;
+  const limitPrice = Math.round(params.limitPrice / tick) * tick;
+
+  const contract: Contract = {
+    symbol: symbol.toUpperCase(),
+    secType: SecType.BAG,
+    exchange: 'SMART',
+    currency: 'USD',
+    comboLegs: [
+      { conId: sellConId, ratio: 1, action: OrderAction.SELL, exchange: 'SMART' },
+      { conId: buyConId,  ratio: 1, action: OrderAction.BUY,  exchange: 'SMART' },
+    ],
+  };
+
+  const orderId = getNextOrderId();
+
+  const order: Order = {
+    action: OrderAction.SELL,
+    orderType: OrderType.LMT,
+    totalQuantity: contracts,
+    lmtPrice: limitPrice,
+    tif: TimeInForce.DAY,
+    transmit: true,
+    ...(account ? { account } : {}),
+  };
+
+  try {
+    ib.placeOrder(orderId, contract, order);
+    console.log(`[IB] Credit spread placed: SELL ${contracts}x ${symbol} ${sellStrike}/${buyStrike}${right} ${expiry} @ $${limitPrice} net credit (orderId=${orderId})`);
+    return { orderId };
+  } catch (err) {
+    throw err;
+  }
+}
+
 // ── Disconnect ───────────────────────────────────────────
 
 export function disconnect(): void {

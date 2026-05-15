@@ -584,6 +584,246 @@ export async function getBestPutOpportunity(
   return chain?.bestPut ?? null;
 }
 
+// ── Credit Spread Strike Finder ──────────────────────────
+
+export interface SpreadStrikeResult {
+  sellStrike: number;     // ATM — income leg (~50 delta)
+  buyStrike: number;      // OTM — protection leg (~25 delta)
+  expiry: string;         // YYYYMMDD
+  dte: number;
+  width: number;          // sellStrike - buyStrike
+  sellPremium: number;    // bid of sell leg
+  buyPremium: number;     // ask of buy leg
+  netCredit: number;      // sellPremium - buyPremium
+  creditPct: number;      // netCredit / width
+  sellDelta: number;
+  buyDelta: number;
+  sellIV: number;
+  buyIV: number;
+}
+
+/**
+ * Find the best credit spread strikes for a vertical put spread.
+ * Sell leg: ATM (~50 delta), Buy leg: OTM (~25 delta), same expiry.
+ * Returns null if no pair meets the minimum credit % threshold.
+ */
+export async function findSpreadStrikes(
+  symbol: string,
+  underlyingPrice: number,
+  right: 'P' | 'C' = 'P',
+  targetDte = 45,
+  minCreditPct = 0.33,
+): Promise<SpreadStrikeResult | null> {
+  const chain = await getOptionsChain(symbol, underlyingPrice, null, undefined, targetDte);
+  if (!chain || chain.expirations.length === 0) return null;
+
+  // Pick expiry closest to target DTE
+  const expiry = chain.expirations
+    .map(e => ({ e, dte: daysToExpiry(e) }))
+    .filter(x => x.dte >= 14)
+    .sort((a, b) => Math.abs(a.dte - targetDte) - Math.abs(b.dte - targetDte))[0];
+  if (!expiry) return null;
+
+  // For synthetic chain, use Black-Scholes to evaluate multiple strike pairs
+  const iv = chain.currentIV || 0.30;
+  const T = expiry.dte / 365;
+  const r = 0.05;
+  const strikes = generateStrikesForSpread(underlyingPrice);
+
+  if (right === 'P') {
+    return findBestPutSpread(symbol, strikes, expiry.e, expiry.dte, underlyingPrice, iv, T, r, minCreditPct);
+  }
+  // Bear call spread
+  return findBestCallSpread(symbol, strikes, expiry.e, expiry.dte, underlyingPrice, iv, T, r, minCreditPct);
+}
+
+function generateStrikesForSpread(price: number): number[] {
+  const interval = price < 25 ? 1 : price < 100 ? 2.5 : price < 200 ? 5 : 10;
+  const low = Math.floor(price * 0.70 / interval) * interval;
+  const high = Math.ceil(price * 1.10 / interval) * interval;
+  const out: number[] = [];
+  for (let s = high; s >= low; s -= interval) out.push(Math.round(s * 100) / 100);
+  return out;
+}
+
+async function findBestPutSpread(
+  symbol: string,
+  strikes: number[],
+  expiry: string,
+  dte: number,
+  price: number,
+  iv: number,
+  T: number,
+  r: number,
+  minCreditPct: number,
+): Promise<SpreadStrikeResult | null> {
+  // Sell leg: ATM put (closest to stock price, delta ~0.50)
+  const sellCandidates = strikes
+    .filter(s => s <= price * 1.02 && s >= price * 0.95)
+    .sort((a, b) => Math.abs(a - price) - Math.abs(b - price));
+
+  // Buy leg: OTM put (~25 delta, further below price)
+  let best: SpreadStrikeResult | null = null;
+
+  for (const sellStrike of sellCandidates.slice(0, 3)) {
+    // Try IB live greeks first, fall back to BS
+    const sellGreeks = await getOptionGreeksForContract(symbol, sellStrike, expiry, 'P', price).catch(() => null);
+
+    // Find the 25-delta put for the buy leg
+    const buyCandidates = strikes
+      .filter(s => s < sellStrike && s >= price * 0.70)
+      .sort((a, b) => a - b); // ascending (furthest OTM first)
+
+    for (const buyStrike of buyCandidates) {
+      const buyGreeks = await getOptionGreeksForContract(symbol, buyStrike, expiry, 'P', price).catch(() => null);
+
+      const width = sellStrike - buyStrike;
+      if (width <= 0) continue;
+
+      let sellBid: number, buyAsk: number, sellDelta: number, buyDelta: number, sellIV: number, buyIV: number;
+
+      if (sellGreeks && buyGreeks) {
+        sellBid = sellGreeks.bid;
+        buyAsk = buyGreeks.ask;
+        sellDelta = sellGreeks.delta;
+        buyDelta = buyGreeks.delta;
+        sellIV = sellGreeks.impliedVol;
+        buyIV = buyGreeks.impliedVol;
+      } else {
+        // Black-Scholes fallback
+        const sellBS = bsPutForSpread(price, sellStrike, T, r, iv);
+        const buyBS = bsPutForSpread(price, buyStrike, T, r, iv);
+        const spread = 0.05;
+        sellBid = Math.max(sellBS.price - spread / 2, 0.01);
+        buyAsk = buyBS.price + spread / 2;
+        sellDelta = sellBS.delta;
+        buyDelta = buyBS.delta;
+        sellIV = iv;
+        buyIV = iv;
+      }
+
+      // Buy leg delta should be in 20-30 delta range
+      const absBuyDelta = Math.abs(buyDelta);
+      if (absBuyDelta < 0.15 || absBuyDelta > 0.35) continue;
+
+      const netCredit = sellBid - buyAsk;
+      if (netCredit <= 0) continue;
+
+      const creditPct = netCredit / width;
+      if (creditPct < minCreditPct) continue;
+
+      // Prefer highest credit %
+      if (!best || creditPct > best.creditPct) {
+        best = {
+          sellStrike, buyStrike, expiry, dte,
+          width, sellPremium: sellBid, buyPremium: buyAsk, netCredit, creditPct,
+          sellDelta, buyDelta, sellIV, buyIV,
+        };
+      }
+
+      break; // found a valid buy leg for this sell strike, move on
+    }
+  }
+
+  return best;
+}
+
+async function findBestCallSpread(
+  symbol: string,
+  strikes: number[],
+  expiry: string,
+  dte: number,
+  price: number,
+  iv: number,
+  T: number,
+  r: number,
+  minCreditPct: number,
+): Promise<SpreadStrikeResult | null> {
+  const sellCandidates = strikes
+    .filter(s => s >= price * 0.98 && s <= price * 1.05)
+    .sort((a, b) => Math.abs(a - price) - Math.abs(b - price));
+
+  let best: SpreadStrikeResult | null = null;
+
+  for (const sellStrike of sellCandidates.slice(0, 3)) {
+    const sellGreeks = await getOptionGreeksForContract(symbol, sellStrike, expiry, 'C', price).catch(() => null);
+
+    const buyCandidates = strikes
+      .filter(s => s > sellStrike && s <= price * 1.30)
+      .sort((a, b) => a - b);
+
+    for (const buyStrike of buyCandidates) {
+      const buyGreeks = await getOptionGreeksForContract(symbol, buyStrike, expiry, 'C', price).catch(() => null);
+
+      const width = buyStrike - sellStrike;
+      if (width <= 0) continue;
+
+      let sellBid: number, buyAsk: number, sellDelta: number, buyDelta: number, sellIV: number, buyIV: number;
+
+      if (sellGreeks && buyGreeks) {
+        sellBid = sellGreeks.bid;
+        buyAsk = buyGreeks.ask;
+        sellDelta = sellGreeks.delta;
+        buyDelta = buyGreeks.delta;
+        sellIV = sellGreeks.impliedVol;
+        buyIV = buyGreeks.impliedVol;
+      } else {
+        const sellBS = bsCallForSpread(price, sellStrike, T, r, iv);
+        const buyBS = bsCallForSpread(price, buyStrike, T, r, iv);
+        const spread = 0.05;
+        sellBid = Math.max(sellBS.price - spread / 2, 0.01);
+        buyAsk = buyBS.price + spread / 2;
+        sellDelta = sellBS.delta;
+        buyDelta = buyBS.delta;
+        sellIV = iv;
+        buyIV = iv;
+      }
+
+      const absBuyDelta = Math.abs(buyDelta);
+      if (absBuyDelta < 0.15 || absBuyDelta > 0.35) continue;
+
+      const netCredit = sellBid - buyAsk;
+      if (netCredit <= 0) continue;
+
+      const creditPct = netCredit / width;
+      if (creditPct < minCreditPct) continue;
+
+      if (!best || creditPct > best.creditPct) {
+        best = {
+          sellStrike, buyStrike, expiry, dte,
+          width, sellPremium: sellBid, buyPremium: buyAsk, netCredit, creditPct,
+          sellDelta, buyDelta, sellIV, buyIV,
+        };
+      }
+      break;
+    }
+  }
+
+  return best;
+}
+
+/** Simplified BS put for spread evaluation */
+function bsPutForSpread(S: number, K: number, T: number, r: number, v: number) {
+  if (T <= 0) return { price: Math.max(K - S, 0), delta: -1 };
+  const sqrtT = Math.sqrt(T);
+  const d1 = (Math.log(S / K) + (r + 0.5 * v * v) * T) / (v * sqrtT);
+  const d2 = d1 - v * sqrtT;
+  const price = K * Math.exp(-r * T) * normCdf(-d2) - S * normCdf(-d1);
+  const delta = normCdf(d1) - 1;
+  return { price, delta };
+}
+
+/** Simplified BS call for spread evaluation */
+function bsCallForSpread(S: number, K: number, T: number, r: number, v: number) {
+  if (T <= 0) return { price: Math.max(S - K, 0), delta: 1 };
+  const sqrtT = Math.sqrt(T);
+  const d1 = (Math.log(S / K) + (r + 0.5 * v * v) * T) / (v * sqrtT);
+  const d2 = d1 - v * sqrtT;
+  const price = S * normCdf(d1) - K * Math.exp(-r * T) * normCdf(d2);
+  const delta = normCdf(d1);
+  return { price, delta };
+}
+
 // ── Strike Sniper ─────────────────────────────────────────
 
 export interface StrikeSniperResult {
