@@ -1179,7 +1179,7 @@ export async function autoTradeOption(ticket: OptionsTradeTicket): Promise<{ tra
   }
 
   try {
-    const { orderId } = await placeOptionsOrder({
+    const { orderId, avgFillPrice, filledQty } = await placeOptionsOrder({
       symbol: ticket.ticker,
       right: 'P',
       strike: ticket.strike,
@@ -1189,32 +1189,45 @@ export async function autoTradeOption(ticket: OptionsTradeTicket): Promise<{ tra
       account: getDefaultAccount() ?? undefined,
     });
 
-    console.log(`[Options Auto-Trade] Placed IB order ${orderId} for ${ticket.ticker} $${ticket.strike}P`);
-    const tradeId = await paperTradeOption(ticket, orderId);
+    console.log(`[Options Auto-Trade] IB order ${orderId} FILLED for ${ticket.ticker} $${ticket.strike}P @ $${avgFillPrice.toFixed(2)} (${filledQty} contracts)`);
+
+    // Record with real IB fill price — no SUBMITTED state needed since we awaited confirmation
+    const realPremium = avgFillPrice;
+    const tradeId = await paperTradeOption({ ...ticket, premium: realPremium }, orderId);
+
+    // Immediately mark as FILLED with real fill price (paperTradeOption sets SUBMITTED for live orders)
+    if (tradeId) {
+      const sb = getSupabase();
+      await sb.from('paper_trades').update({
+        status: 'FILLED',
+        fill_price: realPremium,
+        filled_at: new Date().toISOString(),
+      }).eq('id', tradeId);
+    }
+
     createAutoTradeEvent({
       ticker: ticket.ticker,
       event_type: 'success',
       action: 'executed',
       source: 'scanner',
       mode: 'OPTIONS_PUT',
-      message: `Live order placed #${orderId} — Sold ${ticket.contracts ?? 1}x $${ticket.strike}P exp ${ticket.expiry}, limit $${ticket.premium.toFixed(2)}/contract`,
-      metadata: { ibOrderId: orderId, strike: ticket.strike, expiry: ticket.expiry, premium: ticket.premium, contracts: ticket.contracts ?? 1 },
+      message: `IB order filled #${orderId} — Sold ${filledQty}x $${ticket.strike}P exp ${ticket.expiry} @ $${realPremium.toFixed(2)}/contract`,
+      metadata: { ibOrderId: orderId, strike: ticket.strike, expiry: ticket.expiry, premium: realPremium, contracts: filledQty },
     }).catch(() => {});
     return { tradeId, ibOrderId: orderId, isLive: true };
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
-    console.error('[Options Auto-Trade] IB order failed, falling back to paper:', err);
-    const tradeId = await paperTradeOption(ticket);
+    console.error('[Options Auto-Trade] IB order rejected/timed out:', errMsg);
     createAutoTradeEvent({
       ticker: ticket.ticker,
       event_type: 'error',
       action: 'failed',
       source: 'scanner',
       mode: 'OPTIONS_PUT',
-      message: `IB order failed — paper fallback. $${ticket.strike}P exp ${ticket.expiry}. Error: ${errMsg}`,
+      message: `IB options order rejected — ${ticket.ticker} $${ticket.strike}P exp ${ticket.expiry}. ${errMsg}`,
       metadata: { strike: ticket.strike, expiry: ticket.expiry, premium: ticket.premium, error: errMsg } as Record<string, unknown>,
     }).catch(() => {});
-    return { tradeId, ibOrderId: null, isLive: false };
+    return { tradeId: null, ibOrderId: null, isLive: false };
   }
 }
 

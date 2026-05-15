@@ -760,7 +760,11 @@ export interface OptionsOrderParams {
 
 export interface OptionsOrderResult {
   orderId: number;
+  avgFillPrice: number;
+  filledQty: number;
 }
+
+const OPT_ORDER_TIMEOUT_MS = 120_000; // 2 min — limit orders need more time than market orders
 
 export function placeOptionsOrder(params: OptionsOrderParams): Promise<OptionsOrderResult> {
   return new Promise((resolve, reject) => {
@@ -769,8 +773,6 @@ export function placeOptionsOrder(params: OptionsOrderParams): Promise<OptionsOr
     }
 
     const { symbol, right, strike, expiry, contracts, account } = params;
-    // IB requires limit prices to conform to minimum tick increments.
-    // Options ≥ $3.00 use $0.05 ticks; options < $3.00 use $0.01 ticks.
     const tick = params.limitPrice >= 3.0 ? 0.05 : 0.01;
     const limitPrice = Math.round(params.limitPrice / tick) * tick;
 
@@ -797,11 +799,21 @@ export function placeOptionsOrder(params: OptionsOrderParams): Promise<OptionsOr
       ...(account ? { account } : {}),
     };
 
+    const timer = setTimeout(() => {
+      _pendingOrderCallbacks.delete(orderId);
+      const msg = `IB options order ${orderId} (${symbol} $${strike}${right}) timed out after ${OPT_ORDER_TIMEOUT_MS / 1000}s — no fill/reject received`;
+      console.error(`[IB] ${msg}`);
+      reject(new Error(msg));
+    }, OPT_ORDER_TIMEOUT_MS);
+
+    _pendingOrderCallbacks.set(orderId, { resolve, reject, timer, symbol });
+
     try {
       ib.placeOrder(orderId, contract, order);
-      console.log(`[IB] Options order placed: SELL ${contracts}x ${symbol} $${strike}${right} ${expiry} @ $${limitPrice} (orderId=${orderId})`);
-      resolve({ orderId });
+      console.log(`[IB] Options order dispatched: SELL ${contracts}x ${symbol} $${strike}${right} ${expiry} @ $${limitPrice} (orderId=${orderId}) — awaiting fill...`);
     } catch (err) {
+      clearTimeout(timer);
+      _pendingOrderCallbacks.delete(orderId);
       reject(err);
     }
   });
