@@ -768,7 +768,11 @@ export function OptionsTab() {
       const res = await fetch(`http://localhost:3001/api/options/strike-sniper?symbol=${ticker}&targetStrike=${target}`);
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? 'Request failed');
       const data = await res.json();
-      setSniperResults(data);
+      if (!data.contracts || data.contracts.length === 0) {
+        setSniperError(`No contracts found near $${target} for ${ticker} (current price: $${data.currentPrice?.toFixed(0) ?? '?'}). Try a strike closer to the current price.`);
+      } else {
+        setSniperResults(data);
+      }
     } catch (err) {
       setSniperError(err instanceof Error ? err.message : 'Failed to fetch');
     } finally {
