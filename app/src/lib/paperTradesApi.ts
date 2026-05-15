@@ -223,7 +223,7 @@ export async function getDayTradeValidationReport(): Promise<DayTradeValidationR
   const { data, error } = await supabase
     .from('paper_trades')
     .select('*')
-    .eq('mode', 'DAY_TRADE')
+    .in('mode', ['DAY_TRADE', 'DAY_PENNY'])
     .not('closed_at', 'is', null)
     .order('opened_at', { ascending: false })
     .limit(100);

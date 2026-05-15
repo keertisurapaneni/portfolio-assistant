@@ -742,11 +742,13 @@ export function calculatePositionSize(
   // sizing or risk-based formula. The risk-based formula can balloon when stops are tight
   // (e.g. $2 stop on a $200 stock → 2,750 shares), causing outsized day-trade losses.
   // Swing and long-term trades keep the larger allocation-based cap.
-  const modeMaxDollar = (mode === 'DAY_TRADE' || mode === 'DAY_PENNY') ? config.positionSize : hardMaxDollar;
+  const modeMaxDollar = mode === 'DAY_PENNY' ? config.pennyPositionSize
+    : mode === 'DAY_TRADE' ? config.positionSize
+    : hardMaxDollar;
 
   if (!config.useDynamicSizing || price <= 0) {
-    // Fallback: flat position sizing, but STILL capped by mode
-    const cappedSize = Math.min(config.positionSize, modeMaxDollar);
+    const flatSize = mode === 'DAY_PENNY' ? config.pennyPositionSize : config.positionSize;
+    const cappedSize = Math.min(flatSize, modeMaxDollar);
     const qty = Math.max(1, Math.floor(cappedSize / price));
     return { quantity: qty, dollarSize: qty * price };
   }

@@ -196,13 +196,15 @@ Deno.serve(async (req) => {
     const influencerDay = cleanTrades.filter(t => t.mode === 'DAY_TRADE' && t.strategy_video_id != null);
     // Scanner day trades = DAY_TRADE without a strategy_video_id
     const scannerDay = cleanTrades.filter(t => t.mode === 'DAY_TRADE' && t.strategy_video_id == null);
+    const pennyDay = cleanTrades.filter(t => t.mode === 'DAY_PENNY');
     const swingTrades = cleanTrades.filter(t => t.mode === 'SWING_TRADE');
     const longTerm = cleanTrades.filter(t => t.mode === 'LONG_TERM');
-    const allDayTrade = cleanTrades.filter(t => t.mode === 'DAY_TRADE');
+    const allDayTrade = cleanTrades.filter(t => t.mode === 'DAY_TRADE' || t.mode === 'DAY_PENNY');
 
     const categoryStats: CategoryStats[] = [
       computeStats(influencerDay, 'influencer_day'),
       computeStats(scannerDay, 'scanner_day'),
+      computeStats(pennyDay, 'DAY_PENNY'),
       computeStats(swingTrades, 'SWING_TRADE'),
       computeStats(longTerm, 'LONG_TERM'),
       computeStats(allDayTrade, 'DAY_TRADE'),
