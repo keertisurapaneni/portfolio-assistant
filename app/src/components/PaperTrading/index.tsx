@@ -380,7 +380,8 @@ export function PaperTrading() {
     const seen = new Map<string, number>();
     for (const e of executions) {
       const signal = (e.scanner_signal ?? 'BUY').toUpperCase();
-      const key = `${e.ticker}|${signal}|${e.action ?? 'executed'}`;
+      const action = (e.action ?? 'executed') === 'closed' ? 'executed' : (e.action ?? 'executed');
+      const key = `${e.ticker}|${signal}|${action}`;
       const existingIdx = seen.get(key);
       if (existingIdx != null) {
         const existing = finalExecs[existingIdx];
