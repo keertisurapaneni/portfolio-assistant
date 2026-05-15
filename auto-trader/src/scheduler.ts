@@ -440,10 +440,10 @@ export function startScheduler(): void {
   }, { timezone: 'America/New_York' });
   log('Calendar spread scan: every Monday 11:00 AM ET');
 
-  // Credit spread scan — Tuesday & Thursday 10:30 AM ET.
+  // Credit spread scan — Mon-Fri 10:30 AM ET.
   // Scans for vertical credit spread entries (bull puts / bear calls).
   // Executes qualifying trades automatically (≥40% credit/width, trend-following pullbacks).
-  cron.schedule('30 10 * * 2,4', async () => {
+  cron.schedule('30 10 * * 1-5', async () => {
     try {
       log('[Scheduler] Running credit spread scan...');
       const { runCreditSpreadScan } = await import('./lib/credit-spread-scanner.js');
@@ -453,7 +453,7 @@ export function startScheduler(): void {
       console.error('[Scheduler] Credit spread scan error:', err instanceof Error ? err.message : err);
     }
   }, { timezone: 'America/New_York' });
-  log('Credit spread scan: Tue/Thu 10:30 AM ET');
+  log('Credit spread scan: Mon-Fri 10:30 AM ET');
 
   // Credit spread position management — every 30 min during market hours.
   // Checks 50% profit-take, 100% stop-loss, and 21 DTE time exit rules.
