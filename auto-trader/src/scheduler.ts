@@ -895,7 +895,7 @@ async function promoteDayTradeGainersToWatchlist(): Promise<void> {
   const { data: closedToday } = await sb
     .from('paper_trades')
     .select('ticker, pnl, strategy_source')
-    .eq('mode', 'DAY_TRADE')
+    .in('mode', ['DAY_TRADE', 'DAY_PENNY'])
     .in('status', [...CLOSED_STATUSES])
     .not('pnl', 'is', null)
     .gte('opened_at', `${todayEt}T00:00:00Z`);
@@ -1151,7 +1151,7 @@ export async function reconcileIBLongs(): Promise<{ closed: string[]; errors: st
     .from('paper_trades')
     .select('ticker')
     .eq('signal', 'BUY')
-    .eq('mode', 'DAY_TRADE')
+    .in('mode', ['DAY_TRADE', 'DAY_PENNY'])
     .is('fill_price', null)
     .in('status', ['CLOSED', 'CANCELLED'])
     .gte('opened_at', `${todayEt}T00:00:00Z`);
@@ -1255,7 +1255,7 @@ async function isDayTradeLossGateActive(config: AutoTraderConfig): Promise<boole
   const { data } = await sb
     .from('paper_trades')
     .select('pnl')
-    .eq('mode', 'DAY_TRADE')
+    .in('mode', ['DAY_TRADE', 'DAY_PENNY'])
     .eq('status', 'CLOSED')
     .gte('closed_at', `${todayEt}T00:00:00Z`);
 
@@ -2677,12 +2677,12 @@ async function calculateKellyMultiplier(config: AutoTraderConfig): Promise<numbe
 
   try {
     const sb = getSupabase();
-    // Use last 30 closed DAY_TRADE + SWING_TRADE results (exclude LONG_TERM — different risk profile)
+    // Use last 30 closed short-term results (exclude LONG_TERM — different risk profile)
     const { data, error } = await sb
       .from('paper_trades')
       .select('pnl_percent, fill_price, mode')
       .in('status', [...CLOSED_STATUSES])
-      .in('mode', ['DAY_TRADE', 'SWING_TRADE'])
+      .in('mode', ['DAY_TRADE', 'DAY_PENNY', 'SWING_TRADE'])
       .not('pnl_percent', 'is', null)
       .not('fill_price', 'is', null)
       .order('closed_at', { ascending: false })
@@ -2922,7 +2922,7 @@ async function executeScannerTrade(
   // they are different instruments and managed by a separate pipeline.
   if (await hasActiveTrade(ticker, { excludeOptions: true })) return 'skipped:duplicate';
 
-  // ── Same-day re-entry cooldown (DAY_TRADE only) ───────────────────────
+  // ── Same-day re-entry cooldown (DAY_TRADE only — penny has its own session state) ──
   // hasActiveTrade only checks SUBMITTED/FILLED/PARTIAL — once a day trade hits
   // its target or stop (TARGET_HIT / STOPPED / CLOSED) the ticker is "free" again
   // and the scanner will re-enter it the same afternoon. This creates ghost BUY
@@ -2936,7 +2936,7 @@ async function executeScannerTrade(
       .from('paper_trades')
       .select('id', { count: 'exact', head: true })
       .eq('ticker', ticker)
-      .eq('mode', 'DAY_TRADE')
+      .in('mode', ['DAY_TRADE', 'DAY_PENNY'])
       .not('mode', 'in', '(OPTIONS_PUT,OPTIONS_CALL)')
       .in('status', ['TARGET_HIT', 'STOPPED', 'CLOSED'])
       .gte('opened_at', `${todayEt}T00:00:00Z`);
