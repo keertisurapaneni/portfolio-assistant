@@ -2873,16 +2873,16 @@ async function executeScannerTrade(
   if (!isMarketHoursET() || getETMinutes() < 9 * 60 + 35) return 'skipped:outside-market-hours';
 
   // ── Liquidity gate ─────────────────────────────────────────────────
-  // Block day trades on stocks trading below $5 (penny stocks) or with
-  // abnormally low volume (< 0.15x 10-day avg). Prevents GFAI-type blowups
-  // where thin liquidity causes outsized losses on small-cap garbage.
+  // Block day trades on stocks below $50 or with abnormally low volume
+  // (< 0.15x 10-day avg). Data: sub-$50 scanner trades = -$377 on 7 trades
+  // (23% WR in $20-50 range). All scanner profit comes from $200+ stocks.
   if (mode === 'DAY_TRADE') {
-    if (idea.price < 5) {
-      log(`${ticker}: skipped — price $${idea.price.toFixed(2)} below $5 minimum (penny stock filter)`);
-      persistEvent(ticker, 'skipped', `Penny stock filter: price $${idea.price.toFixed(2)} < $5`, {
-        action: 'skipped', source: 'scanner', mode, skip_reason: 'penny_stock',
+    if (idea.price < 50) {
+      log(`${ticker}: skipped — price $${idea.price.toFixed(2)} below $50 minimum (scanner price floor)`);
+      persistEvent(ticker, 'skipped', `Scanner price floor: price $${idea.price.toFixed(2)} < $50`, {
+        action: 'skipped', source: 'scanner', mode, skip_reason: 'price_floor',
       });
-      return 'skipped:penny_stock';
+      return 'skipped:price_floor';
     }
     if (idea.volumeVs10dAvg != null && idea.volumeVs10dAvg < 0.15) {
       log(`${ticker}: skipped — volume ${idea.volumeVs10dAvg.toFixed(2)}x avg (< 0.15x, illiquid)`);
@@ -3192,8 +3192,8 @@ async function executeScannerTrade(
   // a gap-through on a volatile open turns a $300 expected loss into a $1,500+ wipeout.
   //
   // Confidence-based sizing: high-confidence BUY signals get larger positions.
-  // Data shows conf 9 BUY = 72% WR / $174 avg, conf 8 BUY = 69% WR / $60 avg,
-  // while conf 7 and SELLs don't benefit from increased size.
+  // Data (430 trades): conf 9 multiplied trades were net +$1,102 (+$985 vs $5K cap).
+  // The multiplier correctly sizes up into the system's highest-conviction calls.
   const baseCap = config.positionSize > 0 ? config.positionSize : 5000;
   const confMultiplier = (signal === 'BUY' && scannerConf >= 9) ? 2.0
     : (signal === 'BUY' && scannerConf >= 8) ? 1.5
@@ -3799,6 +3799,16 @@ async function executeExternalStrategySignal(
       failure_reason: 'Unable to resolve market/reference price',
     });
     return 'failed';
+  }
+
+  // Influencer penny stock floor: data shows 13 influencer sub-$20 day trades = -$3,469
+  // (GFAI at $0.82, EZRA at $0.31, etc.). Block true penny stocks while still allowing
+  // influencer calls in the $20-50 range.
+  if (isInfluencerSignal && signal.mode === 'DAY_TRADE' && referencePrice < 20) {
+    return skipExternalSignal(
+      `Price $${referencePrice.toFixed(2)} below $20 influencer day trade floor`,
+      'influencer_price_floor',
+    );
   }
 
   const dd = assessDrawdownMultiplier(positions);
@@ -5268,8 +5278,8 @@ async function checkProfitTakeOpportunities(
 //   TRAIL_ACTIVATION_R  — gain multiple of initial risk before trail kicks in (1.0 = 1R)
 //   TRAIL_RETRACE_PCT   — fraction of peak gain that can retrace before close (0.50 = 50%)
 
-const TRAIL_ACTIVATION_R  = 1.0;  // activate at +1R
-const TRAIL_RETRACE_PCT   = 0.50; // close if 50% of peak gain evaporates
+const TRAIL_ACTIVATION_R  = 0.5;  // activate at +0.5R (was 1.0 — only 5/430 trades ever triggered)
+const TRAIL_RETRACE_PCT   = 0.60; // close if 60% of peak gain retraces (was 0.50)
 
 async function checkDayTradeTrailingStops(
   positions: EnrichedPosition[],
