@@ -20,6 +20,7 @@ import { SignalScorecard } from '../shared';
 import { MetricsTable } from '../shared/MetricsTable';
 import { formatRegimeLabel } from '../utils';
 import { Spinner } from '../../Spinner';
+import { StreakBoard } from '../shared';
 
 export interface PerformanceTabProps {
   categories: CategoryPerformance[];
@@ -76,6 +77,8 @@ export function PerformanceTab({
 
   return (
     <div className="space-y-4">
+      <StreakBoard />
+
       <div className="space-y-3">
         <div className="rounded-xl border border-[hsl(var(--border))] bg-white p-4">
           <div className="flex items-center justify-between mb-2">
