@@ -409,7 +409,7 @@ export async function getOptionsActivityLog(limit = 50): Promise<OptionsActivity
   const { data, error } = await supabase
     .from('auto_trade_events')
     .select('id, ticker, event_type, message, metadata, created_at')
-    .in('mode', ['OPTIONS_PUT', 'OPTIONS_CALL', 'CREDIT_SPREAD'])
+    .or('mode.in.(OPTIONS_PUT,OPTIONS_CALL,CREDIT_SPREAD),and(mode.is.null,message.ilike.%option%)')
     .order('created_at', { ascending: false })
     .limit(limit);
 
