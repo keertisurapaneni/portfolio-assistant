@@ -426,6 +426,20 @@ export function startScheduler(): void {
     }
   }, { timezone: 'America/New_York' });
 
+  // Weekly calendar spread scan — Monday 11:00 AM ET (after options market stabilizes).
+  // Phase 1: paper only, logs opportunities to activity feed for human review.
+  cron.schedule('0 11 * * 1', async () => {
+    try {
+      log('[Scheduler] Running weekly calendar spread scan...');
+      const { runCalendarSpreadScan } = await import('./lib/calendar-spread-scanner.js');
+      const result = await runCalendarSpreadScan();
+      log(`[Scheduler] Calendar scan done — ${result.opportunities.length} opportunities found`);
+    } catch (err) {
+      console.error('[Scheduler] Calendar spread scan error:', err instanceof Error ? err.message : err);
+    }
+  }, { timezone: 'America/New_York' });
+  log('Calendar spread scan: every Monday 11:00 AM ET');
+
   // Weekly Compounder health check — runs Friday 3:30 PM ET (after most price action is done).
   // Reviews every active Steady Compounder: positive-close ratio, zombie flag, profit-trim hints.
   // Results are logged and persisted as auto_trade_events so the dashboard can surface them.
