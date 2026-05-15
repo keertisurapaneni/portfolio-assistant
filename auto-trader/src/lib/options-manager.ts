@@ -13,7 +13,7 @@ import { getSupabase, createAutoTradeEvent } from './supabase.js';
 import { ACTIVE_STATUSES, CLOSED_STATUSES, OPTIONS_MODES } from '../../../shared/trade-status-sets.js';
 import { getOptionsAutoTradeConfig, autoTradeOption, type OptionsTradeTicket } from './options-scanner.js';
 import { getOptionsChain } from './options-chain.js';
-import { isConnected, requestOpenOrders, placeOptionsOrder, getDefaultAccount } from '../ib-connection.js';
+import { isConnected, placeOptionsOrder, getDefaultAccount } from '../ib-connection.js';
 
 import type { AutoTradeEventType } from '../../../shared/auto-trade-events.js';
 
@@ -345,34 +345,33 @@ export async function runOptionsManageCycle(): Promise<ManageCycleResult> {
   result.stopLossMultiplier = stopLossMultiplier;
   result.profitClosePct = profitClosePct;
 
-  // ── Check SUBMITTED orders for IB fills ──────────────────
-  if (isConnected()) {
-    const { data: submitted } = await sb
+  // ── Clean up stale SUBMITTED options orders ──────────────
+  // With the fix to placeOptionsOrder (now awaits fill/reject), SUBMITTED
+  // orders should not persist. Any still SUBMITTED after 5 minutes are stale
+  // (order timed out, process restarted, etc.) — mark them CANCELLED.
+  {
+    const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+    const { data: stale } = await sb
       .from('paper_trades')
-      .select('id, ticker, option_strike, option_premium, ib_order_id')
+      .select('id, ticker, option_strike, ib_order_id')
       .in('mode', [...OPTIONS_MODES])
       .eq('status', 'SUBMITTED')
-      .not('ib_order_id', 'is', null);
+      .lt('opened_at', fiveMinAgo);
 
-    if (submitted?.length) {
-      const openOrders = await requestOpenOrders().catch(() => []);
-      const openOrderIds = new Set(openOrders.map(o => o.orderId));
+    if (stale?.length) {
+      for (const row of stale as Array<{ id: string; ticker: string; option_strike: number; ib_order_id: number | null }>) {
+        await sb.from('paper_trades').update({
+          status: 'CANCELLED',
+          close_reason: 'expired',
+          closed_at: new Date().toISOString(),
+          notes: `[AUTO] Stale SUBMITTED order — no IB fill confirmation received`,
+        }).eq('id', row.id);
 
-      for (const row of submitted as Array<{ id: string; ticker: string; option_strike: number; option_premium: number; ib_order_id: number }>) {
-        if (!openOrderIds.has(row.ib_order_id)) {
-          // Order no longer open → it filled (or was cancelled; treat as filled for options sells)
-          await sb.from('paper_trades').update({
-            status: 'FILLED',
-            filled_at: new Date().toISOString(),
-            fill_price: row.option_premium,
-          }).eq('id', row.id);
-
-          console.log(`[Options Manager] Order ${row.ib_order_id} for ${row.ticker} $${row.option_strike}P confirmed filled`);
-          persistEvent(row.ticker, 'success',
-            `✅ ${row.ticker} $${row.option_strike} put order filled — premium $${(row.option_premium * 100).toFixed(0)} collected`,
-            { action: 'filled', source: 'options', metadata: { ibOrderId: row.ib_order_id } }
-          );
-        }
+        console.log(`[Options Manager] Cancelled stale SUBMITTED order for ${row.ticker} $${row.option_strike}P (ib_order=${row.ib_order_id})`);
+        persistEvent(row.ticker, 'warning',
+          `⚠️ ${row.ticker} $${row.option_strike}P order expired — no IB fill confirmation`,
+          { action: 'skipped', source: 'scanner', mode: 'OPTIONS_PUT', metadata: { ibOrderId: row.ib_order_id } }
+        );
       }
     }
   }
