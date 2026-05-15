@@ -213,6 +213,10 @@ export async function loadAutoTraderConfig(): Promise<AutoTraderConfig> {
         tradeSignalsEnabled: data.trade_signals_enabled ?? DEFAULT_CONFIG.tradeSignalsEnabled,
         suggestedFindsEnabled: data.suggested_finds_enabled ?? DEFAULT_CONFIG.suggestedFindsEnabled,
         optionsWheelEnabled: data.options_wheel_enabled ?? DEFAULT_CONFIG.optionsWheelEnabled,
+        pennyEnabled: data.penny_enabled ?? DEFAULT_CONFIG.pennyEnabled,
+        pennyPositionSize: Number(data.penny_position_size ?? DEFAULT_CONFIG.pennyPositionSize),
+        pennyMaxDailyLoss: Number(data.penny_max_daily_loss ?? DEFAULT_CONFIG.pennyMaxDailyLoss),
+        pennyMaxDailyTrades: Number(data.penny_max_daily_trades ?? DEFAULT_CONFIG.pennyMaxDailyTrades),
       };
       localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
       return config;
@@ -301,6 +305,10 @@ export async function saveAutoTraderConfig(config: Partial<AutoTraderConfig>): P
         trade_signals_enabled: updated.tradeSignalsEnabled,
         suggested_finds_enabled: updated.suggestedFindsEnabled,
         options_wheel_enabled: updated.optionsWheelEnabled,
+        penny_enabled: updated.pennyEnabled,
+        penny_position_size: updated.pennyPositionSize,
+        penny_max_daily_loss: updated.pennyMaxDailyLoss,
+        penny_max_daily_trades: updated.pennyMaxDailyTrades,
         updated_at: new Date().toISOString(),
       });
   } catch (err) {
@@ -520,7 +528,7 @@ function persistEvent(
   extra?: {
     action?: 'executed' | 'skipped' | 'failed';
     source?: 'scanner' | 'suggested_finds' | 'manual' | 'system' | 'dip_buy' | 'profit_take' | 'loss_cut';
-    mode?: 'DAY_TRADE' | 'SWING_TRADE' | 'LONG_TERM';
+    mode?: 'DAY_TRADE' | 'DAY_PENNY' | 'SWING_TRADE' | 'LONG_TERM';
     scanner_signal?: string;
     scanner_confidence?: number;
     fa_recommendation?: string;
@@ -627,7 +635,7 @@ async function checkAllocationCap(
   config: AutoTraderConfig,
   positionSize: number,
   ticker: string,
-  mode: 'LONG_TERM' | 'DAY_TRADE' | 'SWING_TRADE' = 'DAY_TRADE',
+  mode: 'LONG_TERM' | 'DAY_TRADE' | 'DAY_PENNY' | 'SWING_TRADE' = 'DAY_TRADE',
 ): Promise<boolean> {
   const deployed = await getTotalDeployed();
   const cap = config.maxTotalAllocation;
@@ -711,7 +719,7 @@ export function calculatePositionSize(
   config: AutoTraderConfig,
   params: {
     price: number;
-    mode: 'LONG_TERM' | 'DAY_TRADE' | 'SWING_TRADE';
+    mode: 'LONG_TERM' | 'DAY_TRADE' | 'DAY_PENNY' | 'SWING_TRADE';
     conviction?: number;      // for long-term holds
     suggestedFindTag?: 'Steady Compounder' | 'Gold Mine' | 'Dip Discovery';
     entryPrice?: number;      // for scanner trades
@@ -734,7 +742,7 @@ export function calculatePositionSize(
   // sizing or risk-based formula. The risk-based formula can balloon when stops are tight
   // (e.g. $2 stop on a $200 stock → 2,750 shares), causing outsized day-trade losses.
   // Swing and long-term trades keep the larger allocation-based cap.
-  const modeMaxDollar = mode === 'DAY_TRADE' ? config.positionSize : hardMaxDollar;
+  const modeMaxDollar = (mode === 'DAY_TRADE' || mode === 'DAY_PENNY') ? config.positionSize : hardMaxDollar;
 
   if (!config.useDynamicSizing || price <= 0) {
     // Fallback: flat position sizing, but STILL capped by mode
@@ -1548,7 +1556,7 @@ async function runPreTradeChecks(
   config: AutoTraderConfig,
   ticker: string,
   positionSize: number,
-  mode: 'LONG_TERM' | 'DAY_TRADE' | 'SWING_TRADE' = 'DAY_TRADE',
+  mode: 'LONG_TERM' | 'DAY_TRADE' | 'DAY_PENNY' | 'SWING_TRADE' = 'DAY_TRADE',
 ): Promise<boolean> {
   // 0. Drawdown protection — block new day/swing entries during critical drawdown.
   // LONG_TERM is exempt: long-term positions deploy idle cash into a months-long thesis
@@ -1776,7 +1784,7 @@ async function processSingleIdea(
       entryPrice,
       stopLoss,
       takeProfit: targetPrice,
-      tif: mode === 'DAY_TRADE' ? 'DAY' : 'GTC',
+      tif: (mode === 'DAY_TRADE' || mode === 'DAY_PENNY') ? 'DAY' : 'GTC',
     });
 
     // Handle any confirmation prompts
@@ -2358,7 +2366,7 @@ export async function syncPositions(accountId: string): Promise<void> {
         const tradeAge = Date.now() - new Date(trade.created_at).getTime();
         const oneDayMs = 24 * 60 * 60 * 1000;
 
-        if (trade.mode === 'DAY_TRADE' && tradeAge > oneDayMs) {
+        if ((trade.mode === 'DAY_TRADE' || trade.mode === 'DAY_PENNY') && tradeAge > oneDayMs) {
           await updatePaperTrade(trade.id, {
             status: 'CLOSED' as PaperTrade['status'],
             close_reason: 'manual',

@@ -119,7 +119,7 @@ function generateLesson(ctx: TradeContext, outcome: 'WIN' | 'LOSS' | 'BREAKEVEN'
     if (ctx.closeReason === 'target_hit') worked.push('Target price was well-calibrated');
 
     // Duration analysis
-    if (ctx.duration && ctx.mode === 'DAY_TRADE') {
+    if (ctx.duration && (ctx.mode === 'DAY_TRADE' || ctx.mode === 'DAY_PENNY')) {
       if (ctx.duration < 60) worked.push('Quick execution — momentum was strong');
       else if (ctx.duration > 240) parts.push('Took longer than expected for a day trade');
     }

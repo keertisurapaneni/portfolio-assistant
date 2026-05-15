@@ -33,7 +33,7 @@ export const ALL_TERMINAL_STATUSES: readonly TradeStatus[] = [
 
 /** Equity trade modes (excludes options and earnings) */
 export const EQUITY_MODES: readonly TradeMode[] = [
-  'DAY_TRADE', 'SWING_TRADE', 'LONG_TERM',
+  'DAY_TRADE', 'DAY_PENNY', 'SWING_TRADE', 'LONG_TERM',
 ] as const;
 
 /** Options trade modes */

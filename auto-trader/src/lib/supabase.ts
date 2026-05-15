@@ -105,6 +105,10 @@ export async function loadConfig(): Promise<AutoTraderConfig> {
     tradeSignalsEnabled: data.trade_signals_enabled ?? DEFAULT_CONFIG.tradeSignalsEnabled,
     suggestedFindsEnabled: data.suggested_finds_enabled ?? DEFAULT_CONFIG.suggestedFindsEnabled,
     optionsWheelEnabled: data.options_wheel_enabled ?? DEFAULT_CONFIG.optionsWheelEnabled,
+    pennyEnabled: data.penny_enabled ?? DEFAULT_CONFIG.pennyEnabled,
+    pennyPositionSize: Number(data.penny_position_size ?? DEFAULT_CONFIG.pennyPositionSize),
+    pennyMaxDailyLoss: Number(data.penny_max_daily_loss ?? DEFAULT_CONFIG.pennyMaxDailyLoss),
+    pennyMaxDailyTrades: Number(data.penny_max_daily_trades ?? DEFAULT_CONFIG.pennyMaxDailyTrades),
   };
 }
 
@@ -143,7 +147,7 @@ export interface ExternalStrategySignal {
   strategy_video_heading: string | null;
   ticker: string;
   signal: 'BUY' | 'SELL';
-  mode: 'DAY_TRADE' | 'SWING_TRADE' | 'LONG_TERM' | 'OPTIONS_PUT' | 'OPTIONS_CALL';
+  mode: 'DAY_TRADE' | 'DAY_PENNY' | 'SWING_TRADE' | 'LONG_TERM' | 'OPTIONS_PUT' | 'OPTIONS_CALL';
   confidence: number;
   entry_price: number | null;
   stop_loss: number | null;
@@ -327,7 +331,7 @@ export async function getTickerWinRate(
     .select('pnl')
     .eq('ticker', ticker)
     .eq('status', 'CLOSED')
-    .in('mode', ['DAY_TRADE', 'SWING_TRADE'])
+    .in('mode', ['DAY_TRADE', 'DAY_PENNY', 'SWING_TRADE'])
     .not('pnl', 'is', null)
     .neq('pnl', 0)
     .gte('closed_at', since);
@@ -436,7 +440,7 @@ export async function findExternalStrategySignal(params: {
   sourceName: string;
   ticker: string;
   signal: 'BUY' | 'SELL';
-  mode: 'DAY_TRADE' | 'SWING_TRADE' | 'LONG_TERM' | 'OPTIONS_PUT' | 'OPTIONS_CALL';
+  mode: 'DAY_TRADE' | 'DAY_PENNY' | 'SWING_TRADE' | 'LONG_TERM' | 'OPTIONS_PUT' | 'OPTIONS_CALL';
   executeOnDate: string;
   strategyVideoId?: string;
 }): Promise<ExternalStrategySignal | null> {
@@ -593,7 +597,7 @@ export async function getStrategySourcePerformance(): Promise<StrategySourcePerf
 
 export async function getRecentClosedStrategyOutcomes(params: {
   sourceName: string;
-  mode?: 'DAY_TRADE' | 'SWING_TRADE' | 'LONG_TERM' | 'OPTIONS_PUT' | 'OPTIONS_CALL';
+  mode?: 'DAY_TRADE' | 'DAY_PENNY' | 'SWING_TRADE' | 'LONG_TERM' | 'OPTIONS_PUT' | 'OPTIONS_CALL';
   strategyVideoId?: string | null;
   limit?: number;
 }): Promise<StrategyClosedTradeOutcome[]> {

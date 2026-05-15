@@ -16,7 +16,7 @@ export interface TradeIdea {
   confidence: number;     // 0-10 Pass 2 confidence (same scale as full analysis)
   reason: string;        // AI-generated 1-sentence rationale
   tags: string[];        // e.g. ["momentum", "volume-surge"]
-  mode: 'DAY_TRADE' | 'SWING_TRADE';
+  mode: 'DAY_TRADE' | 'SWING_TRADE' | 'DAY_PENNY';
   // Pass 2 FA-grade levels — carried through so auto-trader can skip redundant FA call
   entryPrice?: number | null;
   stopLoss?: number | null;
@@ -73,7 +73,7 @@ export async function fetchScanEvaluations(): Promise<ScanEvaluations> {
   const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
   try {
     const res = await fetch(
-      `${supabaseUrl}/rest/v1/trade_scans?id=in.(day_trades,swing_trades)&select=auto_evaluations`,
+      `${supabaseUrl}/rest/v1/trade_scans?id=in.(day_trades,swing_trades,penny_trades)&select=auto_evaluations`,
       { headers: { apikey: supabaseKey, Authorization: `Bearer ${supabaseKey}` } }
     );
     if (!res.ok) return {};
@@ -107,4 +107,20 @@ export async function fetchTradeIdeas(
     throw new Error(data?.error ?? `Scanner request failed: ${res.status}`);
   }
   return data as ScanResult;
+}
+
+export async function fetchPennyTradeIdeas(): Promise<TradeIdea[]> {
+  const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+  const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+  try {
+    const res = await fetch(
+      `${supabaseUrl}/rest/v1/trade_scans?id=eq.penny_trades&select=data`,
+      { headers: { apikey: supabaseKey, Authorization: `Bearer ${supabaseKey}` } }
+    );
+    if (!res.ok) return [];
+    const rows: Array<{ data: TradeIdea[] }> = await res.json();
+    return rows[0]?.data ?? [];
+  } catch {
+    return [];
+  }
 }

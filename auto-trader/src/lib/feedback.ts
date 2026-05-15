@@ -75,7 +75,7 @@ function generateLesson(
     if (avgConf >= 8) worked.push('High confidence (8+) signals are reliable');
     if (avgConf >= 7 && avgConf < 8) worked.push('7+ confidence met threshold and delivered');
     if (ctx.closeReason === 'target_hit') worked.push('Target price was well-calibrated');
-    if (ctx.duration && ctx.mode === 'DAY_TRADE') {
+    if (ctx.duration && (ctx.mode === 'DAY_TRADE' || ctx.mode === 'DAY_PENNY')) {
       if (ctx.duration < 60) worked.push('Quick execution — momentum was strong');
       else if (ctx.duration > 240) parts.push('Took longer than expected for a day trade');
     }
