@@ -21,6 +21,12 @@ router.get('/options/strike-sniper', async (req, res) => {
     const quote = await fetchQuote(symbol);
     const currentPrice = quote?.price ?? null;
 
+    if (currentPrice && targetStrike < currentPrice * 0.40) {
+      return res.status(400).json({
+        error: `Target strike $${targetStrike} is too far below ${symbol}'s current price ($${currentPrice.toFixed(0)}). Try a strike within 10-30% below the current price.`,
+      });
+    }
+
     const contracts = await findBestContractForStrike(symbol, targetStrike, minReturn, currentPrice ?? undefined);
     const fundamental = await getFundamentalGrade(symbol);
 
