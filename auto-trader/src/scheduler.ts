@@ -4893,6 +4893,7 @@ function detectGoldMineArchetype(notes: string | null, scannerReason: string | n
 async function checkLongTermAutoSell(
   config: AutoTraderConfig,
   positions: EnrichedPosition[],
+  skipTickers?: Set<string>,
 ): Promise<void> {
   // Compounder fallback rules (unchanged from original)
   const compounderProfitTakePct = config.ltProfitTakePct ?? 15;
@@ -4907,6 +4908,10 @@ async function checkLongTermAutoSell(
   const today = new Date().toISOString().slice(0, 10);
 
   for (const trade of longTermOpen) {
+    if (skipTickers?.has(trade.ticker.toUpperCase())) {
+      log(`${trade.ticker}: skipping LT auto-sell — already trimmed by profit-take this cycle`);
+      continue;
+    }
     const ibPos = positions.find(p => p.symbol.toUpperCase() === trade.ticker.toUpperCase());
     if (!ibPos || ibPos.position === 0) continue;
 
@@ -5133,8 +5138,9 @@ async function makeRoomForTrade(
 async function checkProfitTakeOpportunities(
   config: AutoTraderConfig,
   positions: EnrichedPosition[],
-): Promise<void> {
-  if (!config.profitTakeEnabled || !config.accountId) return;
+): Promise<Set<string>> {
+  const trimmedTickers = new Set<string>();
+  if (!config.profitTakeEnabled || !config.accountId) return trimmedTickers;
   const activeTrades = await getActiveTrades();
   const longTermFilled = activeTrades.filter(t => t.mode === 'LONG_TERM' && t.status === 'FILLED');
 
@@ -5189,6 +5195,7 @@ async function checkProfitTakeOpportunities(
         entry_trigger_type: 'profit_take',
       });
 
+      trimmedTickers.add(trade.ticker.toUpperCase());
       log(`${trade.ticker}: PROFIT TAKE ${triggered.label} — sold ${actualTrimQty} shares @ $${avgFillPrice.toFixed(2)}, +${gainPct.toFixed(1)}% ($${realizedPnl.toFixed(2)})`);
       persistEvent(trade.ticker, 'success', `Profit take ${triggered.label}: sold ${actualTrimQty} shares @ $${avgFillPrice.toFixed(2)}`, {
         action: 'executed', source: 'profit_take', mode: 'LONG_TERM',
@@ -5198,6 +5205,7 @@ async function checkProfitTakeOpportunities(
       log(`${trade.ticker}: Profit take failed — ${err instanceof Error ? err.message : 'unknown'}`);
     }
   }
+  return trimmedTickers;
 }
 
 // ── Day-Trade Software Trailing Stop ──────────────────────────────────────────
@@ -5882,10 +5890,10 @@ async function runSchedulerCycle(): Promise<void> {
     await checkStaleDayTrades(positions);              // flag/close day trades stuck FILLED from a prior day
     await checkDayTradeTrailingStops(positions);       // software trailing stop for day trades in profit (+1R)
     await checkDipBuyOpportunities(config, positions);
-    await checkProfitTakeOpportunities(config, positions);
+    const trimmedTickers = await checkProfitTakeOpportunities(config, positions);
     await checkLossCutOpportunities(config, positions);
     await checkSwingHoldExpiry(config, positions);     // free capital from stale swing trades
-    await checkLongTermAutoSell(config, positions);    // stop-loss / profit-take / max-hold for Suggested Finds
+    await checkLongTermAutoSell(config, positions, trimmedTickers);
 
     // ── New entries below — only run when auto-trading is enabled ─────────────
     if (!newEntriesEnabled) {
