@@ -13,7 +13,7 @@ const corsHeaders = {
 
 const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
-const INSTAGRAM_REEL = /instagram\.com\/(?:([^/]+)\/)?reel\/([A-Za-z0-9_-]+)/i;
+const INSTAGRAM_REEL = /instagram\.com\/(?:([^/]+)\/)?reels?\/([A-Za-z0-9_-]+)/i;
 
 // Instagram system paths / CDN paths that are never real account handles
 const IG_SYSTEM_PATHS = new Set([
@@ -47,7 +47,7 @@ async function extractInstagramHandle(url: string): Promise<string | null> {
     const html = await res.text();
     // Prefer og:url — most reliable
     const ogUrl = html.match(/<meta[^>]+property="og:url"[^>]+content="([^"]*)"/i)?.[1] ?? '';
-    const m2 = /instagram\.com\/([^/]+)\/(?:reel|p)\//i.exec(ogUrl);
+    const m2 = /instagram\.com\/([^/]+)\/(?:reels?|p)\//i.exec(ogUrl);
     if (m2?.[1] && !isIgSystemPath(m2[1])) return m2[1].trim().toLowerCase();
 
     // Fallback: first instagram.com/<handle>/ match in HTML

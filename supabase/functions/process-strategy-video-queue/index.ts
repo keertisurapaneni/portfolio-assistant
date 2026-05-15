@@ -11,7 +11,7 @@ const corsHeaders = {
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 };
 
-const INSTAGRAM_REEL = /instagram\.com\/(?:([^/]+)\/)?reel\/([A-Za-z0-9_-]+)/i;
+const INSTAGRAM_REEL = /instagram\.com\/(?:([^/]+)\/)?reels?\/([A-Za-z0-9_-]+)/i;
 const TWITTER_STATUS = /(?:twitter|x)\.com\/(?:[^/]+\/)?status\/(\d+)/i;
 const YOUTUBE = /(?:youtube\.com\/watch\?v=|youtu\.be\/)([A-Za-z0-9_-]{11})/i;
 
@@ -60,7 +60,7 @@ async function fetchInstagramHandle(url: string): Promise<string | null> {
     const html = await res.text();
     // Prefer og:url — most reliable
     const ogUrl = html.match(/<meta[^>]+property="og:url"[^>]+content="([^"]*)"/i)?.[1] ?? '';
-    const m = /instagram\.com\/([^/]+)\/(?:reel|p)\//i.exec(ogUrl);
+    const m = /instagram\.com\/([^/]+)\/(?:reels?|p)\//i.exec(ogUrl);
     if (m?.[1] && !isIgSystemPath(m[1])) return m[1].trim().toLowerCase();
 
     // Fallback: first instagram.com/<handle>/ match in HTML
