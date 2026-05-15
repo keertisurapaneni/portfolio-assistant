@@ -38,7 +38,7 @@ export interface TodayActivityTabProps {
   ibRealizedPnl?: number | null;
 }
 
-type FilterMode = 'all' | 'day' | 'long_term' | 'gainers' | 'losers';
+type FilterMode = 'all' | 'day' | 'penny' | 'long_term' | 'gainers' | 'losers';
 type SortKey = 'ticker' | 'pnl' | 'time' | null;
 type SortDir = 'asc' | 'desc';
 
@@ -267,7 +267,8 @@ export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], 
     if (filterMode !== 'all') {
       filtered = events.filter(ev => {
         const mode = ev.mode;
-        if (filterMode === 'day') return mode === 'DAY_TRADE';
+        if (filterMode === 'day') return mode === 'DAY_TRADE' || mode === 'DAY_PENNY';
+        if (filterMode === 'penny') return mode === 'DAY_PENNY';
         if (filterMode === 'long_term') return mode === 'LONG_TERM' || mode === 'SWING_TRADE';
         if (filterMode === 'gainers' || filterMode === 'losers') {
           const trade = tradesByTicker.get(ev.ticker)?.find(t => t.pnl != null);
@@ -325,7 +326,7 @@ export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], 
 
       {/* Filter + count bar */}
       <div className="flex items-center gap-1.5 flex-wrap">
-        {(['all', 'day', 'long_term'] as FilterMode[]).map(f => (
+        {(['all', 'day', 'penny', 'long_term'] as FilterMode[]).map(f => (
           <button
             key={f}
             onClick={() => setFilterMode(f)}
@@ -336,7 +337,7 @@ export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], 
                 : 'bg-white text-[hsl(var(--muted-foreground))] border-[hsl(var(--border))] hover:border-[hsl(var(--foreground))]/40'
             )}
           >
-            {f === 'all' ? 'All' : f === 'day' ? 'Day Trades' : 'LT / Swing'}
+            {f === 'all' ? 'All' : f === 'day' ? 'Day Trades' : f === 'penny' ? 'Penny' : 'LT / Swing'}
           </button>
         ))}
         <button
@@ -431,6 +432,7 @@ export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], 
                 : 'Trade';
 
               const modeLabel = event.mode === 'DAY_TRADE' ? 'Day'
+                : event.mode === 'DAY_PENNY' ? 'Penny'
                 : event.mode === 'SWING_TRADE' ? 'Swing'
                 : event.mode === 'LONG_TERM' ? 'Long Term'
                 : isPositionSync ? 'Close' : '—';

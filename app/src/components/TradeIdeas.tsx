@@ -15,10 +15,12 @@ import {
   ArrowUpRight,
   ArrowDownRight,
   Ban,
+  Coins,
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import {
   fetchTradeIdeas,
+  fetchPennyTradeIdeas,
   fetchScanEvaluations,
   type TradeIdea,
   type ScanResult,
@@ -108,10 +110,10 @@ if (_persisted) {
 // ── Props ───────────────────────────────────────────────
 
 interface TradeIdeasProps {
-  onSelectTicker: (ticker: string, mode: 'DAY_TRADE' | 'SWING_TRADE') => void;
+  onSelectTicker: (ticker: string, mode: 'DAY_TRADE' | 'SWING_TRADE' | 'DAY_PENNY') => void;
 }
 
-type Tab = 'day' | 'swing' | 'gameplan';
+type Tab = 'day' | 'swing' | 'penny' | 'gameplan';
 
 function formatScanAge(ts: number): string {
   const diffMs = Date.now() - ts;
@@ -133,6 +135,7 @@ export function TradeIdeas({ onSelectTicker }: TradeIdeasProps) {
   const [error, setError] = useState<string | null>(null);
   const [tradedTickers, setTradedTickers] = useState<Set<string>>(new Set());
   const [evaluations, setEvaluations] = useState<ScanEvaluations>({});
+  const [pennyTrades, setPennyTrades] = useState<TradeIdea[]>([]);
   const [marketOpen, setMarketOpen] = useState(() => isMarketHoursWindow());
 
   // Re-check market hours every minute so the badge updates as windows open/close.
@@ -148,7 +151,7 @@ export function TradeIdeas({ onSelectTicker }: TradeIdeasProps) {
     const todayET = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
     Promise.all([getActiveTrades(), getAllTrades(50)])
       .then(([active, all]) => {
-        const relevantModes = new Set(['DAY_TRADE', 'SWING_TRADE']);
+        const relevantModes = new Set(['DAY_TRADE', 'SWING_TRADE', 'DAY_PENNY']);
         const tickers = new Set<string>();
         // Only include active or recent trades that were actually opened today
         [...active, ...all]
@@ -168,6 +171,15 @@ export function TradeIdeas({ onSelectTicker }: TradeIdeasProps) {
     fetchScanEvaluations().then(setEvaluations).catch(() => {});
     const interval = setInterval(() => {
       fetchScanEvaluations().then(setEvaluations).catch(() => {});
+    }, 2 * 60 * 1000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // Load penny stock scan candidates from the trade_scans table.
+  useEffect(() => {
+    fetchPennyTradeIdeas().then(setPennyTrades).catch(() => {});
+    const interval = setInterval(() => {
+      fetchPennyTradeIdeas().then(setPennyTrades).catch(() => {});
     }, 2 * 60 * 1000);
     return () => clearInterval(interval);
   }, []);
@@ -227,7 +239,7 @@ export function TradeIdeas({ onSelectTicker }: TradeIdeasProps) {
   const dayIdeas = data?.dayTrades ?? [];
   const swingIdeas = data?.swingTrades ?? [];
   const gameplanSetups = data?.keyLevelSetups ?? [];
-  const totalCount = dayIdeas.length + swingIdeas.length; // key level setups excluded from badge count
+  const totalCount = dayIdeas.length + swingIdeas.length + pennyTrades.length; // key level setups excluded from badge count
 
   // Sort order: executed/armed → watching → no-eval → blocked
   const evalSortWeight = (ticker: string, signal: 'BUY' | 'SELL') => {
@@ -244,7 +256,9 @@ export function TradeIdeas({ onSelectTicker }: TradeIdeasProps) {
     ? sortedIdeas(dayIdeas)
     : tab === 'swing'
       ? sortedIdeas(swingIdeas)
-      : [];
+      : tab === 'penny'
+        ? sortedIdeas(pennyTrades)
+        : [];
 
   return (
     <div className="rounded-xl border border-[hsl(var(--border))] bg-white shadow-sm overflow-hidden">
@@ -405,6 +419,27 @@ export function TradeIdeas({ onSelectTicker }: TradeIdeasProps) {
             </button>
             <button
               type="button"
+              onClick={() => setTab('penny')}
+              className={cn(
+                'flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg transition-all',
+                tab === 'penny'
+                  ? 'bg-green-50 text-green-700 border border-green-200 shadow-sm'
+                  : 'text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--secondary))]'
+              )}
+            >
+              <Coins className="w-3.5 h-3.5" />
+              Penny
+              {pennyTrades.length > 0 && (
+                <span className={cn(
+                  'ml-0.5 text-[10px] px-1.5 rounded-full font-semibold',
+                  tab === 'penny' ? 'bg-green-200/70 text-green-700' : 'bg-[hsl(var(--secondary))] text-[hsl(var(--muted-foreground))]'
+                )}>
+                  {pennyTrades.length}
+                </span>
+              )}
+            </button>
+            <button
+              type="button"
               onClick={() => setTab('gameplan')}
               className={cn(
                 'flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg transition-all',
@@ -462,13 +497,15 @@ export function TradeIdeas({ onSelectTicker }: TradeIdeasProps) {
             {/* Day / Swing tab content */}
             {tab !== 'gameplan' && (
               <>
-                {ideas.length === 0 && !loading && !error && data && (
+                {ideas.length === 0 && !loading && !error && (data || tab === 'penny') && (
                   <div className="flex flex-col items-center py-6 gap-2 text-center">
                     <BarChart3 className="w-8 h-8 text-[hsl(var(--muted-foreground))] opacity-40" />
                     <p className="text-sm text-[hsl(var(--muted-foreground))]">
                       {tab === 'day'
                         ? 'No high-confidence day trade setups right now.'
-                        : 'No confirmed swing setups found.'}
+                        : tab === 'swing'
+                          ? 'No confirmed swing setups found.'
+                          : 'No penny stock setups found.'}
                     </p>
                     <p className="text-xs text-[hsl(var(--muted-foreground))] opacity-70">
                       Market may be closed or the AI didn't find setups worth recommending.
@@ -688,7 +725,7 @@ function IdeaCard({
   traded: boolean;
   hasOpenPosition?: boolean;
   evaluation?: ScanEvaluation;
-  onSelect: (ticker: string, mode: 'DAY_TRADE' | 'SWING_TRADE') => void;
+  onSelect: (ticker: string, mode: 'DAY_TRADE' | 'SWING_TRADE' | 'DAY_PENNY') => void;
 }) {
   const isPositive = idea.changePercent >= 0;
   // SELL signal with no matching open position — auto-trader will skip this

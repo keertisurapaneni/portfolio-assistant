@@ -24,7 +24,7 @@ import {
 
 // ── Types ────────────────────────────────────────────────
 
-export type Mode = 'DAY_TRADE' | 'SWING_TRADE';
+export type Mode = 'DAY_TRADE' | 'DAY_PENNY' | 'SWING_TRADE';
 
 export interface AnalysisContext {
   indicators: IndicatorSummary;
@@ -42,6 +42,7 @@ export interface AnalysisContext {
 /** Candle timeframes per mode — same for scanner Pass 2 AND full analysis. */
 export const MODE_INTERVALS: Record<Mode, [string, string, string]> = {
   DAY_TRADE: ['1min', '15min', '1h'],
+  DAY_PENNY: ['1min', '15min', '1h'],
   SWING_TRADE: ['4h', '1day', '1week'],
 };
 
@@ -60,6 +61,7 @@ const CANDLE_SIZES_LITE: Record<string, number> = {
 /** Which timeframe to use for indicator computation. */
 const INDICATOR_INTERVAL: Record<Mode, string> = {
   DAY_TRADE: '15min',
+  DAY_PENNY: '15min',
   SWING_TRADE: '1day',
 };
 

@@ -158,8 +158,8 @@ export async function logClosedTradePerformance(
   context?: LogContext
 ): Promise<void> {
   if (!closedTrade.closed_at) return;
-  const strategy = closedTrade.mode as 'DAY_TRADE' | 'SWING_TRADE' | 'LONG_TERM';
-  if (!['DAY_TRADE', 'SWING_TRADE', 'LONG_TERM'].includes(strategy)) return;
+  const strategy = closedTrade.mode as 'DAY_TRADE' | 'DAY_PENNY' | 'SWING_TRADE' | 'LONG_TERM';
+  if (!['DAY_TRADE', 'DAY_PENNY', 'SWING_TRADE', 'LONG_TERM'].includes(strategy)) return;
   if ((closedTrade.notes ?? '').startsWith('Dip buy')) return; // skip dip-buy add-ons
 
   const entryDatetime = closedTrade.filled_at ?? closedTrade.opened_at ?? closedTrade.created_at;
@@ -191,7 +191,7 @@ export async function logClosedTradePerformance(
 
   let maxRunupPct: number | null = null;
   let maxDrawdownPct: number | null = null;
-  if (entryPrice != null && entryPrice > 0 && strategy !== 'DAY_TRADE') {
+  if (entryPrice != null && entryPrice > 0 && strategy !== 'DAY_TRADE' && strategy !== 'DAY_PENNY') {
     try {
       const from = new Date(entryDatetime);
       const to = new Date(exitDatetime);

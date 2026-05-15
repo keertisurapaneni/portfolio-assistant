@@ -55,6 +55,10 @@ export interface AutoTraderConfig {
   tradeSignalsEnabled: boolean;
   suggestedFindsEnabled: boolean;
   optionsWheelEnabled: boolean;
+  pennyEnabled: boolean;
+  pennyPositionSize: number;
+  pennyMaxDailyLoss: number;
+  pennyMaxDailyTrades: number;
 }
 
 export const DEFAULT_CONFIG: AutoTraderConfig = {
@@ -105,4 +109,8 @@ export const DEFAULT_CONFIG: AutoTraderConfig = {
   tradeSignalsEnabled: true,
   suggestedFindsEnabled: true,
   optionsWheelEnabled: true,
+  pennyEnabled: false,
+  pennyPositionSize: 200,
+  pennyMaxDailyLoss: 200,
+  pennyMaxDailyTrades: 10,
 };

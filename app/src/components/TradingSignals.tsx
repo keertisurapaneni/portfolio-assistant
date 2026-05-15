@@ -583,10 +583,11 @@ export function TradingSignals() {
     }
   };
 
-  const handleSelectIdea = (t: string, m: 'DAY_TRADE' | 'SWING_TRADE') => {
+  const handleSelectIdea = (t: string, m: 'DAY_TRADE' | 'SWING_TRADE' | 'DAY_PENNY') => {
     setTicker(t);
-    setMode(m);
-    setStoredMode(m);
+    const analysisMode = m === 'DAY_PENNY' ? 'DAY_TRADE' : m;
+    setMode(analysisMode);
+    setStoredMode(analysisMode);
     setResult(null);  // Clear stale result so old analysis doesn't show
     setError(null);
     // Don't auto-run the full AI analysis — let the user click Analyze.

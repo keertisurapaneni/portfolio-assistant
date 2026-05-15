@@ -91,6 +91,17 @@ import { getEconDayProfile } from './lib/econ-calendar.js';
 import { warmPositionPriceCache } from './routes/positions.js';
 import { generateMorningBrief } from './lib/morning-brief.js';
 import { validateOrder } from './lib/validateOrder.js';
+import {
+  runPennyDiscovery,
+  checkPennyEntry,
+  checkPennyExit,
+  getPennySessionState,
+  isPennySessionDone,
+  getPennySessionSummary,
+  recordPennyTradeResult,
+  pennyPositionSize,
+  type PennyCandidate,
+} from './lib/penny-scanner.js';
 
 // ── Types ────────────────────────────────────────────────
 
@@ -607,7 +618,7 @@ async function closeAllDayTrades(config: AutoTraderConfig): Promise<void> {
   // Include SUBMITTED + PARTIAL — IB fill confirmations sometimes don't write back before
   // the EOD sweep fires, leaving orders in SUBMITTED state. At 3:55 PM ET the position is
   // effectively closed by IB regardless; mark them closed in paper_trades too.
-  const dayTrades = activeTrades.filter(t => t.mode === 'DAY_TRADE' && ['FILLED', 'SUBMITTED', 'PARTIAL'].includes(t.status));
+  const dayTrades = activeTrades.filter(t => (t.mode === 'DAY_TRADE' || t.mode === 'DAY_PENNY') && ['FILLED', 'SUBMITTED', 'PARTIAL'].includes(t.status));
 
   if (dayTrades.length === 0) {
     log('EOD sweep: no open day trades');
@@ -715,7 +726,7 @@ async function closeAllDayTrades(config: AutoTraderConfig): Promise<void> {
 
 async function softCloseDayTrades(positions: EnrichedPosition[]): Promise<void> {
   const activeTrades = await getActiveTrades();
-  const dayTrades = activeTrades.filter(t => t.mode === 'DAY_TRADE' && ['FILLED', 'SUBMITTED', 'PARTIAL'].includes(t.status));
+  const dayTrades = activeTrades.filter(t => (t.mode === 'DAY_TRADE' || t.mode === 'DAY_PENNY') && ['FILLED', 'SUBMITTED', 'PARTIAL'].includes(t.status));
   if (dayTrades.length === 0) return;
 
   log(`[SoftClose] Checking ${dayTrades.length} open day trade(s) before power hour`);
@@ -2458,7 +2469,7 @@ function calculatePositionSize(
   config: AutoTraderConfig,
   params: {
     price: number;
-    mode: 'LONG_TERM' | 'DAY_TRADE' | 'SWING_TRADE' | 'OPTIONS_PUT' | 'OPTIONS_CALL';
+    mode: 'LONG_TERM' | 'DAY_TRADE' | 'DAY_PENNY' | 'SWING_TRADE' | 'OPTIONS_PUT' | 'OPTIONS_CALL';
     conviction?: number;
     suggestedFindTag?: 'Steady Compounder' | 'Gold Mine' | 'Dip Discovery';
     entryPrice?: number;
@@ -2478,7 +2489,9 @@ function calculatePositionSize(
   // sizing or risk-based formula. The risk-based formula can balloon when stops are tight
   // (e.g. $2 stop on a $200 stock → 2,750 shares), causing outsized day-trade losses.
   // Swing and long-term trades keep the larger allocation-based cap.
-  const modeMaxDollar = mode === 'DAY_TRADE' ? config.positionSize : hardMaxDollar;
+  const modeMaxDollar = mode === 'DAY_PENNY' ? config.pennyPositionSize
+    : mode === 'DAY_TRADE' ? config.positionSize
+    : hardMaxDollar;
 
   if (!config.useDynamicSizing || price <= 0) {
     const cappedSize = Math.min(config.positionSize, modeMaxDollar);
@@ -6094,6 +6107,150 @@ async function runSchedulerCycle(): Promise<void> {
       }
     } catch (err) {
       log(`[SpxScanner] Error: ${err instanceof Error ? err.message : 'unknown'}`);
+    }
+
+    // 12b. Penny stock momentum scanner (Ross Cameron's mechanical rules)
+    if (!config.pennyEnabled) {
+      // silent skip
+    } else {
+      try {
+        const etNow = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }));
+        const etMins = etNow.getHours() * 60 + etNow.getMinutes();
+        // Active window: 9:35 AM - 10:00 AM ET (regular hours only for now)
+        if (etMins >= 9 * 60 + 35 && etMins <= 10 * 60) {
+          if (isPennySessionDone()) {
+            log(`[PennyScanner] Session done: ${getPennySessionSummary()}`);
+          } else {
+            // Discovery: find candidates
+            const pennyCandidates = await runPennyDiscovery();
+            if (pennyCandidates.length > 0) {
+              log(`[PennyScanner] Found ${pennyCandidates.length} candidate(s): ${pennyCandidates.map(c => `${c.ticker}(+${c.changePct.toFixed(0)}%)`).join(', ')}`);
+
+              // Write to trade_scans for UI visibility
+              const sb = getSupabase();
+              const scanData = pennyCandidates.map(c => ({
+                ticker: c.ticker,
+                name: c.ticker,
+                price: c.price,
+                change: 0,
+                changePercent: c.changePct,
+                signal: 'BUY' as const,
+                confidence: 8,
+                reason: `Penny momentum: +${c.changePct.toFixed(0)}%, ${c.relativeVolume.toFixed(1)}x vol${c.hasCatalyst ? `, catalyst: ${c.catalystHeadline?.slice(0, 60)}` : ''}${c.float ? `, float ${c.float.toFixed(1)}M` : ''}`,
+                tags: ['penny_momentum'],
+                mode: 'DAY_PENNY' as const,
+              }));
+              await sb.from('trade_scans').upsert({
+                id: 'penny_trades',
+                data: scanData,
+                scanned_at: new Date().toISOString(),
+                expires_at: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
+              });
+
+              // Check entry signals and execute
+              const pennySession = getPennySessionState();
+              const activeCount = await countActivePositions();
+              const slots = config.maxPositions - activeCount;
+
+              for (const candidate of pennyCandidates) {
+                if (slots <= 0) break;
+                if (pennySession.done) break;
+                if (await hasActiveTrade(candidate.ticker, { excludeOptions: true })) continue;
+
+                const entry = await checkPennyEntry(candidate);
+                if (!entry) continue;
+
+                const posSize = pennyPositionSize(config);
+                const qty = Math.max(1, Math.floor(posSize / entry.entryPrice));
+                if (qty <= 0) continue;
+
+                log(`[PennyScanner] Entry signal: ${candidate.ticker} @ $${entry.entryPrice.toFixed(2)}, stop $${entry.stopLoss.toFixed(2)}, target $${entry.targetPrice.toFixed(2)}, R:R ${entry.riskReward.toFixed(1)}`);
+
+                try {
+                  const orderResult = await placeBracketOrder({
+                    symbol: candidate.ticker,
+                    side: 'BUY',
+                    quantity: qty,
+                    entryPrice: entry.entryPrice,
+                    stopLoss: entry.stopLoss,
+                    takeProfit: entry.targetPrice,
+                    tif: 'DAY',
+                  });
+
+                  await createPaperTrade({
+                    ticker: candidate.ticker,
+                    mode: 'DAY_PENNY',
+                    signal: 'BUY',
+                    entry_price: entry.entryPrice,
+                    stop_loss: entry.stopLoss,
+                    target_price: entry.targetPrice,
+                    risk_reward: `${entry.riskReward.toFixed(1)}:1`,
+                    quantity: qty,
+                    position_size: qty * entry.entryPrice,
+                    status: 'SUBMITTED',
+                    ib_order_id: String(orderResult.parentOrderId),
+                    ib_parent_order_id: String(orderResult.parentOrderId),
+                    ib_tp_order_id: String(orderResult.takeProfitOrderId),
+                    ib_sl_order_id: String(orderResult.stopLossOrderId),
+                    scanner_reason: `Penny momentum: +${candidate.changePct.toFixed(0)}%, pullback #${entry.pullbackNumber}, MACD hist ${entry.macdHistogram.toFixed(4)}`,
+                    notes: `Penny trade #${pennySession.totalTrades + 1} of day. Session: ${getPennySessionSummary()}`,
+                    opened_at: new Date().toISOString(),
+                  });
+
+                  persistEvent(candidate.ticker, 'success',
+                    `Penny BUY: ${qty} shares @ $${entry.entryPrice.toFixed(2)}, R:R ${entry.riskReward.toFixed(1)}:1`, {
+                      source: 'penny_scanner',
+                      mode: 'DAY_PENNY',
+                    });
+
+                  log(`[PennyScanner] Executed: ${candidate.ticker} ${qty} shares @ $${entry.entryPrice.toFixed(2)}`);
+                } catch (err) {
+                  log(`[PennyScanner] Order failed for ${candidate.ticker}: ${err instanceof Error ? err.message : 'unknown'}`);
+                  persistEvent(candidate.ticker, 'error',
+                    `Penny order failed: ${err instanceof Error ? err.message : 'unknown'}`, {
+                      source: 'penny_scanner',
+                      mode: 'DAY_PENNY',
+                    });
+                }
+              }
+            } else {
+              log('[PennyScanner] No candidates found this cycle');
+            }
+
+            // Exit monitoring for open penny positions
+            const activeTrades = await getActiveTrades();
+            const pennyTrades = activeTrades.filter(t => t.mode === 'DAY_PENNY' && t.status === 'FILLED');
+            for (const trade of pennyTrades) {
+              const exitSignal = await checkPennyExit(trade.ticker, trade.entry_price ?? 0);
+              if (exitSignal) {
+                log(`[PennyScanner] Exit signal for ${trade.ticker}: ${exitSignal.reasons.join(', ')}`);
+                try {
+                  const closeSide = 'SELL';
+                  const qty = trade.quantity ?? 0;
+                  if (qty > 0) {
+                    await placeMarketOrder({ symbol: trade.ticker, side: closeSide, quantity: qty });
+                    await updatePaperTrade(trade.id, {
+                      status: 'CLOSED',
+                      close_reason: 'eod_close',
+                      closed_at: new Date().toISOString(),
+                      notes: `${trade.notes ?? ''} | Exit: ${exitSignal.reasons.join(', ')}`,
+                    });
+                    persistEvent(trade.ticker, 'success',
+                      `Penny exit: ${exitSignal.reasons.join(', ')}`, {
+                        source: 'penny_scanner',
+                        mode: 'DAY_PENNY',
+                      });
+                  }
+                } catch (err) {
+                  log(`[PennyScanner] Exit failed for ${trade.ticker}: ${err instanceof Error ? err.message : 'unknown'}`);
+                }
+              }
+            }
+          }
+        }
+      } catch (err) {
+        log(`[PennyScanner] Error: ${err instanceof Error ? err.message : 'unknown'}`);
+      }
     }
 
     // 13. Options wheel — manage open positions (every cycle, 30-min intervals)

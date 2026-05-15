@@ -8,6 +8,7 @@
 
 export type TradeMode =
   | 'DAY_TRADE'
+  | 'DAY_PENNY'
   | 'SWING_TRADE'
   | 'LONG_TERM'
   | 'OPTIONS_PUT'

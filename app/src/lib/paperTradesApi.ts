@@ -735,7 +735,7 @@ export async function recalculatePerformance(): Promise<TradePerformance | null>
 // ── Category Performance (Signal Quality) ────────────────
 
 export interface CategoryPerformance {
-  category: 'suggested_finds' | 'day_trade' | 'scanner_day_trade' | 'influencer_day_trade' | 'swing_trade' | 'dip_buy' | 'profit_take';
+  category: 'suggested_finds' | 'day_trade' | 'scanner_day_trade' | 'influencer_day_trade' | 'day_penny' | 'swing_trade' | 'dip_buy' | 'profit_take';
   totalTrades: number;
   activeTrades: number;
   wins: number;
@@ -816,7 +816,7 @@ export interface PendingStrategySignal {
   id: string;
   ticker: string;
   signal: 'BUY' | 'SELL';
-  mode: 'DAY_TRADE' | 'SWING_TRADE' | 'LONG_TERM' | 'OPTIONS_PUT' | 'OPTIONS_CALL';
+  mode: 'DAY_TRADE' | 'DAY_PENNY' | 'SWING_TRADE' | 'LONG_TERM' | 'OPTIONS_PUT' | 'OPTIONS_CALL';
   source_name: string;
   source_url: string | null;
   strategy_video_id: string | null;
@@ -865,6 +865,10 @@ export async function recalculatePerformanceByCategory(): Promise<CategoryPerfor
     {
       key: 'influencer_day_trade',
       filter: (t) => t.mode === 'DAY_TRADE' && !!t.strategy_video_id,
+    },
+    {
+      key: 'day_penny',
+      filter: (t) => t.mode === 'DAY_PENNY',
     },
     {
       key: 'swing_trade',

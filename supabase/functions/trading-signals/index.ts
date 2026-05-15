@@ -536,7 +536,7 @@ Deno.serve(async req => {
 
     const body: RequestPayload = await req.json();
     const ticker = (body?.ticker ?? '').toString().trim().toUpperCase();
-    const requestedMode: RequestMode = body?.mode === 'DAY_TRADE'
+    const requestedMode: RequestMode = (body?.mode === 'DAY_TRADE' || body?.mode === 'DAY_PENNY')
       ? 'DAY_TRADE'
       : body?.mode === 'AUTO'
         ? 'AUTO'
