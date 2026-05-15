@@ -1452,7 +1452,7 @@ function preDayFilter(q: YahooQuote): boolean {
   const volume = rawVal(q.regularMarketVolume);
   if (!q.symbol) return false;
   if (largeCapMode) {
-    if (price < 20) return false;
+    if (price < 50) return false;
     if (absPct < 1) return false;
     if (volume < 1_000_000) return false;
   } else {
