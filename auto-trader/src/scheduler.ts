@@ -29,7 +29,7 @@ import {
   type PositionData,
   type IBConnection,
 } from './ib-connection.js';
-import { getConnectionForMode, getAccountForMode, getPositionSizeConfig, assertLiveLossLimitNotBreached } from './lib/mode-router.js';
+import { getConnectionForMode, getAccountForMode, getPositionSizeConfig, assertLiveLossLimitNotBreached, isModeEnabled, type RoutedConnection } from './lib/mode-router.js';
 import type { AccountType } from '../../shared/trade-types.js';
 import {
   isConfigured,
@@ -1327,7 +1327,8 @@ export async function triggerManualRun(): Promise<string> {
 export async function triggerOptionsScan(): Promise<{ ok: boolean; opportunities: number; skipped: number; message: string }> {
   try {
     const config = await loadConfig();
-    if (!config.optionsWheelEnabled) {
+    const owEnabled = isModeEnabled(config, 'OPTIONS_PUT') || isModeEnabled(config, 'OPTIONS_CALL') || isModeEnabled(config, 'CREDIT_SPREAD') || isModeEnabled(config, 'CALENDAR_SPREAD');
+    if (!owEnabled) {
       return { ok: false, opportunities: 0, skipped: 0, message: 'Options Wheel module disabled' };
     }
     const optionsCapitalBudget = config.maxTotalAllocation ?? 550_000;
@@ -2645,8 +2646,8 @@ async function checkAllocationCap(
   }
 
   // Bucket cap — long-term gets longTermBucketPct, day/swing gets the rest.
-  // When suggestedFindsEnabled=false, LT bucket allocation flows to day/swing automatically.
-  const effectiveLtPct = config.suggestedFindsEnabled ? config.longTermBucketPct : 0;
+  // When LONG_TERM is routed to 'off', LT bucket allocation flows to day/swing automatically.
+  const effectiveLtPct = isModeEnabled(config, 'LONG_TERM') ? config.longTermBucketPct : 0;
   const buckets = await getDeployedByBucket(positions);
   if (mode === 'LONG_TERM') {
     const ltCap = cap * (effectiveLtPct / 100);
@@ -3298,26 +3299,13 @@ async function executeScannerTrade(
     log(`${ticker}: order validation OK — ${orderCheck.reason}`);
   }
 
-  // Resolve connection via mode router (paper or live based on config.modeRouting)
-  let connection: IBConnection;
-  let accountType: AccountType;
+  // Resolve connections via mode router (paper/live/both based on config.modeRouting)
+  let connections: RoutedConnection[];
   try {
-    const routed = getConnectionForMode(mode, config);
-    connection = routed.connection;
-    accountType = routed.accountType;
+    connections = getConnectionForMode(mode, config).connections;
   } catch (routeErr) {
     log(`${ticker}: routing failed — ${routeErr instanceof Error ? routeErr.message : 'unknown'}`);
     return 'failed:routing';
-  }
-
-  if (!connection.isConnected()) return 'failed:no_contract';
-
-  // Live safety: assert daily loss limit not breached
-  if (accountType === 'live') {
-    try { await assertLiveLossLimitNotBreached(config); } catch (limitErr) {
-      log(`${ticker}: ${limitErr instanceof Error ? limitErr.message : 'live loss limit breached'}`);
-      return 'failed:live_loss_limit';
-    }
   }
 
   // SWING only: skip if price too far from entry (entry precision matters)
@@ -3333,57 +3321,74 @@ async function executeScannerTrade(
     }
   }
 
-  try {
-    const result = await connection.placeBracketOrder({
-      symbol: ticker,
-      side: signal,
-      quantity: sizing.quantity,
-      entryPrice,
-      stopLoss,
-      takeProfit: targetPrice,
-      tif: mode === 'DAY_TRADE' ? 'DAY' : 'GTC',
-    });
-
-    await createPaperTrade({
-      ticker, mode, signal,
-      scanner_confidence: Math.round(effectiveScannerConf),
-      fa_confidence: faConf != null ? Math.round(faConf) : null,
-      fa_recommendation: faRec,
-      entry_price: entryPrice,
-      stop_loss: stopLoss,
-      target_price: targetPrice,
-      target_price2: null,
-      risk_reward: faRiskReward,
-      quantity: sizing.quantity,
-      position_size: sizing.dollarSize,
-      ib_order_id: String(result.parentOrderId),
-      ib_tp_order_id: String(result.takeProfitOrderId),
-      ib_sl_order_id: String(result.stopLossOrderId),
-      status: 'SUBMITTED',
-      scanner_reason: idea.reason,
-      fa_rationale: null,
-      in_play_score: idea.in_play_score,
-      pass1_confidence: idea.pass1_confidence,
-      entry_trigger_type: 'bracket_limit',
-      market_condition: idea.market_condition,
-    }, accountType);
-
-    recordPendingOrder(sizing.dollarSize);
-    log(`${ticker}: ORDER PLACED [${accountType}] — ${signal} ${sizing.quantity} @ $${entryPrice}`);
-    if (mode === 'SWING_TRADE') {
-      upsertSwingMetrics({ date: getETDateString(), swing_orders_placed: 1 }).catch(() => {});
+  let primaryResult: string | undefined;
+  for (const { connection, accountType } of connections) {
+    if (!connection.isConnected()) {
+      if (primaryResult) { log(`${ticker}: [${accountType}] connection down — skipping`); continue; }
+      return 'failed:no_contract';
     }
-    persistEvent(ticker, 'success', `Order placed: ${signal} ${sizing.quantity} @ $${entryPrice}`, {
-      action: 'executed', source: 'scanner', mode,
-      scanner_signal: signal, scanner_confidence: Math.round(effectiveScannerConf),
-      fa_recommendation: faRec, fa_confidence: faConf != null ? Math.round(faConf) : null,
-      ...(candlePatternLog.length > 0 && { metadata: { candle_patterns: candlePatternLog } }),
-    }, accountType);
-    return 'executed';
-  } catch (err) {
-    log(`${ticker}: Order FAILED — ${err instanceof Error ? err.message : 'unknown'}`);
-    return 'failed:order';
+
+    if (accountType === 'live') {
+      try { await assertLiveLossLimitNotBreached(config); } catch (limitErr) {
+        log(`${ticker}: [${accountType}] ${limitErr instanceof Error ? limitErr.message : 'live loss limit breached'}`);
+        if (primaryResult) continue;
+        return 'failed:live_loss_limit';
+      }
+    }
+
+    try {
+      const result = await connection.placeBracketOrder({
+        symbol: ticker,
+        side: signal,
+        quantity: sizing.quantity,
+        entryPrice,
+        stopLoss,
+        takeProfit: targetPrice,
+        tif: mode === 'DAY_TRADE' ? 'DAY' : 'GTC',
+      });
+
+      await createPaperTrade({
+        ticker, mode, signal,
+        scanner_confidence: Math.round(effectiveScannerConf),
+        fa_confidence: faConf != null ? Math.round(faConf) : null,
+        fa_recommendation: faRec,
+        entry_price: entryPrice,
+        stop_loss: stopLoss,
+        target_price: targetPrice,
+        target_price2: null,
+        risk_reward: faRiskReward,
+        quantity: sizing.quantity,
+        position_size: sizing.dollarSize,
+        ib_order_id: String(result.parentOrderId),
+        ib_tp_order_id: String(result.takeProfitOrderId),
+        ib_sl_order_id: String(result.stopLossOrderId),
+        status: 'SUBMITTED',
+        scanner_reason: idea.reason,
+        fa_rationale: null,
+        in_play_score: idea.in_play_score,
+        pass1_confidence: idea.pass1_confidence,
+        entry_trigger_type: 'bracket_limit',
+        market_condition: idea.market_condition,
+      }, accountType);
+
+      if (!primaryResult) recordPendingOrder(sizing.dollarSize);
+      log(`${ticker}: ORDER PLACED [${accountType}] — ${signal} ${sizing.quantity} @ $${entryPrice}`);
+      if (mode === 'SWING_TRADE') {
+        upsertSwingMetrics({ date: getETDateString(), swing_orders_placed: 1 }).catch(() => {});
+      }
+      persistEvent(ticker, 'success', `Order placed: ${signal} ${sizing.quantity} @ $${entryPrice}`, {
+        action: 'executed', source: 'scanner', mode,
+        scanner_signal: signal, scanner_confidence: Math.round(effectiveScannerConf),
+        fa_recommendation: faRec, fa_confidence: faConf != null ? Math.round(faConf) : null,
+        ...(candlePatternLog.length > 0 && { metadata: { candle_patterns: candlePatternLog } }),
+      }, accountType);
+      if (!primaryResult) primaryResult = 'executed';
+    } catch (err) {
+      log(`${ticker}: [${accountType}] Order FAILED — ${err instanceof Error ? err.message : 'unknown'}`);
+      if (!primaryResult) primaryResult = 'failed:order';
+    }
   }
+  return primaryResult ?? 'failed:no_connections';
 }
 
 // In-memory set to prevent same-session duplicate SF orders (guards against race conditions
@@ -3436,16 +3441,14 @@ async function _executeSuggestedFindTradeInner(
   if (!isMarketHoursET()) return 'skipped:outside-market-hours';
 
   // Resolve account routing for LONG_TERM mode
-  let connection: IBConnection;
-  let accountType: AccountType;
+  let connections: RoutedConnection[];
   try {
-    const routed = getConnectionForMode('LONG_TERM', config);
-    connection = routed.connection;
-    accountType = routed.accountType;
+    connections = getConnectionForMode('LONG_TERM', config).connections;
   } catch (routeErr) {
     log(`${ticker}: LONG_TERM route error — ${routeErr instanceof Error ? routeErr.message : routeErr}`);
     return 'failed:route_error';
   }
+  const accountType = connections[0].accountType;
 
   if (await hasActiveTrade(ticker, { excludeOptions: true, accountType })) return 'skipped:duplicate';
 
@@ -3588,54 +3591,62 @@ async function _executeSuggestedFindTradeInner(
     return 'skipped:pre_trade_check';
   }
 
-  if (!connection.isConnected()) return 'failed:no_contract';
+  let primaryResult: string | undefined;
+  for (const { connection, accountType: acctType } of connections) {
+    if (!connection.isConnected()) {
+      if (primaryResult) { log(`${ticker}: [${acctType}] connection down — skipping`); continue; }
+      return 'failed:no_contract';
+    }
 
-  if (accountType === 'live') {
-    try { await assertLiveLossLimitNotBreached(config); } catch (limitErr) {
-      log(`${ticker}: LONG_TERM live loss limit hit — ${limitErr instanceof Error ? limitErr.message : limitErr}`);
-      return 'failed:live_loss_limit';
+    if (acctType === 'live') {
+      try { await assertLiveLossLimitNotBreached(config); } catch (limitErr) {
+        log(`${ticker}: [${acctType}] LONG_TERM live loss limit hit — ${limitErr instanceof Error ? limitErr.message : limitErr}`);
+        if (primaryResult) continue;
+        return 'failed:live_loss_limit';
+      }
+    }
+
+    try {
+      const result = await connection.placeMarketOrder({
+        symbol: ticker, side: 'BUY', quantity: sizing.quantity,
+      });
+
+      await createPaperTrade({
+        ticker, mode: 'LONG_TERM', signal: 'BUY',
+        scanner_confidence: conviction,
+        fa_confidence: conviction,
+        fa_recommendation: 'BUY',
+        entry_price: currentPrice,
+        quantity: sizing.quantity,
+        position_size: sizing.dollarSize,
+        ib_order_id: String(result.orderId),
+        status: 'SUBMITTED',
+        scanner_reason: `${stock.tag}: ${stock.reason}`,
+        notes: [
+          'Long-term hold',
+          stock.tag,
+          stock.archetype ? `Archetype: ${stock.archetype}` : null,
+          `Conviction: ${conviction}/10`,
+          stock.valuationTag,
+          stock.tag === 'Dip Discovery' && stock.high52w ? `52wHigh: ${stock.high52w.toFixed(2)}` : null,
+          stock.tag === 'Dip Discovery' && stock.drawdownPct ? `Drawdown: ${stock.drawdownPct.toFixed(1)}%` : null,
+          stock.tag === 'Dip Discovery' && stock.sector ? `Sector: ${stock.sector}` : null,
+        ].filter(Boolean).join(' | '),
+        entry_trigger_type: 'market',
+      }, acctType);
+
+      if (!primaryResult) recordPendingOrder(sizing.dollarSize);
+      log(`${ticker}: SUGGESTED FIND BUY [${acctType}] — ${sizing.quantity} shares @ ~$${currentPrice.toFixed(2)}`);
+      persistEvent(ticker, 'success', `Suggested Find BUY: ${sizing.quantity} shares @ $${currentPrice.toFixed(2)}`, {
+        action: 'executed', source: 'suggested_finds', mode: 'LONG_TERM',
+      }, acctType);
+      if (!primaryResult) primaryResult = 'executed';
+    } catch (err) {
+      log(`${ticker}: [${acctType}] Suggested Find order FAILED — ${err instanceof Error ? err.message : 'unknown'}`);
+      if (!primaryResult) primaryResult = 'failed:order';
     }
   }
-
-  try {
-    const result = await connection.placeMarketOrder({
-      symbol: ticker, side: 'BUY', quantity: sizing.quantity,
-    });
-
-    await createPaperTrade({
-      ticker, mode: 'LONG_TERM', signal: 'BUY',
-      scanner_confidence: conviction,
-      fa_confidence: conviction,
-      fa_recommendation: 'BUY',
-      entry_price: currentPrice,
-      quantity: sizing.quantity,
-      position_size: sizing.dollarSize,
-      ib_order_id: String(result.orderId),
-      status: 'SUBMITTED',
-      scanner_reason: `${stock.tag}: ${stock.reason}`,
-      notes: [
-        'Long-term hold',
-        stock.tag,
-        stock.archetype ? `Archetype: ${stock.archetype}` : null,
-        `Conviction: ${conviction}/10`,
-        stock.valuationTag,
-        stock.tag === 'Dip Discovery' && stock.high52w ? `52wHigh: ${stock.high52w.toFixed(2)}` : null,
-        stock.tag === 'Dip Discovery' && stock.drawdownPct ? `Drawdown: ${stock.drawdownPct.toFixed(1)}%` : null,
-        stock.tag === 'Dip Discovery' && stock.sector ? `Sector: ${stock.sector}` : null,
-      ].filter(Boolean).join(' | '),
-      entry_trigger_type: 'market',
-    }, accountType);
-
-    recordPendingOrder(sizing.dollarSize);
-    log(`${ticker}: SUGGESTED FIND BUY [${accountType}] — ${sizing.quantity} shares @ ~$${currentPrice.toFixed(2)}`);
-    persistEvent(ticker, 'success', `Suggested Find BUY: ${sizing.quantity} shares @ $${currentPrice.toFixed(2)}`, {
-      action: 'executed', source: 'suggested_finds', mode: 'LONG_TERM',
-    }, accountType);
-    return 'executed';
-  } catch (err) {
-    log(`${ticker}: Suggested Find order FAILED — ${err instanceof Error ? err.message : 'unknown'}`);
-    return 'failed:order';
-  }
+  return primaryResult ?? 'failed:no_connections';
 }
 
 /**
@@ -3670,17 +3681,15 @@ async function executeExternalStrategySignal(
   const ticker = signal.ticker.toUpperCase();
 
   // Resolve account routing
-  let extConnection: IBConnection;
-  let extAccountType: AccountType;
+  let extConnections: RoutedConnection[];
   try {
-    const routed = getConnectionForMode(signal.mode, config);
-    extConnection = routed.connection;
-    extAccountType = routed.accountType;
+    extConnections = getConnectionForMode(signal.mode, config).connections;
   } catch (routeErr) {
     log(`${ticker}: external signal route error — ${routeErr instanceof Error ? routeErr.message : routeErr}`);
     await updateExternalStrategySignal(signal.id, { status: 'FAILED', failure_reason: `Route error: ${routeErr instanceof Error ? routeErr.message : routeErr}` });
     return 'failed';
   }
+  const extAccountType = extConnections[0].accountType;
 
   if (signal.mode === 'DAY_TRADE' && await isDayTradeLossGateActive(config)) {
     log(`${ticker}: external signal skipped — daily loss gate active`);
@@ -3980,21 +3989,6 @@ async function executeExternalStrategySignal(
     return 'skipped';
   }
 
-  if (!extConnection.isConnected()) {
-    await updateExternalStrategySignal(signal.id, {
-      status: 'FAILED',
-      failure_reason: 'IB Gateway not connected',
-    });
-    return 'failed';
-  }
-
-  if (extAccountType === 'live') {
-    try { await assertLiveLossLimitNotBreached(config); } catch (limitErr) {
-      await updateExternalStrategySignal(signal.id, { status: 'FAILED', failure_reason: `Live loss limit: ${limitErr instanceof Error ? limitErr.message : limitErr}` });
-      return 'failed';
-    }
-  }
-
   const hasBracketLevels = (
     effectiveEntryPrice != null &&
     effectiveStopLoss != null &&
@@ -4039,121 +4033,146 @@ async function executeExternalStrategySignal(
     log(`${ticker}: order validation OK — ${orderCheck.reason}`);
   }
 
-  try {
-    const side = signal.signal;
-
-    let ibOrderId: string;
-    const entryForRecord = effectiveEntryPrice ?? referencePrice;
-    const splitLabel = allocationSplit > 1
-      ? ` | allocation ${allocationIndex}/${allocationSplit}`
-      : '';
-
-    let ibTpOrderId: string | undefined;
-    let ibSlOrderId: string | undefined;
-    if (hasBracketLevels) {
-      const result = await extConnection.placeBracketOrder({
-        symbol: ticker,
-        side,
-        quantity: sizing.quantity,
-        entryPrice: effectiveEntryPrice!,
-        stopLoss: effectiveStopLoss!,
-        takeProfit: effectiveTargetPrice!,
-        tif: signal.mode === 'DAY_TRADE' ? 'DAY' : 'GTC',
+  let primaryResult: 'executed' | 'failed' | undefined;
+  for (const { connection: extConnection, accountType: acctType } of extConnections) {
+    if (!extConnection.isConnected()) {
+      if (primaryResult) { log(`${ticker}: [${acctType}] connection down — skipping`); continue; }
+      await updateExternalStrategySignal(signal.id, {
+        status: 'FAILED',
+        failure_reason: 'IB Gateway not connected',
       });
-      ibOrderId = String(result.parentOrderId);
-      ibTpOrderId = String(result.takeProfitOrderId);
-      ibSlOrderId = String(result.stopLossOrderId);
-      if (signal.mode === 'SWING_TRADE') {
-        upsertSwingMetrics({ date: getETDateString(), swing_orders_placed: 1 }).catch(() => {});
-      }
-    } else {
-      const result = await extConnection.placeMarketOrder({
-        symbol: ticker,
-        side,
-        quantity: sizing.quantity,
-      });
-      ibOrderId = String(result.orderId);
+      return 'failed';
     }
 
-    const marketCondition: 'trend' | 'chop' | undefined =
-      spyChangePct == null ? undefined
-      : Math.abs(spyChangePct) >= 0.5 ? 'trend'
-      : 'chop';
+    if (acctType === 'live') {
+      try { await assertLiveLossLimitNotBreached(config); } catch (limitErr) {
+        if (primaryResult) { log(`${ticker}: [${acctType}] live loss limit hit — skipping`); continue; }
+        await updateExternalStrategySignal(signal.id, { status: 'FAILED', failure_reason: `Live loss limit: ${limitErr instanceof Error ? limitErr.message : limitErr}` });
+        return 'failed';
+      }
+    }
 
-    const trade = await createPaperTrade({
-      ticker,
-      mode: signal.mode,
-      signal: side,
-      strategy_source: signal.source_name,
-      strategy_source_url: signal.source_url,
-      strategy_video_id: signal.strategy_video_id,
-      strategy_video_heading: signal.strategy_video_heading,
-      scanner_confidence: signal.confidence,
-      fa_confidence: validatedFA?.confidence ?? null,
-      fa_recommendation: validatedFA?.recommendation ?? null,
-      entry_price: entryForRecord,
-      stop_loss: effectiveStopLoss,
-      target_price: effectiveTargetPrice,
-      quantity: sizing.quantity,
-      position_size: sizing.dollarSize,
-      entry_trigger_type: effectiveEntryPrice != null ? 'bracket_limit' : 'market',
-      ib_order_id: ibOrderId,
-      ib_tp_order_id: ibTpOrderId ?? null,
-      ib_sl_order_id: ibSlOrderId ?? null,
-      status: 'SUBMITTED',
-      scanner_reason: `External strategy signal from ${signal.source_name}`,
-      notes: signal.notes ? `External signal${splitLabel} | ${signal.notes}` : `External signal${splitLabel}`,
-      market_condition: marketCondition,
-    }, extAccountType);
+    try {
+      const side = signal.signal;
 
-    recordPendingOrder(sizing.dollarSize);
-    await updateExternalStrategySignal(signal.id, {
-      status: 'EXECUTED',
-      executed_trade_id: trade.id,
-      executed_at: new Date().toISOString(),
-      failure_reason: null,
-    });
+      let ibOrderId: string;
+      const entryForRecord = effectiveEntryPrice ?? referencePrice;
+      const splitLabel = allocationSplit > 1
+        ? ` | allocation ${allocationIndex}/${allocationSplit}`
+        : '';
 
-    persistEvent(ticker, 'success', `External signal executed [${extAccountType}]: ${side} ${sizing.quantity} @ $${entryForRecord.toFixed(2)}`, {
-      action: 'executed',
-      source: resolvedSource,
-      mode: signal.mode,
-      strategy_source: signal.source_name,
-      strategy_source_url: signal.source_url,
-      strategy_video_id: signal.strategy_video_id,
-      strategy_video_heading: signal.strategy_video_heading,
-      scanner_signal: side,
-      scanner_confidence: signal.confidence,
-      metadata: {
-        external_signal_id: signal.id,
-        allocation_split: allocationSplit,
-        allocation_index: allocationIndex,
-        entry_time_et: getETTimeString(),
-        spy_change_pct: spyChangePct,
-        also_in_scanner: alsoInScanner,
-      },
-    }, extAccountType);
-    return 'executed';
-  } catch (err) {
-    const message = err instanceof Error ? err.message : 'unknown';
-    await updateExternalStrategySignal(signal.id, {
-      status: 'FAILED',
-      failure_reason: message,
-    });
-    persistEvent(ticker, 'error', `External signal failed: ${message}`, {
-      action: 'failed',
-      source: resolvedSource,
-      mode: signal.mode,
-      strategy_source: signal.source_name,
-      strategy_source_url: signal.source_url,
-      strategy_video_id: signal.strategy_video_id,
-      strategy_video_heading: signal.strategy_video_heading,
-      scanner_signal: signal.signal,
-      scanner_confidence: signal.confidence,
-      metadata: { external_signal_id: signal.id },
-    }, extAccountType);
-    return 'failed';
+      let ibTpOrderId: string | undefined;
+      let ibSlOrderId: string | undefined;
+      if (hasBracketLevels) {
+        const result = await extConnection.placeBracketOrder({
+          symbol: ticker,
+          side,
+          quantity: sizing.quantity,
+          entryPrice: effectiveEntryPrice!,
+          stopLoss: effectiveStopLoss!,
+          takeProfit: effectiveTargetPrice!,
+          tif: signal.mode === 'DAY_TRADE' ? 'DAY' : 'GTC',
+        });
+        ibOrderId = String(result.parentOrderId);
+        ibTpOrderId = String(result.takeProfitOrderId);
+        ibSlOrderId = String(result.stopLossOrderId);
+        if (signal.mode === 'SWING_TRADE') {
+          upsertSwingMetrics({ date: getETDateString(), swing_orders_placed: 1 }).catch(() => {});
+        }
+      } else {
+        const result = await extConnection.placeMarketOrder({
+          symbol: ticker,
+          side,
+          quantity: sizing.quantity,
+        });
+        ibOrderId = String(result.orderId);
+      }
+
+      const marketCondition: 'trend' | 'chop' | undefined =
+        spyChangePct == null ? undefined
+        : Math.abs(spyChangePct) >= 0.5 ? 'trend'
+        : 'chop';
+
+      const trade = await createPaperTrade({
+        ticker,
+        mode: signal.mode,
+        signal: side,
+        strategy_source: signal.source_name,
+        strategy_source_url: signal.source_url,
+        strategy_video_id: signal.strategy_video_id,
+        strategy_video_heading: signal.strategy_video_heading,
+        scanner_confidence: signal.confidence,
+        fa_confidence: validatedFA?.confidence ?? null,
+        fa_recommendation: validatedFA?.recommendation ?? null,
+        entry_price: entryForRecord,
+        stop_loss: effectiveStopLoss,
+        target_price: effectiveTargetPrice,
+        quantity: sizing.quantity,
+        position_size: sizing.dollarSize,
+        entry_trigger_type: effectiveEntryPrice != null ? 'bracket_limit' : 'market',
+        ib_order_id: ibOrderId,
+        ib_tp_order_id: ibTpOrderId ?? null,
+        ib_sl_order_id: ibSlOrderId ?? null,
+        status: 'SUBMITTED',
+        scanner_reason: `External strategy signal from ${signal.source_name}`,
+        notes: signal.notes ? `External signal${splitLabel} | ${signal.notes}` : `External signal${splitLabel}`,
+        market_condition: marketCondition,
+      }, acctType);
+
+      if (!primaryResult) {
+        recordPendingOrder(sizing.dollarSize);
+        await updateExternalStrategySignal(signal.id, {
+          status: 'EXECUTED',
+          executed_trade_id: trade.id,
+          executed_at: new Date().toISOString(),
+          failure_reason: null,
+        });
+      }
+
+      persistEvent(ticker, 'success', `External signal executed [${acctType}]: ${side} ${sizing.quantity} @ $${entryForRecord.toFixed(2)}`, {
+        action: 'executed',
+        source: resolvedSource,
+        mode: signal.mode,
+        strategy_source: signal.source_name,
+        strategy_source_url: signal.source_url,
+        strategy_video_id: signal.strategy_video_id,
+        strategy_video_heading: signal.strategy_video_heading,
+        scanner_signal: side,
+        scanner_confidence: signal.confidence,
+        metadata: {
+          external_signal_id: signal.id,
+          allocation_split: allocationSplit,
+          allocation_index: allocationIndex,
+          entry_time_et: getETTimeString(),
+          spy_change_pct: spyChangePct,
+          also_in_scanner: alsoInScanner,
+        },
+      }, acctType);
+      if (!primaryResult) primaryResult = 'executed';
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'unknown';
+      if (!primaryResult) {
+        await updateExternalStrategySignal(signal.id, {
+          status: 'FAILED',
+          failure_reason: message,
+        });
+      }
+      persistEvent(ticker, 'error', `External signal failed [${acctType}]: ${message}`, {
+        action: 'failed',
+        source: resolvedSource,
+        mode: signal.mode,
+        strategy_source: signal.source_name,
+        strategy_source_url: signal.source_url,
+        strategy_video_id: signal.strategy_video_id,
+        strategy_video_heading: signal.strategy_video_heading,
+        scanner_signal: signal.signal,
+        scanner_confidence: signal.confidence,
+        metadata: { external_signal_id: signal.id },
+      }, acctType);
+      if (!primaryResult) primaryResult = 'failed';
+    }
   }
+  return primaryResult ?? 'failed';
 }
 
 async function processExternalStrategySignals(
@@ -4821,13 +4840,11 @@ async function checkDipBuyOpportunities(
 ): Promise<void> {
   if (!config.dipBuyEnabled || !config.accountId) return;
   // Resolve LONG_TERM routing for dip buys
-  let dipConn: IBConnection;
-  let dipAcct: AccountType;
+  let dipConnections: RoutedConnection[];
   try {
-    const routed = getConnectionForMode('LONG_TERM', config);
-    dipConn = routed.connection;
-    dipAcct = routed.accountType;
+    dipConnections = getConnectionForMode('LONG_TERM', config).connections;
   } catch { return; }
+  const dipAcct = dipConnections[0].accountType;
 
   const activeTrades = await getActiveTrades(dipAcct);
   const longTermFilled = activeTrades.filter(t => t.mode === 'LONG_TERM' && t.status === 'FILLED');
@@ -4913,38 +4930,48 @@ async function checkDipBuyOpportunities(
 
     if (!(await checkAllocationCap(config, addOnDollar, ticker, positions, 'LONG_TERM'))) continue;
 
-    try {
-      if (!dipConn.isConnected()) continue;
+    let dipExecuted = false;
+    for (const { connection: dipConn, accountType: dipAcctType } of dipConnections) {
+      try {
+        if (!dipConn.isConnected()) {
+          if (dipExecuted) continue;
+          break;
+        }
 
-      if (dipAcct === 'live') {
-        try { await assertLiveLossLimitNotBreached(config); } catch { continue; }
+        if (dipAcctType === 'live') {
+          try { await assertLiveLossLimitNotBreached(config); } catch {
+            if (dipExecuted) continue;
+            break;
+          }
+        }
+
+        const result = await dipConn.placeMarketOrder({
+          symbol: ticker, side: 'BUY', quantity: addOnQty,
+        });
+
+        await createPaperTrade({
+          ticker, mode: 'LONG_TERM', signal: 'BUY',
+          scanner_confidence: trade.scanner_confidence,
+          fa_confidence: trade.fa_confidence,
+          fa_recommendation: 'BUY',
+          entry_price: ibPos.mktPrice,
+          quantity: addOnQty, position_size: addOnDollar,
+          ib_order_id: String(result.orderId),
+          status: 'SUBMITTED',
+          notes: `Dip buy ${triggered.label} at -${absDip.toFixed(1)}%`,
+          entry_trigger_type: 'dip_buy',
+        }, dipAcctType);
+
+        if (!dipExecuted) recordPendingOrder(addOnDollar);
+        log(`${ticker}: DIP BUY ${triggered.label} [${dipAcctType}] — +${addOnQty} shares at -${absDip.toFixed(1)}%`);
+        persistEvent(ticker, 'success', `Dip buy ${triggered.label}: +${addOnQty} shares`, {
+          action: 'executed', source: 'dip_buy', mode: 'LONG_TERM',
+          metadata: { tier: triggered.label, dipPct: absDip, addOnQty, addOnDollar },
+        }, dipAcctType);
+        dipExecuted = true;
+      } catch (err) {
+        log(`${ticker}: [${dipAcctType}] Dip buy failed — ${err instanceof Error ? err.message : 'unknown'}`);
       }
-
-      const result = await dipConn.placeMarketOrder({
-        symbol: ticker, side: 'BUY', quantity: addOnQty,
-      });
-
-      await createPaperTrade({
-        ticker, mode: 'LONG_TERM', signal: 'BUY',
-        scanner_confidence: trade.scanner_confidence,
-        fa_confidence: trade.fa_confidence,
-        fa_recommendation: 'BUY',
-        entry_price: ibPos.mktPrice,
-        quantity: addOnQty, position_size: addOnDollar,
-        ib_order_id: String(result.orderId),
-        status: 'SUBMITTED',
-        notes: `Dip buy ${triggered.label} at -${absDip.toFixed(1)}%`,
-        entry_trigger_type: 'dip_buy',
-      }, dipAcct);
-
-      recordPendingOrder(addOnDollar);
-      log(`${ticker}: DIP BUY ${triggered.label} [${dipAcct}] — +${addOnQty} shares at -${absDip.toFixed(1)}%`);
-      persistEvent(ticker, 'success', `Dip buy ${triggered.label}: +${addOnQty} shares`, {
-        action: 'executed', source: 'dip_buy', mode: 'LONG_TERM',
-        metadata: { tier: triggered.label, dipPct: absDip, addOnQty, addOnDollar },
-      }, dipAcct);
-    } catch (err) {
-      log(`${ticker}: Dip buy failed — ${err instanceof Error ? err.message : 'unknown'}`);
     }
   }
 }
@@ -4963,13 +4990,11 @@ async function checkSwingHoldExpiry(
   const maxDays = config.swingMaxHoldDays ?? 5;
   if (maxDays <= 0 || !config.accountId) return;
 
-  let swingConn: IBConnection;
-  let swingAcct: AccountType;
+  let swingConnections: RoutedConnection[];
   try {
-    const routed = getConnectionForMode('SWING_TRADE', config);
-    swingConn = routed.connection;
-    swingAcct = routed.accountType;
+    swingConnections = getConnectionForMode('SWING_TRADE', config).connections;
   } catch { return; }
+  const swingAcct = swingConnections[0].accountType;
 
   const activeTrades = await getActiveTrades(swingAcct);
   const stale = activeTrades.filter(t =>
@@ -4990,27 +5015,29 @@ async function checkSwingHoldExpiry(
       ? ((ibPos.mktPrice - ibPos.avgCost) / ibPos.avgCost * 100).toFixed(1)
       : '?';
 
-    try {
-      await swingConn.placeMarketOrder({ symbol: trade.ticker, side, quantity: qty });
-      await createPaperTrade({
-        ticker: trade.ticker, mode: 'SWING_TRADE', signal: side,
-        entry_price: ibPos.mktPrice,
-        quantity: qty,
-        position_size: qty * ibPos.mktPrice,
-        status: 'SUBMITTED',
-        notes: `Auto-exit: swing held ${daysHeld} days (max ${maxDays}) — P&L ${gainPct}%`,
-        entry_trigger_type: 'swing_expiry',
-      }, swingAcct);
+    for (const { connection: swingConn, accountType: swAcct } of swingConnections) {
+      try {
+        await swingConn.placeMarketOrder({ symbol: trade.ticker, side, quantity: qty });
+        await createPaperTrade({
+          ticker: trade.ticker, mode: 'SWING_TRADE', signal: side,
+          entry_price: ibPos.mktPrice,
+          quantity: qty,
+          position_size: qty * ibPos.mktPrice,
+          status: 'SUBMITTED',
+          notes: `Auto-exit: swing held ${daysHeld} days (max ${maxDays}) — P&L ${gainPct}%`,
+          entry_trigger_type: 'swing_expiry',
+        }, swAcct);
 
-      log(`${trade.ticker}: SWING EXPIRY [${swingAcct}] — held ${daysHeld} days, closing ${qty} shares at ${gainPct}% P&L`);
-      persistEvent(trade.ticker, 'success',
-        `${trade.ticker} swing auto-closed after ${daysHeld} days (max ${maxDays}d) — P&L ${gainPct}% — capital freed`,
-        { action: 'executed', source: 'swing_expiry', mode: 'SWING_TRADE',
-          metadata: { daysHeld, maxDays, gainPct, qty } },
-        swingAcct,
-      );
-    } catch (err) {
-      log(`${trade.ticker}: Swing expiry close failed — ${err instanceof Error ? err.message : 'unknown'}`);
+        log(`${trade.ticker}: SWING EXPIRY [${swAcct}] — held ${daysHeld} days, closing ${qty} shares at ${gainPct}% P&L`);
+        persistEvent(trade.ticker, 'success',
+          `${trade.ticker} swing auto-closed after ${daysHeld} days (max ${maxDays}d) — P&L ${gainPct}% — capital freed`,
+          { action: 'executed', source: 'swing_expiry', mode: 'SWING_TRADE',
+            metadata: { daysHeld, maxDays, gainPct, qty } },
+          swAcct,
+        );
+      } catch (err) {
+        log(`${trade.ticker}: [${swAcct}] Swing expiry close failed — ${err instanceof Error ? err.message : 'unknown'}`);
+      }
     }
   }
 }
@@ -5086,13 +5113,11 @@ async function checkLongTermAutoSell(
 
   if (!config.accountId) return;
 
-  let ltConn: IBConnection;
-  let ltAcct: AccountType;
+  let ltConnections: RoutedConnection[];
   try {
-    const routed = getConnectionForMode('LONG_TERM', config);
-    ltConn = routed.connection;
-    ltAcct = routed.accountType;
+    ltConnections = getConnectionForMode('LONG_TERM', config).connections;
   } catch { return; }
+  const ltAcct = ltConnections[0].accountType;
 
   const activeTrades = await getActiveTrades(ltAcct);
   // Only BUY records are actual open positions. SELL records (profit-take trims)
@@ -5233,44 +5258,46 @@ async function checkLongTermAutoSell(
 
     processedTickers.add(tickerUpper);
 
-    try {
-      const { avgFillPrice } = await ltConn.placeMarketOrder({ symbol: trade.ticker, side, quantity: qty });
-      const fillPnl = ibPos.position > 0
-        ? (avgFillPrice - ibPos.avgCost) * qty
-        : (ibPos.avgCost - avgFillPrice) * qty;
-      const fillPnlPct = ibPos.avgCost > 0
-        ? ((avgFillPrice - ibPos.avgCost) / ibPos.avgCost) * 100
-        : gainPct;
-      await updatePaperTrade(trade.id, {
-        status: 'CLOSED',
-        close_price: avgFillPrice,
-        pnl: fillPnl,
-        pnl_percent: fillPnlPct,
-        close_reason: reason,
-        closed_at: new Date().toISOString(),
-      }, ltAcct);
+    for (const { connection: ltConn, accountType: ltAcctType } of ltConnections) {
+      try {
+        const { avgFillPrice } = await ltConn.placeMarketOrder({ symbol: trade.ticker, side, quantity: qty });
+        const fillPnl = ibPos.position > 0
+          ? (avgFillPrice - ibPos.avgCost) * qty
+          : (ibPos.avgCost - avgFillPrice) * qty;
+        const fillPnlPct = ibPos.avgCost > 0
+          ? ((avgFillPrice - ibPos.avgCost) / ibPos.avgCost) * 100
+          : gainPct;
+        await updatePaperTrade(trade.id, {
+          status: 'CLOSED',
+          close_price: avgFillPrice,
+          pnl: fillPnl,
+          pnl_percent: fillPnlPct,
+          close_reason: reason,
+          closed_at: new Date().toISOString(),
+        }, ltAcctType);
 
-      const label = reason.startsWith('dd_profit_take') ? 'Dip Discovery profit-take'
-        : reason.startsWith('dd_stop_loss')    ? 'Dip Discovery stop-loss'
-        : reason.startsWith('dd_max_hold')     ? 'Dip Discovery max-hold exit'
-        : reason.startsWith('gm_profit_take')  ? 'GM profit-take'
-        : reason.startsWith('gm_entry_lock')   ? 'GM entry-lock exit'
-        : reason.startsWith('gm_hard_stop')    ? 'GM hard stop (no bounce)'
-        : reason.startsWith('gm_max_hold')     ? 'GM max-hold exit'
-        : reason.startsWith('sc_hard_stop')    ? 'Compounder hard stop (no bounce)'
-        : reason.startsWith('profit_take')     ? 'profit-take'
-        : reason.startsWith('trailing_stop')   ? 'trailing stop'
-        : reason.startsWith('stop_loss')       ? 'stop-loss'
-        : 'max-hold exit';
-      log(`${trade.ticker}: LT AUTO-SELL [${ltAcct}] (${label}) — ${fillPnlPct.toFixed(1)}% P&L, fill $${avgFillPrice.toFixed(2)}, peak $${effectivePeak.toFixed(2)}, held ${daysHeld.toFixed(0)}d`);
-      persistEvent(trade.ticker, 'success',
-        `${trade.ticker} long-term auto-closed (${label}) — ${fillPnlPct.toFixed(1)}% P&L @ $${avgFillPrice.toFixed(2)} — capital freed`,
-        { action: 'closed', source: 'lt_auto_sell', mode: 'LONG_TERM',
-          metadata: { reason, gainPct: fillPnlPct, daysHeld, qty, effectivePeak, entryPrice, avgFillPrice } },
-        ltAcct,
-      );
-    } catch (err) {
-      log(`${trade.ticker}: Long-term auto-sell failed — ${err instanceof Error ? err.message : 'unknown'}`);
+        const label = reason.startsWith('dd_profit_take') ? 'Dip Discovery profit-take'
+          : reason.startsWith('dd_stop_loss')    ? 'Dip Discovery stop-loss'
+          : reason.startsWith('dd_max_hold')     ? 'Dip Discovery max-hold exit'
+          : reason.startsWith('gm_profit_take')  ? 'GM profit-take'
+          : reason.startsWith('gm_entry_lock')   ? 'GM entry-lock exit'
+          : reason.startsWith('gm_hard_stop')    ? 'GM hard stop (no bounce)'
+          : reason.startsWith('gm_max_hold')     ? 'GM max-hold exit'
+          : reason.startsWith('sc_hard_stop')    ? 'Compounder hard stop (no bounce)'
+          : reason.startsWith('profit_take')     ? 'profit-take'
+          : reason.startsWith('trailing_stop')   ? 'trailing stop'
+          : reason.startsWith('stop_loss')       ? 'stop-loss'
+          : 'max-hold exit';
+        log(`${trade.ticker}: LT AUTO-SELL [${ltAcctType}] (${label}) — ${fillPnlPct.toFixed(1)}% P&L, fill $${avgFillPrice.toFixed(2)}, peak $${effectivePeak.toFixed(2)}, held ${daysHeld.toFixed(0)}d`);
+        persistEvent(trade.ticker, 'success',
+          `${trade.ticker} long-term auto-closed (${label}) — ${fillPnlPct.toFixed(1)}% P&L @ $${avgFillPrice.toFixed(2)} — capital freed`,
+          { action: 'closed', source: 'lt_auto_sell', mode: 'LONG_TERM',
+            metadata: { reason, gainPct: fillPnlPct, daysHeld, qty, effectivePeak, entryPrice, avgFillPrice } },
+          ltAcctType,
+        );
+      } catch (err) {
+        log(`${trade.ticker}: [${ltAcctType}] Long-term auto-sell failed — ${err instanceof Error ? err.message : 'unknown'}`);
+      }
     }
   }
 }
@@ -5344,13 +5371,11 @@ async function checkProfitTakeOpportunities(
   const trimmedTickers = new Set<string>();
   if (!config.profitTakeEnabled || !config.accountId) return trimmedTickers;
 
-  let ptConn: IBConnection;
-  let ptAcct: AccountType;
+  let ptConnections: RoutedConnection[];
   try {
-    const routed = getConnectionForMode('LONG_TERM', config);
-    ptConn = routed.connection;
-    ptAcct = routed.accountType;
+    ptConnections = getConnectionForMode('LONG_TERM', config).connections;
   } catch { return trimmedTickers; }
+  const ptAcct = ptConnections[0].accountType;
 
   const activeTrades = await getActiveTrades(ptAcct);
   const longTermFilled = activeTrades.filter(t => t.mode === 'LONG_TERM' && t.status === 'FILLED');
@@ -5381,38 +5406,40 @@ async function checkProfitTakeOpportunities(
     const actualTrimQty = Math.min(trimQty, currentQty - minHoldQty);
     if (actualTrimQty < 1) continue;
 
-    try {
-      if (!ptConn.isConnected()) continue;
+    for (const { connection: ptConn, accountType: ptAcctType } of ptConnections) {
+      try {
+        if (!ptConn.isConnected()) continue;
 
-      const { orderId, avgFillPrice } = await ptConn.placeMarketOrder({
-        symbol: trade.ticker, side: 'SELL', quantity: actualTrimQty,
-      });
+        const { orderId, avgFillPrice } = await ptConn.placeMarketOrder({
+          symbol: trade.ticker, side: 'SELL', quantity: actualTrimQty,
+        });
 
-      const realizedPnl = actualTrimQty * (avgFillPrice - ibPos.avgCost);
+        const realizedPnl = actualTrimQty * (avgFillPrice - ibPos.avgCost);
 
-      await createPaperTrade({
-        ticker: trade.ticker, mode: 'LONG_TERM', signal: 'SELL',
-        entry_price: avgFillPrice,
-        fill_price: avgFillPrice,
-        quantity: actualTrimQty,
-        position_size: actualTrimQty * avgFillPrice,
-        status: 'CLOSED',
-        ib_order_id: String(orderId),
-        pnl: realizedPnl,
-        close_reason: 'profit_take',
-        closed_at: new Date().toISOString(),
-        notes: `Profit take ${triggered.label} at +${gainPct.toFixed(1)}%`,
-        entry_trigger_type: 'profit_take',
-      }, ptAcct);
+        await createPaperTrade({
+          ticker: trade.ticker, mode: 'LONG_TERM', signal: 'SELL',
+          entry_price: avgFillPrice,
+          fill_price: avgFillPrice,
+          quantity: actualTrimQty,
+          position_size: actualTrimQty * avgFillPrice,
+          status: 'CLOSED',
+          ib_order_id: String(orderId),
+          pnl: realizedPnl,
+          close_reason: 'profit_take',
+          closed_at: new Date().toISOString(),
+          notes: `Profit take ${triggered.label} at +${gainPct.toFixed(1)}%`,
+          entry_trigger_type: 'profit_take',
+        }, ptAcctType);
 
-      trimmedTickers.add(trade.ticker.toUpperCase());
-      log(`${trade.ticker}: PROFIT TAKE ${triggered.label} [${ptAcct}] — sold ${actualTrimQty} shares @ $${avgFillPrice.toFixed(2)}, +${gainPct.toFixed(1)}% ($${realizedPnl.toFixed(2)})`);
-      persistEvent(trade.ticker, 'success', `Profit take ${triggered.label}: sold ${actualTrimQty} shares @ $${avgFillPrice.toFixed(2)}`, {
-        action: 'executed', source: 'profit_take', mode: 'LONG_TERM',
-        metadata: { tier: triggered.label, gainPct, trimQty: actualTrimQty, realizedPnl, fillPrice: avgFillPrice, orderId },
-      }, ptAcct);
-    } catch (err) {
-      log(`${trade.ticker}: Profit take failed — ${err instanceof Error ? err.message : 'unknown'}`);
+        trimmedTickers.add(trade.ticker.toUpperCase());
+        log(`${trade.ticker}: PROFIT TAKE ${triggered.label} [${ptAcctType}] — sold ${actualTrimQty} shares @ $${avgFillPrice.toFixed(2)}, +${gainPct.toFixed(1)}% ($${realizedPnl.toFixed(2)})`);
+        persistEvent(trade.ticker, 'success', `Profit take ${triggered.label}: sold ${actualTrimQty} shares @ $${avgFillPrice.toFixed(2)}`, {
+          action: 'executed', source: 'profit_take', mode: 'LONG_TERM',
+          metadata: { tier: triggered.label, gainPct, trimQty: actualTrimQty, realizedPnl, fillPrice: avgFillPrice, orderId },
+        }, ptAcctType);
+      } catch (err) {
+        log(`${trade.ticker}: [${ptAcctType}] Profit take failed — ${err instanceof Error ? err.message : 'unknown'}`);
+      }
     }
   }
   return trimmedTickers;
@@ -5859,7 +5886,7 @@ async function runTradeExecutionOnly(): Promise<void> {
 
   const config = await loadConfig();
   if (!config.enabled || !config.accountId) return;
-  if (!config.tradeSignalsEnabled) return;
+  if (!isModeEnabled(config, 'DAY_TRADE') && !isModeEnabled(config, 'SWING_TRADE')) return;
 
   _running = true;
   const startTime = Date.now();
@@ -6117,7 +6144,7 @@ async function runSchedulerCycle(): Promise<void> {
     // 6. Pre-generate Suggested Finds (daily, after market open only)
     // Moved AFTER the market hours gate — belt-and-suspenders to prevent pre-market order placement.
     // Runs after sync+reset so SF trades are tracked in _pendingDeployedDollar for this cycle.
-    if (config.suggestedFindsEnabled) {
+    if (isModeEnabled(config, 'LONG_TERM')) {
       await preGenerateSuggestedFinds(config, positions);
     } else {
       log('Suggested Finds module disabled — skipping');
@@ -6127,7 +6154,8 @@ async function runSchedulerCycle(): Promise<void> {
     let allIdeas: TradeIdea[] = [];
     let scannerIdeasLoaded = false;
 
-    if (!config.tradeSignalsEnabled) {
+    const tradeSignalsEnabled = isModeEnabled(config, 'DAY_TRADE') || isModeEnabled(config, 'SWING_TRADE');
+    if (!tradeSignalsEnabled) {
       log('Trade Signals module disabled — skipping scanner + video signals');
     } else {
       try {
@@ -6201,7 +6229,7 @@ async function runSchedulerCycle(): Promise<void> {
     // Watches $50 SPX levels for the break → 2 independent candles → retest pattern.
     // Generates a SPY DAY_TRADE order when a clean retest is confirmed.
     // Runs every cycle during market hours; state machine persists in memory across cycles.
-    if (config.tradeSignalsEnabled) try {
+    if (tradeSignalsEnabled) try {
       const spxSetups = await checkSpxLevelSetups();
       for (const setup of spxSetups) {
         // Confidence: 9 base. Bump to 9.5 when QQQ confluence is detected
@@ -6254,7 +6282,7 @@ async function runSchedulerCycle(): Promise<void> {
     }
 
     // 12b. Penny stock momentum scanner (Ross Cameron's mechanical rules)
-    if (!config.pennyEnabled) {
+    if (!isModeEnabled(config, 'DAY_PENNY')) {
       // silent skip
     } else {
       try {
@@ -6398,7 +6426,8 @@ async function runSchedulerCycle(): Promise<void> {
     }
 
     // 13. Options wheel — manage open positions (every cycle, 30-min intervals)
-    if (!config.optionsWheelEnabled) {
+    const optionsWheelEnabled = isModeEnabled(config, 'OPTIONS_PUT') || isModeEnabled(config, 'OPTIONS_CALL') || isModeEnabled(config, 'CREDIT_SPREAD') || isModeEnabled(config, 'CALENDAR_SPREAD');
+    if (!optionsWheelEnabled) {
       log('Options Wheel module disabled — skipping management + scan');
     } else {
     try {
@@ -6546,7 +6575,7 @@ No new options positions will be opened until next month. Existing positions con
       // day-trade contract lookups. Prevents no_contract failures after heavy scans.
       await new Promise(r => setTimeout(r, 5_000));
     }
-    } // end optionsWheelEnabled
+    } // end optionsWheelEnabled (derived from mode routing)
 
     // 15. Daily rehydration (after 4:15 PM ET)
     await runDailyRehydration(config);

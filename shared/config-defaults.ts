@@ -60,8 +60,8 @@ export interface AutoTraderConfig {
   pennyMaxDailyLoss: number;
   pennyMaxDailyTrades: number;
   trendFilterEnabled: boolean;
-  // Dual-account routing
-  modeRouting: Record<string, 'paper' | 'live'>;
+  // Dual-account routing (off = disabled, paper/live = single account, both = dual execution)
+  modeRouting: Record<string, 'off' | 'paper' | 'live' | 'both'>;
   liveKillSwitch: boolean;
   liveDailyLossLimit: number;
   livePortfolioValue: number;
