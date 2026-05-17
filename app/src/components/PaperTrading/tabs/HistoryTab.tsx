@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Clock } from 'lucide-react';
-import type { PaperTrade, PendingStrategySignal, PaperTradeWithAccount } from '../../../lib/paperTradesApi';
+import type { PaperTrade, PendingStrategySignal } from '../../../lib/paperTradesApi';
 import type { AccountView } from '../../../contexts/AccountContext';
 import { fmtUsd } from '../utils';
 import { StatusBadge } from '../shared';
@@ -178,7 +178,7 @@ export function HistoryTab({ trades, pendingSignals, accountView }: HistoryTabPr
                 <tr key={trade.id} className={`hover:bg-[hsl(var(--secondary))]/50 ${isActive ? 'bg-blue-50/30' : ''}`}>
                   <td className="px-4 py-3 font-bold">
                     <span className="inline-flex items-center gap-1.5">
-                      {accountView === 'all' && <AccountDot type={(trade as PaperTradeWithAccount)._accountType} />}
+                      {accountView === 'live' && <AccountDot type="live" />}
                       {trade.ticker}
                     </span>
                   </td>

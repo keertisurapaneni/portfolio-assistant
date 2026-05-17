@@ -31,7 +31,6 @@ function formatSkipReason(reason: string | null | undefined): string | null {
 }
 
 import type { AccountView } from '../../../contexts/AccountContext';
-import type { AutoTradeEventWithAccount } from '../../../lib/paperTradesApi';
 
 function AccountDot({ type }: { type?: 'paper' | 'live' }) {
   if (!type) return null;
@@ -483,7 +482,7 @@ export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], 
                 <tr key={event.id} className={cn('hover:bg-[hsl(var(--secondary))]/50', (isPositionSync || isAutoClose) && 'bg-slate-50/50')}>
                   <td className="px-4 py-3 font-bold">
                     <span className="inline-flex items-center gap-1.5">
-                      {accountView === 'all' && <AccountDot type={(event as AutoTradeEventWithAccount)._accountType} />}
+                      {accountView === 'live' && <AccountDot type="live" />}
                       {event.ticker}
                     </span>
                   </td>
