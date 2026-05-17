@@ -116,23 +116,14 @@ function TradingModulesSection({
     onUpdate({ modeRouting: { ...routing, [mode]: target } });
   };
 
-  const groups: { title: string; description: string; modes: string[] }[] = [
-    {
-      title: 'Trade Signals',
-      description: 'Day & swing trade scanner — AI + technical analysis',
-      modes: ['DAY_TRADE', 'SWING_TRADE'],
-    },
-    {
-      title: 'Options',
-      description: 'Cash-secured puts, covered calls, and spreads',
-      modes: ['OPTIONS_PUT', 'OPTIONS_CALL', 'CREDIT_SPREAD', 'CALENDAR_SPREAD'],
-    },
-    {
-      title: 'Other Strategies',
-      description: 'Additional scanners and strategies',
-      modes: ['DAY_PENNY', 'LONG_TERM', 'EARNINGS_CALENDAR'],
-    },
-  ];
+  const OPTIONS_MODES = ['OPTIONS_PUT', 'OPTIONS_CALL', 'CREDIT_SPREAD', 'CALENDAR_SPREAD', 'EARNINGS_CALENDAR'];
+  const setAllOptions = (target: RouteTarget) => {
+    const updated = { ...routing };
+    OPTIONS_MODES.forEach(m => { updated[m] = target; });
+    onUpdate({ modeRouting: updated });
+  };
+
+  const optionsValue = (routing['OPTIONS_PUT'] as RouteTarget) ?? 'paper';
 
   return (
     <div className="rounded-lg border border-[hsl(var(--border))] bg-slate-50 p-4 space-y-4">
@@ -143,22 +134,34 @@ function TradingModulesSection({
         </p>
       </div>
 
-      {groups.map(group => (
-        <div key={group.title} className="rounded-md border border-[hsl(var(--border))] bg-white p-3 space-y-2.5">
-          <div>
-            <p className="text-xs font-semibold text-[hsl(var(--foreground))]">{group.title}</p>
-            <p className="text-[10px] text-[hsl(var(--muted-foreground))]">{group.description}</p>
-          </div>
-          {group.modes.map(mode => (
-            <RoutePill
-              key={mode}
-              mode={mode}
-              value={(routing[mode] as RouteTarget) ?? 'paper'}
-              onChange={target => setRoute(mode, target)}
-            />
-          ))}
+      {/* Trade Signals */}
+      <div className="rounded-md border border-[hsl(var(--border))] bg-white p-3 space-y-2.5">
+        <div>
+          <p className="text-xs font-semibold text-[hsl(var(--foreground))]">Trade Signals</p>
+          <p className="text-[10px] text-[hsl(var(--muted-foreground))]">Day &amp; swing trade scanner — AI + technical analysis</p>
         </div>
-      ))}
+        <RoutePill mode="DAY_TRADE" value={(routing['DAY_TRADE'] as RouteTarget) ?? 'paper'} onChange={target => setRoute('DAY_TRADE', target)} />
+        <RoutePill mode="SWING_TRADE" value={(routing['SWING_TRADE'] as RouteTarget) ?? 'paper'} onChange={target => setRoute('SWING_TRADE', target)} />
+        <RoutePill mode="DAY_PENNY" value={(routing['DAY_PENNY'] as RouteTarget) ?? 'paper'} onChange={target => setRoute('DAY_PENNY', target)} />
+      </div>
+
+      {/* Options */}
+      <div className="rounded-md border border-[hsl(var(--border))] bg-white p-3 space-y-2.5">
+        <div>
+          <p className="text-xs font-semibold text-[hsl(var(--foreground))]">Options</p>
+          <p className="text-[10px] text-[hsl(var(--muted-foreground))]">Cash-secured puts, covered calls, spreads, and earnings plays</p>
+        </div>
+        <RoutePill mode="ALL_OPTIONS" value={optionsValue} onChange={setAllOptions} />
+      </div>
+
+      {/* Suggested Finds */}
+      <div className="rounded-md border border-[hsl(var(--border))] bg-white p-3 space-y-2.5">
+        <div>
+          <p className="text-xs font-semibold text-[hsl(var(--foreground))]">Suggested Finds</p>
+          <p className="text-[10px] text-[hsl(var(--muted-foreground))]">Quiet Compounders &amp; Gold Mines — auto-buy long-term positions</p>
+        </div>
+        <RoutePill mode="LONG_TERM" value={(routing['LONG_TERM'] as RouteTarget) ?? 'paper'} onChange={target => setRoute('LONG_TERM', target)} />
+      </div>
     </div>
   );
 }
