@@ -385,6 +385,8 @@ export function startScheduler(): void {
   // and tomorrow morning's BMO earnings announcements.
   cron.schedule('30 14 * * 1-5', async () => {
     try {
+      const cfg = await loadConfig();
+      if (!isModeEnabled(cfg, 'EARNINGS_CALENDAR')) return;
       await runEarningsScan();
     } catch (err) {
       console.error('[EarningsScan] Scan failed:', err instanceof Error ? err.message : err);
