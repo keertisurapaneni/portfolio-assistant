@@ -898,7 +898,7 @@ function AppContent() {
                 )}
               >
                 <Bot className="w-4 h-4" />
-                Paper Trading
+                Auto-Trading
               </NavLink>
             )}
           </div>
