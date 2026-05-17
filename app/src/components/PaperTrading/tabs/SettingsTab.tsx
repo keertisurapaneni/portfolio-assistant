@@ -2,6 +2,7 @@ import { AlertTriangle } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import { cn } from '../../../lib/utils';
 import type { AutoTraderConfig } from '../../../lib/autoTrader';
+import type { RouteTarget } from '../../../../../shared/trade-types';
 
 function SettingsToggle({ enabled, onToggle }: { enabled: boolean; onToggle: () => void }) {
   return (
@@ -51,6 +52,113 @@ function SettingsInput({ label, value, onChange, min, max, step, help }: {
         step={step}
       />
       {help && <p className="text-[10px] text-[hsl(var(--muted-foreground))] mt-0.5">{help}</p>}
+    </div>
+  );
+}
+
+const ROUTE_OPTIONS: { value: RouteTarget; label: string }[] = [
+  { value: 'off', label: 'OFF' },
+  { value: 'paper', label: 'PAPER' },
+  { value: 'live', label: 'LIVE' },
+  { value: 'both', label: 'BOTH' },
+];
+
+const ROUTE_STYLES: Record<RouteTarget, string> = {
+  off: 'bg-slate-200 text-slate-600',
+  paper: 'bg-slate-300 text-slate-700',
+  live: 'bg-emerald-100 text-emerald-700',
+  both: 'bg-blue-100 text-blue-700',
+};
+
+function RoutePill({
+  mode,
+  value,
+  onChange,
+}: {
+  mode: string;
+  value: RouteTarget;
+  onChange: (target: RouteTarget) => void;
+}) {
+  return (
+    <div className="flex items-center justify-between gap-3">
+      <span className="text-xs font-medium text-[hsl(var(--foreground))] min-w-[110px]">
+        {mode.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, c => c.toUpperCase())}
+      </span>
+      <div className="flex rounded-md border border-[hsl(var(--border))] overflow-hidden">
+        {ROUTE_OPTIONS.map(opt => (
+          <button
+            key={opt.value}
+            onClick={() => onChange(opt.value)}
+            className={cn(
+              'px-2.5 py-1 text-[10px] font-bold transition-colors',
+              value === opt.value
+                ? ROUTE_STYLES[opt.value]
+                : 'bg-transparent text-[hsl(var(--muted-foreground))] hover:bg-slate-100',
+            )}
+          >
+            {opt.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function TradingModulesSection({
+  config,
+  onUpdate,
+}: {
+  config: AutoTraderConfig;
+  onUpdate: (updates: Partial<AutoTraderConfig>) => void;
+}) {
+  const routing = config.modeRouting ?? {};
+  const setRoute = (mode: string, target: RouteTarget) => {
+    onUpdate({ modeRouting: { ...routing, [mode]: target } });
+  };
+
+  const groups: { title: string; description: string; modes: string[] }[] = [
+    {
+      title: 'Trade Signals',
+      description: 'Day & swing trade scanner — AI + technical analysis',
+      modes: ['DAY_TRADE', 'SWING_TRADE'],
+    },
+    {
+      title: 'Options',
+      description: 'Cash-secured puts, covered calls, and spreads',
+      modes: ['OPTIONS_PUT', 'OPTIONS_CALL', 'CREDIT_SPREAD', 'CALENDAR_SPREAD'],
+    },
+    {
+      title: 'Other Strategies',
+      description: 'Additional scanners and strategies',
+      modes: ['DAY_PENNY', 'LONG_TERM', 'EARNINGS_CALENDAR'],
+    },
+  ];
+
+  return (
+    <div className="rounded-lg border border-[hsl(var(--border))] bg-slate-50 p-4 space-y-4">
+      <div>
+        <h4 className="text-sm font-semibold text-[hsl(var(--foreground))]">Trading Modules</h4>
+        <p className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5">
+          Configure which account receives orders for each trade mode. OFF disables scanning entirely.
+        </p>
+      </div>
+
+      {groups.map(group => (
+        <div key={group.title} className="rounded-md border border-[hsl(var(--border))] bg-white p-3 space-y-2.5">
+          <div>
+            <p className="text-xs font-semibold text-[hsl(var(--foreground))]">{group.title}</p>
+            <p className="text-[10px] text-[hsl(var(--muted-foreground))]">{group.description}</p>
+          </div>
+          {group.modes.map(mode => (
+            <RoutePill
+              key={mode}
+              mode={mode}
+              value={(routing[mode] as RouteTarget) ?? 'paper'}
+              onChange={target => setRoute(mode, target)}
+            />
+          ))}
+        </div>
+      ))}
     </div>
   );
 }
@@ -121,48 +229,9 @@ export function SettingsTab({ config, onUpdate }: SettingsTabProps) {
     <div className="rounded-xl border border-[hsl(var(--border))] bg-white p-6 space-y-6">
       <h3 className="text-lg font-semibold text-[hsl(var(--foreground))]">Auto-Trading Settings</h3>
 
-      <div className="rounded-lg border border-[hsl(var(--border))] bg-slate-50 p-4 space-y-3">
-        <h4 className="text-sm font-semibold text-[hsl(var(--foreground))]">Module Toggles</h4>
-        <p className="text-xs text-[hsl(var(--muted-foreground))] -mt-1">Enable or disable individual trading modules</p>
+      <TradingModulesSection config={config} onUpdate={onUpdate} />
 
-        <div className="flex items-center gap-3">
-          <SettingsToggle enabled={config.tradeSignalsEnabled}
-            onToggle={() => onUpdate({ tradeSignalsEnabled: !config.tradeSignalsEnabled })} />
-          <div>
-            <p className="text-sm font-medium text-[hsl(var(--foreground))]">Trade Signals</p>
-            <p className="text-xs text-[hsl(var(--muted-foreground))]">Day & swing trade scanner — AI + technical analysis for short-term trades</p>
-          </div>
-        </div>
-
-        <div className="flex items-center gap-3">
-          <SettingsToggle enabled={config.suggestedFindsEnabled}
-            onToggle={() => onUpdate({ suggestedFindsEnabled: !config.suggestedFindsEnabled })} />
-          <div>
-            <p className="text-sm font-medium text-[hsl(var(--foreground))]">Suggested Finds</p>
-            <p className="text-xs text-[hsl(var(--muted-foreground))]">Quiet Compounders & Gold Mines — auto-buy long-term positions</p>
-          </div>
-        </div>
-
-        <div className="flex items-center gap-3">
-          <SettingsToggle enabled={config.optionsWheelEnabled}
-            onToggle={() => onUpdate({ optionsWheelEnabled: !config.optionsWheelEnabled })} />
-          <div>
-            <p className="text-sm font-medium text-[hsl(var(--foreground))]">Options Wheel</p>
-            <p className="text-xs text-[hsl(var(--muted-foreground))]">Sell cash-secured puts & covered calls for premium income</p>
-          </div>
-        </div>
-
-        <div className="flex items-center gap-3">
-          <SettingsToggle enabled={config.pennyEnabled}
-            onToggle={() => onUpdate({ pennyEnabled: !config.pennyEnabled })} />
-          <div>
-            <p className="text-sm font-medium text-[hsl(var(--foreground))]">Penny Scanner</p>
-            <p className="text-xs text-[hsl(var(--muted-foreground))]">Low-priced momentum stocks ($2-$20, low float) — first pullback strategy, 9:35-10:00 AM ET</p>
-          </div>
-        </div>
-      </div>
-
-      {config.pennyEnabled && (
+      {(config.modeRouting?.DAY_PENNY ?? 'paper') !== 'off' && (
         <div className="rounded-lg border border-green-200 bg-green-50/50 p-4 space-y-3">
           <h4 className="text-sm font-semibold text-[hsl(var(--foreground))]">Penny Scanner Settings</h4>
           <p className="text-xs text-[hsl(var(--muted-foreground))] -mt-1">
@@ -656,37 +725,6 @@ export function SettingsTab({ config, onUpdate }: SettingsTabProps) {
                 config.liveKillSwitch ? 'translate-x-8' : 'translate-x-1'
               )} />
             </button>
-          </div>
-        </div>
-
-        {/* Mode routing */}
-        <div className="rounded-lg border border-[hsl(var(--border))] bg-slate-50 p-4 mb-4">
-          <h5 className="text-xs font-semibold text-[hsl(var(--foreground))] mb-2">Mode Routing</h5>
-          <p className="text-[10px] text-[hsl(var(--muted-foreground))] mb-3">
-            Which account receives orders for each trade mode. Changes apply on next auto-trader cycle.
-          </p>
-          <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
-            {Object.entries(config.modeRouting ?? {}).map(([mode, target]) => (
-              <div key={mode} className="flex items-center justify-between bg-white rounded-md border border-[hsl(var(--border))] px-3 py-1.5">
-                <span className="text-xs font-medium text-[hsl(var(--foreground))]">
-                  {mode.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, c => c.toUpperCase())}
-                </span>
-                <button
-                  onClick={() => {
-                    const updated = { ...config.modeRouting, [mode]: target === 'paper' ? 'live' as const : 'paper' as const };
-                    onUpdate({ modeRouting: updated });
-                  }}
-                  className={cn(
-                    'px-2 py-0.5 rounded text-[10px] font-bold transition-colors',
-                    target === 'live'
-                      ? 'bg-emerald-100 text-emerald-700 hover:bg-emerald-200'
-                      : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                  )}
-                >
-                  {target.toUpperCase()}
-                </button>
-              </div>
-            ))}
           </div>
         </div>
 

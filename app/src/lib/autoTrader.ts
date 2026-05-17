@@ -310,11 +310,11 @@ export async function saveAutoTraderConfig(config: Partial<AutoTraderConfig>): P
         lt_max_hold_days: updated.ltMaxHoldDays,
         lt_trailing_stop_pct: updated.ltTrailingStopPct,
         suggested_find_position_size: updated.suggestedFindPositionSize,
-        // Module Toggles
-        trade_signals_enabled: updated.tradeSignalsEnabled,
-        suggested_finds_enabled: updated.suggestedFindsEnabled,
-        options_wheel_enabled: updated.optionsWheelEnabled,
-        penny_enabled: updated.pennyEnabled,
+        // Module Toggles — derived from routing for backward compatibility
+        trade_signals_enabled: (updated.modeRouting?.DAY_TRADE ?? 'paper') !== 'off' || (updated.modeRouting?.SWING_TRADE ?? 'paper') !== 'off',
+        suggested_finds_enabled: (updated.modeRouting?.LONG_TERM ?? 'paper') !== 'off',
+        options_wheel_enabled: (updated.modeRouting?.OPTIONS_PUT ?? 'paper') !== 'off' || (updated.modeRouting?.OPTIONS_CALL ?? 'paper') !== 'off' || (updated.modeRouting?.CREDIT_SPREAD ?? 'paper') !== 'off' || (updated.modeRouting?.CALENDAR_SPREAD ?? 'paper') !== 'off',
+        penny_enabled: (updated.modeRouting?.DAY_PENNY ?? 'paper') !== 'off',
         penny_position_size: updated.pennyPositionSize,
         penny_max_daily_loss: updated.pennyMaxDailyLoss,
         penny_max_daily_trades: updated.pennyMaxDailyTrades,
@@ -486,7 +486,8 @@ export async function processTradeIdeas(
     return [];
   }
 
-  if (!cfg.tradeSignalsEnabled) {
+  const tradeSignalsEnabled = (cfg.modeRouting?.DAY_TRADE ?? 'paper') !== 'off' || (cfg.modeRouting?.SWING_TRADE ?? 'paper') !== 'off';
+  if (!tradeSignalsEnabled) {
     logEvent('*', 'info', 'Trade Signals module disabled — skipping');
     return [];
   }
@@ -1913,7 +1914,7 @@ export async function processSuggestedFinds(
     return [];
   }
 
-  if (!cfg.suggestedFindsEnabled) {
+  if ((cfg.modeRouting?.LONG_TERM ?? 'paper') === 'off') {
     logEvent('*', 'info', 'Suggested Finds module disabled — skipping');
     return [];
   }

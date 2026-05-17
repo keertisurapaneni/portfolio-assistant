@@ -8,6 +8,8 @@
 
 export type AccountType = 'paper' | 'live';
 
+export type RouteTarget = 'off' | 'paper' | 'live' | 'both';
+
 export type TradeMode =
   | 'DAY_TRADE'
   | 'DAY_PENNY'
