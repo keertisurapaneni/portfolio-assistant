@@ -5017,15 +5017,24 @@ async function checkLongTermAutoSell(
   if (!config.accountId) return;
 
   const activeTrades = await getActiveTrades();
-  const longTermOpen = activeTrades.filter(t => t.mode === 'LONG_TERM' && t.status === 'FILLED');
+  // Only BUY records are actual open positions. SELL records (profit-take trims)
+  // must be excluded — they are completed actions, not positions to close.
+  // Also deduplicate by ticker to prevent multiple sells against the same IB position.
+  const longTermOpen = activeTrades.filter(t => t.mode === 'LONG_TERM' && t.status === 'FILLED' && t.signal === 'BUY');
   const today = new Date().toISOString().slice(0, 10);
+  const processedTickers = new Set<string>();
 
   for (const trade of longTermOpen) {
-    if (skipTickers?.has(trade.ticker.toUpperCase())) {
+    const tickerUpper = trade.ticker.toUpperCase();
+    if (processedTickers.has(tickerUpper)) {
+      log(`${trade.ticker}: skipping LT auto-sell — already processed this cycle (dedup)`);
+      continue;
+    }
+    if (skipTickers?.has(tickerUpper)) {
       log(`${trade.ticker}: skipping LT auto-sell — already trimmed by profit-take this cycle`);
       continue;
     }
-    const ibPos = positions.find(p => p.symbol.toUpperCase() === trade.ticker.toUpperCase());
+    const ibPos = positions.find(p => p.symbol.toUpperCase() === tickerUpper);
     if (!ibPos || ibPos.position === 0) continue;
 
     const currentPrice = ibPos.mktPrice;
@@ -5143,6 +5152,8 @@ async function checkLongTermAutoSell(
 
     const qty  = Math.abs(ibPos.position);
     const side: 'BUY' | 'SELL' = ibPos.position > 0 ? 'SELL' : 'BUY';
+
+    processedTickers.add(tickerUpper);
 
     try {
       const { avgFillPrice } = await placeMarketOrder({ symbol: trade.ticker, side, quantity: qty });
@@ -5299,7 +5310,7 @@ async function checkProfitTakeOpportunities(
         fill_price: avgFillPrice,
         quantity: actualTrimQty,
         position_size: actualTrimQty * avgFillPrice,
-        status: 'FILLED',
+        status: 'CLOSED',
         ib_order_id: String(orderId),
         pnl: realizedPnl,
         close_reason: 'profit_take',
