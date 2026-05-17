@@ -613,10 +613,10 @@ export function SettingsTab({ config, onUpdate }: SettingsTabProps) {
       <div className="flex items-start gap-2 rounded-lg bg-amber-50 border border-amber-200/70 px-4 py-3 mt-4">
         <AlertTriangle className="w-4 h-4 text-amber-500 mt-0.5 flex-shrink-0" />
         <div>
-          <p className="text-sm font-medium text-amber-800">Paper Trading — Signal Quality Test</p>
+          <p className="text-sm font-medium text-amber-800">Signal Quality Testing</p>
           <p className="text-xs text-amber-700 mt-0.5">
-            Testing AI signal quality with ${config.maxTotalAllocation.toLocaleString()} budget over 1 month.
-            Orders are placed on your IB paper account with simulated money.
+            Testing AI signal quality with ${config.maxTotalAllocation.toLocaleString()} budget.
+            Paper account orders use simulated money. Live account orders use real money.
           </p>
         </div>
       </div>

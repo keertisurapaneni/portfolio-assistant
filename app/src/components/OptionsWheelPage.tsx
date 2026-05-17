@@ -24,7 +24,7 @@ export function OptionsWheelPage() {
           {/* Status banner — matches Suggested Finds style */}
           <div className="ml-12 flex items-center gap-2 px-3 py-2 rounded-lg text-sm bg-amber-50 text-amber-700 border border-amber-200 w-fit">
             <Zap className="w-3.5 h-3.5 animate-pulse" />
-            Auto-scanning and paper trading qualifying puts...
+            Auto-scanning and auto-trading qualifying puts...
           </div>
         </div>
       </div>
