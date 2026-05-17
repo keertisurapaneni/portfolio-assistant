@@ -9,7 +9,7 @@
 import { Router } from 'express';
 import { getLiveConnection, getPaperConnection } from '../ib-connection.js';
 import { loadConfig, saveConfigPartial } from '../lib/supabase.js';
-import type { AccountType } from '../../../shared/trade-types.js';
+import type { RouteTarget } from '../../../shared/trade-types.js';
 
 const router = Router();
 
@@ -72,26 +72,30 @@ router.get('/live/mode-routing', async (_req, res) => {
 
 router.put('/live/mode-routing', async (req, res) => {
   try {
-    const { modeRouting } = req.body as { modeRouting?: Record<string, AccountType> };
+    const { modeRouting } = req.body as { modeRouting?: Record<string, RouteTarget> };
     if (!modeRouting || typeof modeRouting !== 'object') {
       res.status(400).json({ error: 'Missing required object field: modeRouting' });
       return;
     }
 
-    const validModes = ['DAY_TRADE', 'DAY_PENNY', 'SWING_TRADE', 'LONG_TERM', 'OPTIONS_PUT', 'OPTIONS_CALL'];
-    const validAccounts: AccountType[] = ['paper', 'live'];
-    for (const [mode, acct] of Object.entries(modeRouting)) {
+    const validModes = [
+      'DAY_TRADE', 'DAY_PENNY', 'SWING_TRADE', 'LONG_TERM',
+      'OPTIONS_PUT', 'OPTIONS_CALL',
+      'CREDIT_SPREAD', 'CALENDAR_SPREAD', 'EARNINGS_CALENDAR',
+    ];
+    const validTargets: RouteTarget[] = ['off', 'paper', 'live', 'both'];
+    for (const [mode, target] of Object.entries(modeRouting)) {
       if (!validModes.includes(mode)) {
         res.status(400).json({ error: `Invalid mode: ${mode}` });
         return;
       }
-      if (!validAccounts.includes(acct)) {
-        res.status(400).json({ error: `Invalid account type for ${mode}: ${acct}` });
+      if (!validTargets.includes(target)) {
+        res.status(400).json({ error: `Invalid route target for ${mode}: ${target}` });
         return;
       }
     }
 
-    await saveConfigPartial({ modeRouting });
+    await saveConfigPartial({ mode_routing: modeRouting });
     res.json({ ok: true, modeRouting });
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : 'unknown' });

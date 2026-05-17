@@ -648,7 +648,7 @@ export function PaperTrading() {
         <div className="flex items-center justify-center py-12">
           <Spinner size="md" />
         </div>
-      ) : accountView === 'live' && ['portfolio', 'today', 'history', 'performance', 'strategies'].includes(tab) ? (
+      ) : accountView === 'live' && ['portfolio', 'today', 'history', 'performance'].includes(tab) ? (
         <div className="flex flex-col items-center justify-center py-16 gap-4 text-center">
           <div className="w-16 h-16 rounded-full bg-emerald-50 border-2 border-dashed border-emerald-300 flex items-center justify-center">
             <Wifi className="w-7 h-7 text-emerald-400" />
