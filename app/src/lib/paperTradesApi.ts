@@ -48,17 +48,6 @@ let _exemptCache: { data: Set<string>; ts: number } | null = null;
 const SHARED_CACHE_TTL = 30_000;
 
 async function getSharedTrades(accountView: AccountView = 'paper'): Promise<PaperTradeWithAccount[]> {
-  if (accountView === 'all') {
-    const [paperResult, liveResult] = await Promise.all([
-      supabase.from('paper_trades').select('*').limit(2000),
-      supabase.from('live_trades').select('*').limit(2000),
-    ]);
-    return [
-      ...(paperResult.data ?? []).map(t => ({ ...t, _accountType: 'paper' as const })),
-      ...(liveResult.data ?? []).map(t => ({ ...t, _accountType: 'live' as const })),
-    ].sort((a, b) => new Date(b.opened_at).getTime() - new Date(a.opened_at).getTime()) as PaperTradeWithAccount[];
-  }
-
   if (accountView === 'live') {
     const { data, error } = await supabase.from('live_trades').select('*').limit(2000);
     if (error) throw new Error(`Failed to fetch live trades: ${error.message}`);
@@ -204,18 +193,6 @@ export async function getActiveTrades(): Promise<PaperTrade[]> {
 
 /** Get all trades (most recent first) */
 export async function getAllTrades(limit = 50, accountView: AccountView = 'paper'): Promise<PaperTradeWithAccount[]> {
-  if (accountView === 'all') {
-    const [paperResult, liveResult] = await Promise.all([
-      supabase.from('paper_trades').select('*').order('opened_at', { ascending: false }).limit(limit),
-      supabase.from('live_trades').select('*').order('opened_at', { ascending: false }).limit(limit),
-    ]);
-    return [
-      ...(paperResult.data ?? []).map(t => ({ ...t, _accountType: 'paper' as const })),
-      ...(liveResult.data ?? []).map(t => ({ ...t, _accountType: 'live' as const })),
-    ].sort((a, b) => new Date(b.opened_at).getTime() - new Date(a.opened_at).getTime())
-      .slice(0, limit) as PaperTradeWithAccount[];
-  }
-
   const table = tradesTableName(accountView);
   const { data, error } = await supabase
     .from(table)
@@ -590,18 +567,6 @@ export async function createAutoTradeEvent(
 export type AutoTradeEventWithAccount = AutoTradeEventRecord & { _accountType?: AccountType };
 
 export async function getAutoTradeEvents(limit = 100, accountView: AccountView = 'paper'): Promise<AutoTradeEventWithAccount[]> {
-  if (accountView === 'all') {
-    const [paperRes, liveRes] = await Promise.all([
-      supabase.from('auto_trade_events').select('*').order('created_at', { ascending: false }).limit(limit),
-      supabase.from('live_trade_events').select('*').order('created_at', { ascending: false }).limit(limit),
-    ]);
-    return [
-      ...(paperRes.data ?? []).map(e => ({ ...e, _accountType: 'paper' as const })),
-      ...(liveRes.data ?? []).map(e => ({ ...e, _accountType: 'live' as const })),
-    ].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
-      .slice(0, limit) as AutoTradeEventWithAccount[];
-  }
-
   const table = eventsTableName(accountView);
   const { data, error } = await supabase
     .from(table)
@@ -674,16 +639,6 @@ export async function getTodaysExecutedEvents(accountView: AccountView = 'paper'
     return result;
   }
 
-  if (accountView === 'all') {
-    const [paper, live] = await Promise.all([
-      fetchForTable('auto_trade_events', 'paper_trades', 'paper'),
-      fetchForTable('live_trade_events', 'live_trades', 'live'),
-    ]);
-    return [...paper, ...live].sort(
-      (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
-    );
-  }
-
   const evTable = eventsTableName(accountView);
   const trTable = tradesTableName(accountView);
   return (await fetchForTable(evTable, trTable)).sort(
@@ -697,16 +652,10 @@ export async function getAutoTradeEventsByTicker(
   limit = 50,
   accountView: AccountView = 'paper',
 ): Promise<AutoTradeEventWithAccount[]> {
-  if (accountView === 'all') {
-    const [paperRes, liveRes] = await Promise.all([
-      supabase.from('auto_trade_events').select('*').eq('ticker', ticker).order('created_at', { ascending: false }).limit(limit),
-      supabase.from('live_trade_events').select('*').eq('ticker', ticker).order('created_at', { ascending: false }).limit(limit),
-    ]);
-    return [
-      ...(paperRes.data ?? []).map(e => ({ ...e, _accountType: 'paper' as const })),
-      ...(liveRes.data ?? []).map(e => ({ ...e, _accountType: 'live' as const })),
-    ].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
-      .slice(0, limit) as AutoTradeEventWithAccount[];
+  if (accountView === 'live') {
+    const { data, error } = await supabase.from('live_trade_events').select('*').eq('ticker', ticker).order('created_at', { ascending: false }).limit(limit);
+    if (error) throw new Error(`Failed to fetch live events: ${error.message}`);
+    return (data ?? []).map(e => ({ ...e, _accountType: 'live' as const })) as AutoTradeEventWithAccount[];
   }
 
   const table = eventsTableName(accountView);
@@ -781,7 +730,7 @@ export async function getPerformance(): Promise<TradePerformance | null> {
 
 /** Update aggregate performance (recalculate from all trades) */
 export async function recalculatePerformance(accountView: AccountView = 'paper'): Promise<TradePerformance | null> {
-  const table = tradesTableName(accountView === 'all' ? 'paper' : accountView);
+  const table = tradesTableName(accountView);
   const { data: trades, error } = await supabase
     .from(table)
     .select('*')
@@ -935,7 +884,7 @@ export interface PendingStrategySignal {
 export async function recalculatePerformanceByCategory(accountView: AccountView = 'paper'): Promise<CategoryPerformance[]> {
   let trades: PaperTrade[];
   try {
-    trades = await getSharedTrades(accountView === 'all' ? 'paper' : accountView);
+    trades = await getSharedTrades(accountView);
   } catch {
     return [];
   }
@@ -1041,7 +990,7 @@ export async function recalculatePerformanceByStrategySource(accountView: Accoun
   let allTrades: PaperTrade[];
   let exemptSources: Set<string>;
   try {
-    [allTrades, exemptSources] = await Promise.all([getSharedTrades(accountView === 'all' ? 'paper' : accountView), getCachedExemptSources()]);
+    [allTrades, exemptSources] = await Promise.all([getSharedTrades(accountView), getCachedExemptSources()]);
   } catch {
     return [];
   }
@@ -1145,7 +1094,7 @@ export async function recalculatePerformanceByStrategyVideo(accountView: Account
   let allTrades: PaperTrade[];
   let exemptSources: Set<string>;
   try {
-    [allTrades, exemptSources] = await Promise.all([getSharedTrades(accountView === 'all' ? 'paper' : accountView), getCachedExemptSources()]);
+    [allTrades, exemptSources] = await Promise.all([getSharedTrades(accountView), getCachedExemptSources()]);
   } catch {
     return [];
   }

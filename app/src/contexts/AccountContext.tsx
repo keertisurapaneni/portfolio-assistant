@@ -1,6 +1,6 @@
 import { createContext, useContext, useState, type ReactNode } from 'react';
 
-export type AccountView = 'live' | 'paper' | 'all';
+export type AccountView = 'live' | 'paper';
 
 interface AccountContextValue {
   accountView: AccountView;

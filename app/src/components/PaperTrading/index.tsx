@@ -85,9 +85,8 @@ export type Tab = 'portfolio' | 'today' | 'smart' | 'strategies' | 'validation' 
 
 function AccountPill({ value, onChange }: { value: AccountView; onChange: (v: AccountView) => void }) {
   const pills: Array<{ id: AccountView; label: string; activeClass: string }> = [
-    { id: 'live',  label: '🟢 Live',  activeClass: 'bg-emerald-600 text-white shadow-md shadow-emerald-500/25' },
     { id: 'paper', label: 'Paper',    activeClass: 'bg-[hsl(var(--secondary))] text-[hsl(var(--secondary-foreground))] shadow-sm border border-[hsl(var(--border))]' },
-    { id: 'all',   label: 'All',      activeClass: 'bg-blue-600 text-white shadow-md shadow-blue-500/25' },
+    { id: 'live',  label: '🟢 Live',  activeClass: 'bg-emerald-600 text-white shadow-md shadow-emerald-500/25' },
   ];
 
   return (
@@ -484,9 +483,7 @@ export function PaperTrading() {
             <p className="text-sm text-[hsl(var(--muted-foreground))] mt-1">
               {accountView === 'live'
                 ? 'Live account — real money'
-                : accountView === 'all'
-                  ? 'Combined view — paper + live'
-                  : 'Paper account — testing & validation'}
+                : 'Paper account — testing & validation'}
             </p>
           </div>
           <div className="flex items-center gap-3">
