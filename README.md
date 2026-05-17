@@ -42,17 +42,22 @@ AI-powered stock signals — skip the noise, catch the plays.
 - **Top Pick** badge on highest-conviction stock per category
 - Powered by HuggingFace (Qwen2.5-72B → Mixtral-8x7B → Llama-3.1-8B cascade), daily server-side cache
 
-### Paper Trading 🔒
+### Auto-Trading 🔒
 
-*Auth required — connects to IB paper account via IB Gateway + IBC (hands-off, no daily login)*
+*Auth required — connects to IB accounts via IB Gateway + IBC (hands-off, no daily login)*
 
+- **Dual-Account Architecture** — Paper (port 4002) and live (port 4001) IB accounts, each managed by its own IBC instance
+- **Mode Routing** — Each trade mode (Day Trade, Swing, Options, etc.) can be independently set to OFF / PAPER / LIVE / BOTH
 - **IB Portfolio** — Live positions (shares, cost, P&L, market value) and open orders with bracket grouping
 - **Today's Activity** — All trades executed today with ticker, signal, mode, confidence, and time
 - **Trade History** — Completed trades with entry/close price and P&L
 - **Auto-Trade** — Scanner ideas execute as bracket orders (entry + stop + target); Suggested Finds execute as market buys (long-term holds, no stop/target)
 - **AI Feedback Loop** — Analyzes wins/losses, stores lessons, identifies patterns
 - **Performance Stats** — Win rate, total P&L, avg P&L per trade
-- **Settings** — Toggle auto-trading, configure position size, confidence thresholds; persists via Supabase
+- **Settings** — Trading module routing, kill switch, position sizing, confidence thresholds; persists via Supabase
+- **Safety** — Live kill switch, daily loss limit, separate position sizing for live account
+
+> 📄 **Going live?** See [docs/live-trading-setup.md](docs/live-trading-setup.md) for the full setup guide.
 
 #### Auto-Trade Filters
 
