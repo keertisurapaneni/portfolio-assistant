@@ -541,11 +541,13 @@ Action needed: Check the auto-trader service and restart if necessary.`,
       const deferred = shortResult.errors.length > 0 && shortResult.closed.length === 0
         || longResult.errors.length > 0 && longResult.closed.length === 0;
       if (deferred) {
-        // Deferred (market closed) — schedule retry at 9:31 AM ET if we're before open
+        // Deferred (market closed) — schedule retry at 9:31 AM ET on next weekday
         const etNow = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }));
+        const etDay = etNow.getDay();
         const etMins = etNow.getHours() * 60 + etNow.getMinutes();
         const marketOpenMin = 9 * 60 + 31; // 9:31 AM ET
-        if (etMins < marketOpenMin) {
+        const isWeekday = etDay >= 1 && etDay <= 5;
+        if (isWeekday && etMins < marketOpenMin) {
           const delayMs = (marketOpenMin - etMins) * 60_000;
           log(`[IBReconcile] Scheduling retry in ${Math.round(delayMs / 60_000)} min (at 9:31 AM ET)`);
           setTimeout(() => {
@@ -558,6 +560,8 @@ Action needed: Check the auto-trader service and restart if necessary.`,
               }),
             ]);
           }, delayMs);
+        } else if (!isWeekday) {
+          log('[IBReconcile] Weekend — deferring reconciliation until Monday market open');
         }
       }
     } catch (err) {
@@ -1018,17 +1022,30 @@ export async function reconcileIBShorts(): Promise<{ closed: string[]; errors: s
     const tickers = shorts.map(p => `${p.symbol}(${Math.abs(p.position)})`).join(', ');
     const alertMsg = `[IBReconcile] ⚠️ CRITICAL: ${shorts.length} orphaned short position(s) detected AFTER HOURS: ${tickers}. Cannot place cover orders — market is closed. Will retry at next startup during market hours.`;
     log(alertMsg);
-    await createAutoTradeEvent({
-      ticker: 'SYSTEM',
-      event_type: 'error',
-      action: 'failed',
-      source: 'system',
-      message: alertMsg,
-      metadata: {
-        reconcile_type: 'ib_short_reconcile_deferred',
-        shorts: shorts.map(p => ({ symbol: p.symbol, qty: Math.abs(p.position), avgCost: p.avgCost })),
-      },
-    });
+
+    // Only create one deferred alert per calendar day to avoid spamming on every restart
+    const todayStr = etNow.toISOString().slice(0, 10);
+    const { data: existing } = await getSupabase()
+      .from('auto_trade_events')
+      .select('id')
+      .eq('ticker', 'SYSTEM')
+      .gte('created_at', `${todayStr}T00:00:00Z`)
+      .ilike('message', '%orphaned short%AFTER HOURS%')
+      .limit(1);
+
+    if (!existing?.length) {
+      await createAutoTradeEvent({
+        ticker: 'SYSTEM',
+        event_type: 'error',
+        action: 'failed',
+        source: 'system',
+        message: alertMsg,
+        metadata: {
+          reconcile_type: 'ib_short_reconcile_deferred',
+          shorts: shorts.map(p => ({ symbol: p.symbol, qty: Math.abs(p.position), avgCost: p.avgCost })),
+        },
+      });
+    }
     return { closed: [], errors: [`Market closed — ${shorts.length} short(s) deferred: ${tickers}`] };
   }
 
