@@ -66,6 +66,7 @@ import {
   clearSharedTradesCache,
 } from '../../lib/paperTradesApi';
 import { getTotalDeployed, getMarketRegime, calculateKellyMultiplier, type MarketRegime } from '../../lib/autoTrader';
+import { useAccountView, type AccountView } from '../../contexts/AccountContext';
 import { Spinner } from '../Spinner';
 import { fmtUsd } from './utils';
 import { StatCard } from './shared';
@@ -81,6 +82,31 @@ import {
 } from './tabs';
 
 export type Tab = 'portfolio' | 'today' | 'smart' | 'strategies' | 'validation' | 'history' | 'performance' | 'settings';
+
+function AccountPill({ value, onChange }: { value: AccountView; onChange: (v: AccountView) => void }) {
+  const pills: Array<{ id: AccountView; label: string; activeClass: string }> = [
+    { id: 'live',  label: '🟢 Live',  activeClass: 'bg-emerald-600 text-white shadow-md shadow-emerald-500/25' },
+    { id: 'paper', label: 'Paper',    activeClass: 'bg-slate-700 text-white shadow-md' },
+    { id: 'all',   label: 'All',      activeClass: 'bg-blue-600 text-white shadow-md shadow-blue-500/25' },
+  ];
+
+  return (
+    <div className="flex items-center gap-0.5 bg-slate-100 p-0.5 rounded-lg">
+      {pills.map(p => (
+        <button
+          key={p.id}
+          onClick={() => onChange(p.id)}
+          className={cn(
+            'px-3 py-1.5 text-xs font-semibold rounded-md transition-all',
+            value === p.id ? p.activeClass : 'text-slate-500 hover:text-slate-700'
+          )}
+        >
+          {p.label}
+        </button>
+      ))}
+    </div>
+  );
+}
 
 // Module-level cache: survives unmount so navigating back is instant
 const PAGE_CACHE_TTL = 2 * 60 * 1000; // 2 minutes
@@ -110,6 +136,7 @@ interface PageCache {
 let _pageCache: PageCache | null = null;
 
 export function PaperTrading() {
+  const { accountView, setAccountView } = useAccountView();
   const cached = _pageCache && Date.now() - _pageCache.ts < PAGE_CACHE_TTL ? _pageCache : null;
 
   const [config, setConfig] = useState<AutoTraderConfig>(getAutoTraderConfig);
@@ -171,8 +198,8 @@ export function PaperTrading() {
   const loadCoreData = useCallback(async () => {
     const [perf, savedEvents, todayEvents] = await Promise.all([
       getPerformance(),
-      getAutoTradeEvents(100),
-      getTodaysExecutedEvents(),
+      getAutoTradeEvents(100, accountView),
+      getTodaysExecutedEvents(accountView),
     ]);
     setPerformance(perf);
     setPersistedEvents(savedEvents);
@@ -223,7 +250,7 @@ export function PaperTrading() {
       for (const group of needed) {
         switch (group) {
           case 'allTrades':
-            promises.push(getAllTrades(500).then(d => { setAllTrades(d); }));
+            promises.push(getAllTrades(500, accountView).then(d => { setAllTrades(d); }));
             break;
           case 'pendingSignals':
             promises.push(getPendingStrategySignals(300).then(d => { setPendingSignals(d); }));
@@ -232,15 +259,15 @@ export function PaperTrading() {
             promises.push(getTodaySignalsForManualExecute().then(d => { setTodaySignalsForExecute(d); }));
             break;
           case 'categoryPerf':
-            promises.push(recalculatePerformanceByCategory().then(d => { setCategoryPerf(d); }));
+            promises.push(recalculatePerformanceByCategory(accountView).then(d => { setCategoryPerf(d); }));
             break;
           case 'totalDeployed':
             promises.push(getTotalDeployed().then(d => { setTotalDeployed(d); }));
             break;
           case 'strategyPerf':
             promises.push(Promise.all([
-              recalculatePerformanceByStrategySource().then(d => { setSourcePerf(d); }),
-              recalculatePerformanceByStrategyVideo().then(d => { setVideoPerf(d); }),
+              recalculatePerformanceByStrategySource(accountView).then(d => { setSourcePerf(d); }),
+              recalculatePerformanceByStrategyVideo(accountView).then(d => { setVideoPerf(d); }),
               getStrategySignalStatusSummaries().then(d => { setStrategyStatuses(d); }),
             ]).then(() => {}));
             break;
@@ -285,6 +312,21 @@ export function PaperTrading() {
   // Re-load IB data when connection or account changes
   useEffect(() => { loadIBData(); }, [loadIBData]);
 
+  // Re-fetch all data when account view switches
+  useEffect(() => {
+    fetchedRef.current.clear();
+    clearSharedTradesCache();
+    _pageCache = null;
+    (async () => {
+      setLoading(true);
+      try {
+        await Promise.all([loadCoreData(), loadIBData(), loadTabData(tab, true)]);
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, [accountView]); // eslint-disable-line react-hooks/exhaustive-deps
+
   useEffect(() => { loadAutoTraderConfig().then(setConfig); }, []);
 
   // Load tab data lazily when the user switches tabs.
@@ -295,7 +337,7 @@ export function PaperTrading() {
     const forceRefresh = tab === 'today';
     loadTabData(tab, forceRefresh);
     if (forceRefresh) {
-      getTodaysExecutedEvents().then(setTodaysExecuted).catch(() => {});
+      getTodaysExecutedEvents(accountView).then(setTodaysExecuted).catch(() => {});
       loadIBData();
     }
   }, [tab]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -436,12 +478,19 @@ export function PaperTrading() {
       <div>
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-2xl font-bold text-[hsl(var(--foreground))]">Paper Trading</h1>
+            <h1 className="text-2xl font-bold text-[hsl(var(--foreground))]">
+              {accountView === 'live' ? 'Live Trading' : accountView === 'all' ? 'All Accounts' : 'Paper Trading'}
+            </h1>
             <p className="text-sm text-[hsl(var(--muted-foreground))] mt-1">
-              Auto-execute scanner signals on IB paper account
+              {accountView === 'live'
+                ? 'Live account — real money positions'
+                : accountView === 'all'
+                  ? 'Combined view of paper + live accounts'
+                  : 'Auto-execute scanner signals on IB paper account'}
             </p>
           </div>
           <div className="flex items-center gap-3">
+            <AccountPill value={accountView} onChange={setAccountView} />
             <button
               onClick={handleSync}
               disabled={syncing || !connected}
@@ -611,6 +660,7 @@ export function PaperTrading() {
               pendingSignals={pendingSignals}
               connected={connected}
               onRefresh={loadIBData}
+              accountView={accountView}
             />
           )}
           {tab === 'today' && (
@@ -620,6 +670,7 @@ export function PaperTrading() {
               todaySignalsForExecute={todaySignalsForExecute}
               onExecuteSignal={refreshAfterAction}
               ibRealizedPnl={ibAccountPnl?.realizedPnL ?? null}
+              accountView={accountView}
             />
           )}
           {tab === 'smart' && (
@@ -644,13 +695,14 @@ export function PaperTrading() {
             />
           )}
           {tab === 'history' && (
-            <HistoryTab trades={allTrades} pendingSignals={pendingSignals} />
+            <HistoryTab trades={allTrades} pendingSignals={pendingSignals} accountView={accountView} />
           )}
           {tab === 'performance' && (
             <PerformanceTab
               categories={categoryPerf}
               totalDeployed={totalDeployed}
               maxAllocation={config.maxTotalAllocation}
+              accountView={accountView}
             />
           )}
           {tab === 'settings' && (

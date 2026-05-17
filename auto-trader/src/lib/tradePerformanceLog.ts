@@ -5,6 +5,7 @@
 
 import { getSupabase } from './supabase.js';
 import type { PaperTrade } from './supabase.js';
+import type { AccountType } from '../../../shared/trade-types.js';
 
 // ── Regime helper (SPY SMA50/SMA200 + VIX, cached per day) ─────────────────
 
@@ -155,7 +156,8 @@ export interface LogContext {
 /** Log a closed trade to trade_performance_log. Idempotent. */
 export async function logClosedTradePerformance(
   closedTrade: PaperTrade,
-  context?: LogContext
+  context?: LogContext,
+  accountType: AccountType = 'paper',
 ): Promise<void> {
   if (!closedTrade.closed_at) return;
   const strategy = closedTrade.mode as 'DAY_TRADE' | 'DAY_PENNY' | 'SWING_TRADE' | 'LONG_TERM';
@@ -233,6 +235,7 @@ export async function logClosedTradePerformance(
       ? { spy_above_50: regimeAtExit.spy_above_50, spy_above_200: regimeAtExit.spy_above_200, vix_bucket: regimeAtExit.vix_bucket }
       : null,
     trigger_label: context?.trigger ?? 'IB_POSITION_GONE',
+    account_type: accountType,
   };
 
   const sb = getSupabase();

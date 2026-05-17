@@ -6,9 +6,10 @@
  */
 
 import { EventName } from '@stoqey/ib';
-import { getIBApi, isConnected, getNextOrderId, getDefaultAccount } from '../ib-connection.js';
-import { getSupabase, createAutoTradeEvent, type PaperTrade } from './supabase.js';
+import { getIBApi, isConnected, getNextOrderId, getDefaultAccount, type IBConnection, getConnectionForAccount } from '../ib-connection.js';
+import { getSupabase, createAutoTradeEvent, tradesTable, type PaperTrade } from './supabase.js';
 import { recalculatePerformance } from './feedback.js';
+import type { AccountType } from '../../../shared/trade-types.js';
 
 interface IBExecution {
   orderId: number;
@@ -28,25 +29,26 @@ function log(msg: string): void {
   console.log(`[Reconcile] ${msg}`);
 }
 
-export async function runEndOfDayReconciliation(): Promise<void> {
-  if (!isConnected()) {
-    log('Skipped — IB not connected');
+export async function runEndOfDayReconciliation(accountType: AccountType = 'paper'): Promise<void> {
+  const conn = getConnectionForAccount(accountType);
+  if (!conn.isConnected()) {
+    log(`Skipped — IB:${accountType} not connected`);
     return;
   }
 
-  const ib = getIBApi();
+  const ib = conn.getIBApi();
   if (!ib) {
-    log('Skipped — no IB API instance');
+    log(`Skipped — no IB:${accountType} API instance`);
     return;
   }
 
-  const account = getDefaultAccount();
+  const account = conn.getDefaultAccount();
   if (!account) {
-    log('Skipped — no account available');
+    log(`Skipped — no IB:${accountType} account available`);
     return;
   }
 
-  log('Starting end-of-day reconciliation...');
+  log(`Starting end-of-day reconciliation for ${accountType}...`);
 
   // Get today's date in ET for the IB filter
   const etNow = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }));
@@ -56,12 +58,12 @@ export async function runEndOfDayReconciliation(): Promise<void> {
   const todayFilterET = `${yyyy}${mm}${dd} 00:00:00`;
 
   // 1. Request all of today's executions from IB
-  const executions = await requestExecutions(ib, account, todayFilterET);
+  const executions = await requestExecutions(ib, account, todayFilterET, conn);
   log(`Received ${executions.length} executions from IB`);
 
   if (executions.length === 0) {
     log('No executions found — nothing to reconcile');
-    await logReconciliationSummary(0, 0, 0, 0);
+    await logReconciliationSummary(0, 0, 0, 0, undefined, accountType);
     return;
   }
 
@@ -71,14 +73,15 @@ export async function runEndOfDayReconciliation(): Promise<void> {
   todayStartET.setHours(0, 0, 0, 0);
   const todayStartUTC = new Date(todayStartET.toLocaleString('en-US', { timeZone: 'UTC' }));
 
+  const tTable = tradesTable(accountType);
   const { data: todayTrades } = await sb
-    .from('paper_trades')
+    .from(tTable)
     .select('*')
     .or(`opened_at.gte.${todayStartUTC.toISOString()},closed_at.gte.${todayStartUTC.toISOString()},filled_at.gte.${todayStartUTC.toISOString()}`)
     .not('status', 'in', '(CANCELLED,REJECTED)');
 
   const trades = (todayTrades ?? []) as PaperTrade[];
-  log(`Found ${trades.length} paper_trades for today`);
+  log(`Found ${trades.length} ${tTable} for today`);
 
   // Build lookup: ib_order_id → trade
   const tradeByOrderId = new Map<number, PaperTrade>();
@@ -117,7 +120,7 @@ export async function runEndOfDayReconciliation(): Promise<void> {
       const isCoverBuy = exec.side === 'BOT' || exec.side === 'BUY';
       if (isCoverBuy) {
         const { data: coverTrade } = await sb
-          .from('paper_trades')
+          .from(tTable)
           .select('*')
           .eq('ticker', exec.ticker)
           .eq('close_reason', 'reconcile_cover')
@@ -132,7 +135,7 @@ export async function runEndOfDayReconciliation(): Promise<void> {
           const qty = ct.quantity ?? 1;
           // For a covered short: entry was SELL (fill_price is the short entry), cover is BUY (exec.price)
           const pnl = (fillPrice - exec.price) * qty;
-          await sb.from('paper_trades').update({
+          await sb.from(tTable).update({
             close_price: exec.price,
             pnl: parseFloat(pnl.toFixed(2)),
             pnl_percent: fillPrice > 0 ? parseFloat(((pnl / (fillPrice * qty)) * 100).toFixed(2)) : null,
@@ -170,7 +173,7 @@ export async function runEndOfDayReconciliation(): Promise<void> {
           updates.pnl_percent = parseFloat(((pnl / (exec.price * qty)) * 100).toFixed(2));
         }
 
-        await sb.from('paper_trades').update(updates).eq('id', trade.id);
+        await sb.from(tTable).update(updates).eq('id', trade.id);
         corrected++;
         correctionDetails.push(`${trade.ticker}: fill_price ${currentFill.toFixed(2)} → ${exec.price.toFixed(2)}`);
         log(`Corrected ${trade.ticker} fill_price: $${currentFill.toFixed(2)} → $${exec.price.toFixed(2)}`);
@@ -210,7 +213,7 @@ export async function runEndOfDayReconciliation(): Promise<void> {
           const costBasis = fillPrice * qty;
           const pnlPct = costBasis > 0 ? (pnl / costBasis) * 100 : 0;
 
-          await sb.from('paper_trades').update({
+          await sb.from(tTable).update({
             close_price: exec.price,
             pnl: parseFloat(pnl.toFixed(2)),
             pnl_percent: parseFloat(pnlPct.toFixed(2)),
@@ -249,18 +252,19 @@ export async function runEndOfDayReconciliation(): Promise<void> {
   }
 
   // 6. Log summary
-  await logReconciliationSummary(matched, corrected, orphaned, flagged, correctionDetails);
-  log(`Done: ${matched} matched, ${corrected} corrected, ${orphaned} orphaned, ${flagged} flagged`);
+  await logReconciliationSummary(matched, corrected, orphaned, flagged, correctionDetails, accountType);
+  log(`Done (${accountType}): ${matched} matched, ${corrected} corrected, ${orphaned} orphaned, ${flagged} flagged`);
 }
 
 function requestExecutions(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   ib: any,
   account: string,
-  timeFilter: string
+  timeFilter: string,
+  conn: IBConnection,
 ): Promise<IBExecution[]> {
   return new Promise((resolve) => {
-    const reqId = getNextOrderId();
+    const reqId = conn.getNextOrderId();
     const executions: IBExecution[] = [];
     // execId → realizedPnl from IB's commissionReport. IB fires commissionReport for each
     // execution, usually shortly after execDetails, but may arrive after execDetailsEnd.
@@ -341,7 +345,8 @@ async function logReconciliationSummary(
   corrected: number,
   orphaned: number,
   flagged: number,
-  details?: string[]
+  details?: string[],
+  accountType: AccountType = 'paper',
 ): Promise<void> {
   try {
     await createAutoTradeEvent({
@@ -355,7 +360,7 @@ async function logReconciliationSummary(
         matched, corrected, orphaned, flagged,
         notes: (details ?? []).join('\n') || undefined,
       },
-    });
+    }, accountType);
   } catch (err) {
     log(`Failed to log reconciliation summary: ${err instanceof Error ? err.message : err}`);
   }

@@ -22,16 +22,20 @@ import { formatRegimeLabel } from '../utils';
 import { Spinner } from '../../Spinner';
 import { StreakBoard } from '../shared';
 
+import type { AccountView } from '../../../contexts/AccountContext';
+
 export interface PerformanceTabProps {
   categories: CategoryPerformance[];
   totalDeployed: number;
   maxAllocation: number;
+  accountView?: AccountView;
 }
 
 export function PerformanceTab({
   categories,
   totalDeployed,
   maxAllocation,
+  accountView: _accountView,
 }: PerformanceTabProps) {
   const [window, setWindow] = useState<'7d' | '30d' | '90d'>('30d');
   const [data, setData] = useState<PerformanceResponse | null>(null);

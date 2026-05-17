@@ -30,12 +30,26 @@ function formatSkipReason(reason: string | null | undefined): string | null {
   return reason;
 }
 
+import type { AccountView } from '../../../contexts/AccountContext';
+import type { AutoTradeEventWithAccount } from '../../../lib/paperTradesApi';
+
+function AccountDot({ type }: { type?: 'paper' | 'live' }) {
+  if (!type) return null;
+  return (
+    <span
+      className={`inline-block w-2 h-2 rounded-full flex-shrink-0 ${type === 'live' ? 'bg-emerald-500' : 'bg-slate-400'}`}
+      title={type === 'live' ? 'Live trade' : 'Paper trade'}
+    />
+  );
+}
+
 export interface TodayActivityTabProps {
   events: AutoTradeEventRecord[];
   trades: PaperTrade[];
   todaySignalsForExecute?: PendingStrategySignal[];
   onExecuteSignal?: () => void;
   ibRealizedPnl?: number | null;
+  accountView?: AccountView;
 }
 
 type FilterMode = 'all' | 'day' | 'penny' | 'long_term' | 'gainers' | 'losers';
@@ -48,7 +62,7 @@ function isTradingDay(): boolean {
   return day !== 0 && day !== 6; // 0=Sun, 6=Sat
 }
 
-export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], onExecuteSignal, ibRealizedPnl }: TodayActivityTabProps) {
+export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], onExecuteSignal, ibRealizedPnl, accountView }: TodayActivityTabProps) {
   const [executingId, setExecutingId] = useState<string | null>(null);
   const [executingAll, setExecutingAll] = useState(false);
   const [filterMode, setFilterMode] = useState<FilterMode>('all');
@@ -467,7 +481,12 @@ export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], 
 
               return (
                 <tr key={event.id} className={cn('hover:bg-[hsl(var(--secondary))]/50', (isPositionSync || isAutoClose) && 'bg-slate-50/50')}>
-                  <td className="px-4 py-3 font-bold">{event.ticker}</td>
+                  <td className="px-4 py-3 font-bold">
+                    <span className="inline-flex items-center gap-1.5">
+                      {accountView === 'all' && <AccountDot type={(event as AutoTradeEventWithAccount)._accountType} />}
+                      {event.ticker}
+                    </span>
+                  </td>
                   <td className="px-4 py-3">
                     <span className={cn('inline-flex px-1.5 py-0.5 rounded text-[10px] font-bold', signalColor)}>
                       {signalLabel}

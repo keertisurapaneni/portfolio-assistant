@@ -6,6 +6,8 @@
  * DO NOT duplicate these types elsewhere.
  */
 
+export type AccountType = 'paper' | 'live';
+
 export type TradeMode =
   | 'DAY_TRADE'
   | 'DAY_PENNY'

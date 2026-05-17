@@ -218,6 +218,14 @@ export async function loadAutoTraderConfig(): Promise<AutoTraderConfig> {
         pennyMaxDailyLoss: Number(data.penny_max_daily_loss ?? DEFAULT_CONFIG.pennyMaxDailyLoss),
         pennyMaxDailyTrades: Number(data.penny_max_daily_trades ?? DEFAULT_CONFIG.pennyMaxDailyTrades),
         trendFilterEnabled: data.trend_filter_enabled ?? DEFAULT_CONFIG.trendFilterEnabled,
+        // Dual-account routing
+        modeRouting: data.mode_routing ?? DEFAULT_CONFIG.modeRouting,
+        liveKillSwitch: data.live_kill_switch ?? DEFAULT_CONFIG.liveKillSwitch,
+        liveDailyLossLimit: Number(data.live_daily_loss_limit ?? DEFAULT_CONFIG.liveDailyLossLimit),
+        livePortfolioValue: Number(data.live_portfolio_value ?? DEFAULT_CONFIG.livePortfolioValue),
+        livePositionSize: Number(data.live_position_size ?? DEFAULT_CONFIG.livePositionSize),
+        liveMaxPositions: Number(data.live_max_positions ?? DEFAULT_CONFIG.liveMaxPositions),
+        liveMaxDailyDeployment: Number(data.live_max_daily_deployment ?? DEFAULT_CONFIG.liveMaxDailyDeployment),
       };
       localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
       return config;
@@ -311,6 +319,14 @@ export async function saveAutoTraderConfig(config: Partial<AutoTraderConfig>): P
         penny_max_daily_loss: updated.pennyMaxDailyLoss,
         penny_max_daily_trades: updated.pennyMaxDailyTrades,
         trend_filter_enabled: updated.trendFilterEnabled,
+        // Dual-account routing
+        mode_routing: updated.modeRouting,
+        live_kill_switch: updated.liveKillSwitch,
+        live_daily_loss_limit: updated.liveDailyLossLimit,
+        live_portfolio_value: updated.livePortfolioValue,
+        live_position_size: updated.livePositionSize,
+        live_max_positions: updated.liveMaxPositions,
+        live_max_daily_deployment: updated.liveMaxDailyDeployment,
         updated_at: new Date().toISOString(),
       });
   } catch (err) {

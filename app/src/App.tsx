@@ -13,6 +13,7 @@ import { generateAIInsights } from './lib/aiInsights';
 import { getRiskProfile, setRiskProfile } from './lib/settingsStorage';
 import { cn } from './lib/utils';
 import { AuthProvider, useAuth } from './lib/auth';
+import { AccountProvider } from './contexts/AccountContext';
 import { useAutoTradeScheduler } from './hooks/useAutoTradeScheduler';
 
 // Components
@@ -994,9 +995,11 @@ function AppContent() {
 function App() {
   return (
     <AuthProvider>
-      <BrowserRouter>
-        <AppContent />
-      </BrowserRouter>
+      <AccountProvider>
+        <BrowserRouter>
+          <AppContent />
+        </BrowserRouter>
+      </AccountProvider>
     </AuthProvider>
   );
 }
