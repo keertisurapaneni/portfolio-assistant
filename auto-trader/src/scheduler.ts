@@ -23,8 +23,14 @@ import {
   cancelOrder,
   getOrderFillPrice,
   getOrderFillPriceWithFallback,
+  getPaperConnection,
+  getLiveConnection,
+  getConnectionForAccount,
   type PositionData,
+  type IBConnection,
 } from './ib-connection.js';
+import { getConnectionForMode, getAccountForMode, getPositionSizeConfig, assertLiveLossLimitNotBreached } from './lib/mode-router.js';
+import type { AccountType } from '../../shared/trade-types.js';
 import {
   isConfigured,
   getSupabase,
@@ -65,6 +71,7 @@ import {
   type AutoTraderConfig,
   type ExternalStrategySignal,
   type PaperTrade,
+  tradesTable,
 } from './lib/supabase.js';
 import { ACTIVE_STATUSES, CLOSED_STATUSES } from '../../shared/trade-status-sets.js';
 import type { AutoTradeEventType } from '../../shared/auto-trade-events.js';
@@ -620,104 +627,90 @@ export function stopScheduler(): void {
  */
 async function closeAllDayTrades(config: AutoTraderConfig): Promise<void> {
   log('EOD day-trade sweep: closing all open day trade positions…');
-  const activeTrades = await getActiveTrades();
-  // Include SUBMITTED + PARTIAL — IB fill confirmations sometimes don't write back before
-  // the EOD sweep fires, leaving orders in SUBMITTED state. At 3:55 PM ET the position is
-  // effectively closed by IB regardless; mark them closed in paper_trades too.
-  const dayTrades = activeTrades.filter(t => (t.mode === 'DAY_TRADE' || t.mode === 'DAY_PENNY') && ['FILLED', 'SUBMITTED', 'PARTIAL'].includes(t.status));
 
-  if (dayTrades.length === 0) {
-    log('EOD sweep: no open day trades');
-    return;
-  }
+  // Close day trades on both paper and live accounts
+  for (const acctType of ['paper', 'live'] as AccountType[]) {
+    const conn = getConnectionForAccount(acctType);
+    if (!conn.isConnected()) {
+      if (acctType === 'paper') log('EOD sweep: paper IB not connected, skipping paper');
+      continue;
+    }
 
-  log(`EOD sweep: ${dayTrades.length} open day trade(s) to close`);
-  for (const trade of dayTrades) {
-    try {
-      if (!isConnected()) {
-        log(`EOD sweep: ${trade.ticker} — IB not connected, skipping`);
-        continue;
-      }
-      const closeSide = trade.signal === 'BUY' ? 'SELL' : 'BUY';
-      const qty = trade.quantity ?? 0;
-      if (qty <= 0) {
-        log(`EOD sweep: ${trade.ticker} — quantity is 0, skipping`);
-        continue;
-      }
+    const activeTrades = await getActiveTrades(acctType);
+    const dayTrades = activeTrades.filter(t => (t.mode === 'DAY_TRADE' || t.mode === 'DAY_PENNY') && ['FILLED', 'SUBMITTED', 'PARTIAL'].includes(t.status));
 
-      // ── Double-close guard ────────────────────────────────────────────────
-      // Mark as CLOSED (with null price) BEFORE placing the IB order. This
-      // prevents any concurrent process (a second cron firing, another
-      // scheduler cycle, or a leftover browser closeAllDayTrades call) from
-      // seeing the trade as FILLED and placing a duplicate close order.
-      // The EOD reconciler at 4:15 PM will write the correct close_price/pnl.
-      if (trade.status === 'FILLED') {
+    if (dayTrades.length === 0) {
+      if (acctType === 'paper') log('EOD sweep: no open day trades (paper)');
+      continue;
+    }
+
+    log(`EOD sweep [${acctType}]: ${dayTrades.length} open day trade(s) to close`);
+    for (const trade of dayTrades) {
+      try {
+        const closeSide = trade.signal === 'BUY' ? 'SELL' : 'BUY';
+        const qty = trade.quantity ?? 0;
+        if (qty <= 0) {
+          log(`EOD sweep: ${trade.ticker} — quantity is 0, skipping`);
+          continue;
+        }
+
+        if (trade.status === 'FILLED') {
+          await updatePaperTrade(trade.id, {
+            status: 'CLOSED',
+            close_reason: 'eod_close',
+            closed_at: new Date().toISOString(),
+          }, acctType);
+        }
+
+        if (trade.status === 'SUBMITTED' || trade.status === 'PARTIAL') {
+          const orderId = trade.ib_order_id ? parseInt(trade.ib_order_id, 10) : NaN;
+          if (!Number.isNaN(orderId)) {
+            try {
+              conn.cancelOrder(orderId);
+              log(`${trade.ticker}: EOD — cancelled open entry IB order #${orderId}`);
+            } catch (cancelErr) {
+              log(`${trade.ticker}: EOD — cancel IB order #${orderId} failed (${cancelErr instanceof Error ? cancelErr.message : 'unknown'}) — continuing`);
+            }
+          }
+          await updatePaperTrade(trade.id, {
+            status: 'CANCELLED',
+            close_reason: 'never_filled',
+            closed_at: new Date().toISOString(),
+          }, acctType);
+          log(`${trade.ticker}: EOD cancelled (unfilled SUBMITTED order — no IB position to close)`);
+          continue;
+        }
+
+        let fillResult: { avgFillPrice: number } | null = null;
+        try {
+          fillResult = await conn.placeMarketOrder({ symbol: trade.ticker, side: closeSide, quantity: qty });
+          log(`${trade.ticker}: EOD close filled [${acctType}] (${qty} shares ${closeSide}) @ $${fillResult.avgFillPrice.toFixed(2)}`);
+        } catch (orderErr) {
+          log(`EOD sweep: ${trade.ticker} — IB order failed (${orderErr instanceof Error ? orderErr.message : 'unknown'}) — will retry on next sweep`);
+        }
+
+        if (!fillResult) continue;
+
+        const entryFillPrice = trade.fill_price ?? trade.entry_price ?? 0;
+        const isLong = trade.signal === 'BUY';
+        const pnl = isLong
+          ? (fillResult.avgFillPrice - entryFillPrice) * qty
+          : (entryFillPrice - fillResult.avgFillPrice) * qty;
+        const costBasis = entryFillPrice * qty;
+        const pnlPct = costBasis > 0 ? (pnl / costBasis) * 100 : 0;
+
         await updatePaperTrade(trade.id, {
           status: 'CLOSED',
           close_reason: 'eod_close',
+          close_price: fillResult.avgFillPrice,
+          pnl: parseFloat(pnl.toFixed(2)),
+          pnl_percent: parseFloat(pnlPct.toFixed(2)),
           closed_at: new Date().toISOString(),
-        });
+        }, acctType);
+        log(`${trade.ticker}: EOD closed [${acctType}] (${qty} shares ${closeSide}) @ $${fillResult.avgFillPrice.toFixed(2)} — P&L $${pnl.toFixed(2)}`);
+      } catch (err) {
+        log(`EOD sweep: ${trade.ticker} — close failed: ${err instanceof Error ? err.message : 'unknown'}`);
       }
-
-      // Cancel the original IB entry order first (SUBMITTED/PARTIAL trades that haven't filled).
-      // This is the root-cause fix for pre-market fills: without cancellation, IB holds the open
-      // entry order overnight and fills it the next morning. DAY tif should auto-expire, but
-      // explicit cancel is belt-and-suspenders in case IB extended-hours settings are active.
-      if (trade.status === 'SUBMITTED' || trade.status === 'PARTIAL') {
-        const orderId = trade.ib_order_id ? parseInt(trade.ib_order_id, 10) : NaN;
-        if (!Number.isNaN(orderId)) {
-          try {
-            cancelOrder(orderId);
-            log(`${trade.ticker}: EOD — cancelled open entry IB order #${orderId}`);
-          } catch (cancelErr) {
-            log(`${trade.ticker}: EOD — cancel IB order #${orderId} failed (${cancelErr instanceof Error ? cancelErr.message : 'unknown'}) — continuing`);
-          }
-        }
-        // SUBMITTED = entry never filled, so there is no position to close in IB.
-        // Mark CANCELLED (not CLOSED) so it doesn't pollute the P&L activity log
-        // with $0 entries. CANCELLED trades are excluded from win/loss calculations.
-        await updatePaperTrade(trade.id, {
-          status: 'CANCELLED',
-          close_reason: 'never_filled',
-          closed_at: new Date().toISOString(),
-        });
-        log(`${trade.ticker}: EOD cancelled (unfilled SUBMITTED order — no IB position to close)`);
-        continue;
-      }
-
-      let fillResult: { avgFillPrice: number } | null = null;
-      try {
-        fillResult = await placeMarketOrder({ symbol: trade.ticker, side: closeSide, quantity: qty });
-        log(`${trade.ticker}: EOD close filled (${qty} shares ${closeSide}) @ $${fillResult.avgFillPrice.toFixed(2)}`);
-      } catch (orderErr) {
-        log(`EOD sweep: ${trade.ticker} — IB order failed (${orderErr instanceof Error ? orderErr.message : 'unknown'}) — will retry on next sweep`);
-      }
-
-      if (!fillResult) {
-        // Don't mark CLOSED if IB rejected the order — the position is still open.
-        // Leave status unchanged so the 4:05 safety sweep or IBReconcile picks it up.
-        continue;
-      }
-
-      const entryFillPrice = trade.fill_price ?? trade.entry_price ?? 0;
-      const isLong = trade.signal === 'BUY';
-      const pnl = isLong
-        ? (fillResult.avgFillPrice - entryFillPrice) * qty
-        : (entryFillPrice - fillResult.avgFillPrice) * qty;
-      const costBasis = entryFillPrice * qty;
-      const pnlPct = costBasis > 0 ? (pnl / costBasis) * 100 : 0;
-
-      await updatePaperTrade(trade.id, {
-        status: 'CLOSED',
-        close_reason: 'eod_close',
-        close_price: fillResult.avgFillPrice,
-        pnl: parseFloat(pnl.toFixed(2)),
-        pnl_percent: parseFloat(pnlPct.toFixed(2)),
-        closed_at: new Date().toISOString(),
-      });
-      log(`${trade.ticker}: EOD closed (${qty} shares ${closeSide}) @ $${fillResult.avgFillPrice.toFixed(2)} — P&L $${pnl.toFixed(2)}`);
-    } catch (err) {
-      log(`EOD sweep: ${trade.ticker} — close failed: ${err instanceof Error ? err.message : 'unknown'}`);
     }
   }
 }
@@ -731,77 +724,82 @@ async function closeAllDayTrades(config: AutoTraderConfig): Promise<void> {
 // Winning trades with room to run are left for the trailing stop or bracket.
 
 async function softCloseDayTrades(positions: EnrichedPosition[]): Promise<void> {
-  const activeTrades = await getActiveTrades();
-  const dayTrades = activeTrades.filter(t => (t.mode === 'DAY_TRADE' || t.mode === 'DAY_PENNY') && ['FILLED', 'SUBMITTED', 'PARTIAL'].includes(t.status));
-  if (dayTrades.length === 0) return;
+  // Soft-close day trades on both paper and live accounts
+  for (const acctType of ['paper', 'live'] as AccountType[]) {
+    const conn = getConnectionForAccount(acctType);
+    if (!conn.isConnected()) continue;
 
-  log(`[SoftClose] Checking ${dayTrades.length} open day trade(s) before power hour`);
-  let closed = 0;
+    const activeTrades = await getActiveTrades(acctType);
+    const dayTrades = activeTrades.filter(t => (t.mode === 'DAY_TRADE' || t.mode === 'DAY_PENNY') && ['FILLED', 'SUBMITTED', 'PARTIAL'].includes(t.status));
+    if (dayTrades.length === 0) continue;
 
-  for (const trade of dayTrades) {
-    const ibPos = positions.find(p => p.symbol.toUpperCase() === trade.ticker.toUpperCase());
-    if (!ibPos || ibPos.mktPrice <= 0) continue;
+    log(`[SoftClose:${acctType}] Checking ${dayTrades.length} open day trade(s) before power hour`);
+    let closed = 0;
 
-    const fillPrice    = trade.fill_price ?? trade.entry_price ?? 0;
-    const targetPrice  = trade.target_price ?? 0;
-    const currentPrice = ibPos.mktPrice;
-    const isBuy        = trade.signal === 'BUY';
+    for (const trade of dayTrades) {
+      const ibPos = positions.find(p => p.symbol.toUpperCase() === trade.ticker.toUpperCase());
+      if (!ibPos || ibPos.mktPrice <= 0) continue;
 
-    const unrealizedPnl = isBuy
-      ? (currentPrice - fillPrice) * (trade.quantity ?? 0)
-      : (fillPrice - currentPrice) * (trade.quantity ?? 0);
+      const fillPrice    = trade.fill_price ?? trade.entry_price ?? 0;
+      const targetPrice  = trade.target_price ?? 0;
+      const currentPrice = ibPos.mktPrice;
+      const isBuy        = trade.signal === 'BUY';
 
-    // Determine whether near-target (75% of full gain achieved)
-    let nearTarget = false;
-    if (fillPrice > 0 && targetPrice > 0) {
-      const fullGain   = Math.abs(targetPrice - fillPrice);
-      const actualGain = Math.abs(currentPrice - fillPrice);
-      nearTarget = fullGain > 0 && actualGain / fullGain >= 0.75;
-    }
+      const unrealizedPnl = isBuy
+        ? (currentPrice - fillPrice) * (trade.quantity ?? 0)
+        : (fillPrice - currentPrice) * (trade.quantity ?? 0);
 
-    const shouldClose = unrealizedPnl < 0 || nearTarget;
-    const reason      = unrealizedPnl < 0 ? `losing (${unrealizedPnl.toFixed(0)})` : `near target (75%+)`;
-
-    if (!shouldClose) {
-      log(`${trade.ticker}: [SoftClose] skip — P&L ${unrealizedPnl.toFixed(0)}, not near target`);
-      continue;
-    }
-
-    const closeSide = isBuy ? 'SELL' : 'BUY';
-    const qty       = trade.quantity ?? 0;
-    if (qty <= 0) continue;
-
-    try {
-      let orderPlaced = false;
-      try {
-        await placeMarketOrder({ symbol: trade.ticker, side: closeSide, quantity: qty });
-        log(`${trade.ticker}: [SoftClose] close order placed at 3:45 PM — ${reason}`);
-        orderPlaced = true;
-      } catch (orderErr) {
-        log(`${trade.ticker}: [SoftClose] IB order failed (${orderErr instanceof Error ? orderErr.message : 'unknown'}) — will retry at 3:55 PM hard close`);
+      let nearTarget = false;
+      if (fillPrice > 0 && targetPrice > 0) {
+        const fullGain   = Math.abs(targetPrice - fillPrice);
+        const actualGain = Math.abs(currentPrice - fillPrice);
+        nearTarget = fullGain > 0 && actualGain / fullGain >= 0.75;
       }
 
-      if (!orderPlaced) continue;
+      const shouldClose = unrealizedPnl < 0 || nearTarget;
+      const reason      = unrealizedPnl < 0 ? `losing (${unrealizedPnl.toFixed(0)})` : `near target (75%+)`;
 
-      const pnl = unrealizedPnl;
-      const costBasis = fillPrice * (trade.quantity ?? 1);
-      const pnlPct = costBasis > 0 ? (pnl / costBasis) * 100 : 0;
+      if (!shouldClose) {
+        log(`${trade.ticker}: [SoftClose] skip — P&L ${unrealizedPnl.toFixed(0)}, not near target`);
+        continue;
+      }
 
-      await updatePaperTrade(trade.id, {
-        status:       'CLOSED',
-        close_reason: 'soft_eod_close',
-        close_price:  currentPrice,
-        pnl:          parseFloat(pnl.toFixed(2)),
-        pnl_percent:  parseFloat(pnlPct.toFixed(2)),
-        closed_at:    new Date().toISOString(),
-      });
-      log(`${trade.ticker}: [SoftClose] DB marked closed at 3:45 PM — ${reason} — P&L $${pnl.toFixed(2)}`);
-      closed++;
-    } catch (err) {
-      log(`${trade.ticker}: [SoftClose] close failed — ${err instanceof Error ? err.message : 'unknown'}`);
+      const closeSide = isBuy ? 'SELL' : 'BUY';
+      const qty       = trade.quantity ?? 0;
+      if (qty <= 0) continue;
+
+      try {
+        let orderPlaced = false;
+        try {
+          await conn.placeMarketOrder({ symbol: trade.ticker, side: closeSide, quantity: qty });
+          log(`${trade.ticker}: [SoftClose:${acctType}] close order placed at 3:45 PM — ${reason}`);
+          orderPlaced = true;
+        } catch (orderErr) {
+          log(`${trade.ticker}: [SoftClose] IB order failed (${orderErr instanceof Error ? orderErr.message : 'unknown'}) — will retry at 3:55 PM hard close`);
+        }
+
+        if (!orderPlaced) continue;
+
+        const pnl = unrealizedPnl;
+        const costBasis = fillPrice * (trade.quantity ?? 1);
+        const pnlPct = costBasis > 0 ? (pnl / costBasis) * 100 : 0;
+
+        await updatePaperTrade(trade.id, {
+          status:       'CLOSED',
+          close_reason: 'soft_eod_close',
+          close_price:  currentPrice,
+          pnl:          parseFloat(pnl.toFixed(2)),
+          pnl_percent:  parseFloat(pnlPct.toFixed(2)),
+          closed_at:    new Date().toISOString(),
+        }, acctType);
+        log(`${trade.ticker}: [SoftClose:${acctType}] DB marked closed at 3:45 PM — ${reason} — P&L $${pnl.toFixed(2)}`);
+        closed++;
+      } catch (err) {
+        log(`${trade.ticker}: [SoftClose] close failed — ${err instanceof Error ? err.message : 'unknown'}`);
+      }
     }
+    log(`[SoftClose:${acctType}] Done — ${closed} position(s) closed`);
   }
-  log(`[SoftClose] Done — ${closed} position(s) closed`);
 }
 
 // ── Stale Day-Trade Detector ───────────────────────────────────────────────────
@@ -2349,14 +2347,15 @@ async function persistEvent(
   ticker: string,
   eventType: string,
   message: string,
-  extra?: Omit<AutoTradeEventInput, 'ticker' | 'message'>
+  extra?: Omit<AutoTradeEventInput, 'ticker' | 'message'>,
+  accountType: AccountType = 'paper',
 ): Promise<void> {
   const safeType = (VALID_EVENT_TYPES.has(eventType as AutoTradeEventType) ? eventType : 'info') as AutoTradeEventType;
   const payload: AutoTradeEventInput = { ticker, event_type: safeType, message, ...extra };
   const delays = [1000, 2000];
   for (let attempt = 0; attempt <= delays.length; attempt++) {
     try {
-      await createAutoTradeEvent(payload);
+      await createAutoTradeEvent(payload, accountType);
       return;
     } catch (err) {
       const label = `${ticker}/${eventType}`;
@@ -3299,10 +3298,27 @@ async function executeScannerTrade(
     log(`${ticker}: order validation OK — ${orderCheck.reason}`);
   }
 
-  // Verify IB connection is live before attempting order placement.
-  // We skip reqContractDetails for STK orders — it can fail transiently (empty
-  // results with SMART routing) while placeOrder handles contract resolution itself.
-  if (!isConnected()) return 'failed:no_contract';
+  // Resolve connection via mode router (paper or live based on config.modeRouting)
+  let connection: IBConnection;
+  let accountType: AccountType;
+  try {
+    const routed = getConnectionForMode(mode, config);
+    connection = routed.connection;
+    accountType = routed.accountType;
+  } catch (routeErr) {
+    log(`${ticker}: routing failed — ${routeErr instanceof Error ? routeErr.message : 'unknown'}`);
+    return 'failed:routing';
+  }
+
+  if (!connection.isConnected()) return 'failed:no_contract';
+
+  // Live safety: assert daily loss limit not breached
+  if (accountType === 'live') {
+    try { await assertLiveLossLimitNotBreached(config); } catch (limitErr) {
+      log(`${ticker}: ${limitErr instanceof Error ? limitErr.message : 'live loss limit breached'}`);
+      return 'failed:live_loss_limit';
+    }
+  }
 
   // SWING only: skip if price too far from entry (entry precision matters)
   if (mode === 'SWING_TRADE' && entryPrice > 0) {
@@ -3318,7 +3334,7 @@ async function executeScannerTrade(
   }
 
   try {
-    const result = await placeBracketOrder({
+    const result = await connection.placeBracketOrder({
       symbol: ticker,
       side: signal,
       quantity: sizing.quantity,
@@ -3350,10 +3366,10 @@ async function executeScannerTrade(
       pass1_confidence: idea.pass1_confidence,
       entry_trigger_type: 'bracket_limit',
       market_condition: idea.market_condition,
-    });
+    }, accountType);
 
     recordPendingOrder(sizing.dollarSize);
-    log(`${ticker}: ORDER PLACED — ${signal} ${sizing.quantity} @ $${entryPrice}`);
+    log(`${ticker}: ORDER PLACED [${accountType}] — ${signal} ${sizing.quantity} @ $${entryPrice}`);
     if (mode === 'SWING_TRADE') {
       upsertSwingMetrics({ date: getETDateString(), swing_orders_placed: 1 }).catch(() => {});
     }
@@ -3362,7 +3378,7 @@ async function executeScannerTrade(
       scanner_signal: signal, scanner_confidence: Math.round(effectiveScannerConf),
       fa_recommendation: faRec, fa_confidence: faConf != null ? Math.round(faConf) : null,
       ...(candlePatternLog.length > 0 && { metadata: { candle_patterns: candlePatternLog } }),
-    });
+    }, accountType);
     return 'executed';
   } catch (err) {
     log(`${ticker}: Order FAILED — ${err instanceof Error ? err.message : 'unknown'}`);
@@ -3419,23 +3435,29 @@ async function _executeSuggestedFindTradeInner(
   // where that check runs at the boundary (e.g. slow event loop crossing the 9:30 threshold).
   if (!isMarketHoursET()) return 'skipped:outside-market-hours';
 
-  if (await hasActiveTrade(ticker, { excludeOptions: true })) return 'skipped:duplicate';
+  // Resolve account routing for LONG_TERM mode
+  let connection: IBConnection;
+  let accountType: AccountType;
+  try {
+    const routed = getConnectionForMode('LONG_TERM', config);
+    connection = routed.connection;
+    accountType = routed.accountType;
+  } catch (routeErr) {
+    log(`${ticker}: LONG_TERM route error — ${routeErr instanceof Error ? routeErr.message : routeErr}`);
+    return 'failed:route_error';
+  }
 
-  // ── Recent-loss cooldown gate ─────────────────────────────────────────
-  // LONG_TERM trades use a 21-day lookback.
+  if (await hasActiveTrade(ticker, { excludeOptions: true, accountType })) return 'skipped:duplicate';
+
   if (await hasRecentLoss(ticker, 21, { excludeOptions: true })) {
     log(`${ticker}: LONG_TERM skipped — recent loss within 21d cooldown`);
     persistEvent(ticker, 'skipped', `LONG_TERM re-entry blocked — ticker had a loss within 21 days`, {
       action: 'skipped', source: 'suggested_finds', mode: 'LONG_TERM',
       skip_reason: 'recent_loss_cooldown',
-    });
+    }, accountType);
     return 'skipped:recent_loss_cooldown';
   }
 
-  // ── Repeated stop-out gate ────────────────────────────────────────────
-  // If a ticker has been loss-cut 3+ times in the last 90 days, the thesis
-  // is broken regardless of the current conviction score. Block re-entry
-  // indefinitely until the window clears. Prevents POOL/AOS-style churn.
   {
     const stopOuts = await countRecentStopOuts(ticker, 90, { excludeOptions: true });
     if (stopOuts >= 3) {
@@ -3443,19 +3465,16 @@ async function _executeSuggestedFindTradeInner(
       persistEvent(ticker, 'skipped', `LONG_TERM re-entry blocked — ${stopOuts} stop-outs in 90d`, {
         action: 'skipped', source: 'suggested_finds', mode: 'LONG_TERM',
         skip_reason: 'repeated_stop_out',
-      });
+      }, accountType);
       return 'skipped:repeated_stop_out';
     }
   }
 
-  // Same-day guard: block a second entry for the same ticker on the same ET calendar day.
-  // Protects against TEN-style duplicate orders that slip through hasActiveTrade due to
-  // a narrow race between two scheduler cycles.
   {
     const todayEt = getETDateString();
     const sb = getSupabase();
     const { data: todayTrades } = await sb
-      .from('paper_trades')
+      .from(tradesTable(accountType))
       .select('id')
       .eq('ticker', ticker)
       .eq('mode', 'LONG_TERM')
@@ -3569,10 +3588,17 @@ async function _executeSuggestedFindTradeInner(
     return 'skipped:pre_trade_check';
   }
 
-  if (!isConnected()) return 'failed:no_contract';
+  if (!connection.isConnected()) return 'failed:no_contract';
+
+  if (accountType === 'live') {
+    try { await assertLiveLossLimitNotBreached(config); } catch (limitErr) {
+      log(`${ticker}: LONG_TERM live loss limit hit — ${limitErr instanceof Error ? limitErr.message : limitErr}`);
+      return 'failed:live_loss_limit';
+    }
+  }
 
   try {
-    const result = await placeMarketOrder({
+    const result = await connection.placeMarketOrder({
       symbol: ticker, side: 'BUY', quantity: sizing.quantity,
     });
 
@@ -3598,13 +3624,13 @@ async function _executeSuggestedFindTradeInner(
         stock.tag === 'Dip Discovery' && stock.sector ? `Sector: ${stock.sector}` : null,
       ].filter(Boolean).join(' | '),
       entry_trigger_type: 'market',
-    });
+    }, accountType);
 
     recordPendingOrder(sizing.dollarSize);
-    log(`${ticker}: SUGGESTED FIND BUY — ${sizing.quantity} shares @ ~$${currentPrice.toFixed(2)}`);
+    log(`${ticker}: SUGGESTED FIND BUY [${accountType}] — ${sizing.quantity} shares @ ~$${currentPrice.toFixed(2)}`);
     persistEvent(ticker, 'success', `Suggested Find BUY: ${sizing.quantity} shares @ $${currentPrice.toFixed(2)}`, {
       action: 'executed', source: 'suggested_finds', mode: 'LONG_TERM',
-    });
+    }, accountType);
     return 'executed';
   } catch (err) {
     log(`${ticker}: Suggested Find order FAILED — ${err instanceof Error ? err.message : 'unknown'}`);
@@ -3643,7 +3669,19 @@ async function executeExternalStrategySignal(
 ): Promise<'executed' | 'skipped' | 'failed' | 'waiting'> {
   const ticker = signal.ticker.toUpperCase();
 
-  // ── Daily max-loss gate ───────────────────────────────────────────────
+  // Resolve account routing
+  let extConnection: IBConnection;
+  let extAccountType: AccountType;
+  try {
+    const routed = getConnectionForMode(signal.mode, config);
+    extConnection = routed.connection;
+    extAccountType = routed.accountType;
+  } catch (routeErr) {
+    log(`${ticker}: external signal route error — ${routeErr instanceof Error ? routeErr.message : routeErr}`);
+    await updateExternalStrategySignal(signal.id, { status: 'FAILED', failure_reason: `Route error: ${routeErr instanceof Error ? routeErr.message : routeErr}` });
+    return 'failed';
+  }
+
   if (signal.mode === 'DAY_TRADE' && await isDayTradeLossGateActive(config)) {
     log(`${ticker}: external signal skipped — daily loss gate active`);
     return 'skipped';
@@ -3712,14 +3750,10 @@ async function executeExternalStrategySignal(
   // expert's specific level. Only block if the SAME video already has an active trade open.
   if (!skipConfirmationGates) {
     if (allowDuplicateTicker || isGenericAutoSignal || signal.strategy_video_id != null) {
-      const activeTrades = await getActiveTrades();
+      const activeTrades = await getActiveTrades(extAccountType);
       const sameTickerTrades = activeTrades.filter(
         trade => trade.ticker.toUpperCase() === ticker
       );
-      // True duplicate: same strategy video already has an active trade in the same
-      // mode + direction for this ticker (e.g. allocation split already executed).
-      // Different direction (BUY vs SELL) or non-influencer (scanner) trades are NOT
-      // conflicts — a day trader can hold both a long and a short simultaneously.
       const hasConflict = sameTickerTrades.some(trade =>
         trade.mode === signal.mode &&
         trade.signal === signal.signal &&
@@ -3733,6 +3767,7 @@ async function executeExternalStrategySignal(
       ...(signal.mode !== 'LONG_TERM' ? { excludeMode: 'LONG_TERM' as const } : {}),
       signal: signal.signal,
       excludeOptions: true,
+      accountType: extAccountType,
     })) {
       return skipExternalSignal('Duplicate active trade for ticker', 'duplicate_active_trade');
     }
@@ -3945,12 +3980,19 @@ async function executeExternalStrategySignal(
     return 'skipped';
   }
 
-  if (!isConnected()) {
+  if (!extConnection.isConnected()) {
     await updateExternalStrategySignal(signal.id, {
       status: 'FAILED',
       failure_reason: 'IB Gateway not connected',
     });
     return 'failed';
+  }
+
+  if (extAccountType === 'live') {
+    try { await assertLiveLossLimitNotBreached(config); } catch (limitErr) {
+      await updateExternalStrategySignal(signal.id, { status: 'FAILED', failure_reason: `Live loss limit: ${limitErr instanceof Error ? limitErr.message : limitErr}` });
+      return 'failed';
+    }
   }
 
   const hasBracketLevels = (
@@ -3959,7 +4001,6 @@ async function executeExternalStrategySignal(
     effectiveTargetPrice != null
   );
 
-  // SWING only: skip bracket limit if price too far from entry (bypassed for manual execute)
   if (
     !skipConfirmationGates &&
     signal.mode === 'SWING_TRADE' &&
@@ -3979,7 +4020,6 @@ async function executeExternalStrategySignal(
     }
   }
 
-  // ── Pure order sanity check (synchronous, no DB) ─────────────────────
   {
     const deployed = await getTotalDeployed(positions);
     const orderCheck = validateOrder({
@@ -4011,7 +4051,7 @@ async function executeExternalStrategySignal(
     let ibTpOrderId: string | undefined;
     let ibSlOrderId: string | undefined;
     if (hasBracketLevels) {
-      const result = await placeBracketOrder({
+      const result = await extConnection.placeBracketOrder({
         symbol: ticker,
         side,
         quantity: sizing.quantity,
@@ -4027,7 +4067,7 @@ async function executeExternalStrategySignal(
         upsertSwingMetrics({ date: getETDateString(), swing_orders_placed: 1 }).catch(() => {});
       }
     } else {
-      const result = await placeMarketOrder({
+      const result = await extConnection.placeMarketOrder({
         symbol: ticker,
         side,
         quantity: sizing.quantity,
@@ -4035,8 +4075,6 @@ async function executeExternalStrategySignal(
       ibOrderId = String(result.orderId);
     }
 
-    // Derive market_condition from SPY change for the Trade Validation tab.
-    // spyChangePct is already fetched above for both gate-checked and influencer signals.
     const marketCondition: 'trend' | 'chop' | undefined =
       spyChangePct == null ? undefined
       : Math.abs(spyChangePct) >= 0.5 ? 'trend'
@@ -4066,7 +4104,7 @@ async function executeExternalStrategySignal(
       scanner_reason: `External strategy signal from ${signal.source_name}`,
       notes: signal.notes ? `External signal${splitLabel} | ${signal.notes}` : `External signal${splitLabel}`,
       market_condition: marketCondition,
-    });
+    }, extAccountType);
 
     recordPendingOrder(sizing.dollarSize);
     await updateExternalStrategySignal(signal.id, {
@@ -4076,7 +4114,7 @@ async function executeExternalStrategySignal(
       failure_reason: null,
     });
 
-    persistEvent(ticker, 'success', `External signal executed: ${side} ${sizing.quantity} @ $${entryForRecord.toFixed(2)}`, {
+    persistEvent(ticker, 'success', `External signal executed [${extAccountType}]: ${side} ${sizing.quantity} @ $${entryForRecord.toFixed(2)}`, {
       action: 'executed',
       source: resolvedSource,
       mode: signal.mode,
@@ -4094,7 +4132,7 @@ async function executeExternalStrategySignal(
         spy_change_pct: spyChangePct,
         also_in_scanner: alsoInScanner,
       },
-    });
+    }, extAccountType);
     return 'executed';
   } catch (err) {
     const message = err instanceof Error ? err.message : 'unknown';
@@ -4113,7 +4151,7 @@ async function executeExternalStrategySignal(
       scanner_signal: signal.signal,
       scanner_confidence: signal.confidence,
       metadata: { external_signal_id: signal.id },
-    });
+    }, extAccountType);
     return 'failed';
   }
 }
@@ -4295,7 +4333,20 @@ async function syncPositions(
   config: AutoTraderConfig,
   positions: EnrichedPosition[],
 ): Promise<void> {
-  const activeTrades = await getActiveTrades();
+  // Sync positions on both paper and live accounts
+  for (const syncAcct of ['paper', 'live'] as AccountType[]) {
+    const syncConn = getConnectionForAccount(syncAcct);
+    if (!syncConn.isConnected()) continue;
+    await _syncPositionsForAccount(config, positions, syncAcct);
+  }
+}
+
+async function _syncPositionsForAccount(
+  config: AutoTraderConfig,
+  positions: EnrichedPosition[],
+  syncAcct: AccountType,
+): Promise<void> {
+  const activeTrades = await getActiveTrades(syncAcct);
 
   for (const trade of activeTrades) {
     // Options positions are managed exclusively by options-manager — never touch them here.
@@ -4308,7 +4359,7 @@ async function syncPositions(
     if (ibPos && ibPos.position !== 0) {
       // Position exists — clear missing_since if it was set (position reappeared)
       if (trade.missing_since) {
-        await updatePaperTrade(trade.id, { missing_since: null });
+        await updatePaperTrade(trade.id, { missing_since: null }, syncAcct);
         log(`${trade.ticker}: Position reappeared — cleared missing_since`);
       }
       if (trade.status === 'SUBMITTED' || trade.status === 'PENDING') {
@@ -4350,7 +4401,7 @@ async function syncPositions(
             log(`${trade.ticker}: Entry log failed — ${err instanceof Error ? err.message : 'unknown'}`);
           }
         }
-        await updatePaperTrade(trade.id, updates);
+        await updatePaperTrade(trade.id, updates, syncAcct);
         log(`${trade.ticker}: Filled @ $${fillPrice.toFixed(2)}`);
       }
 
@@ -4372,7 +4423,7 @@ async function syncPositions(
         await updatePaperTrade(trade.id, {
           pnl: parseFloat(unrealizedPnl.toFixed(2)),
           pnl_percent: parseFloat(((unrealizedPnl / costBasis) * 100).toFixed(2)),
-        });
+        }, syncAcct);
       }
     } else if (trade.status === 'FILLED') {
       // Position gone — closed by bracket TP/SL or manual action.
@@ -4392,7 +4443,7 @@ async function syncPositions(
 
       if (!hasConfirmedFill && !trade.missing_since) {
         // First detection — mark as missing, don't close yet
-        await updatePaperTrade(trade.id, { missing_since: new Date().toISOString() });
+        await updatePaperTrade(trade.id, { missing_since: new Date().toISOString() }, syncAcct);
         log(`${trade.ticker}: Position missing — marking missing_since (will confirm in ~30 min)`);
         continue;
       }
@@ -4452,8 +4503,8 @@ async function syncPositions(
         pnl_percent: pnlPct,
         r_multiple: rMultiple,
         missing_since: null,
-      });
-      log(`${trade.ticker}: Closed (${closeReason}) — P&L $${pnl.toFixed(2)}${hasConfirmedFill ? '' : ' [fallback price]'}`);
+      }, syncAcct);
+      log(`${trade.ticker}: Closed [${syncAcct}] (${closeReason}) — P&L $${pnl.toFixed(2)}${hasConfirmedFill ? '' : ' [fallback price]'}`);
       const closedTrade = {
         ...trade,
         status,
@@ -4479,7 +4530,7 @@ async function syncPositions(
       logClosedTradePerformance(closedTrade as import('./lib/supabase.js').PaperTrade, {
         source: 'scheduler',
         trigger: hasConfirmedFill ? 'IB_FILL_CONFIRMED' : 'IB_POSITION_GONE_FALLBACK',
-      }).catch(err => log(`Trade perf log failed for ${trade.ticker}: ${err instanceof Error ? err.message : 'unknown'}`));
+      }, syncAcct).catch(err => log(`Trade perf log failed for ${trade.ticker}: ${err instanceof Error ? err.message : 'unknown'}`));
     } else if (trade.status === 'SUBMITTED') {
       // ── Fill detection for SUBMITTED orders ───────────────────────────────
       // Market/limit orders (no bracket) don't get monitored via TP/SL fill lookup.
@@ -4504,11 +4555,9 @@ async function syncPositions(
               status: 'FILLED',
               fill_price: fillPrice,
               filled_at: new Date().toISOString(),
-            });
+            }, syncAcct);
             log(`${trade.ticker}: SUBMITTED → FILLED (fill detected in ib_fills: orderId=${orderId} @ $${fillPrice})`);
 
-            // For plain SELL orders (closing a long with no further management),
-            // immediately close the trade — there's no open position to monitor.
             if (isSell) {
               const originalFillPrice = trade.fill_price ?? trade.entry_price ?? fillPrice;
               const pnl = (fillPrice - originalFillPrice) * qty;
@@ -4523,7 +4572,7 @@ async function syncPositions(
                 pnl: parseFloat(pnl.toFixed(2)),
                 pnl_percent: originalFillPrice > 0 ? parseFloat(((pnl / (originalFillPrice * qty)) * 100).toFixed(2)) : null,
                 closed_at: closedAt,
-              });
+              }, syncAcct);
               log(`${trade.ticker}: SELL closed immediately — fill @ $${fillPrice}, P&L $${pnl.toFixed(2)}`);
               continue;
             }
@@ -4545,10 +4594,11 @@ async function syncPositions(
           status: 'CLOSED', close_reason: 'manual',
           closed_at: closedAt,
           notes: (trade.notes ?? '') + ' | Expired: DAY order not filled by market close',
-        });
+        }, syncAcct);
         logClosedTradePerformance(
           { ...trade, status: 'CLOSED', close_reason: 'manual', closed_at: closedAt } as import('./lib/supabase.js').PaperTrade,
-          { source: 'scheduler', trigger: 'EXPIRED_DAY_ORDER' }
+          { source: 'scheduler', trigger: 'EXPIRED_DAY_ORDER' },
+          syncAcct,
         ).catch(() => {});
         log(`${trade.ticker}: Day trade expired (market closed)`);
       }
@@ -4562,7 +4612,7 @@ async function syncPositions(
         const orderId = trade.ib_order_id ? parseInt(trade.ib_order_id, 10) : NaN;
         if (!Number.isNaN(orderId)) {
           try {
-            cancelOrder(orderId);
+            getConnectionForAccount(syncAcct).cancelOrder(orderId);
             log(`${trade.ticker}: Swing bracket limit cancelled (expired >2 trading days)`);
           } catch (err) {
             log(`${trade.ticker}: Cancel failed — ${err instanceof Error ? err.message : 'unknown'}`);
@@ -4574,10 +4624,11 @@ async function syncPositions(
           status: 'CLOSED', close_reason: 'manual',
           closed_at: closedAt,
           notes: (trade.notes ?? '') + ' | Expired: SWING limit not filled within 2 trading days',
-        });
+        }, syncAcct);
         logClosedTradePerformance(
           { ...trade, status: 'CLOSED', close_reason: 'manual', closed_at: closedAt } as import('./lib/supabase.js').PaperTrade,
-          { source: 'scheduler', trigger: 'EXPIRED_SWING_BRACKET' }
+          { source: 'scheduler', trigger: 'EXPIRED_SWING_BRACKET' },
+          syncAcct,
         ).catch(() => {});
       }
     }
@@ -4769,11 +4820,18 @@ async function checkDipBuyOpportunities(
   positions: EnrichedPosition[],
 ): Promise<void> {
   if (!config.dipBuyEnabled || !config.accountId) return;
-  const activeTrades = await getActiveTrades();
+  // Resolve LONG_TERM routing for dip buys
+  let dipConn: IBConnection;
+  let dipAcct: AccountType;
+  try {
+    const routed = getConnectionForMode('LONG_TERM', config);
+    dipConn = routed.connection;
+    dipAcct = routed.accountType;
+  } catch { return; }
+
+  const activeTrades = await getActiveTrades(dipAcct);
   const longTermFilled = activeTrades.filter(t => t.mode === 'LONG_TERM' && t.status === 'FILLED');
 
-  // Build primary (non-dip-buy) entry map and cross-channel entry count per ticker.
-  // The entry count includes ALL open LONG_TERM positions (SC + dip buys) for the ticker.
   const initialByTicker = new Map<string, { trade: PaperTrade; isGoldMine: boolean }>();
   const openEntriesByTicker = new Map<string, number>();
   for (const t of longTermFilled) {
@@ -4856,9 +4914,13 @@ async function checkDipBuyOpportunities(
     if (!(await checkAllocationCap(config, addOnDollar, ticker, positions, 'LONG_TERM'))) continue;
 
     try {
-      if (!isConnected()) continue;
+      if (!dipConn.isConnected()) continue;
 
-      const result = await placeMarketOrder({
+      if (dipAcct === 'live') {
+        try { await assertLiveLossLimitNotBreached(config); } catch { continue; }
+      }
+
+      const result = await dipConn.placeMarketOrder({
         symbol: ticker, side: 'BUY', quantity: addOnQty,
       });
 
@@ -4873,14 +4935,14 @@ async function checkDipBuyOpportunities(
         status: 'SUBMITTED',
         notes: `Dip buy ${triggered.label} at -${absDip.toFixed(1)}%`,
         entry_trigger_type: 'dip_buy',
-      });
+      }, dipAcct);
 
       recordPendingOrder(addOnDollar);
-      log(`${ticker}: DIP BUY ${triggered.label} — +${addOnQty} shares at -${absDip.toFixed(1)}%`);
+      log(`${ticker}: DIP BUY ${triggered.label} [${dipAcct}] — +${addOnQty} shares at -${absDip.toFixed(1)}%`);
       persistEvent(ticker, 'success', `Dip buy ${triggered.label}: +${addOnQty} shares`, {
         action: 'executed', source: 'dip_buy', mode: 'LONG_TERM',
         metadata: { tier: triggered.label, dipPct: absDip, addOnQty, addOnDollar },
-      });
+      }, dipAcct);
     } catch (err) {
       log(`${ticker}: Dip buy failed — ${err instanceof Error ? err.message : 'unknown'}`);
     }
@@ -4901,7 +4963,15 @@ async function checkSwingHoldExpiry(
   const maxDays = config.swingMaxHoldDays ?? 5;
   if (maxDays <= 0 || !config.accountId) return;
 
-  const activeTrades = await getActiveTrades();
+  let swingConn: IBConnection;
+  let swingAcct: AccountType;
+  try {
+    const routed = getConnectionForMode('SWING_TRADE', config);
+    swingConn = routed.connection;
+    swingAcct = routed.accountType;
+  } catch { return; }
+
+  const activeTrades = await getActiveTrades(swingAcct);
   const stale = activeTrades.filter(t =>
     t.mode === 'SWING_TRADE' &&
     t.status === 'FILLED' &&
@@ -4921,7 +4991,7 @@ async function checkSwingHoldExpiry(
       : '?';
 
     try {
-      await placeMarketOrder({ symbol: trade.ticker, side, quantity: qty });
+      await swingConn.placeMarketOrder({ symbol: trade.ticker, side, quantity: qty });
       await createPaperTrade({
         ticker: trade.ticker, mode: 'SWING_TRADE', signal: side,
         entry_price: ibPos.mktPrice,
@@ -4930,13 +5000,14 @@ async function checkSwingHoldExpiry(
         status: 'SUBMITTED',
         notes: `Auto-exit: swing held ${daysHeld} days (max ${maxDays}) — P&L ${gainPct}%`,
         entry_trigger_type: 'swing_expiry',
-      });
+      }, swingAcct);
 
-      log(`${trade.ticker}: SWING EXPIRY — held ${daysHeld} days, closing ${qty} shares at ${gainPct}% P&L`);
+      log(`${trade.ticker}: SWING EXPIRY [${swingAcct}] — held ${daysHeld} days, closing ${qty} shares at ${gainPct}% P&L`);
       persistEvent(trade.ticker, 'success',
-        `⏱️ ${trade.ticker} swing auto-closed after ${daysHeld} days (max ${maxDays}d) — P&L ${gainPct}% — capital freed`,
+        `${trade.ticker} swing auto-closed after ${daysHeld} days (max ${maxDays}d) — P&L ${gainPct}% — capital freed`,
         { action: 'executed', source: 'swing_expiry', mode: 'SWING_TRADE',
-          metadata: { daysHeld, maxDays, gainPct, qty } }
+          metadata: { daysHeld, maxDays, gainPct, qty } },
+        swingAcct,
       );
     } catch (err) {
       log(`${trade.ticker}: Swing expiry close failed — ${err instanceof Error ? err.message : 'unknown'}`);
@@ -5008,7 +5079,6 @@ async function checkLongTermAutoSell(
   positions: EnrichedPosition[],
   skipTickers?: Set<string>,
 ): Promise<void> {
-  // Compounder fallback rules (unchanged from original)
   const compounderProfitTakePct = config.ltProfitTakePct ?? 15;
   const compounderMaxHoldDays   = config.ltMaxHoldDays ?? 0;
   const compounderTrailingStop  = config.ltTrailingStopPct ?? 10;
@@ -5016,7 +5086,15 @@ async function checkLongTermAutoSell(
 
   if (!config.accountId) return;
 
-  const activeTrades = await getActiveTrades();
+  let ltConn: IBConnection;
+  let ltAcct: AccountType;
+  try {
+    const routed = getConnectionForMode('LONG_TERM', config);
+    ltConn = routed.connection;
+    ltAcct = routed.accountType;
+  } catch { return; }
+
+  const activeTrades = await getActiveTrades(ltAcct);
   // Only BUY records are actual open positions. SELL records (profit-take trims)
   // must be excluded — they are completed actions, not positions to close.
   // Also deduplicate by ticker to prevent multiple sells against the same IB position.
@@ -5049,7 +5127,7 @@ async function checkLongTermAutoSell(
     // Track price peak across cycles
     const storedPeak = trade.price_peak ?? 0;
     if (currentPrice > storedPeak || !trade.price_peak_date) {
-      await updatePaperTrade(trade.id, { price_peak: currentPrice, price_peak_date: today });
+      await updatePaperTrade(trade.id, { price_peak: currentPrice, price_peak_date: today }, ltAcct);
     }
     const effectivePeak = Math.max(storedPeak, currentPrice);
     // Was this position ever meaningfully above entry (>0.1% buffer for noise)?
@@ -5156,7 +5234,7 @@ async function checkLongTermAutoSell(
     processedTickers.add(tickerUpper);
 
     try {
-      const { avgFillPrice } = await placeMarketOrder({ symbol: trade.ticker, side, quantity: qty });
+      const { avgFillPrice } = await ltConn.placeMarketOrder({ symbol: trade.ticker, side, quantity: qty });
       const fillPnl = ibPos.position > 0
         ? (avgFillPrice - ibPos.avgCost) * qty
         : (ibPos.avgCost - avgFillPrice) * qty;
@@ -5170,9 +5248,8 @@ async function checkLongTermAutoSell(
         pnl_percent: fillPnlPct,
         close_reason: reason,
         closed_at: new Date().toISOString(),
-      });
+      }, ltAcct);
 
-      const emoji = fillPnlPct >= 0 ? '✅' : '🛑';
       const label = reason.startsWith('dd_profit_take') ? 'Dip Discovery profit-take'
         : reason.startsWith('dd_stop_loss')    ? 'Dip Discovery stop-loss'
         : reason.startsWith('dd_max_hold')     ? 'Dip Discovery max-hold exit'
@@ -5185,11 +5262,12 @@ async function checkLongTermAutoSell(
         : reason.startsWith('trailing_stop')   ? 'trailing stop'
         : reason.startsWith('stop_loss')       ? 'stop-loss'
         : 'max-hold exit';
-      log(`${trade.ticker}: LT AUTO-SELL (${label}) — ${fillPnlPct.toFixed(1)}% P&L, fill $${avgFillPrice.toFixed(2)}, peak $${effectivePeak.toFixed(2)}, held ${daysHeld.toFixed(0)}d`);
+      log(`${trade.ticker}: LT AUTO-SELL [${ltAcct}] (${label}) — ${fillPnlPct.toFixed(1)}% P&L, fill $${avgFillPrice.toFixed(2)}, peak $${effectivePeak.toFixed(2)}, held ${daysHeld.toFixed(0)}d`);
       persistEvent(trade.ticker, 'success',
-        `${emoji} ${trade.ticker} long-term auto-closed (${label}) — ${fillPnlPct.toFixed(1)}% P&L @ $${avgFillPrice.toFixed(2)} — capital freed`,
+        `${trade.ticker} long-term auto-closed (${label}) — ${fillPnlPct.toFixed(1)}% P&L @ $${avgFillPrice.toFixed(2)} — capital freed`,
         { action: 'closed', source: 'lt_auto_sell', mode: 'LONG_TERM',
-          metadata: { reason, gainPct: fillPnlPct, daysHeld, qty, effectivePeak, entryPrice, avgFillPrice } }
+          metadata: { reason, gainPct: fillPnlPct, daysHeld, qty, effectivePeak, entryPrice, avgFillPrice } },
+        ltAcct,
       );
     } catch (err) {
       log(`${trade.ticker}: Long-term auto-sell failed — ${err instanceof Error ? err.message : 'unknown'}`);
@@ -5265,7 +5343,16 @@ async function checkProfitTakeOpportunities(
 ): Promise<Set<string>> {
   const trimmedTickers = new Set<string>();
   if (!config.profitTakeEnabled || !config.accountId) return trimmedTickers;
-  const activeTrades = await getActiveTrades();
+
+  let ptConn: IBConnection;
+  let ptAcct: AccountType;
+  try {
+    const routed = getConnectionForMode('LONG_TERM', config);
+    ptConn = routed.connection;
+    ptAcct = routed.accountType;
+  } catch { return trimmedTickers; }
+
+  const activeTrades = await getActiveTrades(ptAcct);
   const longTermFilled = activeTrades.filter(t => t.mode === 'LONG_TERM' && t.status === 'FILLED');
 
   const tiers = [
@@ -5284,7 +5371,6 @@ async function checkProfitTakeOpportunities(
     const triggered = tiers.find(t => gainPct >= t.pct);
     if (!triggered) continue;
 
-    // Check if already trimmed at this tier
     const pastEvents = await getPastTrimEvents(trade.ticker);
     if (pastEvents.some(e => e.metadata?.tier === triggered.label)) continue;
 
@@ -5296,9 +5382,9 @@ async function checkProfitTakeOpportunities(
     if (actualTrimQty < 1) continue;
 
     try {
-      if (!isConnected()) continue;
+      if (!ptConn.isConnected()) continue;
 
-      const { orderId, avgFillPrice } = await placeMarketOrder({
+      const { orderId, avgFillPrice } = await ptConn.placeMarketOrder({
         symbol: trade.ticker, side: 'SELL', quantity: actualTrimQty,
       });
 
@@ -5317,14 +5403,14 @@ async function checkProfitTakeOpportunities(
         closed_at: new Date().toISOString(),
         notes: `Profit take ${triggered.label} at +${gainPct.toFixed(1)}%`,
         entry_trigger_type: 'profit_take',
-      });
+      }, ptAcct);
 
       trimmedTickers.add(trade.ticker.toUpperCase());
-      log(`${trade.ticker}: PROFIT TAKE ${triggered.label} — sold ${actualTrimQty} shares @ $${avgFillPrice.toFixed(2)}, +${gainPct.toFixed(1)}% ($${realizedPnl.toFixed(2)})`);
+      log(`${trade.ticker}: PROFIT TAKE ${triggered.label} [${ptAcct}] — sold ${actualTrimQty} shares @ $${avgFillPrice.toFixed(2)}, +${gainPct.toFixed(1)}% ($${realizedPnl.toFixed(2)})`);
       persistEvent(trade.ticker, 'success', `Profit take ${triggered.label}: sold ${actualTrimQty} shares @ $${avgFillPrice.toFixed(2)}`, {
         action: 'executed', source: 'profit_take', mode: 'LONG_TERM',
         metadata: { tier: triggered.label, gainPct, trimQty: actualTrimQty, realizedPnl, fillPrice: avgFillPrice, orderId },
-      });
+      }, ptAcct);
     } catch (err) {
       log(`${trade.ticker}: Profit take failed — ${err instanceof Error ? err.message : 'unknown'}`);
     }
@@ -5350,87 +5436,90 @@ const TRAIL_ACTIVATION_R  = 0.5;  // activate at +0.5R (was 1.0 — only 5/430 t
 const TRAIL_RETRACE_PCT   = 0.60; // close if 60% of peak gain retraces (was 0.50)
 
 async function checkDayTradeTrailingStops(
+  config: AutoTraderConfig,
   positions: EnrichedPosition[],
 ): Promise<void> {
-  const activeTrades = await getActiveTrades();
-  const dayTrades = activeTrades.filter(
-    t => (t.mode === 'DAY_TRADE' || t.mode === 'DAY_PENNY') && (t.status === 'FILLED' || t.status === 'PARTIAL'),
-  );
-  if (dayTrades.length === 0) return;
+  // Day trades may be on different accounts based on mode routing
+  for (const acctType of ['paper', 'live'] as AccountType[]) {
+    const conn = getConnectionForAccount(acctType);
+    if (!conn.isConnected()) continue;
 
-  for (const trade of dayTrades) {
-    const ibPos = positions.find(p => p.symbol.toUpperCase() === trade.ticker.toUpperCase());
-    if (!ibPos || ibPos.mktPrice <= 0) continue;
-
-    const fillPrice  = trade.fill_price ?? trade.entry_price ?? 0;
-    const stopPrice  = trade.stop_loss ?? 0;
-    if (!fillPrice || !stopPrice) continue;
-
-    const risk = Math.abs(fillPrice - stopPrice);
-    if (risk <= 0) continue;
-
-    const currentPrice = ibPos.mktPrice;
-    const isBuy = trade.signal === 'BUY';
-
-    // Gain in multiples of initial risk (positive = in profit)
-    const gainInR = isBuy
-      ? (currentPrice - fillPrice) / risk
-      : (fillPrice - currentPrice) / risk;
-
-    if (gainInR < TRAIL_ACTIVATION_R) continue; // not yet in profit enough to trail
-
-    // Track peak price (persist to DB when it moves)
-    const storedPeak = trade.price_peak ?? 0;
-    const newPeak = isBuy
-      ? Math.max(storedPeak, currentPrice)
-      : (storedPeak <= 0 ? currentPrice : Math.min(storedPeak, currentPrice));
-
-    if (newPeak !== storedPeak) {
-      await updatePaperTrade(trade.id, { price_peak: newPeak });
-    }
-
-    // Trail stop = peak minus TRAIL_RETRACE_PCT of the peak gain
-    const peakGain    = Math.abs(newPeak - fillPrice);
-    const trailDist   = peakGain * TRAIL_RETRACE_PCT;
-    const trailStop   = isBuy ? newPeak - trailDist : newPeak + trailDist;
-    const violated    = isBuy ? currentPrice <= trailStop : currentPrice >= trailStop;
-
-    log(
-      `${trade.ticker}: trail check — fill ${fillPrice} peak ${newPeak.toFixed(2)} ` +
-      `current ${currentPrice.toFixed(2)} trailStop ${trailStop.toFixed(2)} ` +
-      `(+${gainInR.toFixed(1)}R) ${violated ? '→ TRIGGERED' : 'ok'}`,
+    const activeTrades = await getActiveTrades(acctType);
+    const dayTrades = activeTrades.filter(
+      t => (t.mode === 'DAY_TRADE' || t.mode === 'DAY_PENNY') && (t.status === 'FILLED' || t.status === 'PARTIAL'),
     );
+    if (dayTrades.length === 0) continue;
 
-    if (!violated) continue;
+    for (const trade of dayTrades) {
+      const ibPos = positions.find(p => p.symbol.toUpperCase() === trade.ticker.toUpperCase());
+      if (!ibPos || ibPos.mktPrice <= 0) continue;
 
-    // Close the position at market
-    const closeSide = isBuy ? 'SELL' : 'BUY';
-    const qty       = trade.quantity ?? 0;
-    if (qty <= 0) continue;
+      const fillPrice  = trade.fill_price ?? trade.entry_price ?? 0;
+      const stopPrice  = trade.stop_loss ?? 0;
+      if (!fillPrice || !stopPrice) continue;
 
-    try {
-      const { avgFillPrice } = await placeMarketOrder({ symbol: trade.ticker, side: closeSide, quantity: qty });
-      const pnl = isBuy
-        ? parseFloat(((avgFillPrice - fillPrice) * qty).toFixed(2))
-        : parseFloat(((fillPrice - avgFillPrice) * qty).toFixed(2));
-      const pnlPct = fillPrice > 0
-        ? parseFloat(((pnl / (fillPrice * qty)) * 100).toFixed(2))
-        : null;
-      await updatePaperTrade(trade.id, {
-        status:       'CLOSED',
-        close_reason: 'trailing_stop',
-        close_price:  avgFillPrice,
-        pnl,
-        pnl_percent:  pnlPct,
-        closed_at:    new Date().toISOString(),
-      });
+      const risk = Math.abs(fillPrice - stopPrice);
+      if (risk <= 0) continue;
+
+      const currentPrice = ibPos.mktPrice;
+      const isBuy = trade.signal === 'BUY';
+
+      const gainInR = isBuy
+        ? (currentPrice - fillPrice) / risk
+        : (fillPrice - currentPrice) / risk;
+
+      if (gainInR < TRAIL_ACTIVATION_R) continue;
+
+      const storedPeak = trade.price_peak ?? 0;
+      const newPeak = isBuy
+        ? Math.max(storedPeak, currentPrice)
+        : (storedPeak <= 0 ? currentPrice : Math.min(storedPeak, currentPrice));
+
+      if (newPeak !== storedPeak) {
+        await updatePaperTrade(trade.id, { price_peak: newPeak }, acctType);
+      }
+
+      const peakGain    = Math.abs(newPeak - fillPrice);
+      const trailDist   = peakGain * TRAIL_RETRACE_PCT;
+      const trailStop   = isBuy ? newPeak - trailDist : newPeak + trailDist;
+      const violated    = isBuy ? currentPrice <= trailStop : currentPrice >= trailStop;
+
       log(
-        `${trade.ticker}: DAY_TRADE trailing stop closed — peak ${newPeak.toFixed(2)}, ` +
-        `current ${currentPrice.toFixed(2)}, trail stop ${trailStop.toFixed(2)}, ` +
-        `P&L $${pnl.toFixed(2)}`,
+        `${trade.ticker}: trail check [${acctType}] — fill ${fillPrice} peak ${newPeak.toFixed(2)} ` +
+        `current ${currentPrice.toFixed(2)} trailStop ${trailStop.toFixed(2)} ` +
+        `(+${gainInR.toFixed(1)}R) ${violated ? '→ TRIGGERED' : 'ok'}`,
       );
-    } catch (err) {
-      log(`${trade.ticker}: trailing stop close failed — ${err instanceof Error ? err.message : 'unknown'}`);
+
+      if (!violated) continue;
+
+      const closeSide = isBuy ? 'SELL' : 'BUY';
+      const qty       = trade.quantity ?? 0;
+      if (qty <= 0) continue;
+
+      try {
+        const { avgFillPrice } = await conn.placeMarketOrder({ symbol: trade.ticker, side: closeSide, quantity: qty });
+        const pnl = isBuy
+          ? parseFloat(((avgFillPrice - fillPrice) * qty).toFixed(2))
+          : parseFloat(((fillPrice - avgFillPrice) * qty).toFixed(2));
+        const pnlPct = fillPrice > 0
+          ? parseFloat(((pnl / (fillPrice * qty)) * 100).toFixed(2))
+          : null;
+        await updatePaperTrade(trade.id, {
+          status:       'CLOSED',
+          close_reason: 'trailing_stop',
+          close_price:  avgFillPrice,
+          pnl,
+          pnl_percent:  pnlPct,
+          closed_at:    new Date().toISOString(),
+        }, acctType);
+        log(
+          `${trade.ticker}: DAY_TRADE trailing stop closed [${acctType}] — peak ${newPeak.toFixed(2)}, ` +
+          `current ${currentPrice.toFixed(2)}, trail stop ${trailStop.toFixed(2)}, ` +
+          `P&L $${pnl.toFixed(2)}`,
+        );
+      } catch (err) {
+        log(`${trade.ticker}: trailing stop close failed — ${err instanceof Error ? err.message : 'unknown'}`);
+      }
     }
   }
 }
@@ -5440,86 +5529,86 @@ async function checkLossCutOpportunities(
   positions: EnrichedPosition[],
 ): Promise<void> {
   if (!config.lossCutEnabled || !config.accountId) return;
-  const activeTrades = await getActiveTrades();
-  const eligible = activeTrades.filter(t =>
-    (t.mode === 'LONG_TERM' || t.mode === 'SWING_TRADE') &&
-    (t.status === 'FILLED' || t.status === 'PARTIAL')
-  );
 
-  const tiers = [
-    { pct: config.lossCutTier3Pct, sellPct: config.lossCutTier3SellPct, label: 'Tier 3 (full exit)' },
-    { pct: config.lossCutTier2Pct, sellPct: config.lossCutTier2SellPct, label: 'Tier 2' },
-    { pct: config.lossCutTier1Pct, sellPct: config.lossCutTier1SellPct, label: 'Tier 1' },
-  ];
+  // Loss cuts may apply to both paper and live accounts
+  for (const acctType of ['paper', 'live'] as AccountType[]) {
+    const conn = getConnectionForAccount(acctType);
+    if (!conn.isConnected()) continue;
 
-  // Macro circuit breaker for LONG_TERM positions: if SPY has dropped >5% in the last
-  // 5 trading days, this is broad-market turbulence, not individual business failure.
-  // Suspend LONG_TERM loss cuts for one cycle — the thesis re-check happens on next run.
-  // SWING_TRADE loss cuts are NOT suppressed (different time horizon, thesis is price-based).
-  let spyMacroSelloff = false;
-  const eligibleLongTerm = eligible.filter(t => t.mode === 'LONG_TERM');
-  if (eligibleLongTerm.length > 0) {
-    const spy5d = await fetchSpy5DayChangePct();
-    if (spy5d !== null && spy5d <= -5) {
-      spyMacroSelloff = true;
-      log(`[LossCut] SPY 5d = ${spy5d.toFixed(1)}% — macro selloff circuit breaker active: LONG_TERM loss cuts suppressed this cycle`);
-    }
-  }
+    const activeTrades = await getActiveTrades(acctType);
+    const eligible = activeTrades.filter(t =>
+      (t.mode === 'LONG_TERM' || t.mode === 'SWING_TRADE') &&
+      (t.status === 'FILLED' || t.status === 'PARTIAL')
+    );
+    if (eligible.length === 0) continue;
 
-  for (const trade of eligible) {
-    const ibPos = positions.find(p => p.symbol.toUpperCase() === trade.ticker.toUpperCase());
-    if (!ibPos || ibPos.mktPrice <= 0 || ibPos.avgCost <= 0) continue;
+    const tiers = [
+      { pct: config.lossCutTier3Pct, sellPct: config.lossCutTier3SellPct, label: 'Tier 3 (full exit)' },
+      { pct: config.lossCutTier2Pct, sellPct: config.lossCutTier2SellPct, label: 'Tier 2' },
+      { pct: config.lossCutTier1Pct, sellPct: config.lossCutTier1SellPct, label: 'Tier 1' },
+    ];
 
-    const lossPct = ((ibPos.avgCost - ibPos.mktPrice) / ibPos.avgCost) * 100;
-    if (lossPct <= 0) continue;
-
-    // Suppress LONG_TERM loss cuts during broad market selloffs (see circuit breaker above).
-    if (trade.mode === 'LONG_TERM' && spyMacroSelloff) continue;
-
-    // Min hold period
-    if (trade.created_at) {
-      const holdDays = (Date.now() - new Date(trade.created_at).getTime()) / 86400000;
-      if (holdDays < config.lossCutMinHoldDays) continue;
+    let spyMacroSelloff = false;
+    const eligibleLongTerm = eligible.filter(t => t.mode === 'LONG_TERM');
+    if (eligibleLongTerm.length > 0) {
+      const spy5d = await fetchSpy5DayChangePct();
+      if (spy5d !== null && spy5d <= -5) {
+        spyMacroSelloff = true;
+        log(`[LossCut:${acctType}] SPY 5d = ${spy5d.toFixed(1)}% — macro selloff circuit breaker active: LONG_TERM loss cuts suppressed this cycle`);
+      }
     }
 
-    const triggered = tiers.find(t => lossPct >= t.pct);
-    if (!triggered) continue;
+    for (const trade of eligible) {
+      const ibPos = positions.find(p => p.symbol.toUpperCase() === trade.ticker.toUpperCase());
+      if (!ibPos || ibPos.mktPrice <= 0 || ibPos.avgCost <= 0) continue;
 
-    const pastEvents = await getPastLossCutEvents(trade.ticker);
-    if (pastEvents.some(e => e.metadata?.tier === triggered.label)) continue;
+      const lossPct = ((ibPos.avgCost - ibPos.mktPrice) / ibPos.avgCost) * 100;
+      if (lossPct <= 0) continue;
 
-    const currentQty = Math.abs(ibPos.position);
-    const sellQty = triggered.sellPct >= 100
-      ? currentQty
-      : Math.max(1, Math.floor(currentQty * (triggered.sellPct / 100)));
-    if (sellQty < 1) continue;
+      if (trade.mode === 'LONG_TERM' && spyMacroSelloff) continue;
 
-    try {
-      if (!isConnected()) continue;
+      if (trade.created_at) {
+        const holdDays = (Date.now() - new Date(trade.created_at).getTime()) / 86400000;
+        if (holdDays < config.lossCutMinHoldDays) continue;
+      }
 
-      const side = ibPos.position > 0 ? 'SELL' : 'BUY';
-      await placeMarketOrder({ symbol: trade.ticker, side: side as 'BUY' | 'SELL', quantity: sellQty });
+      const triggered = tiers.find(t => lossPct >= t.pct);
+      if (!triggered) continue;
 
-      await createPaperTrade({
-        ticker: trade.ticker, mode: trade.mode as 'LONG_TERM' | 'SWING_TRADE',
-        signal: 'SELL', entry_price: ibPos.mktPrice,
-        quantity: sellQty,
-        position_size: sellQty * ibPos.mktPrice,
-        status: 'SUBMITTED',
-        notes: `Loss cut ${triggered.label} at -${lossPct.toFixed(1)}%`,
-        entry_trigger_type: 'loss_cut',
-      });
+      const pastEvents = await getPastLossCutEvents(trade.ticker);
+      if (pastEvents.some(e => e.metadata?.tier === triggered.label)) continue;
 
-      const realizedLoss = ibPos.position > 0
-        ? sellQty * (ibPos.avgCost - ibPos.mktPrice)
-        : sellQty * (ibPos.mktPrice - ibPos.avgCost);
-      log(`${trade.ticker}: LOSS CUT ${triggered.label} — sold ${sellQty} shares at -${lossPct.toFixed(1)}% ($${realizedLoss.toFixed(2)})`);
-      persistEvent(trade.ticker, 'success', `Loss cut ${triggered.label}: sold ${sellQty} shares`, {
-        action: 'executed', source: 'loss_cut', mode: trade.mode,
-        metadata: { tier: triggered.label, lossPct, sellQty, realizedLoss },
-      });
-    } catch (err) {
-      log(`${trade.ticker}: Loss cut failed — ${err instanceof Error ? err.message : 'unknown'}`);
+      const currentQty = Math.abs(ibPos.position);
+      const sellQty = triggered.sellPct >= 100
+        ? currentQty
+        : Math.max(1, Math.floor(currentQty * (triggered.sellPct / 100)));
+      if (sellQty < 1) continue;
+
+      try {
+        const side = ibPos.position > 0 ? 'SELL' : 'BUY';
+        await conn.placeMarketOrder({ symbol: trade.ticker, side: side as 'BUY' | 'SELL', quantity: sellQty });
+
+        await createPaperTrade({
+          ticker: trade.ticker, mode: trade.mode as 'LONG_TERM' | 'SWING_TRADE',
+          signal: 'SELL', entry_price: ibPos.mktPrice,
+          quantity: sellQty,
+          position_size: sellQty * ibPos.mktPrice,
+          status: 'SUBMITTED',
+          notes: `Loss cut ${triggered.label} at -${lossPct.toFixed(1)}%`,
+          entry_trigger_type: 'loss_cut',
+        }, acctType);
+
+        const realizedLoss = ibPos.position > 0
+          ? sellQty * (ibPos.avgCost - ibPos.mktPrice)
+          : sellQty * (ibPos.mktPrice - ibPos.avgCost);
+        log(`${trade.ticker}: LOSS CUT ${triggered.label} [${acctType}] — sold ${sellQty} shares at -${lossPct.toFixed(1)}% ($${realizedLoss.toFixed(2)})`);
+        persistEvent(trade.ticker, 'success', `Loss cut ${triggered.label}: sold ${sellQty} shares`, {
+          action: 'executed', source: 'loss_cut', mode: trade.mode,
+          metadata: { tier: triggered.label, lossPct, sellQty, realizedLoss },
+        }, acctType);
+      } catch (err) {
+        log(`${trade.ticker}: Loss cut failed — ${err instanceof Error ? err.message : 'unknown'}`);
+      }
     }
   }
 }
@@ -6012,7 +6101,7 @@ async function runSchedulerCycle(): Promise<void> {
     // 6. Position management: dip buy, profit take, loss cut, swing expiry
     // These ALWAYS run regardless of config.enabled — existing positions must be actively managed.
     await checkStaleDayTrades(positions);              // flag/close day trades stuck FILLED from a prior day
-    await checkDayTradeTrailingStops(positions);       // software trailing stop for day trades in profit (+1R)
+    await checkDayTradeTrailingStops(config, positions);       // software trailing stop for day trades in profit (+1R)
     await checkDipBuyOpportunities(config, positions);
     const trimmedTickers = await checkProfitTakeOpportunities(config, positions);
     await checkLossCutOpportunities(config, positions);

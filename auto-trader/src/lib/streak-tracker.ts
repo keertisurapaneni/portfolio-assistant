@@ -13,8 +13,9 @@
  *   base × Kelly × regime × streak = final size
  */
 
-import { getSupabase } from './supabase.js';
+import { getSupabase, tradesTable, streakTable } from './supabase.js';
 import { CLOSED_STATUSES } from '../../../shared/trade-status-sets.js';
+import type { AccountType } from '../../../shared/trade-types.js';
 
 const log = (msg: string) => console.log(`[StreakTracker] ${msg}`);
 
@@ -45,16 +46,17 @@ interface StreakState {
  *
  * Non-blocking: returns 1.0 on any error (never silently kills sizing).
  */
-export async function getStreakMultiplier(mode: string): Promise<number> {
+export async function getStreakMultiplier(mode: string, accountType: AccountType = 'paper'): Promise<number> {
   const config = STREAK_CONFIGS[mode];
   if (!config) return 1.0;
 
   try {
     const sb = getSupabase();
+    const tTable = tradesTable(accountType);
+    const sTable = streakTable(accountType);
 
-    // Fetch last N completed trades for this mode
     const { data: trades, error: tradeErr } = await sb
-      .from('paper_trades')
+      .from(tTable)
       .select('pnl')
       .eq('mode', mode)
       .in('status', [...CLOSED_STATUSES])
@@ -64,16 +66,14 @@ export async function getStreakMultiplier(mode: string): Promise<number> {
       .limit(config.windowSize);
 
     if (tradeErr || !trades || trades.length < config.windowSize) {
-      // Not enough trades to judge — don't apply cold streak
       return 1.0;
     }
 
     const wins = trades.filter(t => (t.pnl ?? 0) > 0).length;
     const winRate = wins / trades.length;
 
-    // Fetch current state
     const { data: stateRow } = await sb
-      .from('strategy_streak_state')
+      .from(sTable)
       .select('is_cold, entered_cold_at, rolling_win_rate')
       .eq('mode', mode)
       .single();
@@ -82,18 +82,15 @@ export async function getStreakMultiplier(mode: string): Promise<number> {
     let isCold: boolean;
 
     if (wasCold) {
-      // Currently cold — only recover if win rate exceeds recovery threshold
       isCold = winRate < config.recoveryThreshold;
     } else {
-      // Currently normal — enter cold if win rate drops below cold threshold
       isCold = winRate < config.coldThreshold;
     }
 
-    // Persist state change
     const stateChanged = isCold !== wasCold;
     if (stateChanged || !stateRow) {
       await sb
-        .from('strategy_streak_state')
+        .from(sTable)
         .upsert({
           mode,
           is_cold: isCold,
@@ -109,9 +106,8 @@ export async function getStreakMultiplier(mode: string): Promise<number> {
         log(`✅ ${mode} recovered from cold streak — win rate ${(winRate * 100).toFixed(0)}% > ${(config.recoveryThreshold * 100).toFixed(0)}% recovery threshold → full size restored`);
       }
     } else {
-      // Update rolling stats even if state didn't change
       await sb
-        .from('strategy_streak_state')
+        .from(sTable)
         .update({
           last_checked_at: new Date().toISOString(),
           rolling_win_rate: winRate,

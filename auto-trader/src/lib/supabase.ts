@@ -7,6 +7,7 @@
 
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { ACTIVE_STATUSES, CLOSED_STATUSES } from '../../../shared/trade-status-sets.js';
+import type { AccountType } from '../../../shared/trade-types.js';
 
 const SUPABASE_URL = process.env.SUPABASE_URL ?? '';
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY ?? '';
@@ -31,6 +32,24 @@ export function getSupabaseAnonKey(): string { return SUPABASE_ANON_KEY; }
 export function getSupabaseServiceRoleKey(): string { return SUPABASE_SERVICE_KEY; }
 export function isConfigured(): boolean {
   return !!(SUPABASE_URL && SUPABASE_SERVICE_KEY && SUPABASE_ANON_KEY);
+}
+
+// ── Dual-Account Table Routing ───────────────────────────
+
+export function tradesTable(acct: AccountType): 'paper_trades' | 'live_trades' {
+  return acct === 'live' ? 'live_trades' : 'paper_trades';
+}
+
+export function eventsTable(acct: AccountType): 'auto_trade_events' | 'live_trade_events' {
+  return acct === 'live' ? 'live_trade_events' : 'auto_trade_events';
+}
+
+export function fillsTable(acct: AccountType): 'ib_fills' | 'live_ib_fills' {
+  return acct === 'live' ? 'live_ib_fills' : 'ib_fills';
+}
+
+export function streakTable(acct: AccountType): 'strategy_streak_state' | 'live_strategy_streak_state' {
+  return acct === 'live' ? 'live_strategy_streak_state' : 'strategy_streak_state';
 }
 
 // ── Auto-Trader Config (shared single source of truth) ──
@@ -110,6 +129,14 @@ export async function loadConfig(): Promise<AutoTraderConfig> {
     pennyMaxDailyLoss: Number(data.penny_max_daily_loss ?? DEFAULT_CONFIG.pennyMaxDailyLoss),
     pennyMaxDailyTrades: Number(data.penny_max_daily_trades ?? DEFAULT_CONFIG.pennyMaxDailyTrades),
     trendFilterEnabled: data.trend_filter_enabled ?? DEFAULT_CONFIG.trendFilterEnabled,
+    // Dual-account routing
+    modeRouting: data.mode_routing ?? DEFAULT_CONFIG.modeRouting,
+    liveKillSwitch: data.live_kill_switch ?? DEFAULT_CONFIG.liveKillSwitch,
+    liveDailyLossLimit: Number(data.live_daily_loss_limit ?? DEFAULT_CONFIG.liveDailyLossLimit),
+    livePortfolioValue: Number(data.live_portfolio_value ?? DEFAULT_CONFIG.livePortfolioValue),
+    livePositionSize: Number(data.live_position_size ?? DEFAULT_CONFIG.livePositionSize),
+    liveMaxPositions: Number(data.live_max_positions ?? DEFAULT_CONFIG.liveMaxPositions),
+    liveMaxDailyDeployment: Number(data.live_max_daily_deployment ?? DEFAULT_CONFIG.liveMaxDailyDeployment),
   };
 }
 
@@ -186,10 +213,10 @@ export interface StrategyClosedTradeOutcome {
 
 import { formatDateToEtIso } from '../../../shared/date-helpers.js';
 
-export async function getActiveTrades(): Promise<PaperTrade[]> {
+export async function getActiveTrades(accountType: AccountType = 'paper'): Promise<PaperTrade[]> {
   const sb = getSupabase();
   const { data, error } = await sb
-    .from('paper_trades')
+    .from(tradesTable(accountType))
     .select('*')
     .in('status', [...ACTIVE_STATUSES])
     .order('opened_at', { ascending: false });
@@ -245,11 +272,11 @@ export async function getLongTermExposureByTag(): Promise<{
 
 export async function hasActiveTrade(
   ticker: string,
-  opts?: { excludeMode?: 'LONG_TERM'; signal?: 'BUY' | 'SELL'; excludeOptions?: boolean }
+  opts?: { excludeMode?: 'LONG_TERM'; signal?: 'BUY' | 'SELL'; excludeOptions?: boolean; accountType?: AccountType }
 ): Promise<boolean> {
   const sb = getSupabase();
   let query = sb
-    .from('paper_trades')
+    .from(tradesTable(opts?.accountType ?? 'paper'))
     .select('id', { count: 'exact', head: true })
     .eq('ticker', ticker)
     .in('status', [...ACTIVE_STATUSES]);
@@ -345,12 +372,10 @@ export async function getTickerWinRate(
   return { wins, losses, winRate, total };
 }
 
-export async function countActivePositions(): Promise<number> {
+export async function countActivePositions(accountType: AccountType = 'paper'): Promise<number> {
   const sb = getSupabase();
-  // Options positions run on their own pipeline and budget — exclude them from
-  // the stock scanner's max-positions slot count so they don't starve day/swing trades.
   const { count } = await sb
-    .from('paper_trades')
+    .from(tradesTable(accountType))
     .select('id', { count: 'exact', head: true })
     .in('status', [...ACTIVE_STATUSES])
     .not('mode', 'in', '(OPTIONS_PUT,OPTIONS_CALL)');
@@ -358,11 +383,12 @@ export async function countActivePositions(): Promise<number> {
 }
 
 export async function createPaperTrade(
-  trade: Record<string, unknown>
+  trade: Record<string, unknown>,
+  accountType: AccountType = 'paper',
 ): Promise<PaperTrade> {
   const sb = getSupabase();
   const { data, error } = await sb
-    .from('paper_trades')
+    .from(tradesTable(accountType))
     .insert(trade)
     .select()
     .single();
@@ -372,11 +398,12 @@ export async function createPaperTrade(
 
 export async function updatePaperTrade(
   id: string,
-  updates: Record<string, unknown>
+  updates: Record<string, unknown>,
+  accountType: AccountType = 'paper',
 ): Promise<void> {
   const sb = getSupabase();
   const { error } = await sb
-    .from('paper_trades')
+    .from(tradesTable(accountType))
     .update(updates)
     .eq('id', id);
   if (error) throw new Error(`updatePaperTrade: ${error.message}`);
@@ -631,10 +658,11 @@ export type { AutoTradeAction, AutoTradeSource, AutoTradeEventInput, AutoTradeEv
 import type { AutoTradeAction, AutoTradeSource, AutoTradeEventInput } from '../../../shared/auto-trade-events.js';
 
 export async function createAutoTradeEvent(
-  event: AutoTradeEventInput
+  event: AutoTradeEventInput,
+  accountType: AccountType = 'paper',
 ): Promise<void> {
   const sb = getSupabase();
-  const { error } = await sb.from('auto_trade_events').insert(event);
+  const { error } = await sb.from(eventsTable(accountType)).insert(event);
   if (error) {
     throw new Error(`Failed to persist event for ${event.ticker}: ${error.message}`);
   }
@@ -724,35 +752,32 @@ export interface IbFill {
   filled_at: string;
 }
 
-export async function insertIbFill(fill: IbFill): Promise<void> {
+export async function insertIbFill(fill: IbFill, accountType: AccountType = 'paper'): Promise<void> {
   const sb = getSupabase();
-  const { error } = await sb.from('ib_fills').insert(fill);
+  const { error } = await sb.from(fillsTable(accountType)).insert(fill);
   if (error) {
     console.warn(`[Supabase] Failed to persist IB fill for order ${fill.order_id}: ${error.message}`);
   }
 }
 
-export async function updateIbFillCommission(execId: string, commission: number, realizedPnl?: number | null): Promise<void> {
+export async function updateIbFillCommission(execId: string, commission: number, realizedPnl?: number | null, accountType: AccountType = 'paper'): Promise<void> {
   const sb = getSupabase();
   const updates: Record<string, unknown> = { commission };
-  // Store IB's FIFO-based realized P&L alongside the commission. This is the source of
-  // truth for P&L when IB's FIFO cost basis differs from our tracked fill_price
-  // (e.g. orphaned prior-day lots). The EOD reconciler reads this to correct paper_trades.
   if (realizedPnl != null && isFinite(realizedPnl) && Math.abs(realizedPnl) < 1e6) {
     updates.realized_pnl = realizedPnl;
   }
-  const { error } = await sb.from('ib_fills').update(updates).eq('exec_id', execId);
+  const { error } = await sb.from(fillsTable(accountType)).update(updates).eq('exec_id', execId);
   if (error) {
     console.warn(`[Supabase] Failed to update commission for exec ${execId}: ${error.message}`);
   }
 }
 
-export async function getTodayFillPrices(): Promise<Map<number, number>> {
+export async function getTodayFillPrices(accountType: AccountType = 'paper'): Promise<Map<number, number>> {
   const sb = getSupabase();
   const todayStart = new Date();
   todayStart.setHours(0, 0, 0, 0);
   const { data, error } = await sb
-    .from('ib_fills')
+    .from(fillsTable(accountType))
     .select('order_id, fill_price')
     .gte('filled_at', todayStart.toISOString());
   if (error || !data) return new Map();
@@ -763,10 +788,10 @@ export async function getTodayFillPrices(): Promise<Map<number, number>> {
   return map;
 }
 
-export async function getFillPriceByOrderId(orderId: number): Promise<number | undefined> {
+export async function getFillPriceByOrderId(orderId: number, accountType: AccountType = 'paper'): Promise<number | undefined> {
   const sb = getSupabase();
   const { data } = await sb
-    .from('ib_fills')
+    .from(fillsTable(accountType))
     .select('fill_price')
     .eq('order_id', orderId)
     .order('filled_at', { ascending: false })

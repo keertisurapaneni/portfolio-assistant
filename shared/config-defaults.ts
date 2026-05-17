@@ -60,6 +60,14 @@ export interface AutoTraderConfig {
   pennyMaxDailyLoss: number;
   pennyMaxDailyTrades: number;
   trendFilterEnabled: boolean;
+  // Dual-account routing
+  modeRouting: Record<string, 'paper' | 'live'>;
+  liveKillSwitch: boolean;
+  liveDailyLossLimit: number;
+  livePortfolioValue: number;
+  livePositionSize: number;
+  liveMaxPositions: number;
+  liveMaxDailyDeployment: number;
 }
 
 export const DEFAULT_CONFIG: AutoTraderConfig = {
@@ -115,4 +123,22 @@ export const DEFAULT_CONFIG: AutoTraderConfig = {
   pennyMaxDailyLoss: 200,
   pennyMaxDailyTrades: 10,
   trendFilterEnabled: true,
+  // Dual-account routing — all modes default to paper for safety
+  modeRouting: {
+    DAY_TRADE: 'paper',
+    SWING_TRADE: 'paper',
+    OPTIONS_PUT: 'paper',
+    OPTIONS_CALL: 'paper',
+    CALENDAR_SPREAD: 'paper',
+    CREDIT_SPREAD: 'paper',
+    DAY_PENNY: 'paper',
+    LONG_TERM: 'paper',
+    EARNINGS_CALENDAR: 'paper',
+  },
+  liveKillSwitch: true,
+  liveDailyLossLimit: -500,
+  livePortfolioValue: 100_000,
+  livePositionSize: 500,
+  liveMaxPositions: 2,
+  liveMaxDailyDeployment: 5_000,
 };

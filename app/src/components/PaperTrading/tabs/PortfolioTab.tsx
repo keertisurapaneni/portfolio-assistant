@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 import type { IBPosition, IBLiveOrder } from '../../../lib/ibClient';
 import type { PendingStrategySignal } from '../../../lib/paperTradesApi';
+import type { AccountView } from '../../../contexts/AccountContext';
 import { fmtUsd } from '../utils';
 import { StatusBadge } from '../shared';
 
@@ -40,9 +41,10 @@ export interface PortfolioTabProps {
   pendingSignals: PendingStrategySignal[];
   connected: boolean;
   onRefresh: () => void;
+  accountView?: AccountView;
 }
 
-export function PortfolioTab({ positions, orders, pendingSignals, connected, onRefresh }: PortfolioTabProps) {
+export function PortfolioTab({ positions, orders, pendingSignals, connected, onRefresh, accountView: _accountView }: PortfolioTabProps) {
   const [sortKey, setSortKey] = useState<PortfolioSortKey>('costBasis');
   const [sortDir, setSortDir] = useState<SortDir>('desc');
 

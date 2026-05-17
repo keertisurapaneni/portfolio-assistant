@@ -1,17 +1,29 @@
 import { useState } from 'react';
 import { Clock } from 'lucide-react';
-import type { PaperTrade, PendingStrategySignal } from '../../../lib/paperTradesApi';
+import type { PaperTrade, PendingStrategySignal, PaperTradeWithAccount } from '../../../lib/paperTradesApi';
+import type { AccountView } from '../../../contexts/AccountContext';
 import { fmtUsd } from '../utils';
 import { StatusBadge } from '../shared';
 
 type HistorySortKey = 'date' | 'ticker' | 'pnl' | 'signal' | 'status';
 
+function AccountDot({ type }: { type?: 'paper' | 'live' }) {
+  if (!type) return null;
+  return (
+    <span
+      className={`inline-block w-2 h-2 rounded-full flex-shrink-0 ${type === 'live' ? 'bg-emerald-500' : 'bg-slate-400'}`}
+      title={type === 'live' ? 'Live trade' : 'Paper trade'}
+    />
+  );
+}
+
 export interface HistoryTabProps {
   trades: PaperTrade[];
   pendingSignals: PendingStrategySignal[];
+  accountView?: AccountView;
 }
 
-export function HistoryTab({ trades, pendingSignals }: HistoryTabProps) {
+export function HistoryTab({ trades, pendingSignals, accountView }: HistoryTabProps) {
   const [sortKey, setSortKey] = useState<HistorySortKey>('date');
   const [sortAsc, setSortAsc] = useState(false);
 
@@ -164,7 +176,12 @@ export function HistoryTab({ trades, pendingSignals }: HistoryTabProps) {
               const isActive = ['SUBMITTED', 'FILLED', 'PARTIAL', 'PENDING'].includes(trade.status);
               return (
                 <tr key={trade.id} className={`hover:bg-[hsl(var(--secondary))]/50 ${isActive ? 'bg-blue-50/30' : ''}`}>
-                  <td className="px-4 py-3 font-bold">{trade.ticker}</td>
+                  <td className="px-4 py-3 font-bold">
+                    <span className="inline-flex items-center gap-1.5">
+                      {accountView === 'all' && <AccountDot type={(trade as PaperTradeWithAccount)._accountType} />}
+                      {trade.ticker}
+                    </span>
+                  </td>
                   <td className="px-4 py-3">
                     <span className={`inline-flex px-2 py-0.5 rounded text-[10px] font-bold ${trade.signal === 'BUY' ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'}`}>
                       {trade.signal}

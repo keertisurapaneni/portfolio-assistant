@@ -620,6 +620,127 @@ export function SettingsTab({ config, onUpdate }: SettingsTabProps) {
           </p>
         </div>
       </div>
+
+      {/* ── Live Trading Section ── */}
+      <div className="border-t border-[hsl(var(--border))] pt-6 mt-6">
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <h4 className="text-sm font-semibold text-[hsl(var(--foreground))]">🟢 Live Trading</h4>
+            <p className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5">Real money — IB live account settings</p>
+          </div>
+        </div>
+
+        {/* Kill switch */}
+        <div className="rounded-lg border-2 border-red-300 bg-red-50/50 p-4 mb-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <AlertTriangle className="w-5 h-5 text-red-600 flex-shrink-0" />
+              <div>
+                <p className="text-sm font-bold text-red-800">Live Kill Switch</p>
+                <p className="text-xs text-red-600">
+                  {config.liveKillSwitch
+                    ? 'ON — All live trading is BLOCKED. Only paper trades will execute.'
+                    : 'OFF — Live-routed modes will trade with real money.'}
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={() => onUpdate({ liveKillSwitch: !config.liveKillSwitch })}
+              className={cn(
+                'relative inline-flex h-7 w-14 items-center rounded-full transition-colors flex-shrink-0',
+                config.liveKillSwitch ? 'bg-red-600' : 'bg-emerald-600'
+              )}
+            >
+              <span className={cn(
+                'inline-block h-5 w-5 rounded-full bg-white transition-transform',
+                config.liveKillSwitch ? 'translate-x-8' : 'translate-x-1'
+              )} />
+            </button>
+          </div>
+        </div>
+
+        {/* Mode routing */}
+        <div className="rounded-lg border border-[hsl(var(--border))] bg-slate-50 p-4 mb-4">
+          <h5 className="text-xs font-semibold text-[hsl(var(--foreground))] mb-2">Mode Routing</h5>
+          <p className="text-[10px] text-[hsl(var(--muted-foreground))] mb-3">
+            Which account receives orders for each trade mode. Changes apply on next auto-trader cycle.
+          </p>
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+            {Object.entries(config.modeRouting ?? {}).map(([mode, target]) => (
+              <div key={mode} className="flex items-center justify-between bg-white rounded-md border border-[hsl(var(--border))] px-3 py-1.5">
+                <span className="text-xs font-medium text-[hsl(var(--foreground))]">
+                  {mode.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, c => c.toUpperCase())}
+                </span>
+                <button
+                  onClick={() => {
+                    const updated = { ...config.modeRouting, [mode]: target === 'paper' ? 'live' as const : 'paper' as const };
+                    onUpdate({ modeRouting: updated });
+                  }}
+                  className={cn(
+                    'px-2 py-0.5 rounded text-[10px] font-bold transition-colors',
+                    target === 'live'
+                      ? 'bg-emerald-100 text-emerald-700 hover:bg-emerald-200'
+                      : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                  )}
+                >
+                  {target.toUpperCase()}
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Live sizing parameters */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div>
+            <label className="block text-xs font-medium text-[hsl(var(--foreground))] mb-1">Portfolio Value ($)</label>
+            <div className="flex items-center gap-1.5">
+              <span className="text-xs text-[hsl(var(--muted-foreground))]">$</span>
+              <NumInput value={config.livePortfolioValue} onCommit={v => onUpdate({ livePortfolioValue: v })}
+                className="w-full px-2 py-1.5 border border-[hsl(var(--border))] rounded-lg text-xs"
+                min={1000} step={1000} />
+            </div>
+            <p className="text-[10px] text-[hsl(var(--muted-foreground))] mt-0.5">Total value of live IB account</p>
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-[hsl(var(--foreground))] mb-1">Position Size ($)</label>
+            <div className="flex items-center gap-1.5">
+              <span className="text-xs text-[hsl(var(--muted-foreground))]">$</span>
+              <NumInput value={config.livePositionSize} onCommit={v => onUpdate({ livePositionSize: v })}
+                className="w-full px-2 py-1.5 border border-[hsl(var(--border))] rounded-lg text-xs"
+                min={100} step={100} />
+            </div>
+            <p className="text-[10px] text-[hsl(var(--muted-foreground))] mt-0.5">Max $ per live trade</p>
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-[hsl(var(--foreground))] mb-1">Max Positions</label>
+            <NumInput value={config.liveMaxPositions} onCommit={v => onUpdate({ liveMaxPositions: v })}
+              className="w-full px-2 py-1.5 border border-[hsl(var(--border))] rounded-lg text-xs"
+              min={1} max={10} />
+            <p className="text-[10px] text-[hsl(var(--muted-foreground))] mt-0.5">Max concurrent live positions</p>
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-[hsl(var(--foreground))] mb-1">Daily Loss Limit ($)</label>
+            <div className="flex items-center gap-1.5">
+              <span className="text-xs text-[hsl(var(--muted-foreground))]">$</span>
+              <NumInput value={config.liveDailyLossLimit} onCommit={v => onUpdate({ liveDailyLossLimit: v })}
+                className="w-full px-2 py-1.5 border border-[hsl(var(--border))] rounded-lg text-xs"
+                min={-10000} max={0} step={100} />
+            </div>
+            <p className="text-[10px] text-[hsl(var(--muted-foreground))] mt-0.5">Stop live trading if daily losses exceed this (negative number)</p>
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-[hsl(var(--foreground))] mb-1">Daily Deployment Limit ($)</label>
+            <div className="flex items-center gap-1.5">
+              <span className="text-xs text-[hsl(var(--muted-foreground))]">$</span>
+              <NumInput value={config.liveMaxDailyDeployment} onCommit={v => onUpdate({ liveMaxDailyDeployment: v })}
+                className="w-full px-2 py-1.5 border border-[hsl(var(--border))] rounded-lg text-xs"
+                min={500} step={500} />
+            </div>
+            <p className="text-[10px] text-[hsl(var(--muted-foreground))] mt-0.5">Max new capital deployed per day on live account</p>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
