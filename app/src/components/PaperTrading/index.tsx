@@ -541,7 +541,7 @@ export function PaperTrading() {
           icon={<TrendingUp className="w-4 h-4" />}
           label="Unrealized P&L"
           value={connected && totalMktValue > 0 ? fmtUsd(totalUnrealizedPnl, 0, true) : '—'}
-          subtitle={ibAccountPnl?.realizedPnL != null
+          subtitle={ibAccountPnl?.realizedPnL != null && new Date().getDay() !== 0 && new Date().getDay() !== 6
             ? `Today Realized: ${fmtUsd(ibAccountPnl.realizedPnL, 0, true)}`
             : `All-Time: ${fmtUsd(performance?.total_pnl ?? 0, 0, true)}`}
           color={totalUnrealizedPnl >= 0 ? 'green' : 'red'}

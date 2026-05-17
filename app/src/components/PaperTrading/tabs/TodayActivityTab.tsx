@@ -42,6 +42,12 @@ type FilterMode = 'all' | 'day' | 'penny' | 'long_term' | 'gainers' | 'losers';
 type SortKey = 'ticker' | 'pnl' | 'time' | null;
 type SortDir = 'asc' | 'desc';
 
+function isTradingDay(): boolean {
+  const now = new Date();
+  const day = now.getDay();
+  return day !== 0 && day !== 6; // 0=Sun, 6=Sat
+}
+
 export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], onExecuteSignal, ibRealizedPnl }: TodayActivityTabProps) {
   const [executingId, setExecutingId] = useState<string | null>(null);
   const [executingAll, setExecutingAll] = useState(false);
@@ -243,7 +249,8 @@ export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], 
   };
 
   const allEventPnl = useMemo(() => computeEventPnl(events), [events, tradesByTicker]);
-  const todayPnlAll = ibRealizedPnl ?? allEventPnl;
+  const effectiveIbPnl = isTradingDay() ? ibRealizedPnl : null;
+  const todayPnlAll = effectiveIbPnl ?? allEventPnl;
 
   function handleSort(key: SortKey) {
     if (sortKey === key) {
@@ -309,8 +316,8 @@ export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], 
   }, [events, filterMode, sortKey, sortDir, tradesByTicker]);
 
   const filteredPnl = useMemo(() => computeEventPnl(filteredSortedEvents), [filteredSortedEvents, tradesByTicker]);
-  const useIbPnl = filterMode === 'all' && ibRealizedPnl != null;
-  const displayPnl = useIbPnl ? ibRealizedPnl : filterMode === 'all' ? todayPnlAll : filteredPnl;
+  const useIbPnl = filterMode === 'all' && effectiveIbPnl != null;
+  const displayPnl = useIbPnl ? effectiveIbPnl : filterMode === 'all' ? todayPnlAll : filteredPnl;
   const pnlLabel = filterMode === 'all' ? "Today's Realized P&L"
     : filterMode === 'day' ? 'Day Trade P&L'
     : filterMode === 'penny' ? 'Penny P&L'
