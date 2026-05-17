@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { BrowserRouter, Routes, Route, NavLink, useLocation } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, NavLink, Navigate, useLocation } from 'react-router-dom';
 import { SpeedInsights } from '@vercel/speed-insights/react';
 import { Analytics } from '@vercel/analytics/react';
 import { Activity, Briefcase, Brain, Lightbulb, RefreshCw, User, LogOut, ChevronDown, Bot, CircleDollarSign, Newspaper } from 'lucide-react';
@@ -20,7 +20,7 @@ import { useAutoTradeScheduler } from './hooks/useAutoTradeScheduler';
 import { Dashboard } from './components/Dashboard';
 import { SuggestedFinds } from './components/SuggestedFinds';
 import { TradingSignals } from './components/TradingSignals';
-import { PaperTrading } from './components/PaperTrading';
+import { PaperTrading as AutoTrading } from './components/PaperTrading';
 import { OptionsWheelPage } from './components/OptionsWheelPage';
 import { MorningBrief } from './components/MorningBrief';
 import { StockDetail } from './components/StockDetail';
@@ -889,7 +889,7 @@ function AppContent() {
             </NavLink>
             {isAuthed && (
               <NavLink
-                to="/paper-trading"
+                to="/auto-trading"
                 className={({ isActive }) => cn(
                   'flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all',
                   isActive
@@ -930,7 +930,9 @@ function AppContent() {
           } />
           <Route path="/finds" element={<SuggestedFinds existingTickers={existingTickers} />} />
           <Route path="/signals" element={<TradingSignals />} />
-          {isAuthed && <Route path="/paper-trading" element={<PaperTrading />} />}
+          {isAuthed && <Route path="/auto-trading" element={<AutoTrading />} />}
+          {/* Redirect old bookmark */}
+          {isAuthed && <Route path="/paper-trading" element={<Navigate to="/auto-trading" replace />} />}
           {isAuthed && <Route path="/options" element={<OptionsWheelPage />} />}
           <Route path="/morning-brief" element={<MorningBrief />} />
         </Routes>
