@@ -555,27 +555,6 @@ export function PaperTrading() {
         )}
       </div>
 
-      {/* Live view gate: show empty state if no live gateway is set up */}
-      {accountView === 'live' && (
-        <div className="flex flex-col items-center justify-center py-16 gap-4 text-center">
-          <div className="w-16 h-16 rounded-full bg-emerald-50 border-2 border-dashed border-emerald-300 flex items-center justify-center">
-            <Wifi className="w-7 h-7 text-emerald-400" />
-          </div>
-          <div>
-            <h3 className="text-lg font-semibold text-[hsl(var(--foreground))]">Live Account Not Connected</h3>
-            <p className="text-sm text-[hsl(var(--muted-foreground))] mt-1 max-w-md">
-              Set up a second IB Gateway on port 4001 with your live account, then disable the kill switch in Settings to start live trading.
-            </p>
-          </div>
-          <button
-            onClick={() => setAccountView('paper')}
-            className="px-4 py-2 text-sm font-medium rounded-lg bg-[hsl(var(--secondary))] text-[hsl(var(--secondary-foreground))] hover:opacity-80 transition-opacity"
-          >
-            Switch to Paper
-          </button>
-        </div>
-      )}
-
       {accountView !== 'live' && <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
         <StatCard
           icon={<Briefcase className="w-4 h-4" />}
@@ -622,8 +601,7 @@ export function PaperTrading() {
         />
       </div>}
 
-      {accountView !== 'live' && <>
-      {/* Tab bar — horizontally scrollable on mobile */}
+      {/* Tab bar — always visible, horizontally scrollable on mobile */}
       <div className="overflow-x-auto -mx-4 px-4 sm:mx-0 sm:px-0" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
         <div className="flex gap-1 bg-white/60 p-1 rounded-xl border border-[hsl(var(--border))] w-max sm:w-auto min-w-full">
           {[
@@ -669,6 +647,24 @@ export function PaperTrading() {
       ) : tabLoading ? (
         <div className="flex items-center justify-center py-12">
           <Spinner size="md" />
+        </div>
+      ) : accountView === 'live' && ['portfolio', 'today', 'history', 'performance', 'strategies'].includes(tab) ? (
+        <div className="flex flex-col items-center justify-center py-16 gap-4 text-center">
+          <div className="w-16 h-16 rounded-full bg-emerald-50 border-2 border-dashed border-emerald-300 flex items-center justify-center">
+            <Wifi className="w-7 h-7 text-emerald-400" />
+          </div>
+          <div>
+            <h3 className="text-lg font-semibold text-[hsl(var(--foreground))]">Live Account Not Connected</h3>
+            <p className="text-sm text-[hsl(var(--muted-foreground))] mt-1 max-w-md">
+              Set up a second IB Gateway on port 4001 with your live account, then disable the kill switch in Settings to start live trading.
+            </p>
+          </div>
+          <button
+            onClick={() => setAccountView('paper')}
+            className="px-4 py-2 text-sm font-medium rounded-lg bg-[hsl(var(--secondary))] text-[hsl(var(--secondary-foreground))] hover:opacity-80 transition-opacity"
+          >
+            Switch to Paper
+          </button>
         </div>
       ) : (
         <>
@@ -795,7 +791,6 @@ export function PaperTrading() {
           </div>
         </div>
       )}
-      </>}
     </div>
   );
 }
