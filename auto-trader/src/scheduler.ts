@@ -657,14 +657,6 @@ async function closeAllDayTrades(config: AutoTraderConfig): Promise<void> {
           continue;
         }
 
-        if (trade.status === 'FILLED') {
-          await updatePaperTrade(trade.id, {
-            status: 'CLOSED',
-            close_reason: 'eod_close',
-            closed_at: new Date().toISOString(),
-          }, acctType);
-        }
-
         if (trade.status === 'SUBMITTED' || trade.status === 'PARTIAL') {
           const orderId = trade.ib_order_id ? parseInt(trade.ib_order_id, 10) : NaN;
           if (!Number.isNaN(orderId)) {
@@ -772,30 +764,33 @@ async function softCloseDayTrades(positions: EnrichedPosition[]): Promise<void> 
       if (qty <= 0) continue;
 
       try {
-        let orderPlaced = false;
+        let fillResult: { avgFillPrice: number } | null = null;
         try {
-          await conn.placeMarketOrder({ symbol: trade.ticker, side: closeSide, quantity: qty });
-          log(`${trade.ticker}: [SoftClose:${acctType}] close order placed at 3:45 PM — ${reason}`);
-          orderPlaced = true;
+          fillResult = await conn.placeMarketOrder({ symbol: trade.ticker, side: closeSide, quantity: qty });
+          log(`${trade.ticker}: [SoftClose:${acctType}] close filled @ $${fillResult.avgFillPrice.toFixed(2)} — ${reason}`);
         } catch (orderErr) {
           log(`${trade.ticker}: [SoftClose] IB order failed (${orderErr instanceof Error ? orderErr.message : 'unknown'}) — will retry at 3:55 PM hard close`);
         }
 
-        if (!orderPlaced) continue;
+        if (!fillResult) continue;
 
-        const pnl = unrealizedPnl;
-        const costBasis = fillPrice * (trade.quantity ?? 1);
+        const closePrice = fillResult.avgFillPrice;
+        const isBuyTrade = trade.signal === 'BUY';
+        const pnl = isBuyTrade
+          ? (closePrice - fillPrice) * qty
+          : (fillPrice - closePrice) * qty;
+        const costBasis = fillPrice * qty;
         const pnlPct = costBasis > 0 ? (pnl / costBasis) * 100 : 0;
 
         await updatePaperTrade(trade.id, {
           status:       'CLOSED',
           close_reason: 'soft_eod_close',
-          close_price:  currentPrice,
+          close_price:  closePrice,
           pnl:          parseFloat(pnl.toFixed(2)),
           pnl_percent:  parseFloat(pnlPct.toFixed(2)),
           closed_at:    new Date().toISOString(),
         }, acctType);
-        log(`${trade.ticker}: [SoftClose:${acctType}] DB marked closed at 3:45 PM — ${reason} — P&L $${pnl.toFixed(2)}`);
+        log(`${trade.ticker}: [SoftClose:${acctType}] DB marked closed — ${reason} — fill $${closePrice.toFixed(2)}, P&L $${pnl.toFixed(2)}`);
         closed++;
       } catch (err) {
         log(`${trade.ticker}: [SoftClose] close failed — ${err instanceof Error ? err.message : 'unknown'}`);
@@ -1196,6 +1191,48 @@ export async function reconcileIBLongs(): Promise<{ closed: string[]; errors: st
       message: `[IBLongReconcile] ${unknownPositions.length} IB long position(s) have no active paper_trade but are NOT ghost orders — manual review required: ${symbols}`,
       metadata: { symbols: unknownPositions.map(p => p.symbol) },
     });
+
+    // Check if any unknown positions have a CLOSED paper_trade from today that
+    // likely represents a failed close (DB marked CLOSED but IB still holds shares).
+    // Indicators: close_price is null, or close_reason is 'eod_close'/'soft_eod_close'.
+    const unknownTickers = unknownPositions.map(p => p.symbol.toUpperCase());
+    const { data: failedCloses } = await sb
+      .from('paper_trades')
+      .select('id, ticker, status, close_price, close_reason, quantity')
+      .eq('signal', 'BUY')
+      .eq('status', 'CLOSED')
+      .in('ticker', unknownTickers)
+      .gte('opened_at', `${todayEt}T00:00:00Z`);
+
+    const reopened: string[] = [];
+    for (const fc of (failedCloses ?? [])) {
+      const ibPos = unknownPositions.find(p => p.symbol.toUpperCase() === fc.ticker.toUpperCase());
+      if (!ibPos) continue;
+      const isSuspect = fc.close_price == null
+        || ['eod_close', 'soft_eod_close'].includes(fc.close_reason ?? '');
+      if (!isSuspect) continue;
+
+      await sb.from('paper_trades').update({
+        status: 'FILLED',
+        pnl: null,
+        pnl_percent: null,
+        closed_at: null,
+        close_reason: null,
+        close_price: null,
+      }).eq('id', fc.id);
+      reopened.push(fc.ticker);
+      log(`[IBLongReconcile] Reopened ${fc.ticker} — DB said CLOSED but IB still holds ${Math.round(ibPos.position)} shares`);
+    }
+    if (reopened.length > 0) {
+      await createAutoTradeEvent({
+        ticker: reopened.join(','),
+        event_type: 'warning',
+        action: 'executed',
+        source: 'system',
+        message: `[IBLongReconcile] Reopened ${reopened.length} trade(s) that were marked CLOSED but IB still holds: ${reopened.join(', ')}`,
+        metadata: { reopened },
+      });
+    }
   }
 
   if (confirmedGhosts.length === 0) {
@@ -6394,15 +6431,23 @@ async function runSchedulerCycle(): Promise<void> {
                   const closeSide = 'SELL';
                   const qty = trade.quantity ?? 0;
                   if (qty > 0) {
-                    await placeMarketOrder({ symbol: trade.ticker, side: closeSide, quantity: qty });
+                    const fillResult = await placeMarketOrder({ symbol: trade.ticker, side: closeSide, quantity: qty });
+                    const closePrice = fillResult.avgFillPrice;
+                    const entryPrice = trade.fill_price ?? trade.entry_price ?? 0;
+                    const pnl = (closePrice - entryPrice) * qty;
+                    const costBasis = entryPrice * qty;
+                    const pnlPct = costBasis > 0 ? (pnl / costBasis) * 100 : 0;
                     await updatePaperTrade(trade.id, {
                       status: 'CLOSED',
-                      close_reason: 'eod_close',
+                      close_reason: 'penny_exit',
+                      close_price: closePrice,
+                      pnl: parseFloat(pnl.toFixed(2)),
+                      pnl_percent: parseFloat(pnlPct.toFixed(2)),
                       closed_at: new Date().toISOString(),
                       notes: `${trade.notes ?? ''} | Exit: ${exitSignal.reasons.join(', ')}`,
                     });
                     persistEvent(trade.ticker, 'success',
-                      `Penny exit: ${exitSignal.reasons.join(', ')}`, {
+                      `Penny exit: ${exitSignal.reasons.join(', ')} — fill $${closePrice.toFixed(2)}, P&L $${pnl.toFixed(2)}`, {
                         source: 'penny_scanner',
                         mode: 'DAY_PENNY',
                       });
