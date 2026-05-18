@@ -14,7 +14,7 @@ export interface StrategyVideoQueueItem {
   status: 'pending' | 'processing' | 'done' | 'failed';
   error_message: string | null;
   strategy_video_id: string | null;
-  strategy_type: 'daily_signal' | 'generic_strategy' | null;
+  strategy_type: 'daily_signal' | 'daily_penny' | 'generic_strategy' | null;
   created_at: string;
   processed_at: string | null;
 }
@@ -108,7 +108,7 @@ export async function assignUnknownToSource(params: {
   source_handle: string;
   source_name: string;
   video_ids?: string[];
-  strategy_type?: 'daily_signal' | 'generic_strategy';
+  strategy_type?: 'daily_signal' | 'daily_penny' | 'generic_strategy';
 }): Promise<{ assigned: number; video_ids: string[] }> {
   const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/assign-strategy-videos-to-source`;
   const key = import.meta.env.VITE_SUPABASE_ANON_KEY;
@@ -136,6 +136,14 @@ export async function assignUnknownToSource(params: {
 export const KNOWN_SIGNAL_GENERATORS = new Set([
   'Somesh | Day Trader | Investor',
   'Kay Capitals',
+]);
+
+/**
+ * Known penny stock watchlist creators — their videos default to daily_penny.
+ */
+export const KNOWN_PENNY_GENERATORS = new Set([
+  'Ross Cameron',
+  'Warrior Trading',
 ]);
 
 /**
@@ -180,7 +188,7 @@ export async function updateStrategyVideoMetadata(params: {
   platform?: 'instagram' | 'twitter' | 'youtube';
   source_handle?: string;
   source_name?: string;
-  strategy_type?: 'daily_signal' | 'generic_strategy';
+  strategy_type?: 'daily_signal' | 'daily_penny' | 'generic_strategy';
 }): Promise<{ ok: boolean }> {
   const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/update-strategy-video-metadata`;
   const key = import.meta.env.VITE_SUPABASE_ANON_KEY;

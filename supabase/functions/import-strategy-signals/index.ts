@@ -112,12 +112,14 @@ Deno.serve(async (req) => {
     });
   }
 
-  if (video.strategy_type !== 'daily_signal') {
+  if (video.strategy_type !== 'daily_signal' && video.strategy_type !== 'daily_penny') {
     return new Response(
-      JSON.stringify({ ok: true, skipped: true, reason: 'Not a daily_signal — no signals to import' }),
+      JSON.stringify({ ok: true, skipped: true, reason: 'Not a daily_signal or daily_penny — no signals to import' }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
   }
+
+  const isPenny = video.strategy_type === 'daily_penny';
 
   const signals = (Array.isArray(video.extracted_signals) ? video.extracted_signals : []) as ExtractedSignal[];
   if (signals.length === 0) {
@@ -154,12 +156,14 @@ Deno.serve(async (req) => {
   // Determine mode from timeframe / applicable_timeframes
   const applicableTimeframes = Array.isArray(video.applicable_timeframes) ? video.applicable_timeframes : [];
   const timeframe = (video.timeframe as string | null) ?? null;
-  const primaryMode: 'DAY_TRADE' | 'SWING_TRADE' | 'LONG_TERM' =
-    applicableTimeframes.includes('DAY_TRADE') || timeframe === 'DAY_TRADE'
+  const primaryMode: 'DAY_TRADE' | 'SWING_TRADE' | 'LONG_TERM' | 'DAY_PENNY' =
+    isPenny
+      ? 'DAY_PENNY'
+      : applicableTimeframes.includes('DAY_TRADE') || timeframe === 'DAY_TRADE'
       ? 'DAY_TRADE'
       : applicableTimeframes.includes('SWING_TRADE') || timeframe === 'SWING_TRADE'
       ? 'SWING_TRADE'
-      : 'DAY_TRADE'; // default to day trade for daily signals
+      : 'DAY_TRADE';
 
   // Build execute_at / expires_at from execution_window_et.
   // Influencer pre-market setups have different timing needs per setup type.
@@ -181,13 +185,19 @@ Deno.serve(async (req) => {
     expiresAt = toUtcTimestamp(tradeDate, executionWindow.end);
   }
 
-  if (primaryMode === 'DAY_TRADE') {
+  if (primaryMode === 'DAY_PENNY') {
+    // Penny momentum window: 7:00 AM pre-market scan through 10:00 AM ET
     if (!executeAt) {
-      executeAt = toUtcTimestamp(tradeDate, '09:35'); // skip opening 5 min chaos
+      executeAt = toUtcTimestamp(tradeDate, '09:35');
     }
     if (!expiresAt) {
-      // Expiry depends on setup type — tighter for breakout (thesis fails quickly),
-      // wider for pullback/range plays that need time to develop
+      expiresAt = toUtcTimestamp(tradeDate, '10:00');
+    }
+  } else if (primaryMode === 'DAY_TRADE') {
+    if (!executeAt) {
+      executeAt = toUtcTimestamp(tradeDate, '09:35');
+    }
+    if (!expiresAt) {
       const expiryBySetup: Record<string, string> = {
         breakout:      '11:00',
         momentum:      '12:00',

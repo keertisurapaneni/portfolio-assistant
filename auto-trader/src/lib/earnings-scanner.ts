@@ -28,8 +28,7 @@
  */
 
 import { getSupabase, createAutoTradeEvent } from './supabase.js';
-
-const FINNHUB_KEY = process.env.FINNHUB_API_KEY ?? '';
+import { finnhubFetch, FINNHUB_KEY } from './finnhub.js';
 
 // ── Screening thresholds ─────────────────────────────────
 const MIN_AVG_VOLUME_30D    = 500_000;   // minimum 30-day avg daily volume
@@ -80,32 +79,11 @@ interface EarningsEvent {
   hour?: string | null;   // 'bmo' | 'amc'
 }
 
-// ── Rate-limited fetch ───────────────────────────────────
-
-let _lastCall = 0;
-const MIN_GAP_MS = 900;
-
-async function fetchJson<T>(url: string): Promise<T | null> {
-  const now = Date.now();
-  const wait = MIN_GAP_MS - (now - _lastCall);
-  if (wait > 0) await new Promise(r => setTimeout(r, wait));
-  _lastCall = Date.now();
-  try {
-    const res = await fetch(url, {
-      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; PortfolioAssistant/1.0)' },
-    });
-    if (!res.ok) return null;
-    return await res.json() as T;
-  } catch {
-    return null;
-  }
-}
-
 // ── Data helpers ─────────────────────────────────────────
 
 /** Fetch upcoming earnings events for a given date from Finnhub. */
 async function getEarningsForDate(dateStr: string): Promise<EarningsEvent[]> {
-  const data = await fetchJson<{ earningsCalendar?: EarningsEvent[] }>(
+  const data = await finnhubFetch<{ earningsCalendar?: EarningsEvent[] }>(
     `https://finnhub.io/api/v1/calendar/earnings?from=${dateStr}&to=${dateStr}&token=${FINNHUB_KEY}`
   );
   return (data?.earningsCalendar ?? []).filter(e => e.symbol && /^[A-Z]{1,5}$/.test(e.symbol));
@@ -119,7 +97,7 @@ async function fetchPriceHistory(ticker: string, days = 40): Promise<{
 } | null> {
   const to   = Math.floor(Date.now() / 1000);
   const from = to - 86_400 * (days + 10); // extra buffer for weekends
-  const data = await fetchJson<{ c?: (number | null)[]; v?: (number | null)[] }>(
+  const data = await finnhubFetch<{ c?: (number | null)[]; v?: (number | null)[] }>(
     `https://finnhub.io/api/v1/stock/candle?symbol=${ticker}&resolution=D&from=${from}&to=${to}&token=${FINNHUB_KEY}`
   );
   if (!data?.c || data.c.length < 10) return null;

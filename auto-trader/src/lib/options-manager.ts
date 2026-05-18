@@ -13,6 +13,7 @@ import { getSupabase, createAutoTradeEvent } from './supabase.js';
 import { ACTIVE_STATUSES, CLOSED_STATUSES, OPTIONS_MODES } from '../../../shared/trade-status-sets.js';
 import { getOptionsAutoTradeConfig, autoTradeOption, type OptionsTradeTicket } from './options-scanner.js';
 import { getOptionsChain } from './options-chain.js';
+import { finnhubFetch, FINNHUB_KEY } from './finnhub.js';
 import { isConnected, placeOptionsOrder, getDefaultAccount } from '../ib-connection.js';
 
 import type { AutoTradeEventType } from '../../../shared/auto-trade-events.js';
@@ -414,13 +415,11 @@ export async function runOptionsManageCycle(): Promise<ManageCycleResult> {
     // ── Check 2: Get current premium from IB ──
     if (!isConnected()) continue;
 
-    // Get fresh quote for the stock
     let stockPrice: number | null = null;
-    try {
-      const res = await fetch(`https://finnhub.io/api/v1/quote?symbol=${pos.ticker}&token=${process.env.FINNHUB_API_KEY}`);
-      const q = await res.json() as { c?: number };
-      stockPrice = q.c ?? null;
-    } catch { /* skip */ }
+    const q = await finnhubFetch<{ c?: number }>(
+      `https://finnhub.io/api/v1/quote?symbol=${pos.ticker}&token=${FINNHUB_KEY}`,
+    );
+    stockPrice = q?.c ?? null;
 
     if (!stockPrice) continue;
 
@@ -707,13 +706,11 @@ export async function runOptionsManageCycle(): Promise<ManageCycleResult> {
 
     if (!isConnected()) continue;
 
-    // Get fresh stock price
     let stockPrice: number | null = null;
-    try {
-      const res = await fetch(`https://finnhub.io/api/v1/quote?symbol=${pos.ticker}&token=${process.env.FINNHUB_API_KEY}`);
-      const q = await res.json() as { c?: number };
-      stockPrice = q.c ?? null;
-    } catch { /* skip */ }
+    const ccQ = await finnhubFetch<{ c?: number }>(
+      `https://finnhub.io/api/v1/quote?symbol=${pos.ticker}&token=${FINNHUB_KEY}`,
+    );
+    stockPrice = ccQ?.c ?? null;
     if (!stockPrice) continue;
 
     // Get current call premium

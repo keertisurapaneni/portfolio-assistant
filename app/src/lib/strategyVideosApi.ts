@@ -14,7 +14,7 @@ export interface StrategyVideoRecord {
   reel_url: string | null;
   canonical_url: string | null;
   video_heading: string | null;
-  strategy_type: 'daily_signal' | 'generic_strategy' | null;
+  strategy_type: 'daily_signal' | 'daily_penny' | 'generic_strategy' | null;
   timeframe: string | null;
   applicable_timeframes: string[] | null;
   execution_window_et: { start?: string; end?: string } | null;
@@ -34,7 +34,7 @@ export interface StrategyVideoNormalized {
   reelUrl?: string;
   canonicalUrl?: string;
   videoHeading?: string;
-  strategyType?: 'daily_signal' | 'generic_strategy';
+  strategyType?: 'daily_signal' | 'daily_penny' | 'generic_strategy';
   timeframe?: string;
   applicableTimeframes?: string[];
   executionWindowEt?: { start?: string; end?: string };

@@ -30,7 +30,7 @@ Return a single JSON object (no markdown, no code block) with these fields. Use 
 {
   "source_name": "Display name of creator/channel (e.g. 'Somesh | Day Trader | Investor', 'Casper Clipping')",
   "source_handle": "Instagram/Twitter handle if mentioned (e.g. 'kaycapitals', 'casperclipping'). Lowercase, no @.",
-  "strategy_type": "daily_signal" | "generic_strategy",
+  "strategy_type": "daily_signal" | "daily_penny" | "generic_strategy",
   "video_heading": "Short title summarizing the strategy (e.g. '4 stocks day-trading gameplan for Thursday')",
   "trade_date": "YYYY-MM-DD if date-specific (daily_signal), else null",
   "timeframe": "DAY_TRADE" | "SWING_TRADE" | "LONG_TERM" | null,
@@ -43,6 +43,7 @@ Return a single JSON object (no markdown, no code block) with these fields. Use 
 
 Rules:
 - daily_signal: video gives concrete levels (entry, stop, target) for specific stocks today. Use extracted_signals.
+- daily_penny: video discusses a penny stock / small-cap watchlist for the day — stocks typically $2-$20, low float, momentum/gap plays. Creators like Ross Cameron / Warrior Trading. Use extracted_signals for the tickers mentioned as watchlist candidates (set longTriggerAbove to the current price or breakout level if given, targets optional). Key difference from daily_signal: these are low-priced, speculative momentum names — not large-cap level-based setups.
 - generic_strategy: general rules, patterns, SMC concepts (no specific levels). extracted_signals = [].
 - source_name: from intro ("Hey it's Somesh from Kay Capitals"), outro, or channel branding. Humanize (e.g. "Kay Capitals" → "Somesh | Day Trader | Investor" if known).
 - source_handle: Instagram handle if mentioned. Infer from source_name (e.g. "Casper Clipping" → "casperclipping").
@@ -50,7 +51,7 @@ Rules:
 - longTriggerAbove / shortTriggerBelow / longTargets / shortTargets: MUST be actual dollar prices, NOT percentages. META trades near $600, TSLA near $300-$500, NVDA near $100-$200, SPY near $500-$700, QQQ near $400-$600. If the numbers you extracted are in single digits or look like percentages (e.g. 5.96, 6.1), you made an error — re-read the transcript and extract the real dollar price. A number like "6.1" for META means nothing; the real level would be something like $610 or $608.
 - ATH / all-time-high language: if the transcript says "above ATH" or "new all-time high" for the long trigger without giving a specific number, set longTriggerAbove = shortTriggerBelow (use the short trigger level as a proxy). If shortTriggerBelow is also missing, use shortTargets[0]. Never leave BOTH longTriggerAbove and shortTriggerBelow null when the transcript gives any price levels for that ticker.
 - "below X" always maps to shortTriggerBelow=X. "above X" always maps to longTriggerAbove=X. Extract these directly from the transcript — do not leave them null if a number is present.
-- trade_date: only for daily_signal when date is explicit (e.g. "for Thursday", "today's levels").
+- trade_date: for daily_signal or daily_penny when date is explicit (e.g. "for Thursday", "today's levels", "Monday morning watchlist").
 - execution_window_et: only if time window is specified (e.g. "9:30-9:35 levels", "first candle rule").
 - setup_type: how the influencer intends execution:
     "breakout"     — enter when price breaks above/below a pre-market high/low with volume (most common for daily signals with trigger levels)
@@ -186,11 +187,16 @@ Deno.serve(async (req) => {
 
   // ── Step 2: LLM extraction — transcript already saved, so failures are non-fatal ──
   const todayEt = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' }); // YYYY-MM-DD
+  const PENNY_CREATOR_NAMES = ['Ross Cameron', 'Warrior Trading'];
+  const PENNY_CREATOR_HANDLES = ['warrior_trading', 'warriortrading', 'rosscameron'];
+  const isPennyCreator = (uploaderName && PENNY_CREATOR_NAMES.some(n => uploaderName.includes(n)))
+    || (uploaderHandle && PENNY_CREATOR_HANDLES.includes(uploaderHandle.toLowerCase()));
   const contextLines = [
     `Today's date (ET): ${todayEt}`,
     uploaderName ? `Creator name (from platform metadata, authoritative): ${uploaderName}` : null,
     uploaderHandle ? `Creator handle (from platform metadata, authoritative): @${uploaderHandle}` : null,
     videoDescription ? `Video caption/description: ${videoDescription}` : null,
+    isPennyCreator ? `HINT: This creator is a known penny stock / small-cap momentum trader. Use strategy_type = "daily_penny" if the video discusses a watchlist or specific penny stock tickers. Only use "generic_strategy" if the video is purely educational with no ticker mentions.` : null,
   ].filter(Boolean).join('\n');
   const tomorrowEtForPrompt = (() => {
     const d = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }));
@@ -253,8 +259,9 @@ Deno.serve(async (req) => {
     }
   }
 
-  const extractedStrategyType = extracted.strategy_type === 'daily_signal' || extracted.strategy_type === 'generic_strategy'
-    ? extracted.strategy_type : null;
+  const VALID_STRATEGY_TYPES = ['daily_signal', 'daily_penny', 'generic_strategy'] as const;
+  const extractedStrategyType = VALID_STRATEGY_TYPES.includes(extracted.strategy_type as typeof VALID_STRATEGY_TYPES[number])
+    ? (extracted.strategy_type as string) : null;
   let strategy_type = extractedStrategyType;
   const video_heading = extracted.video_heading ? String(extracted.video_heading).trim() : null;
   // Only accept ISO date strings — reject relative values like "Friday", "tomorrow", etc.
@@ -264,7 +271,7 @@ Deno.serve(async (req) => {
   // Creators often upload the next trading day's gameplan the night before (pre-market), so a
   // date 1 calendar day in the future is valid and should NOT be clamped. Anything further is
   // an LLM inference error.
-  if (trade_date && extractedStrategyType === 'daily_signal') {
+  if (trade_date && (extractedStrategyType === 'daily_signal' || extractedStrategyType === 'daily_penny')) {
     const tomorrowEt = new Date(
       new Date().toLocaleString('en-US', { timeZone: 'America/New_York' })
     );
@@ -329,8 +336,15 @@ Deno.serve(async (req) => {
   if (strategy_type === 'generic_strategy' && extracted_signals.some((s: Record<string, unknown>) =>
     s.longTriggerAbove != null || s.shortTriggerBelow != null
   )) {
-    console.warn(`[extract] Overriding strategy_type: generic_strategy → daily_signal (video has concrete price levels)`);
-    strategy_type = 'daily_signal';
+    const overrideTo = isPennyCreator ? 'daily_penny' : 'daily_signal';
+    console.warn(`[extract] Overriding strategy_type: generic_strategy → ${overrideTo} (video has concrete price levels)`);
+    strategy_type = overrideTo;
+  }
+
+  // Known penny creators: if LLM returned daily_signal instead of daily_penny, correct it
+  if (isPennyCreator && strategy_type === 'daily_signal') {
+    console.warn(`[extract] Overriding strategy_type: daily_signal → daily_penny (known penny creator)`);
+    strategy_type = 'daily_penny';
   }
 
   const summary = extracted.summary ? String(extracted.summary).trim() : null;
@@ -374,7 +388,7 @@ Deno.serve(async (req) => {
 
   // For daily_signal videos with extracted signals: auto-import into external_strategy_signals
   // so the auto-trader picks them up on trade_date. Fire-and-forget (non-blocking).
-  if (strategy_type === 'daily_signal' && extracted_signals.length > 0) {
+  if ((strategy_type === 'daily_signal' || strategy_type === 'daily_penny') && extracted_signals.length > 0) {
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
     const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
     fetch(`${supabaseUrl}/functions/v1/import-strategy-signals`, {

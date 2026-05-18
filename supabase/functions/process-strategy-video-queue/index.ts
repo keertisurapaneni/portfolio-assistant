@@ -55,9 +55,26 @@ const KNOWN_SIGNAL_HANDLES = new Set([
   'kaycapitals',
 ]);
 
+const KNOWN_PENNY_GENERATORS = new Set([
+  'Ross Cameron',
+  'Warrior Trading',
+]);
+
+const KNOWN_PENNY_HANDLES = new Set([
+  'warrior_trading',
+  'warriortrading',
+  'rosscameron',
+]);
+
 function isKnownSignalGenerator(sourceName: string, sourceHandle: string | null): boolean {
   if (KNOWN_SIGNAL_GENERATORS.has(sourceName)) return true;
   if (sourceHandle && KNOWN_SIGNAL_HANDLES.has(sourceHandle.toLowerCase())) return true;
+  return false;
+}
+
+function isKnownPennyGenerator(sourceName: string, sourceHandle: string | null): boolean {
+  if (KNOWN_PENNY_GENERATORS.has(sourceName)) return true;
+  if (sourceHandle && KNOWN_PENNY_HANDLES.has(sourceHandle.toLowerCase())) return true;
   return false;
 }
 
@@ -184,7 +201,9 @@ Deno.serve(async (req) => {
       reel_url: parsed.platform === 'instagram' ? item.url : null,
       canonical_url: parsed.platform !== 'instagram' ? item.url : null,
       video_heading: null,
-      strategy_type: isKnownSignalGenerator(sourceName, sourceHandle) ? 'daily_signal' : null,
+      strategy_type: isKnownPennyGenerator(sourceName, sourceHandle)
+        ? 'daily_penny'
+        : isKnownSignalGenerator(sourceName, sourceHandle) ? 'daily_signal' : null,
       timeframe: null,
       applicable_timeframes: [],
       status: 'tracked',

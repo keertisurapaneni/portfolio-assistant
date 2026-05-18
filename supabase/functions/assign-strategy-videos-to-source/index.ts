@@ -183,7 +183,7 @@ Deno.serve(async (req) => {
     source_name: sourceName,
     updated_at: new Date().toISOString(),
   };
-  if (body.strategy_type === 'daily_signal' || body.strategy_type === 'generic_strategy') {
+  if (body.strategy_type === 'daily_signal' || body.strategy_type === 'daily_penny' || body.strategy_type === 'generic_strategy') {
     updatePayload.strategy_type = body.strategy_type;
   }
   const { error: updateErr } = await supabase

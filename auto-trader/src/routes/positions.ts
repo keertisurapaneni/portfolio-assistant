@@ -7,17 +7,14 @@
 
 import { Router } from 'express';
 import { requestPositions } from '../ib-connection.js';
+import { finnhubFetch, FINNHUB_KEY, FINNHUB_BASE } from '../lib/finnhub.js';
 
 const router = Router();
 
-const FINNHUB_BASE = 'https://finnhub.io/api/v1';
-const FINNHUB_KEY = process.env.FINNHUB_API_KEY ?? '';
-
 /** In-memory price cache: symbol → { price, fetchedAt } */
 const priceCache = new Map<string, { price: number | null; fetchedAt: number }>();
-const CACHE_TTL_MS = 5 * 60_000; // 5-minute TTL — re-fetch at most once per 5 minutes
+const CACHE_TTL_MS = 5 * 60_000;
 
-/** Fetch current price for a ticker from Finnhub. Returns null on failure. */
 async function getQuotePrice(symbol: string): Promise<number | null> {
   if (!FINNHUB_KEY) return null;
 
@@ -26,18 +23,12 @@ async function getQuotePrice(symbol: string): Promise<number | null> {
     return cached.price;
   }
 
-  try {
-    const res = await fetch(
-      `${FINNHUB_BASE}/quote?symbol=${symbol.toUpperCase()}&token=${FINNHUB_KEY}`
-    );
-    if (!res.ok) return null;
-    const data = await res.json() as { c?: number };
-    const price = data.c && data.c > 0 ? data.c : null;
-    priceCache.set(symbol, { price, fetchedAt: Date.now() });
-    return price;
-  } catch {
-    return null;
-  }
+  const data = await finnhubFetch<{ c?: number }>(
+    `${FINNHUB_BASE}/quote?symbol=${symbol.toUpperCase()}&token=${FINNHUB_KEY}`,
+  );
+  const price = data?.c && data.c > 0 ? data.c : null;
+  priceCache.set(symbol, { price, fetchedAt: Date.now() });
+  return price;
 }
 
 const delay = (ms: number) => new Promise<void>(r => setTimeout(r, ms));

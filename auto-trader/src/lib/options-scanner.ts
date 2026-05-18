@@ -40,9 +40,9 @@ import { isConnected, placeOptionsOrder, getDefaultAccount } from '../ib-connect
 import { fetchDailyBars, fetchQuote, sma as calcSma, estimateHistoricalVol } from './yahoo-finance.js';
 import { getFundamentalGrade } from './fundamental-grader.js';
 
-// ── Constants ────────────────────────────────────────────
+import { finnhubFetch, FINNHUB_KEY } from './finnhub.js';
 
-const FINNHUB_KEY = process.env.FINNHUB_API_KEY ?? '';
+// ── Constants ────────────────────────────────────────────
 const MIN_STOCK_PRICE = 20;
 const MIN_PREMIUM_YIELD_PCT = 1.5;        // at least 1.5% of strike per 30 days (regular stocks)
 const MIN_PREMIUM_YIELD_INDEX_ETF = 1.2;  // index ETFs (VPU/VYM/VIG): lower floor — assignment is a feature
@@ -221,27 +221,8 @@ const MAX_POSITIONS_SAME_EXPIRY_WEEK = 3;
 
 // ── Finnhub Helpers ──────────────────────────────────────
 
-// Finnhub free tier = 60 calls/min. Rate-limit to ~50/min (1200ms gap) with
-// a simple queue so bursts don't exhaust the quota mid-scan.
-let _lastFinnhubCall = 0;
-const FINNHUB_MIN_GAP_MS = 800;
-
-async function fetchJson<T>(url: string): Promise<T | null> {
-  try {
-    const now = Date.now();
-    const wait = FINNHUB_MIN_GAP_MS - (now - _lastFinnhubCall);
-    if (wait > 0) await new Promise(r => setTimeout(r, wait));
-    _lastFinnhubCall = Date.now();
-    const res = await fetch(url);
-    if (!res.ok) return null;
-    return await res.json() as T;
-  } catch {
-    return null;
-  }
-}
-
 async function getStockQuote(ticker: string): Promise<{ price: number; change: number; pctChange: number } | null> {
-  const data = await fetchJson<{ c: number; d: number; dp: number }>(
+  const data = await finnhubFetch<{ c: number; d: number; dp: number }>(
     `https://finnhub.io/api/v1/quote?symbol=${ticker}&token=${FINNHUB_KEY}`
   );
   if (!data?.c) return null;
@@ -249,7 +230,7 @@ async function getStockQuote(ticker: string): Promise<{ price: number; change: n
 }
 
 async function getRSI(ticker: string): Promise<{ rsi: number; prevRsi: number } | null> {
-  const basic = await fetchJson<{ rsi?: number[] }>(
+  const basic = await finnhubFetch<{ rsi?: number[] }>(
     `https://finnhub.io/api/v1/indicator?symbol=${ticker}&resolution=D&from=${Math.floor(Date.now() / 1000) - 86400 * 60}&to=${Math.floor(Date.now() / 1000)}&indicator=rsi&timeperiod=14&token=${FINNHUB_KEY}`
   );
   if (!basic?.rsi || basic.rsi.length < 2) return null;
@@ -259,7 +240,7 @@ async function getRSI(ticker: string): Promise<{ rsi: number; prevRsi: number } 
 }
 
 async function getEarningsDate(ticker: string): Promise<Date | null> {
-  const data = await fetchJson<{ earningsCalendar?: Array<{ date?: string }> }>(
+  const data = await finnhubFetch<{ earningsCalendar?: Array<{ date?: string }> }>(
     `https://finnhub.io/api/v1/calendar/earnings?symbol=${ticker}&token=${FINNHUB_KEY}`
   );
   const entries = data?.earningsCalendar ?? [];
@@ -271,7 +252,7 @@ async function getEarningsDate(ticker: string): Promise<Date | null> {
 }
 
 async function getVix(): Promise<number> {
-  const data = await fetchJson<{ c: number }>(
+  const data = await finnhubFetch<{ c: number }>(
     `https://finnhub.io/api/v1/quote?symbol=VIX&token=${FINNHUB_KEY}`
   );
   return data?.c ?? 20;
@@ -368,11 +349,11 @@ async function getNewsSentiment(ticker: string): Promise<NewsSentimentResult> {
   const from = new Date(Date.now() - NEWS_LOOKBACK_DAYS * 86400_000).toISOString().slice(0, 10);
 
   const [sentiment, news] = await Promise.all([
-    fetchJson<{
+    finnhubFetch<{
       sentiment?: { bullishPercent?: number; bearishPercent?: number };
       buzz?: { articlesInLastWeek?: number };
     }>(`https://finnhub.io/api/v1/news-sentiment?symbol=${ticker}&token=${FINNHUB_KEY}`),
-    fetchJson<Array<{ headline?: string; summary?: string }>>(
+    finnhubFetch<Array<{ headline?: string; summary?: string }>>(
       `https://finnhub.io/api/v1/company-news?symbol=${ticker}&from=${from}&to=${to}&token=${FINNHUB_KEY}`
     ),
   ]);
@@ -408,7 +389,7 @@ const sectorCache = new Map<string, string>();
 
 async function getStockSector(ticker: string): Promise<string> {
   if (sectorCache.has(ticker)) return sectorCache.get(ticker)!;
-  const data = await fetchJson<{ finnhubIndustry?: string }>(
+  const data = await finnhubFetch<{ finnhubIndustry?: string }>(
     `https://finnhub.io/api/v1/stock/profile2?symbol=${ticker}&token=${FINNHUB_KEY}`
   );
   const sector = data?.finnhubIndustry ?? 'Unknown';

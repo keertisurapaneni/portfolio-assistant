@@ -12,8 +12,7 @@
  */
 
 import { getSupabase } from './supabase.js';
-
-const FINNHUB_KEY = process.env.FINNHUB_API_KEY ?? '';
+import { finnhubFetch, FINNHUB_KEY } from './finnhub.js';
 const SUPABASE_URL = process.env.SUPABASE_URL ?? '';
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY ?? '';
 
@@ -33,14 +32,12 @@ function hoursAgoUnix(hours: number): number {
 
 async function fetchMarketNews() {
   try {
-    const from = hoursAgoUnix(14); // slightly wider window to catch overnight
+    const from = hoursAgoUnix(14);
     const url = `https://finnhub.io/api/v1/news?category=general&minId=${from}&token=${FINNHUB_KEY}`;
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`Finnhub news ${res.status}`);
-    const data = await res.json() as Array<{
+    const data = await finnhubFetch<Array<{
       headline: string; summary: string; related: string; datetime: number; source: string;
-    }>;
-    // Keep last 12h, deduplicate by headline
+    }>>(url);
+    if (!data) return [];
     const cutoff = hoursAgoUnix(12);
     const seen = new Set<string>();
     return data
@@ -56,12 +53,10 @@ async function fetchMarketNews() {
 async function fetchEarningsToday(dateStr: string) {
   try {
     const url = `https://finnhub.io/api/v1/calendar/earnings?from=${dateStr}&to=${dateStr}&token=${FINNHUB_KEY}`;
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`Finnhub earnings ${res.status}`);
-    const data = await res.json() as { earningsCalendar?: Array<{
+    const data = await finnhubFetch<{ earningsCalendar?: Array<{
       symbol: string; date: string; epsEstimate?: number; hour?: string;
-    }> };
-    return (data.earningsCalendar ?? []).slice(0, 30);
+    }> }>(url);
+    return (data?.earningsCalendar ?? []).slice(0, 30);
   } catch (err) {
     log(`Earnings fetch failed: ${err}`);
     return [];
@@ -71,12 +66,10 @@ async function fetchEarningsToday(dateStr: string) {
 async function fetchEconomicEventsToday(dateStr: string) {
   try {
     const url = `https://finnhub.io/api/v1/calendar/economic?from=${dateStr}&to=${dateStr}&token=${FINNHUB_KEY}`;
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`Finnhub econ ${res.status}`);
-    const data = await res.json() as { economicCalendar?: Array<{
+    const data = await finnhubFetch<{ economicCalendar?: Array<{
       event: string; time: string; prior?: string; estimate?: string; impact?: string;
-    }> };
-    return (data.economicCalendar ?? []).map(e => ({
+    }> }>(url);
+    return (data?.economicCalendar ?? []).map(e => ({
       event: e.event,
       time: e.time,
       prior: e.prior ?? null,

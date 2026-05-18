@@ -10,7 +10,7 @@
  * then halve day-trade position sizes on those days to reduce risk.
  */
 
-const FINNHUB_KEY = process.env.FINNHUB_API_KEY ?? '';
+import { finnhubFetch, FINNHUB_KEY } from './finnhub.js';
 
 // Events that historically cause outsized intraday volatility.
 // Matched case-insensitively against the Finnhub event description.
@@ -63,12 +63,10 @@ export async function getEconDayProfile(): Promise<EconDayProfile> {
 
   try {
     const url = `https://finnhub.io/api/v1/calendar/economic?from=${dateStr}&to=${dateStr}&token=${FINNHUB_KEY}`;
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`Finnhub econ calendar ${res.status}`);
-
-    const data = await res.json() as {
+    const data = await finnhubFetch<{
       economicCalendar?: Array<{ event: string; time: string; impact?: string }>;
-    };
+    }>(url);
+    if (!data) throw new Error('Finnhub econ calendar: no data');
 
     const events = (data.economicCalendar ?? []).map(e => ({
       event: e.event,

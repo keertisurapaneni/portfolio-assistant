@@ -4,7 +4,7 @@
  * Results are cached in memory with 24h TTL.
  */
 
-const FINNHUB_KEY = process.env.FINNHUB_API_KEY ?? '';
+import { finnhubFetch, FINNHUB_KEY } from './finnhub.js';
 
 export type FundamentalGrade = 'A' | 'B' | 'C' | 'D' | 'F';
 
@@ -111,17 +111,13 @@ export async function getFundamentalGrade(ticker: string, isIndexEtf = false): P
 
   let metrics: Record<string, number | null> = {};
   try {
-    const wait = 900 - (Date.now() - lastCall);
-    if (wait > 0) await new Promise(r => setTimeout(r, wait));
-    lastCall = Date.now();
-
-    const res = await fetch(`https://finnhub.io/api/v1/stock/metric?symbol=${ticker}&metric=all&token=${FINNHUB_KEY}`);
-    if (res.ok) {
-      const data: FinnhubMetricAll = await res.json();
+    const data = await finnhubFetch<FinnhubMetricAll>(
+      `https://finnhub.io/api/v1/stock/metric?symbol=${ticker}&metric=all&token=${FINNHUB_KEY}`,
+    );
+    if (data) {
       metrics = data.metric ?? {};
     }
   } catch {
-    // API failure → return neutral C grade
     return { grade: 'C', score: 50, breakdown: {} };
   }
 
@@ -148,8 +144,6 @@ export async function getFundamentalGrade(ticker: string, isIndexEtf = false): P
   cache.set(ticker, { result, ts: Date.now() });
   return result;
 }
-
-let lastCall = 0;
 
 export function clearFundamentalCache(): void {
   cache.clear();

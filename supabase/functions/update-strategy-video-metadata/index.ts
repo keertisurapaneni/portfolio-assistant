@@ -55,7 +55,7 @@ Deno.serve(async (req) => {
   if (sourceName) updates.source_name = sourceName;
 
   const strategyType = body.strategy_type;
-  if (strategyType === 'daily_signal' || strategyType === 'generic_strategy') {
+  if (strategyType === 'daily_signal' || strategyType === 'daily_penny' || strategyType === 'generic_strategy') {
     updates.strategy_type = strategyType;
   }
 
