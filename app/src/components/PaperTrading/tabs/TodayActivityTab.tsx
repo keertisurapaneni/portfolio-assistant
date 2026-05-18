@@ -248,7 +248,11 @@ export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], 
       );
       if (matched) {
         countedTradeIds.add(matched.id);
-        sum += matched.pnl ?? 0;
+        // Only count P&L from trades with a confirmed exit price.
+        // A trade marked CLOSED with pnl but no close_price is a failed close (DB out of sync with IB).
+        if (matched.pnl != null && matched.close_price != null) {
+          sum += matched.pnl;
+        }
       } else if (AUTO_CLOSE.has(ev.source ?? '') && ev.metadata) {
         const meta = ev.metadata as { pnl?: number; realizedPnl?: number; gainPct?: number; qty?: number; entryPrice?: number };
         const metaPnl = meta.pnl ?? meta.realizedPnl
