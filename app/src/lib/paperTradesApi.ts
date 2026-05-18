@@ -191,6 +191,19 @@ export async function getActiveTrades(): Promise<PaperTrade[]> {
   return (data ?? []) as PaperTrade[];
 }
 
+/** Get closed trade P&L time series (lightweight — just dates and P&L) */
+export async function getClosedTradePnlSeries(accountView: AccountView = 'paper'): Promise<Array<{date: string; pnl: number}>> {
+  const table = tradesTableName(accountView);
+  const { data } = await supabase
+    .from(table)
+    .select('closed_at, pnl')
+    .not('pnl', 'is', null)
+    .not('closed_at', 'is', null)
+    .in('status', ['TARGET_HIT', 'STOPPED', 'CLOSED'])
+    .order('closed_at', { ascending: true });
+  return (data ?? []).map(t => ({ date: t.closed_at, pnl: t.pnl }));
+}
+
 /** Get all trades (most recent first) */
 export async function getAllTrades(limit = 50, accountView: AccountView = 'paper'): Promise<PaperTradeWithAccount[]> {
   const table = tradesTableName(accountView);
@@ -1533,6 +1546,34 @@ export async function expireStaleSignals(): Promise<number> {
   if (e2) console.warn('[expireStaleSignals] execute_on_date sweep failed:', e2.message);
 
   return ((byTime ?? []).length + (byDate ?? []).length + byWeekend.length);
+}
+
+// ── MFE/MAE Performance Data ─────────────────────────────
+
+export interface MfeMaeDataPoint {
+  ticker: string;
+  maxRunup: number;
+  maxDrawdown: number;
+  realizedReturn: number;
+  strategy: string;
+}
+
+export async function getMfeMaeData(accountView: AccountView = 'paper'): Promise<MfeMaeDataPoint[]> {
+  const { data } = await supabase
+    .from('trade_performance_log')
+    .select('ticker, max_runup_pct_during_hold, max_drawdown_pct_during_hold, realized_return_pct, strategy')
+    .not('max_runup_pct_during_hold', 'is', null)
+    .not('max_drawdown_pct_during_hold', 'is', null)
+    .eq('account_type', accountView === 'live' ? 'live' : 'paper')
+    .order('created_at', { ascending: false })
+    .limit(500);
+  return (data ?? []).map(t => ({
+    ticker: t.ticker,
+    maxRunup: t.max_runup_pct_during_hold,
+    maxDrawdown: t.max_drawdown_pct_during_hold,
+    realizedReturn: t.realized_return_pct,
+    strategy: t.strategy,
+  }));
 }
 
 // ── Portfolio Snapshots ──────────────────────────────────
