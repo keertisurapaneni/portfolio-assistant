@@ -283,7 +283,7 @@ export function startScheduler(): void {
   });
 
   // Transcript ingest: every 10 min, process strategy_videos with null video_heading
-  const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
+  const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
   const ingestScript = resolve(projectRoot, 'scripts', 'ingest_video.py');
   if (existsSync(ingestScript)) {
     cron.schedule('*/10 * * * *', () => {

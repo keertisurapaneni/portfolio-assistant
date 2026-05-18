@@ -1,6 +1,7 @@
 /**
  * Process pending strategy_video_queue items: create minimal strategy_videos entries.
- * Category (daily_signal vs generic_strategy) is set later when transcript is available.
+ * Known signal generators are auto-categorized as daily_signal at creation time.
+ * Other sources get strategy_type: null — Groq classifies them when transcript is available.
  */
 
 import { createClient } from 'jsr:@supabase/supabase-js@2';
@@ -43,6 +44,22 @@ const IG_SYSTEM_PATHS = new Set([
   'reel', 'p', 'stories', 'explore', 'accounts', 'direct', 'static',
   'rsrc.php', 'favicon.ico', 'about', 'legal', 'privacy', 'help',
 ]);
+
+const KNOWN_SIGNAL_GENERATORS = new Set([
+  'Somesh | Day Trader | Investor',
+  'Kay Capitals',
+]);
+
+const KNOWN_SIGNAL_HANDLES = new Set([
+  'kaycapitalz',
+  'kaycapitals',
+]);
+
+function isKnownSignalGenerator(sourceName: string, sourceHandle: string | null): boolean {
+  if (KNOWN_SIGNAL_GENERATORS.has(sourceName)) return true;
+  if (sourceHandle && KNOWN_SIGNAL_HANDLES.has(sourceHandle.toLowerCase())) return true;
+  return false;
+}
 
 /** Returns true if the string looks like a CDN path or system resource (not a real IG handle) */
 function isIgSystemPath(handle: string): boolean {
@@ -167,7 +184,7 @@ Deno.serve(async (req) => {
       reel_url: parsed.platform === 'instagram' ? item.url : null,
       canonical_url: parsed.platform !== 'instagram' ? item.url : null,
       video_heading: null,
-      strategy_type: null,
+      strategy_type: isKnownSignalGenerator(sourceName, sourceHandle) ? 'daily_signal' : null,
       timeframe: null,
       applicable_timeframes: [],
       status: 'tracked',
