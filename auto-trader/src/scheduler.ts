@@ -676,6 +676,16 @@ async function closeAllDayTrades(config: AutoTraderConfig): Promise<void> {
           continue;
         }
 
+        // Cancel bracket TP/SL orders to prevent duplicate sells during hard close
+        if (trade.ib_tp_order_id) {
+          try { conn.cancelOrder(parseInt(trade.ib_tp_order_id, 10)); log(`${trade.ticker}: EOD — cancelled bracket TP #${trade.ib_tp_order_id}`); }
+          catch (e) { log(`${trade.ticker}: EOD — cancel TP #${trade.ib_tp_order_id} failed: ${e instanceof Error ? e.message : 'unknown'}`); }
+        }
+        if (trade.ib_sl_order_id) {
+          try { conn.cancelOrder(parseInt(trade.ib_sl_order_id, 10)); log(`${trade.ticker}: EOD — cancelled bracket SL #${trade.ib_sl_order_id}`); }
+          catch (e) { log(`${trade.ticker}: EOD — cancel SL #${trade.ib_sl_order_id} failed: ${e instanceof Error ? e.message : 'unknown'}`); }
+        }
+
         let fillResult: { avgFillPrice: number } | null = null;
         try {
           fillResult = await conn.placeMarketOrder({ symbol: trade.ticker, side: closeSide, quantity: qty });
@@ -762,6 +772,16 @@ async function softCloseDayTrades(positions: EnrichedPosition[]): Promise<void> 
       const closeSide = isBuy ? 'SELL' : 'BUY';
       const qty       = trade.quantity ?? 0;
       if (qty <= 0) continue;
+
+      // Cancel bracket TP/SL orders to prevent duplicate sells during soft close
+      if (trade.ib_tp_order_id) {
+        try { conn.cancelOrder(parseInt(trade.ib_tp_order_id, 10)); log(`${trade.ticker}: [SoftClose] cancelled bracket TP #${trade.ib_tp_order_id}`); }
+        catch (e) { log(`${trade.ticker}: [SoftClose] cancel TP #${trade.ib_tp_order_id} failed: ${e instanceof Error ? e.message : 'unknown'}`); }
+      }
+      if (trade.ib_sl_order_id) {
+        try { conn.cancelOrder(parseInt(trade.ib_sl_order_id, 10)); log(`${trade.ticker}: [SoftClose] cancelled bracket SL #${trade.ib_sl_order_id}`); }
+        catch (e) { log(`${trade.ticker}: [SoftClose] cancel SL #${trade.ib_sl_order_id} failed: ${e instanceof Error ? e.message : 'unknown'}`); }
+      }
 
       try {
         let fillResult: { avgFillPrice: number } | null = null;
@@ -5553,6 +5573,16 @@ async function checkDayTradeTrailingStops(
       const closeSide = isBuy ? 'SELL' : 'BUY';
       const qty       = trade.quantity ?? 0;
       if (qty <= 0) continue;
+
+      // Cancel bracket TP/SL orders to prevent duplicate sells
+      if (trade.ib_tp_order_id) {
+        try { conn.cancelOrder(parseInt(trade.ib_tp_order_id, 10)); log(`${trade.ticker}: trailing stop — cancelled bracket TP #${trade.ib_tp_order_id}`); }
+        catch (e) { log(`${trade.ticker}: trailing stop — cancel TP #${trade.ib_tp_order_id} failed: ${e instanceof Error ? e.message : 'unknown'}`); }
+      }
+      if (trade.ib_sl_order_id) {
+        try { conn.cancelOrder(parseInt(trade.ib_sl_order_id, 10)); log(`${trade.ticker}: trailing stop — cancelled bracket SL #${trade.ib_sl_order_id}`); }
+        catch (e) { log(`${trade.ticker}: trailing stop — cancel SL #${trade.ib_sl_order_id} failed: ${e instanceof Error ? e.message : 'unknown'}`); }
+      }
 
       try {
         const { avgFillPrice } = await conn.placeMarketOrder({ symbol: trade.ticker, side: closeSide, quantity: qty });

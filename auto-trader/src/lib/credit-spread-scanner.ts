@@ -473,6 +473,44 @@ export async function manageCreditSpreadPositions(): Promise<void> {
       if (closeReason) {
         console.log(`[Credit Spread Manager] ${pos.ticker} → ${closeReason} (P&L: $${pnlTotal.toFixed(0)}, ${pnlPctOfMaxGain.toFixed(0)}% of max gain, ${dte} DTE)`);
 
+        // Place IB buy-to-close spread order before marking CLOSED
+        let ibCloseOrderId: number | null = null;
+        if (isConnected() && pos.spread_short_strike && pos.spread_long_strike && pos.option_expiry) {
+          const spreadRight = pos.spread_type === 'BULL_PUT' ? 'P' as const : 'C' as const;
+          const spreadExpiry = pos.option_expiry.replace(/-/g, '');
+          const closeLimit = Math.max(0.01, currentSpreadValue * 1.05);
+          try {
+            const closeResult = await placeVerticalSpreadOrder({
+              symbol: pos.ticker,
+              right: spreadRight,
+              sellStrike: pos.spread_short_strike,
+              buyStrike: pos.spread_long_strike,
+              expiry: spreadExpiry,
+              contracts: contracts,
+              limitPrice: closeLimit,
+              action: 'BUY',
+              account: getDefaultAccount() ?? undefined,
+            });
+            ibCloseOrderId = closeResult.orderId;
+            console.log(`[Credit Spread Manager] IB buy-to-close dispatched for ${pos.ticker} (order #${ibCloseOrderId})`);
+          } catch (ibErr) {
+            console.warn(`[Credit Spread Manager] IB buy-to-close FAILED for ${pos.ticker}: ${ibErr instanceof Error ? ibErr.message : ibErr}`);
+          }
+        }
+
+        if (!ibCloseOrderId && isConnected()) {
+          console.warn(`[Credit Spread Manager] ${pos.ticker} — close trigger ${closeReason} but IB close order failed, leaving position open for retry`);
+          await createAutoTradeEvent({
+            ticker: pos.ticker,
+            mode: 'CREDIT_SPREAD',
+            event_type: 'warning',
+            action: 'skipped',
+            message: `${pos.ticker} ${closeReason} triggered but IB buy-to-close failed — position left open for retry`,
+            metadata: { closeReason, pnl: pnlTotal, dte, pnlPctOfMaxGain },
+          });
+          continue;
+        }
+
         await sb.from('paper_trades').update({
           status: 'CLOSED',
           close_reason: closeReason,
@@ -482,13 +520,14 @@ export async function manageCreditSpreadPositions(): Promise<void> {
           closed_at: new Date().toISOString(),
         }).eq('id', pos.id);
 
+        const ibTag = ibCloseOrderId ? ` (IB #${ibCloseOrderId})` : ' (model-based, IB disconnected)';
         await createAutoTradeEvent({
           ticker: pos.ticker,
           mode: 'CREDIT_SPREAD',
           event_type: pnlTotal >= 0 ? 'success' : 'warning',
           action: 'closed',
-          message: `Closed ${pos.spread_type}: ${pos.spread_short_strike}/${pos.spread_long_strike} | ${closeReason} | P&L $${pnlTotal.toFixed(0)} (${pnlPctOfMaxGain.toFixed(0)}% of max)`,
-          metadata: { closeReason, pnl: pnlTotal, dte, pnlPctOfMaxGain },
+          message: `Closed ${pos.spread_type}: ${pos.spread_short_strike}/${pos.spread_long_strike} | ${closeReason} | P&L $${pnlTotal.toFixed(0)} (${pnlPctOfMaxGain.toFixed(0)}% of max)${ibTag}`,
+          metadata: { closeReason, pnl: pnlTotal, dte, pnlPctOfMaxGain, ibCloseOrderId },
         });
       }
     } catch (err) {
