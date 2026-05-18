@@ -97,6 +97,7 @@ export interface OptionsOrderParams {
   contracts: number;
   limitPrice: number;
   account?: string;
+  action?: 'BUY' | 'SELL';
 }
 
 export interface OptionsOrderResult {
@@ -129,6 +130,7 @@ export interface VerticalSpreadOrderParams {
   contracts: number;
   limitPrice: number;
   account?: string;
+  action?: 'BUY' | 'SELL';
 }
 
 export interface VerticalSpreadOrderResult {
@@ -791,8 +793,10 @@ export class IBConnection {
 
       const orderId = this.getNextOrderId();
 
+      const orderAction = params.action === 'BUY' ? OrderAction.BUY : OrderAction.SELL;
+
       const order: Order = {
-        action: OrderAction.SELL,
+        action: orderAction,
         orderType: OrderType.LMT,
         totalQuantity: contracts,
         lmtPrice: limitPrice,
@@ -810,9 +814,10 @@ export class IBConnection {
 
       this._pendingOrderCallbacks.set(orderId, { resolve, reject, timer, symbol });
 
+      const actionLabel = params.action === 'BUY' ? 'BUY' : 'SELL';
       try {
         this.ib.placeOrder(orderId, contract, order);
-        console.log(`${this.tag} Options order dispatched: SELL ${contracts}x ${symbol} $${strike}${right} ${expiry} @ $${limitPrice} (orderId=${orderId}, contract=${JSON.stringify(contract)}) — awaiting fill...`);
+        console.log(`${this.tag} Options order dispatched: ${actionLabel} ${contracts}x ${symbol} $${strike}${right} ${expiry} @ $${limitPrice} (orderId=${orderId}) — awaiting fill...`);
       } catch (err) {
         clearTimeout(timer);
         this._pendingOrderCallbacks.delete(orderId);
@@ -960,8 +965,12 @@ export class IBConnection {
 
     const orderId = this.getNextOrderId();
 
+    const spreadAction = params.action === 'BUY' ? OrderAction.BUY : OrderAction.SELL;
+    const spreadActionLabel = params.action === 'BUY' ? 'BUY' : 'SELL';
+    const creditDebitLabel = params.action === 'BUY' ? 'net debit' : 'net credit';
+
     const order: Order = {
-      action: OrderAction.SELL,
+      action: spreadAction,
       orderType: OrderType.LMT,
       totalQuantity: contracts,
       lmtPrice: limitPrice,
@@ -972,7 +981,7 @@ export class IBConnection {
 
     try {
       this.ib.placeOrder(orderId, contract, order);
-      console.log(`${this.tag} Credit spread placed: SELL ${contracts}x ${symbol} ${sellStrike}/${buyStrike}${right} ${expiry} @ $${limitPrice} net credit (orderId=${orderId})`);
+      console.log(`${this.tag} Credit spread placed: ${spreadActionLabel} ${contracts}x ${symbol} ${sellStrike}/${buyStrike}${right} ${expiry} @ $${limitPrice} ${creditDebitLabel} (orderId=${orderId})`);
       return { orderId };
     } catch (err) {
       throw err;

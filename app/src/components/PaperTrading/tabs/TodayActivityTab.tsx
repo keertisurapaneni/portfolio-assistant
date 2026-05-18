@@ -441,9 +441,10 @@ export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], 
               const AUTO_CLOSE_SOURCES = new Set(['lt_auto_sell', 'swing_expiry', 'capital_pressure']);
               const isAutoClose = AUTO_CLOSE_SOURCES.has(event.source ?? '');
               const metaPnl = isPositionSync && event.metadata ? (event.metadata as { pnl?: number }).pnl : undefined;
-              const eventPnl = metaPnl ?? matched?.pnl;
-              const pnl = eventPnl ?? null;
               const terminalStatuses = [...CLOSED_STATUSES, ...EXCLUDED_STATUSES] as string[];
+              const isRealizedClose = matched?.close_price != null || terminalStatuses.includes(matched?.status ?? '');
+              const eventPnl = metaPnl ?? (isRealizedClose ? matched?.pnl : undefined);
+              const pnl = eventPnl ?? null;
               const isClosed = isPositionSync || isAutoClose || (matched?.close_price != null) || terminalStatuses.includes(matched?.status ?? '');
               const isActive = !isClosed && matched && ['FILLED', 'PARTIAL'].includes(matched.status);
               const msg = event.message;
