@@ -13,28 +13,44 @@
 export const FINNHUB_BASE = 'https://finnhub.io/api/v1';
 export const FINNHUB_KEY = process.env.FINNHUB_API_KEY ?? '';
 
-// ── Sliding-window rate limiter ──────────────────────────
+// ── Sliding-window rate limiter (circular buffer) ─────────
+//
+// Fixed-size Float64Array avoids the O(n) array.shift() that the naive
+// approach incurs on every prune. With only 55 slots the perf difference
+// is negligible, but this is cleaner and allocation-free after init.
 
 const MAX_REQUESTS = 55;
 const WINDOW_MS = 60_000;
-const callTimestamps: number[] = [];
+
+const ringBuf = new Float64Array(MAX_REQUESTS);
+let head = 0;   // next write position
+let count = 0;  // active entries in the window
+
+function oldestIdx(): number {
+  return (head - count + MAX_REQUESTS) % MAX_REQUESTS;
+}
 
 function pruneOldTimestamps(): void {
   const cutoff = Date.now() - WINDOW_MS;
-  while (callTimestamps.length > 0 && callTimestamps[0]! < cutoff) {
-    callTimestamps.shift();
+  while (count > 0 && ringBuf[oldestIdx()]! < cutoff) {
+    count--;
   }
+}
+
+function recordCall(): void {
+  ringBuf[head] = Date.now();
+  head = (head + 1) % MAX_REQUESTS;
+  if (count < MAX_REQUESTS) count++;
 }
 
 async function waitForSlot(): Promise<void> {
   pruneOldTimestamps();
-  if (callTimestamps.length < MAX_REQUESTS) return;
+  if (count < MAX_REQUESTS) return;
 
-  const oldestTs = callTimestamps[0]!;
-  const waitMs = oldestTs + WINDOW_MS - Date.now() + 50;
+  const waitMs = ringBuf[oldestIdx()]! + WINDOW_MS - Date.now() + 50;
   if (waitMs > 0) {
     console.log(
-      `[Finnhub] Rate limit reached (${callTimestamps.length}/${MAX_REQUESTS}), waiting ${waitMs}ms...`,
+      `[Finnhub] Rate limit reached (${count}/${MAX_REQUESTS}), waiting ${waitMs}ms...`,
     );
     await new Promise(r => setTimeout(r, waitMs));
     pruneOldTimestamps();
@@ -67,6 +83,25 @@ function setCache(url: string, data: unknown): void {
   }
 }
 
+// ── Retry helpers ─────────────────────────────────────────
+
+const RETRY_DELAY_MS = 500;
+
+function isTransientError(err: unknown): boolean {
+  if (err instanceof DOMException && err.name === 'TimeoutError') return true;
+  if (err instanceof TypeError) return true; // fetch network failures
+  return false;
+}
+
+function isFinnhubErrorBody(data: unknown): boolean {
+  return (
+    data != null &&
+    typeof data === 'object' &&
+    'error' in data &&
+    typeof (data as Record<string, unknown>).error === 'string'
+  );
+}
+
 // ── Public API ────────────────────────────────────────────
 
 /**
@@ -74,7 +109,9 @@ function setCache(url: string, data: unknown): void {
  * All Finnhub calls across the auto-trader should go through this function.
  *
  * - Enforces a 55-request/60-second sliding window across ALL callers
- * - Caches responses for 2 minutes to avoid redundant API calls
+ * - Caches successful responses for 2 minutes
+ * - Retries once on transient network/timeout errors (not on API errors)
+ * - Detects Finnhub's 200-with-error-body pattern and returns null without caching
  * - Returns null on any failure (network, parse, non-200 status)
  */
 export async function finnhubFetch<T>(url: string): Promise<T | null> {
@@ -83,18 +120,40 @@ export async function finnhubFetch<T>(url: string): Promise<T | null> {
   const cached = getCached<T>(url);
   if (cached !== undefined) return cached;
 
-  await waitForSlot();
-  callTimestamps.push(Date.now());
+  let lastErr: unknown;
 
-  try {
-    const res = await fetch(url, {
-      signal: AbortSignal.timeout(12_000),
-    });
-    if (!res.ok) return null;
-    const data = (await res.json()) as T;
-    setCache(url, data);
-    return data;
-  } catch {
-    return null;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    if (attempt > 0) {
+      await new Promise(r => setTimeout(r, RETRY_DELAY_MS));
+    }
+
+    await waitForSlot();
+    recordCall();
+
+    try {
+      const res = await fetch(url, {
+        signal: AbortSignal.timeout(12_000),
+      });
+
+      // Non-200: don't retry (server said no), don't cache
+      if (!res.ok) return null;
+
+      const data = (await res.json()) as T;
+
+      // Finnhub sometimes returns {"error":"..."} with HTTP 200
+      if (isFinnhubErrorBody(data)) return null;
+
+      setCache(url, data);
+      return data;
+    } catch (err) {
+      lastErr = err;
+      if (attempt === 0 && isTransientError(err)) continue;
+      break;
+    }
   }
+
+  if (lastErr) {
+    console.warn(`[Finnhub] fetch failed after retry: ${lastErr}`);
+  }
+  return null;
 }
