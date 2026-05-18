@@ -169,6 +169,9 @@ export class IBConnection {
   private _activeRequests = 0;
   private _requestQueue: Array<() => void> = [];
 
+  private _consecutiveCode200 = 0;
+  private static readonly CODE_200_RECONNECT_THRESHOLD = 3;
+
   private get tag(): string { return `[IB:${this.label}]`; }
 
   constructor(label: AccountType, port: number, clientId: number) {
@@ -299,6 +302,20 @@ export class IBConnection {
         const msg = `IB order ${reqId} (${pending.symbol}) rejected: code=${code} ${err.message}`;
         console.error(`${this.tag} ${msg}`);
         pending.reject(new Error(msg));
+
+        if (code === 200) {
+          this._consecutiveCode200++;
+          if (this._consecutiveCode200 >= IBConnection.CODE_200_RECONNECT_THRESHOLD) {
+            console.error(`${this.tag} ⚠️ ${this._consecutiveCode200} consecutive code-200 rejections — gateway session likely degraded, forcing reconnect`);
+            this._consecutiveCode200 = 0;
+            this._connected = false;
+            this.connectionListeners.forEach(fn => fn(false));
+            try { this.ib?.disconnect(); } catch { /* ignore */ }
+            this.scheduleReconnect();
+          }
+        } else {
+          this._consecutiveCode200 = 0;
+        }
         return;
       }
 
@@ -346,6 +363,7 @@ export class IBConnection {
     ) => {
       if (status === 'Filled' && avgFillPrice > 0) {
         this._orderFillPrices.set(orderId, avgFillPrice);
+        this._consecutiveCode200 = 0;
         console.log(`${this.tag} Order ${orderId} filled @ $${avgFillPrice.toFixed(4)}`);
 
         if (this._pendingOrderCallbacks.has(orderId)) {
@@ -794,7 +812,7 @@ export class IBConnection {
 
       try {
         this.ib.placeOrder(orderId, contract, order);
-        console.log(`${this.tag} Options order dispatched: SELL ${contracts}x ${symbol} $${strike}${right} ${expiry} @ $${limitPrice} (orderId=${orderId}) — awaiting fill...`);
+        console.log(`${this.tag} Options order dispatched: SELL ${contracts}x ${symbol} $${strike}${right} ${expiry} @ $${limitPrice} (orderId=${orderId}, contract=${JSON.stringify(contract)}) — awaiting fill...`);
       } catch (err) {
         clearTimeout(timer);
         this._pendingOrderCallbacks.delete(orderId);
