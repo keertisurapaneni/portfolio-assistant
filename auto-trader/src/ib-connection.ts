@@ -1007,8 +1007,51 @@ export function getPaperConnection(): IBConnection {
   return paperConn;
 }
 
+/**
+ * Minimal stub returned when liveConn hasn't been initialized (e.g. index.ts
+ * uses the legacy connect() path instead of initConnections()). Every call
+ * site checks isConnected() and skips when false, so this prevents crashes
+ * without changing behavior.
+ */
+const disconnectedStub = Object.freeze({
+  label: 'live' as AccountType,
+  port: 4001,
+  clientId: 2,
+  isConnected: () => false,
+  getAccounts: () => [] as string[],
+  getDefaultAccount: () => null,
+  getIBApi: () => null,
+  getNextOrderId: () => 0,
+  getDailyPnL: (): AccountPnL => ({ dailyPnL: null, unrealizedPnL: null, realizedPnL: null }),
+  getOrderFillPrice: () => undefined,
+  getOrderFillPriceWithFallback: async () => undefined,
+  onConnectionChange: () => (() => {}),
+  connect: () => {},
+  disconnect: () => {},
+  acquireRequestSlot: async () => {},
+  releaseRequestSlot: () => {},
+  registerReqErrorCallback: () => {},
+  unregisterReqErrorCallback: () => {},
+  createStockContract: (symbol: string) => ({
+    symbol: symbol.toUpperCase(),
+    secType: SecType.STK,
+    exchange: 'SMART',
+    currency: 'USD',
+  }),
+  searchContract: async () => null,
+  placeBracketOrder: () => Promise.reject(new Error('Live connection not initialized')),
+  placeMarketOrder: () => Promise.reject(new Error('Live connection not initialized')),
+  placeOptionsOrder: () => Promise.reject(new Error('Live connection not initialized')),
+  placeCalendarSpreadOrder: () => Promise.reject(new Error('Live connection not initialized')),
+  placeVerticalSpreadOrder: () => Promise.reject(new Error('Live connection not initialized')),
+  cancelOrder: () => { throw new Error('Live connection not initialized'); },
+  requestPositions: () => Promise.reject(new Error('Live connection not initialized')),
+  requestOpenOrders: () => Promise.reject(new Error('Live connection not initialized')),
+  resolveOptionConId: async () => null,
+}) as unknown as IBConnection;
+
 export function getLiveConnection(): IBConnection {
-  if (!liveConn) throw new Error('Live connection not initialized — call initConnections() first');
+  if (!liveConn) return disconnectedStub;
   return liveConn;
 }
 

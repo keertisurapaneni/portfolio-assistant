@@ -162,21 +162,16 @@ Deno.serve(async (req) => {
       : 'DAY_TRADE'; // default to day trade for daily signals
 
   // Build execute_at / expires_at from execution_window_et.
-  // Influencer pre-market setups have different timing needs per setup type:
+  // Influencer pre-market setups have different timing needs per setup type.
+  // Expiry windows are generous to absorb ingestion delays (transcript download,
+  // LLM extraction, edge function processing) while still preventing stale
+  // afternoon execution.
   //
-  //   breakout      — enter when price breaks the pre-market level w/ volume
-  //                   9:35 AM start, 10:30 AM expiry (if it doesn't break in 1st hour, the setup failed)
-  //
-  //   momentum      — buy the directional move in the opening hour
-  //                   9:35 AM start, 11:00 AM expiry (full first hour of momentum)
-  //
-  //   pullback_vwap — wait for a retest of VWAP / support after the initial move
-  //                   9:35 AM start, 12:30 PM expiry (VWAP retests often come after the gap+run fades)
-  //
-  //   range         — support/resistance play, can trigger any time during regular hours
-  //                   9:35 AM start, 02:30 PM expiry (range plays work all day until late-day momentum)
-  //
-  //   default/null  — conservative default: 9:35 AM start, 11:00 AM expiry
+  //   breakout      — 9:35 AM start, 11:00 AM expiry
+  //   momentum      — 9:35 AM start, 12:00 PM expiry
+  //   pullback_vwap — 9:35 AM start, 13:00 PM expiry
+  //   range         — 9:35 AM start, 14:30 PM expiry
+  //   default/null  — 9:35 AM start, 12:00 PM expiry
   let executeAt: string | null = null;
   let expiresAt: string | null = null;
   if (executionWindow?.start) {
@@ -194,12 +189,12 @@ Deno.serve(async (req) => {
       // Expiry depends on setup type — tighter for breakout (thesis fails quickly),
       // wider for pullback/range plays that need time to develop
       const expiryBySetup: Record<string, string> = {
-        breakout:      '10:30', // didn't break in 1st hour → setup failed
-        momentum:      '11:00', // momentum fades after first hour
-        pullback_vwap: '12:30', // VWAP retest may come after the gap+run fades
-        range:         '14:30', // range plays are valid all day until late-session momentum
+        breakout:      '11:00',
+        momentum:      '12:00',
+        pullback_vwap: '13:00',
+        range:         '14:30',
       };
-      const defaultExpiry = '11:00';
+      const defaultExpiry = '12:00';
       expiresAt = toUtcTimestamp(tradeDate, expiryBySetup[setupType ?? ''] ?? defaultExpiry);
     }
   } else {
