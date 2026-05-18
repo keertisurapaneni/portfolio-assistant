@@ -16,8 +16,7 @@
  */
 
 import { getSupabase, createAutoTradeEvent } from './supabase.js';
-
-const FINNHUB_KEY = process.env.FINNHUB_API_KEY ?? '';
+import { finnhubFetch, FINNHUB_KEY } from './finnhub.js';
 const DIP_THRESHOLD_PCT = 5;      // stock down ≥5% from 20-day high = dip entry (cumulative)
 const RED_DAY_THRESHOLD_PCT = 3;  // single-session drop ≥3% = red day entry (same-day IV spike)
 const DIP_LOOKBACK_DAYS = 20;     // measure high over last 20 trading days
@@ -38,16 +37,6 @@ function resetIfNewDay() {
   }
 }
 
-async function fetchJson<T>(url: string): Promise<T | null> {
-  try {
-    const res = await fetch(url);
-    if (!res.ok) return null;
-    return await res.json() as T;
-  } catch {
-    return null;
-  }
-}
-
 interface DipCheckResult {
   ticker: string;
   price: number;
@@ -64,10 +53,10 @@ async function checkDip(ticker: string): Promise<DipCheckResult | null> {
   const from = to - 86400 * (DIP_LOOKBACK_DAYS + 10); // extra buffer
 
   const [candles, quote] = await Promise.all([
-    fetchJson<{ c?: number[]; h?: number[] }>(
+    finnhubFetch<{ c?: number[]; h?: number[] }>(
       `https://finnhub.io/api/v1/stock/candle?symbol=${ticker}&resolution=D&from=${from}&to=${to}&token=${FINNHUB_KEY}`
     ),
-    fetchJson<{ c: number; dp: number }>(
+    finnhubFetch<{ c: number; dp: number }>(
       `https://finnhub.io/api/v1/quote?symbol=${ticker}&token=${FINNHUB_KEY}`
     ),
   ]);
@@ -119,9 +108,6 @@ export async function runDipWatcher(): Promise<void> {
   for (const entry of watchlist as Array<{ ticker: string; notes: string | null }>) {
     // Skip if already alerted today
     if (alertedToday.has(entry.ticker)) continue;
-
-    // Throttle Finnhub calls
-    await new Promise(r => setTimeout(r, 400));
 
     const result = await checkDip(entry.ticker);
     if (!result?.isDip) continue;

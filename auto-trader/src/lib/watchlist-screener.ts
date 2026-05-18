@@ -23,8 +23,7 @@
  */
 
 import { getSupabase, createAutoTradeEvent } from './supabase.js';
-
-const FINNHUB_KEY = process.env.FINNHUB_API_KEY ?? '';
+import { finnhubFetch, FINNHUB_KEY } from './finnhub.js';
 
 // Curated universe of S&P 500 / Nasdaq 100 candidates beyond what's already on the watchlist.
 // Covers dividend aristocrats, large-cap tech, quality growth, and high-IV momentum names.
@@ -65,19 +64,7 @@ interface FinnhubProfile {
   exchange?: string;
 }
 
-let _lastCall = 0;
-async function fetchJson<T>(url: string): Promise<T | null> {
-  try {
-    const wait = 900 - (Date.now() - _lastCall);
-    if (wait > 0) await new Promise(r => setTimeout(r, wait));
-    _lastCall = Date.now();
-    const res = await fetch(url);
-    if (!res.ok) return null;
-    return res.json() as Promise<T>;
-  } catch {
-    return null;
-  }
-}
+const fetchJson = finnhubFetch;
 
 function assignTier(beta: number): 'STABLE' | 'GROWTH' | 'HIGH_VOL' {
   if (beta < 0.9) return 'STABLE';

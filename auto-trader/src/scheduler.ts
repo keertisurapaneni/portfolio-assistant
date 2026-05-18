@@ -97,6 +97,7 @@ import { evaluateVwapAlignment, detectVwapReclaim } from './lib/vwap.js';
 import { checkTrendFilter } from './lib/trend-filter.js';
 import { getStreakMultiplier } from './lib/streak-tracker.js';
 import { getEconDayProfile } from './lib/econ-calendar.js';
+import { finnhubFetch } from './lib/finnhub.js';
 import { warmPositionPriceCache } from './routes/positions.js';
 import { generateMorningBrief } from './lib/morning-brief.js';
 import { validateOrder } from './lib/validateOrder.js';
@@ -188,7 +189,7 @@ interface StrategyVideoRecord {
   reelUrl?: string;
   canonicalUrl?: string;
   videoHeading?: string;
-  strategyType?: 'daily_signal' | 'generic_strategy';
+  strategyType?: 'daily_signal' | 'daily_penny' | 'generic_strategy';
   timeframe?: 'DAY_TRADE' | 'SWING_TRADE' | 'LONG_TERM';
   applicableTimeframes?: Array<'DAY_TRADE' | 'SWING_TRADE' | 'LONG_TERM'>;
   executionWindowEt?: {
@@ -1544,7 +1545,7 @@ async function loadStrategyVideos(): Promise<StrategyVideoRecord[]> {
     reelUrl: r.reel_url ?? undefined,
     canonicalUrl: r.canonical_url ?? undefined,
     videoHeading: r.video_heading ?? undefined,
-    strategyType: (r.strategy_type === 'daily_signal' || r.strategy_type === 'generic_strategy' ? r.strategy_type : undefined) as StrategyVideoRecord['strategyType'],
+    strategyType: (r.strategy_type === 'daily_signal' || r.strategy_type === 'daily_penny' || r.strategy_type === 'generic_strategy' ? r.strategy_type : undefined) as StrategyVideoRecord['strategyType'],
     timeframe: (r.timeframe === 'DAY_TRADE' || r.timeframe === 'SWING_TRADE' || r.timeframe === 'LONG_TERM' ? r.timeframe : undefined) as StrategyVideoRecord['timeframe'],
     applicableTimeframes: (() => {
       const arr = r.applicable_timeframes ?? [];
@@ -1559,9 +1560,9 @@ async function loadStrategyVideos(): Promise<StrategyVideoRecord[]> {
     status: 'tracked',
   }));
 
-  // daily_signal videos expire after their trade date; generic_strategy are ongoing
+  // daily_signal / daily_penny videos expire after their trade date; generic_strategy are ongoing
   return mapped.filter(v => {
-    if (v.strategyType === 'daily_signal' && v.tradeDate) {
+    if ((v.strategyType === 'daily_signal' || v.strategyType === 'daily_penny') && v.tradeDate) {
       const tradeDate = normalizeDateToEtIso(v.tradeDate);
       if (tradeDate && tradeDate < todayET) return false; // expired
     }
@@ -1573,7 +1574,7 @@ async function autoQueueDailySignalsFromTrackedVideos(): Promise<void> {
   const todayET = getETDateString();
   const videos = await loadStrategyVideos();
   const dailyVideos = videos.filter(v =>
-    v.strategyType === 'daily_signal' &&
+    (v.strategyType === 'daily_signal' || v.strategyType === 'daily_penny') &&
     normalizeDateToEtIso(v.tradeDate) === todayET &&
     Array.isArray(v.extractedSignals) &&
     (v.extractedSignals?.length ?? 0) > 0
@@ -2055,14 +2056,10 @@ async function shouldMarkStrategyX(signal: ExternalStrategySignal): Promise<{
 
 async function getQuotePrice(symbol: string): Promise<number | null> {
   if (!FINNHUB_KEY) return null;
-  try {
-    const res = await fetch(
-      `${FINNHUB_BASE}/quote?symbol=${symbol.toUpperCase()}&token=${FINNHUB_KEY}`
-    );
-    if (!res.ok) return null;
-    const data = await res.json() as { c?: number };
-    return data.c && data.c > 0 ? data.c : null;
-  } catch { return null; }
+  const data = await finnhubFetch<{ c?: number }>(
+    `${FINNHUB_BASE}/quote?symbol=${symbol.toUpperCase()}&token=${FINNHUB_KEY}`,
+  );
+  return data?.c && data.c > 0 ? data.c : null;
 }
 
 // ── Swing entry log (post-trade metrics — collect only) ──
@@ -2774,18 +2771,14 @@ async function getTickerSector(ticker: string): Promise<string | null> {
   const cached = _sectorCache.get(ticker.toUpperCase());
   if (cached) return cached;
   if (!FINNHUB_KEY) return null;
-  try {
-    const res = await fetch(
-      `${FINNHUB_BASE}/stock/profile2?symbol=${ticker.toUpperCase()}&token=${FINNHUB_KEY}`
-    );
-    if (!res.ok) return null;
-    const data = await res.json() as { finnhubIndustry?: string };
-    if (data.finnhubIndustry) {
-      _sectorCache.set(ticker.toUpperCase(), data.finnhubIndustry);
-      return data.finnhubIndustry;
-    }
-    return null;
-  } catch { return null; }
+  const data = await finnhubFetch<{ finnhubIndustry?: string }>(
+    `${FINNHUB_BASE}/stock/profile2?symbol=${ticker.toUpperCase()}&token=${FINNHUB_KEY}`,
+  );
+  if (data?.finnhubIndustry) {
+    _sectorCache.set(ticker.toUpperCase(), data.finnhubIndustry);
+    return data.finnhubIndustry;
+  }
+  return null;
 }
 
 async function checkSectorExposure(
@@ -2818,13 +2811,12 @@ async function checkEarningsBlackout(
   try {
     const from = new Date().toISOString().slice(0, 10);
     const to = new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10);
-    const res = await fetch(
-      `${FINNHUB_BASE}/calendar/earnings?symbol=${ticker.toUpperCase()}&from=${from}&to=${to}&token=${FINNHUB_KEY}`
-    );
-    if (!res.ok) return true;
-    const data = await res.json() as {
+    const data = await finnhubFetch<{
       earningsCalendar?: { date?: string; symbol?: string }[];
-    };
+    }>(
+      `${FINNHUB_BASE}/calendar/earnings?symbol=${ticker.toUpperCase()}&from=${from}&to=${to}&token=${FINNHUB_KEY}`,
+    );
+    if (!data) return true;
     const next = data.earningsCalendar?.find(e => e.symbol === ticker.toUpperCase());
     if (next?.date) {
       const daysUntil = (new Date(next.date).getTime() - Date.now()) / 86400000;

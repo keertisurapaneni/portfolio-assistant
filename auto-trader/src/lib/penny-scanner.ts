@@ -55,7 +55,8 @@ interface PennyEntrySignal {
 
 // ── Constants ────────────────────────────────────────────
 
-const FINNHUB_KEY = process.env.FINNHUB_API_KEY ?? '';
+import { finnhubFetch, FINNHUB_KEY } from './finnhub.js';
+
 const YAHOO_HEADERS = {
   'User-Agent': 'Mozilla/5.0 (compatible; PortfolioAssistant/1.0)',
   Accept: 'application/json',
@@ -71,26 +72,9 @@ const MAX_FLOAT_MILLIONS = 10;
 const MIN_RR = 2.0;
 const MAX_PULLBACKS = 2;
 
-// ── Rate-limited Finnhub fetch ───────────────────────────
+// ── Finnhub fetch alias ──────────────────────────────────
 
-let _lastFinnhubCall = 0;
-const FINNHUB_GAP_MS = 900;
-
-async function fetchFinnhub<T>(url: string): Promise<T | null> {
-  const wait = FINNHUB_GAP_MS - (Date.now() - _lastFinnhubCall);
-  if (wait > 0) await new Promise(r => setTimeout(r, wait));
-  _lastFinnhubCall = Date.now();
-  try {
-    const res = await fetch(url, {
-      headers: YAHOO_HEADERS,
-      signal: AbortSignal.timeout(TIMEOUT_MS),
-    });
-    if (!res.ok) return null;
-    return await res.json() as T;
-  } catch {
-    return null;
-  }
-}
+const fetchFinnhub = finnhubFetch;
 
 // ── Session State ────────────────────────────────────────
 

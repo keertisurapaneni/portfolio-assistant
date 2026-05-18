@@ -6,6 +6,7 @@
 import { getSupabase } from './supabase.js';
 import type { PaperTrade } from './supabase.js';
 import type { AccountType } from '../../../shared/trade-types.js';
+import { finnhubFetch } from './finnhub.js';
 
 // ── Regime helper (SPY SMA50/SMA200 + VIX, cached per day) ─────────────────
 
@@ -40,17 +41,12 @@ async function fetchYahooBars(symbol: string): Promise<{ closes: number[] } | nu
 }
 
 async function fetchVix(): Promise<number | null> {
-  const FINNHUB_BASE = 'https://finnhub.io/api/v1';
   const key = process.env.FINNHUB_API_KEY ?? '';
   if (!key) return null;
-  try {
-    const res = await fetch(`${FINNHUB_BASE}/quote?symbol=VIX&token=${key}`);
-    if (!res.ok) return null;
-    const data = (await res.json()) as { c?: number };
-    return data.c != null && data.c > 0 ? data.c : null;
-  } catch {
-    return null;
-  }
+  const data = await finnhubFetch<{ c?: number }>(
+    `https://finnhub.io/api/v1/quote?symbol=VIX&token=${key}`,
+  );
+  return data?.c != null && data.c > 0 ? data.c : null;
 }
 
 function vixToBucket(vix: number | null): RegimeSnapshot['vix_bucket'] {

@@ -18,7 +18,7 @@ interface UpsertPayload {
   reel_url?: string;
   canonical_url?: string;
   video_heading?: string;
-  strategy_type?: 'daily_signal' | 'generic_strategy';
+  strategy_type?: 'daily_signal' | 'daily_penny' | 'generic_strategy';
   timeframe?: string;
   applicable_timeframes?: string[];
   execution_window_et?: { start?: string; end?: string };

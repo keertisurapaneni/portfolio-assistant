@@ -18,10 +18,9 @@ import { getSupabase, createAutoTradeEvent } from './supabase.js';
 import { ACTIVE_STATUSES } from '../../../shared/trade-status-sets.js';
 import { fetchDailyBars, fetchQuote, sma as calcSma } from './yahoo-finance.js';
 import { isConnected, placeVerticalSpreadOrder, getDefaultAccount } from '../ib-connection.js';
+import { finnhubFetch, FINNHUB_KEY } from './finnhub.js';
 
 // ── Constants ────────────────────────────────────────────
-
-const FINNHUB_KEY = process.env.FINNHUB_API_KEY ?? '';
 const MIN_CREDIT_PCT = 0.33;           // collect at least 33% of width
 const PREFERRED_CREDIT_PCT = 0.40;     // Tony's sweet spot: 40%+
 const MAX_RISK_PCT = 0.02;             // max 2% of account per trade
@@ -63,16 +62,8 @@ export interface CreditSpreadScanResult {
 
 // ── Helpers ──────────────────────────────────────────────
 
-async function fetchJson<T>(url: string): Promise<T | null> {
-  try {
-    const res = await fetch(url);
-    if (!res.ok) return null;
-    return await res.json() as T;
-  } catch { return null; }
-}
-
 async function getStockQuote(ticker: string): Promise<{ price: number; change: number; pctChange: number } | null> {
-  const data = await fetchJson<{ c: number; d: number; dp: number }>(
+  const data = await finnhubFetch<{ c: number; d: number; dp: number }>(
     `https://finnhub.io/api/v1/quote?symbol=${ticker}&token=${FINNHUB_KEY}`
   );
   if (!data?.c) return null;
@@ -80,7 +71,7 @@ async function getStockQuote(ticker: string): Promise<{ price: number; change: n
 }
 
 async function getEarningsDate(ticker: string): Promise<Date | null> {
-  const data = await fetchJson<{ earningsCalendar?: Array<{ date?: string }> }>(
+  const data = await finnhubFetch<{ earningsCalendar?: Array<{ date?: string }> }>(
     `https://finnhub.io/api/v1/calendar/earnings?symbol=${ticker}&token=${FINNHUB_KEY}`
   );
   const future = (data?.earningsCalendar ?? [])
@@ -282,7 +273,6 @@ export async function runCreditSpreadScan(
       skipped.push({ ticker, reason: `error:${msg.slice(0, 60)}` });
     }
 
-    await new Promise(r => setTimeout(r, 800));
   }
 
   // Sort by credit % descending (best risk-reward first)

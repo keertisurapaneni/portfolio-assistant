@@ -523,7 +523,7 @@ function parseGoldMineCandidates(raw: string): {
 // 52-week high and show signs of stabilization (price > 10-day SMA).
 // AI identifies candidates; Finnhub data verifies drawdown and stabilization.
 
-const FINNHUB_KEY = process.env.FINNHUB_API_KEY ?? '';
+import { finnhubFetch, FINNHUB_KEY } from './finnhub.js';
 
 interface DipCandidate {
   ticker: string;
@@ -533,11 +533,7 @@ interface DipCandidate {
 }
 
 async function finnhubGet<T>(path: string): Promise<T | null> {
-  try {
-    const res = await fetch(`https://finnhub.io/api/v1${path}&token=${FINNHUB_KEY}`);
-    if (!res.ok) return null;
-    return await res.json() as T;
-  } catch { return null; }
+  return finnhubFetch<T>(`https://finnhub.io/api/v1${path}&token=${FINNHUB_KEY}`);
 }
 
 function buildDipCandidatePrompt(): string {

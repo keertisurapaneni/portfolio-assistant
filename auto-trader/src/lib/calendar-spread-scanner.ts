@@ -22,10 +22,10 @@ import { getOptionsChain, type OptionGreeks, type OptionsChainSummary } from './
 import { getSupabase, createAutoTradeEvent } from './supabase.js';
 import { ACTIVE_STATUSES } from '../../../shared/trade-status-sets.js';
 import { fetchDailyBars, sma as calcSma } from './yahoo-finance.js';
+import { finnhubFetch, FINNHUB_KEY } from './finnhub.js';
 
 // ── Constants ────────────────────────────────────────────
 
-const FINNHUB_KEY = process.env.FINNHUB_API_KEY ?? '';
 const MIN_IV_RANK = 40;
 const MAX_BB_WIDTH_PCT = 25;
 const MIN_FRONT_DTE = 14;
@@ -73,16 +73,8 @@ function daysToExpiryFromStr(yyyymmdd: string): number {
   return Math.ceil((new Date(y, m, d).getTime() - Date.now()) / 86_400_000);
 }
 
-async function fetchJson<T>(url: string): Promise<T | null> {
-  try {
-    const res = await fetch(url);
-    if (!res.ok) return null;
-    return await res.json() as T;
-  } catch { return null; }
-}
-
 async function getEarningsDate(ticker: string): Promise<Date | null> {
-  const data = await fetchJson<{ earningsCalendar?: Array<{ date?: string }> }>(
+  const data = await finnhubFetch<{ earningsCalendar?: Array<{ date?: string }> }>(
     `https://finnhub.io/api/v1/calendar/earnings?symbol=${ticker}&token=${FINNHUB_KEY}`
   );
   const entries = data?.earningsCalendar ?? [];

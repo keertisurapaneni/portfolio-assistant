@@ -8,6 +8,7 @@
  */
 
 import { Router } from 'express';
+import { finnhubFetch, FINNHUB_KEY, FINNHUB_BASE } from '../lib/finnhub.js';
 
 const router = Router();
 
@@ -58,9 +59,6 @@ router.get('/regime/spy', async (_req, res) => {
   }
 });
 
-const FINNHUB_BASE = 'https://finnhub.io/api/v1';
-const FINNHUB_KEY = process.env.FINNHUB_API_KEY ?? '';
-
 // ── Sector lookup via Finnhub company profile ──
 
 router.get('/sector/:symbol', async (req, res) => {
@@ -69,16 +67,14 @@ router.get('/sector/:symbol', async (req, res) => {
   if (!FINNHUB_KEY) return res.status(500).json({ error: 'FINNHUB_API_KEY not configured' });
 
   try {
-    const url = `${FINNHUB_BASE}/stock/profile2?symbol=${symbol}&token=${FINNHUB_KEY}`;
-    const response = await fetch(url);
-    if (!response.ok) {
-      return res.status(404).json({ error: `Could not fetch profile for ${symbol}` });
-    }
-    const data = await response.json() as {
+    const data = await finnhubFetch<{
       finnhubIndustry?: string;
       name?: string;
       ticker?: string;
-    };
+    }>(`${FINNHUB_BASE}/stock/profile2?symbol=${symbol}&token=${FINNHUB_KEY}`);
+    if (!data) {
+      return res.status(404).json({ error: `Could not fetch profile for ${symbol}` });
+    }
 
     res.json({
       symbol,
@@ -100,19 +96,13 @@ router.get('/earnings/:symbol', async (req, res) => {
   if (!FINNHUB_KEY) return res.status(500).json({ error: 'FINNHUB_API_KEY not configured' });
 
   try {
-    // Search for next earnings within 30 days
     const from = new Date().toISOString().slice(0, 10);
     const to = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-    const url = `${FINNHUB_BASE}/calendar/earnings?symbol=${symbol}&from=${from}&to=${to}&token=${FINNHUB_KEY}`;
-    const response = await fetch(url);
-    if (!response.ok) {
-      return res.json({ symbol, earningsDate: null });
-    }
-    const data = await response.json() as {
+    const data = await finnhubFetch<{
       earningsCalendar?: Array<{ date?: string; symbol?: string }>;
-    };
+    }>(`${FINNHUB_BASE}/calendar/earnings?symbol=${symbol}&from=${from}&to=${to}&token=${FINNHUB_KEY}`);
 
-    const calendar = data.earningsCalendar ?? [];
+    const calendar = data?.earningsCalendar ?? [];
     const nextEarnings = calendar.find(e => e.symbol === symbol);
 
     res.json({
@@ -121,7 +111,7 @@ router.get('/earnings/:symbol', async (req, res) => {
     });
   } catch (err) {
     console.error(`[Route: earnings] ${symbol}:`, err);
-    res.json({ symbol, earningsDate: null }); // fail open
+    res.json({ symbol, earningsDate: null });
   }
 });
 
