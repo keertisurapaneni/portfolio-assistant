@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   BarChart2,
   RefreshCw,
@@ -10,19 +10,54 @@ import {
 } from 'lucide-react';
 import { cn } from '../../../lib/utils';
 import type { CategoryPerformance } from '../../../lib/paperTradesApi';
+import { getClosedTradePnlSeries } from '../../../lib/paperTradesApi';
 import {
   getPaperTradingPerformance,
   type PerformanceResponse,
   type RecentClosedTrade,
 } from '../../../lib/paperTradingPerformanceApi';
 import { fmtUsd } from '../utils';
-import { SignalScorecard } from '../shared';
+import { SignalScorecard, EquityCurve, DrawdownChart, PnlDistribution, PnlCalendar, MfeMaeChart, TimeOfDayChart } from '../shared';
 import { MetricsTable } from '../shared/MetricsTable';
 import { formatRegimeLabel } from '../utils';
 import { Spinner } from '../../Spinner';
 import { StreakBoard } from '../shared';
 
 import type { AccountView } from '../../../contexts/AccountContext';
+
+function ExpectancyCard({ trades }: { trades: RecentClosedTrade[] }) {
+  const pnls = trades
+    .map(t => t.realized_pnl as number | undefined ?? (t as Record<string, unknown>).pnl as number | undefined)
+    .filter((p): p is number => p != null);
+
+  if (pnls.length === 0) {
+    return (
+      <div className="rounded-xl border border-[hsl(var(--border))] bg-white p-4">
+        <p className="text-xs font-medium text-[hsl(var(--muted-foreground))]">Expectancy</p>
+        <p className="text-xl font-bold tabular-nums mt-0.5 text-[hsl(var(--muted-foreground))]">—</p>
+        <p className="text-[10px] text-[hsl(var(--muted-foreground))] mt-0.5">Expected $ per trade</p>
+      </div>
+    );
+  }
+
+  const wins = pnls.filter(p => p > 0);
+  const losses = pnls.filter(p => p <= 0);
+  const winRate = wins.length / pnls.length;
+  const lossRate = losses.length / pnls.length;
+  const avgWin = wins.length > 0 ? wins.reduce((a, b) => a + b, 0) / wins.length : 0;
+  const avgLoss = losses.length > 0 ? Math.abs(losses.reduce((a, b) => a + b, 0) / losses.length) : 0;
+  const expectancy = (winRate * avgWin) - (lossRate * avgLoss);
+
+  return (
+    <div className="rounded-xl border border-[hsl(var(--border))] bg-white p-4">
+      <p className="text-xs font-medium text-[hsl(var(--muted-foreground))]">Expectancy</p>
+      <p className={cn('text-xl font-bold tabular-nums mt-0.5', expectancy >= 0 ? 'text-emerald-600' : 'text-red-600')}>
+        {expectancy >= 0 ? '+' : '-'}${Math.abs(expectancy).toFixed(2)}
+      </p>
+      <p className="text-[10px] text-[hsl(var(--muted-foreground))] mt-0.5">Expected $ per trade</p>
+    </div>
+  );
+}
 
 export interface PerformanceTabProps {
   categories: CategoryPerformance[];
@@ -42,6 +77,18 @@ export function PerformanceTab({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedTrade, setSelectedTrade] = useState<RecentClosedTrade | null>(null);
+  const [pnlSeries, setPnlSeries] = useState<Array<{ date: string; pnl: number }>>([]);
+
+  const dailyPnl = useMemo(() => {
+    const byDate = new Map<string, number>();
+    pnlSeries.forEach(t => {
+      const day = t.date.slice(0, 10);
+      byDate.set(day, (byDate.get(day) ?? 0) + t.pnl);
+    });
+    return Array.from(byDate.entries())
+      .map(([date, pnl]) => ({ date, pnl }))
+      .sort((a, b) => a.date.localeCompare(b.date));
+  }, [pnlSeries]);
 
   const sf = categories.find(c => c.category === 'suggested_finds');
   const scannerDt = categories.find(c => c.category === 'scanner_day_trade');
@@ -66,6 +113,10 @@ export function PerformanceTab({
   }, [window]);
 
   useEffect(() => { load(); }, [load]);
+
+  useEffect(() => {
+    getClosedTradePnlSeries(_accountView).then(setPnlSeries).catch(() => setPnlSeries([]));
+  }, [_accountView]);
 
   const hasInsufficientWarnings = data?.warnings.some(w =>
     w.toLowerCase().includes('insufficient') || w.toLowerCase().includes('<10')
@@ -211,7 +262,7 @@ export function PerformanceTab({
 
       {data && data.overall.count_trades_closed > 0 && (
         <>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
             <div className="rounded-xl border border-[hsl(var(--border))] bg-white p-4">
               <p className="text-xs font-medium text-[hsl(var(--muted-foreground))]">Realized Return %</p>
               <p className={cn('text-xl font-bold tabular-nums mt-0.5', data.overall.portfolio_realized_return_pct >= 0 ? 'text-emerald-600' : 'text-red-600')}>
@@ -230,6 +281,7 @@ export function PerformanceTab({
               <p className="text-xs font-medium text-[hsl(var(--muted-foreground))]">Trades Closed</p>
               <p className="text-xl font-bold tabular-nums mt-0.5">{data.overall.count_trades_closed}</p>
             </div>
+            <ExpectancyCard trades={data.recentClosedTrades} />
           </div>
 
           {Object.keys(data.byStrategy).length > 0 && (
@@ -302,6 +354,46 @@ export function PerformanceTab({
               </table>
             </div>
           )}
+
+          {pnlSeries.length > 0 && (
+            <>
+              <div className="space-y-2">
+                <h3 className="text-lg font-semibold text-[hsl(var(--foreground))]">Equity Curve</h3>
+                <div className="rounded-xl border border-[hsl(var(--border))] bg-white p-4">
+                  <EquityCurve data={pnlSeries} />
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <h3 className="text-lg font-semibold text-[hsl(var(--foreground))]">Drawdown</h3>
+                <div className="rounded-xl border border-[hsl(var(--border))] bg-white p-4">
+                  <DrawdownChart data={pnlSeries} />
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <h3 className="text-lg font-semibold text-[hsl(var(--foreground))]">P&L Distribution</h3>
+                <div className="rounded-xl border border-[hsl(var(--border))] bg-white p-4">
+                  <PnlDistribution pnls={pnlSeries.map(t => t.pnl)} />
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <h3 className="text-lg font-semibold text-[hsl(var(--foreground))]">P&L Calendar</h3>
+                <PnlCalendar data={dailyPnl} />
+              </div>
+
+              <div className="space-y-2">
+                <h3 className="text-lg font-semibold text-[hsl(var(--foreground))]">Performance by Time of Day</h3>
+                <TimeOfDayChart data={pnlSeries} />
+              </div>
+            </>
+          )}
+
+          <div className="space-y-2">
+            <h3 className="text-lg font-semibold text-[hsl(var(--foreground))]">Entry & Exit Efficiency (MFE/MAE)</h3>
+            <MfeMaeChart accountView={_accountView} />
+          </div>
         </>
       )}
 
