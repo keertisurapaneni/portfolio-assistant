@@ -430,7 +430,7 @@ export function StrategyPerformanceTab({ sources, videos, statuses, onRefresh }:
     setUpdatingCategoryVideoId(videoId);
     try {
       await updateStrategyVideoMetadata({ video_id: videoId, strategy_type: strategyType });
-      if (strategyType === 'daily_signal' || strategyType === 'daily_penny') {
+      if (strategyType === 'daily_signal' || strategyType === 'daily_penny' || strategyType === 'options_signal') {
         await reimportSignalsForVideo(videoId);
       }
       onRefresh();
@@ -1266,7 +1266,7 @@ export function StrategyPerformanceTab({ sources, videos, statuses, onRefresh }:
                                               <select
                                                 value={video.strategyType ?? 'generic_strategy'}
                                                 onChange={(e) => {
-                                                  const v = e.target.value as 'daily_signal' | 'daily_penny' | 'generic_strategy';
+                                                  const v = e.target.value as 'daily_signal' | 'daily_penny' | 'generic_strategy' | 'options_signal';
                                                   if (v) handleCategoryChange(video.videoId!, v);
                                                 }}
                                                 disabled={updatingCategoryVideoId === video.videoId}
