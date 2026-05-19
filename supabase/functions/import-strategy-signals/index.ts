@@ -304,17 +304,26 @@ Deno.serve(async (req) => {
     const noteText = sig.notes ?? null;
 
     // Options signal path (BUY_CALL / BUY_PUT from pocket/breakout setups)
-    if (isOptionsSignal && (sig.signal === 'BUY_CALL' || sig.signal === 'BUY_PUT')) {
-      const isCall = sig.signal === 'BUY_CALL';
+    // Fallback: when strategy_type is options_signal but the LLM returned the
+    // longTriggerAbove/shortTriggerBelow format instead of BUY_CALL/BUY_PUT,
+    // convert automatically so these don't get misrouted as DAY_TRADE.
+    let effectiveSignal = sig.signal;
+    if (isOptionsSignal && !effectiveSignal) {
+      if (sig.longTriggerAbove != null) effectiveSignal = 'BUY_CALL';
+      else if (sig.shortTriggerBelow != null) effectiveSignal = 'BUY_PUT';
+    }
+
+    if (isOptionsSignal && (effectiveSignal === 'BUY_CALL' || effectiveSignal === 'BUY_PUT')) {
+      const isCall = effectiveSignal === 'BUY_CALL';
       const mode = isCall ? 'OPTIONS_CALL' : 'OPTIONS_PUT';
-      const targets = sig.targets ?? [];
+      const targets = sig.targets ?? (isCall ? sig.longTargets : sig.shortTargets) ?? [];
       const primaryTarget = targets[0] ?? null;
       const targetSummary = targets.length > 0
         ? targets.map((t, i) => `T${i + 1}: ${t}`).join(', ')
         : null;
 
-      let entryPrice = sig.trigger_price ?? null;
-      const entryCtx = sig.entry_context ?? 'above_level';
+      let entryPrice = sig.trigger_price ?? (isCall ? sig.longTriggerAbove : sig.shortTriggerBelow) ?? null;
+      const entryCtx = sig.entry_context ?? (entryPrice != null ? 'above_level' : 'above_todays_high');
 
       // Resolve "above_todays_high" / "below_todays_low" using Finnhub quote
       if (entryPrice == null && (entryCtx === 'above_todays_high' || entryCtx === 'below_todays_low')) {
