@@ -865,19 +865,26 @@ Stocks:
 {{STOCK_DATA}}`;
 
 const SWING_SCAN_USER = `Evaluate these stocks for SWING trades (2-10 day holds). For each, decide BUY, SELL, or SKIP.
-NOTE: You only have indicators (no candle data). A deeper analysis with full candle data will validate winners later.
+NOTE: You only have indicators (no candle data). A deeper pass with full candle data validates winners.
 
 ${SWING_TRADE_RULES}
 
 SCREENING INSTRUCTIONS — READ CAREFULLY:
-- You are a SETUP FINDER. Your job is to surface every stock that has an identifiable swing pattern. The next pass filters.
-- A stock pulling back to SMA(20) in an uptrend IS a setup. Give it BUY 6-7.
-- A stock consolidating at support with low volume IS a setup (accumulation). Give it BUY 5-6.
-- A stock with RSI < 35 above SMA(200) IS a mean-reversion setup. Give it BUY 6-7.
-- A stock breaking below SMA(50) on volume IS a setup. Give it SELL 5-6.
-- SKIP only stocks with NO identifiable pattern — stuck mid-range, no support/resistance nearby, no trend, no setup.
-- You should identify 6-10 actionable ideas. If you're SKIPping more than 60% of the list, you're being too conservative.
-- Confidence = how clean the SETUP is (not certainty of profit). Clean pullback to support = 6-7. Messy = 4-5. No setup = SKIP.
+- You are a SETUP FINDER at a prop trading firm. Surface every stock matching one of the three core setups above.
+- Check each stock against ALL THREE setups before deciding SKIP.
+
+Confidence anchors (use these as calibration):
+- 7-8: Textbook setup — tight consolidation near clear S/R + above key SMAs + rubber band coiling. Or strong mean reversion (RSI extreme + quality name).
+- 5-6: Solid setup — pullback to SMA(20/50) in uptrend, or consolidation forming but not as tight. Or day-2 continuation candidate.
+- 4-5: Emerging setup — stock near support but pattern not fully formed yet. Worth a deeper look in Pass 2.
+- SKIP: No identifiable pattern from the three core setups. Stock mid-range, no nearby S/R, no trend.
+
+Key reminders:
+- Low volume during consolidation or pullback = POSITIVE (rubber band coiling, selling drying up). Do NOT skip for low volume.
+- ADX < 20 = consolidating = potential breakout forming. Do NOT skip for low ADX.
+- A stock that already moved 15% but NOW sits at SMA(20) support = valid BUY (pullback entry).
+- SELL setups are valid: lower highs, breakdowns below SMA(50), mean reversion shorts on extended stocks.
+- You should surface 6-10 actionable ideas. If SKIPping > 60%, you are too conservative.
 
 Respond with a JSON array ONLY (no markdown, no backticks):
 [{"ticker":"AAPL","signal":"BUY"|"SELL"|"SKIP","confidence":0-10,"reason":"1 sentence"}]
