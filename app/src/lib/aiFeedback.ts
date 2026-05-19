@@ -28,7 +28,7 @@ import { CLOSED_STATUSES } from '../../../shared/trade-status-sets.ts';
  * Uses the same Gemini model as trading signals for consistency.
  */
 export async function analyzeCompletedTrade(trade: PaperTrade): Promise<TradeLearning | null> {
-  if (!trade.closed_at || !trade.pnl) return null;
+  if (!trade.closed_at || trade.pnl == null) return null;
 
   const outcome: 'WIN' | 'LOSS' | 'BREAKEVEN' =
     trade.pnl > 0 ? 'WIN' : trade.pnl < 0 ? 'LOSS' : 'BREAKEVEN';
@@ -227,6 +227,8 @@ export async function analyzeUnreviewedTrades(): Promise<number> {
     .from('paper_trades')
     .select('*')
     .in('status', [...CLOSED_STATUSES])
+    .not('pnl', 'is', null)
+    .not('fill_price', 'is', null)
     .order('closed_at', { ascending: false })
     .limit(20);
 

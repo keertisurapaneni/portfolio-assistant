@@ -268,19 +268,19 @@ export async function getDayTradeValidationReport(): Promise<DayTradeValidationR
   if (error) throw new Error(`Failed to fetch day trades: ${error.message}`);
   const trades = (data ?? []) as PaperTrade[];
 
-  const scannerTrades = trades.filter(t => t.entry_trigger_type === 'bracket_limit' && t.fill_price != null);
+  const scannerTrades = trades.filter(t => t.entry_trigger_type === 'bracket_limit' && t.fill_price != null && t.pnl != null);
   const withMarket = scannerTrades.filter(t => t.market_condition);
 
   const trendVsChop = ['trend', 'chop'].map(mc => {
     const subset = withMarket.filter(t => t.market_condition === mc);
-    const wins = subset.filter(t => (t.pnl ?? 0) > 0).length;
+    const wins = subset.filter(t => t.pnl! > 0).length;
     const rMults = subset.map(t => t.r_multiple).filter((r): r is number => r != null);
     return {
       marketCondition: mc,
       trades: subset.length,
       wins,
       winRatePct: subset.length > 0 ? Math.round(100 * wins / subset.length) : 0,
-      avgPnl: subset.length > 0 ? Math.round(100 * subset.reduce((s, t) => s + (t.pnl ?? 0), 0) / subset.length) / 100 : 0,
+      avgPnl: subset.length > 0 ? Math.round(100 * subset.reduce((s, t) => s + t.pnl!, 0) / subset.length) / 100 : 0,
       avgRMultiple: rMults.length > 0 ? Math.round(100 * rMults.reduce((a, b) => a + b, 0) / rMults.length) / 100 : 0,
     };
   }).filter(r => r.trades > 0);
@@ -291,7 +291,7 @@ export async function getDayTradeValidationReport(): Promise<DayTradeValidationR
     { subset: conf7Plus, label: 'conf ≥7' },
     { subset: confBelow7, label: 'conf <7' },
   ].map(({ subset, label }) => {
-    const wins = subset.filter(t => (t.pnl ?? 0) > 0).length;
+    const wins = subset.filter(t => t.pnl! > 0).length;
     const rMults = subset.map(t => t.r_multiple).filter((r): r is number => r != null);
     return {
       confBucket: label,
@@ -310,7 +310,7 @@ export async function getDayTradeValidationReport(): Promise<DayTradeValidationR
     { subset: midInPlay, label: 'mid (1.5–2.5)' },
     { subset: lowInPlay, label: 'low (<1.5)' },
   ].map(({ subset, label }) => {
-    const wins = subset.filter(t => (t.pnl ?? 0) > 0).length;
+    const wins = subset.filter(t => t.pnl! > 0).length;
     const rMults = subset.map(t => t.r_multiple).filter((r): r is number => r != null);
     return {
       bucket: label,
@@ -410,7 +410,7 @@ export async function getSwingTradeValidationReport(): Promise<SwingTradeValidat
   funnel.signalsPerWeek = days >= 1 ? Math.round((funnel.signals / days) * 5) : 0; // ~5 trading days/week
 
   const closed = trades.filter(
-    t => t.fill_price != null && (CLOSED_STATUSES as readonly string[]).includes(t.status)
+    t => t.fill_price != null && t.pnl != null && (CLOSED_STATUSES as readonly string[]).includes(t.status)
   );
   const bracketOrders = trades.filter(t => t.entry_trigger_type === 'bracket_limit');
   const filled = bracketOrders.filter(t => t.fill_price != null);
@@ -421,8 +421,8 @@ export async function getSwingTradeValidationReport(): Promise<SwingTradeValidat
     const mc = t.market_condition ?? 'unknown';
     const cur = byRegime.get(mc) ?? { trades: 0, wins: 0, pnl: 0 };
     cur.trades++;
-    if ((t.pnl ?? 0) > 0) cur.wins++;
-    cur.pnl += t.pnl ?? 0;
+    if (t.pnl! > 0) cur.wins++;
+    cur.pnl += t.pnl!;
     byRegime.set(mc, cur);
   }
   const trendVsChop = [...byRegime.entries()].map(([mc, s]) => ({
@@ -438,7 +438,7 @@ export async function getSwingTradeValidationReport(): Promise<SwingTradeValidat
     const r = t.close_reason ?? 'unknown';
     const cur = byReason.get(r) ?? { trades: 0, pnl: 0, daysHeld: [] };
     cur.trades++;
-    cur.pnl += t.pnl ?? 0;
+    cur.pnl += t.pnl!;
     if (t.filled_at && t.closed_at) {
       cur.daysHeld.push((new Date(t.closed_at).getTime() - new Date(t.filled_at).getTime()) / 86400000);
     }
@@ -458,9 +458,9 @@ export async function getSwingTradeValidationReport(): Promise<SwingTradeValidat
     const days = (new Date(t.closed_at).getTime() - new Date(t.filled_at).getTime()) / 86400000;
     return days < 2;
   });
-  const totalLosses = closed.filter(t => (t.pnl ?? 0) < 0);
-  const totalLossPnl = totalLosses.reduce((s, t) => s + (t.pnl ?? 0), 0);
-  const quickStopPnl = quickStops.reduce((s, t) => s + (t.pnl ?? 0), 0);
+  const totalLosses = closed.filter(t => t.pnl! < 0);
+  const totalLossPnl = totalLosses.reduce((s, t) => s + t.pnl!, 0);
+  const quickStopPnl = quickStops.reduce((s, t) => s + t.pnl!, 0);
   const pctOfLosses = totalLosses.length > 0 && totalLossPnl !== 0
     ? Math.round(100 * quickStopPnl / totalLossPnl)
     : 0;

@@ -82,8 +82,8 @@ function computeGroupMetrics(rows: TradePerformanceRow[]): GroupMetrics {
   const sumLosses = Math.abs(losses.reduce((a, b) => a + b, 0));
   const profitFactor = sumLosses > 0 ? sumWins / sumLosses : (sumWins > 0 ? Infinity : 0);
   return {
-    count_trades_closed: rows.length,
-    win_rate: rows.length > 0 ? wins.length / rows.length : 0,
+    count_trades_closed: pnls.length,
+    win_rate: pnls.length > 0 ? wins.length / pnls.length : 0,
     avg_return_pct: returns.length > 0 ? returns.reduce((a, b) => a + b, 0) / returns.length : 0,
     median_return_pct: median(returns),
     stdev_return_pct: stdev(returns),
@@ -111,8 +111,9 @@ function aggregateByGroup(
 }
 
 function portfolioRealizedReturnPct(rows: TradePerformanceRow[]): number {
-  const totalNotional = rows.reduce((s, r) => s + (r.notional_at_entry ?? 0), 0);
-  const totalPnl = rows.reduce((s, r) => s + (r.realized_pnl ?? 0), 0);
+  const withPnl = rows.filter(r => r.realized_pnl != null && r.notional_at_entry != null);
+  const totalNotional = withPnl.reduce((s, r) => s + r.notional_at_entry!, 0);
+  const totalPnl = withPnl.reduce((s, r) => s + r.realized_pnl!, 0);
   return totalNotional > 0 ? (totalPnl / totalNotional) * 100 : 0;
 }
 
