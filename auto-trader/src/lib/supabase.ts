@@ -129,8 +129,31 @@ export async function loadConfig(): Promise<AutoTraderConfig> {
     pennyMaxDailyLoss: Number(data.penny_max_daily_loss ?? DEFAULT_CONFIG.pennyMaxDailyLoss),
     pennyMaxDailyTrades: Number(data.penny_max_daily_trades ?? DEFAULT_CONFIG.pennyMaxDailyTrades),
     trendFilterEnabled: data.trend_filter_enabled ?? DEFAULT_CONFIG.trendFilterEnabled,
-    // Dual-account routing
-    modeRouting: data.mode_routing ?? DEFAULT_CONFIG.modeRouting,
+    // Dual-account routing — reconcile with boolean flags to prevent drift.
+    // If a boolean flag says disabled but mode_routing says enabled, the boolean wins
+    // (more restrictive). This guards against the migration that added mode_routing
+    // with all-"paper" defaults without reading the pre-existing boolean state.
+    modeRouting: (() => {
+      const routing = { ...(data.mode_routing ?? DEFAULT_CONFIG.modeRouting) };
+      if (data.suggested_finds_enabled === false && routing.LONG_TERM !== 'off') {
+        console.warn('[Config] suggested_finds_enabled=false but mode_routing.LONG_TERM=%s — forcing to off', routing.LONG_TERM);
+        routing.LONG_TERM = 'off';
+      }
+      if (data.trade_signals_enabled === false) {
+        if (routing.DAY_TRADE !== 'off') routing.DAY_TRADE = 'off';
+        if (routing.SWING_TRADE !== 'off') routing.SWING_TRADE = 'off';
+      }
+      if (data.options_wheel_enabled === false) {
+        if (routing.OPTIONS_PUT !== 'off') routing.OPTIONS_PUT = 'off';
+        if (routing.OPTIONS_CALL !== 'off') routing.OPTIONS_CALL = 'off';
+        if (routing.CREDIT_SPREAD !== 'off') routing.CREDIT_SPREAD = 'off';
+        if (routing.CALENDAR_SPREAD !== 'off') routing.CALENDAR_SPREAD = 'off';
+      }
+      if (data.penny_enabled === false && routing.DAY_PENNY !== 'off') {
+        routing.DAY_PENNY = 'off';
+      }
+      return routing;
+    })(),
     liveKillSwitch: data.live_kill_switch ?? DEFAULT_CONFIG.liveKillSwitch,
     liveDailyLossLimit: Number(data.live_daily_loss_limit ?? DEFAULT_CONFIG.liveDailyLossLimit),
     livePortfolioValue: Number(data.live_portfolio_value ?? DEFAULT_CONFIG.livePortfolioValue),

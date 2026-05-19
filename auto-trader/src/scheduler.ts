@@ -6433,7 +6433,9 @@ async function runSchedulerCycle(): Promise<void> {
     // 6. Pre-generate Suggested Finds (daily, after market open only)
     // Moved AFTER the market hours gate — belt-and-suspenders to prevent pre-market order placement.
     // Runs after sync+reset so SF trades are tracked in _pendingDeployedDollar for this cycle.
-    if (isModeEnabled(config, 'LONG_TERM')) {
+    // Belt-and-suspenders: check BOTH mode_routing AND suggestedFindsEnabled.
+    // These can get out of sync if the frontend saves one but not the other.
+    if (isModeEnabled(config, 'LONG_TERM') && config.suggestedFindsEnabled !== false) {
       await preGenerateSuggestedFinds(config, positions);
     } else {
       log('Suggested Finds module disabled — skipping');
