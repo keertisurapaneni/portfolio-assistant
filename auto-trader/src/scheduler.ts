@@ -220,6 +220,8 @@ let _lastRunResult: string = 'never';
 let _ibWasConnected = false; // watchdog: track previous connection state
 let _lastCycleSummary: string[] = [];
 let _runCount = 0;
+let _cachedSpyChangePct: number | null = null;
+let _cachedSpyChangePctAt: number = 0; // timestamp of last fetch
 let _lastSuggestedFindsDate = '';
 let _lastSnapshotDate = '';
 let _lastRehydrationDate = '';
@@ -242,6 +244,8 @@ const RETRYABLE_SKIP_PREFIXES = [
   'skipped:swing_chop',
   'skipped:swing_low_volume',
   'skipped:swing_volume_divergence',
+  'skipped:market_direction_bearish',
+  'skipped:market_direction_bullish',
 ];
 
 function isRetryableSkip(result: string): boolean {
@@ -2232,6 +2236,22 @@ async function fetchSpyChangePct(): Promise<number | null> {
   } catch { return null; }
 }
 
+const SPY_CACHE_TTL_MS = 60_000; // refresh SPY quote at most once per minute
+
+async function getCachedSpyChangePct(): Promise<number | null> {
+  if (Date.now() - _cachedSpyChangePctAt < SPY_CACHE_TTL_MS && _cachedSpyChangePct !== null) {
+    return _cachedSpyChangePct;
+  }
+  const pct = await fetchSpyChangePct();
+  if (pct !== null) {
+    _cachedSpyChangePct = pct;
+    _cachedSpyChangePctAt = Date.now();
+  }
+  return pct;
+}
+
+const INDEX_ETFS = new Set(['SPY', 'QQQ', 'IWM', 'DIA']);
+
 /**
  * Fetch SPY's 5-trading-day rolling change using daily close data.
  * Used to detect broad market selloffs that should pause Compounder stop-losses
@@ -2937,6 +2957,8 @@ function scanResultToEval(result: string): { status: ScanEvaluationStatus; reaso
   if (result === 'skipped:same_day_duplicate')  return { status: 'blocked',   reason: 'Already traded today' };
   if (result === 'skipped:recent_loss_cooldown')return { status: 'blocked',   reason: 'Loss cooldown active' };
   if (result === 'skipped:daily_loss_gate')     return { status: 'blocked',   reason: 'Daily loss limit reached' };
+  if (result === 'skipped:market_direction_bearish') return { status: 'blocked', reason: 'SPY bearish — market against BUY' };
+  if (result === 'skipped:market_direction_bullish') return { status: 'blocked', reason: 'SPY bullish — market against SELL' };
   if (result === 'skipped:swing_chop')          return { status: 'blocked',   reason: 'Market too choppy' };
   if (result === 'skipped:pre_trade_check')     return { status: 'blocked',   reason: 'Pre-trade gate failed' };
   if (result === 'skipped:max_positions')       return { status: 'blocked',   reason: 'Max positions reached' };
@@ -3079,6 +3101,34 @@ async function executeScannerTrade(
     }
     if (tf.ema100 != null) {
       log(`${ticker}: trend filter passed — ${tf.reason}`);
+    }
+  }
+
+  // ── SPY market direction gate ────────────────────────────────────────
+  // Day trades only. "Context over pattern": don't buy into a selloff or
+  // short into a rally. Index ETFs (SPY, QQQ, IWM, DIA) are excluded —
+  // gating them by their own direction would be circular.
+  // Non-blocking on data failure (fetchSpyChangePct returns null).
+  const MARKET_DIRECTION_PCT = 0.5;
+  if (mode === 'DAY_TRADE' && !INDEX_ETFS.has(ticker)) {
+    const spyPct = await getCachedSpyChangePct();
+    if (spyPct !== null) {
+      if (signal === 'BUY' && spyPct < -MARKET_DIRECTION_PCT) {
+        log(`${ticker}: skipped — market direction against BUY: SPY ${spyPct.toFixed(2)}%`);
+        persistEvent(ticker, 'skipped', `Market direction: SPY ${spyPct.toFixed(2)}% against BUY`, {
+          action: 'skipped', source: 'scanner', mode, skip_reason: 'market_direction',
+          spy_change_pct: spyPct,
+        });
+        return 'skipped:market_direction_bearish';
+      }
+      if (signal === 'SELL' && spyPct > MARKET_DIRECTION_PCT) {
+        log(`${ticker}: skipped — market direction against SELL: SPY +${spyPct.toFixed(2)}%`);
+        persistEvent(ticker, 'skipped', `Market direction: SPY +${spyPct.toFixed(2)}% against SELL`, {
+          action: 'skipped', source: 'scanner', mode, skip_reason: 'market_direction',
+          spy_change_pct: spyPct,
+        });
+        return 'skipped:market_direction_bullish';
+      }
     }
   }
 
