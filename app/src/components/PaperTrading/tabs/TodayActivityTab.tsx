@@ -237,37 +237,30 @@ export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], 
     );
   }
 
+  const terminalStatuses = [...CLOSED_STATUSES];
+
   const computeEventPnl = (evList: typeof events) => {
     const countedTradeIds = new Set<string>();
-    const AUTO_CLOSE = new Set(['system', 'lt_auto_sell', 'swing_expiry', 'capital_pressure']);
     let sum = 0;
     for (const ev of evList) {
-      const matched = tradesByTicker.get(ev.ticker)?.find(t =>
-        (t.pnl != null || ['FILLED', 'TARGET_HIT', 'STOPPED', 'CLOSED'].includes(t.status))
-        && !countedTradeIds.has(t.id)
-      );
+      const matched = tradesByTicker.get(ev.ticker)
+        ?.sort((a, b) => {
+          const aTerminal = terminalStatuses.includes(a.status) ? 0 : 1;
+          const bTerminal = terminalStatuses.includes(b.status) ? 0 : 1;
+          return aTerminal - bTerminal;
+        })
+        ?.find(t =>
+          t.pnl != null && t.pnl_source != null && !countedTradeIds.has(t.id)
+        );
       if (matched) {
         countedTradeIds.add(matched.id);
-        // Only count P&L from trades with a confirmed exit price.
-        // A trade marked CLOSED with pnl but no close_price is a failed close (DB out of sync with IB).
-        if (matched.pnl != null && matched.close_price != null) {
-          sum += matched.pnl;
-        }
-      } else if (AUTO_CLOSE.has(ev.source ?? '') && ev.metadata) {
-        const meta = ev.metadata as { pnl?: number; realizedPnl?: number; gainPct?: number; qty?: number; entryPrice?: number };
-        const metaPnl = meta.pnl ?? meta.realizedPnl
-          ?? (meta.gainPct != null && meta.qty != null && meta.entryPrice != null
-            ? (meta.gainPct / 100) * meta.qty * meta.entryPrice
-            : undefined);
-        if (metaPnl != null) sum += metaPnl;
+        sum += matched.pnl!;
       }
     }
     return sum;
   };
 
-  const allEventPnl = useMemo(() => computeEventPnl(events), [events, tradesByTicker]);
   const effectiveIbPnl = isTradingDay() ? ibRealizedPnl : null;
-  const todayPnlAll = effectiveIbPnl ?? allEventPnl;
 
   function handleSort(key: SortKey) {
     if (sortKey === key) {
@@ -295,7 +288,7 @@ export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], 
         if (filterMode === 'penny') return mode === 'DAY_PENNY';
         if (filterMode === 'long_term') return mode === 'LONG_TERM' || mode === 'SWING_TRADE';
         if (filterMode === 'gainers' || filterMode === 'losers') {
-          const trade = tradesByTicker.get(ev.ticker)?.find(t => t.pnl != null);
+          const trade = tradesByTicker.get(ev.ticker)?.find(t => t.pnl != null && t.pnl_source != null);
           const pnl = trade?.pnl ?? null;
           if (filterMode === 'gainers') return pnl != null && pnl > 0;
           if (filterMode === 'losers') return pnl != null && pnl < 0;
@@ -334,7 +327,7 @@ export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], 
 
   const filteredPnl = useMemo(() => computeEventPnl(filteredSortedEvents), [filteredSortedEvents, tradesByTicker]);
   const useIbPnl = filterMode === 'all' && effectiveIbPnl != null;
-  const displayPnl = useIbPnl ? effectiveIbPnl : filterMode === 'all' ? todayPnlAll : filteredPnl;
+  const displayPnl = useIbPnl ? effectiveIbPnl : filteredPnl;
   const pnlLabel = filterMode === 'all' ? "Today's Realized P&L"
     : filterMode === 'day' ? 'Day Trade P&L'
     : filterMode === 'penny' ? 'Penny P&L'
@@ -342,15 +335,40 @@ export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], 
     : filterMode === 'gainers' ? 'Gainers P&L'
     : 'Losers P&L';
 
+  // Determine IB connection state for header display
+  const ibConnected = isTradingDay() && ibRealizedPnl !== undefined;
+  const ibSyncing = ibConnected && ibRealizedPnl === null;
+  const ibOffline = !isTradingDay() || ibRealizedPnl === undefined;
+
   return (
     <div className="space-y-3">
-      {displayPnl !== 0 && (
+      {/* Header P&L: IB is the single source of truth */}
+      {filterMode === 'all' ? (
         <div className="flex items-center justify-between rounded-lg bg-[hsl(var(--secondary))] px-4 py-2.5">
           <div className="flex items-center gap-2">
             <span className="text-sm font-medium text-[hsl(var(--muted-foreground))]">{pnlLabel}</span>
             {useIbPnl && (
               <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 font-semibold">IB</span>
             )}
+            {ibSyncing && (
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 font-semibold animate-pulse">Syncing...</span>
+            )}
+            {ibOffline && (
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-100 text-gray-500 font-semibold">IB Offline</span>
+            )}
+          </div>
+          {useIbPnl && (
+            <span className={cn('text-sm font-bold tabular-nums', effectiveIbPnl! > 0 ? 'text-emerald-600' : effectiveIbPnl! < 0 ? 'text-red-600' : '')}>
+              {fmtUsd(effectiveIbPnl!, 2, true)}
+            </span>
+          )}
+          {ibSyncing && <span className="text-xs text-amber-600">—</span>}
+          {ibOffline && <span className="text-xs text-gray-400">—</span>}
+        </div>
+      ) : displayPnl !== 0 && (
+        <div className="flex items-center justify-between rounded-lg bg-[hsl(var(--secondary))] px-4 py-2.5">
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-medium text-[hsl(var(--muted-foreground))]">{pnlLabel}</span>
           </div>
           <span className={cn('text-sm font-bold tabular-nums', displayPnl > 0 ? 'text-emerald-600' : displayPnl < 0 ? 'text-red-600' : '')}>
             {fmtUsd(displayPnl, 2, true)}

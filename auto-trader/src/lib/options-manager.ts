@@ -10,6 +10,7 @@
  */
 
 import { getSupabase, createAutoTradeEvent } from './supabase.js';
+import { recordTradeClose } from './trade-closer.js';
 import { ACTIVE_STATUSES, CLOSED_STATUSES, OPTIONS_MODES } from '../../../shared/trade-status-sets.js';
 import { getOptionsAutoTradeConfig, autoTradeOption, type OptionsTradeTicket } from './options-scanner.js';
 import { getOptionsChain } from './options-chain.js';
@@ -162,15 +163,18 @@ async function evaluateAndRollPut(
   const rollClosePremium = ibCloseOldPut.avgFillPrice;
   const pnl = (premiumCollected - rollClosePremium) * 100;
 
-  await sb.from('paper_trades').update({
+  await recordTradeClose({
+    tradeId: pos.id,
+    closePrice: rollClosePremium,
+    closeReason: 'rolled',
     status: 'CLOSED',
-    close_price: rollClosePremium,
-    pnl,
-    pnl_percent: (pnl / capital) * 100,
-    closed_at: new Date().toISOString(),
-    close_reason: 'rolled',
-    option_close_pct: Math.max(0, (1 - rollClosePremium / premiumCollected) * 100),
-  }).eq('id', pos.id);
+    orderId: ibCloseOldPut.orderId,
+    accountType: 'paper',
+    overridePnl: pnl,
+    overridePnlPct: (pnl / capital) * 100,
+    overridePnlSource: 'ib_fill_calculated',
+    extraUpdates: { option_close_pct: Math.max(0, (1 - rollClosePremium / premiumCollected) * 100) },
+  });
 
   // 2. Open the new leg — record in DB (+ IB order if connected)
   const newExpiryISO = `${newExpiry.slice(0, 4)}-${newExpiry.slice(4, 6)}-${newExpiry.slice(6, 8)}`;
@@ -437,15 +441,17 @@ export async function runOptionsManageCycle(): Promise<ManageCycleResult> {
     // ── Check 1: Expired (past expiry date) ──
     if (dte <= 0) {
       // Option expired — close as profit (premium kept) if not assigned
-      await sb.from('paper_trades').update({
+      await recordTradeClose({
+        tradeId: pos.id,
+        closePrice: 0,
+        closeReason: 'expired_worthless',
         status: 'CLOSED',
-        close_price: 0,
-        pnl: premiumCollected * 100,
-        pnl_percent: (premiumCollected / pos.option_strike) * 100,
-        closed_at: new Date().toISOString(),
-        close_reason: 'expired_worthless',
-        option_close_pct: 100,
-      }).eq('id', pos.id);
+        accountType: 'paper',
+        overridePnl: premiumCollected * 100,
+        overridePnlPct: (premiumCollected / pos.option_strike) * 100,
+        overridePnlSource: 'ib_fill_calculated',
+        extraUpdates: { option_close_pct: 100 },
+      });
 
       result.expiredPositions.push(pos.ticker);
       persistEvent(pos.ticker, 'success',
@@ -497,15 +503,18 @@ export async function runOptionsManageCycle(): Promise<ManageCycleResult> {
       const closePnl = (premiumCollected - closePremium) * 100;
       const closeProfitPct = premiumCollected > 0 ? Math.max(0, (1 - closePremium / premiumCollected) * 100) : 0;
       const lossAmount = Math.abs(closePnl);
-      await sb.from('paper_trades').update({
+      await recordTradeClose({
+        tradeId: pos.id,
+        closePrice: closePremium,
+        closeReason: 'stop_loss',
         status: 'CLOSED',
-        close_price: closePremium,
-        pnl: closePnl,
-        pnl_percent: (closePnl / (pos.option_capital_req ?? pos.option_strike * 100)) * 100,
-        closed_at: new Date().toISOString(),
-        close_reason: 'stop_loss',
-        option_close_pct: closeProfitPct,
-      }).eq('id', pos.id);
+        orderId: ibClose.orderId,
+        accountType: 'paper',
+        overridePnl: closePnl,
+        overridePnlPct: (closePnl / (pos.option_capital_req ?? pos.option_strike * 100)) * 100,
+        overridePnlSource: 'ib_fill_calculated',
+        extraUpdates: { option_close_pct: closeProfitPct },
+      });
 
       console.log(`[Options Manager] STOP-LOSS: ${pos.ticker} $${pos.option_strike}P — stock $${stockPrice.toFixed(2)} below strike + premium ${stopLossMultiplier}×+ original, closing for -$${lossAmount.toFixed(0)} (IB fill @ $${closePremium.toFixed(4)})`);
       persistEvent(pos.ticker, 'error',
@@ -531,15 +540,18 @@ export async function runOptionsManageCycle(): Promise<ManageCycleResult> {
       const closePremium = ibClose.avgFillPrice;
       const closePnl = (premiumCollected - closePremium) * 100;
       const closeProfitPct = premiumCollected > 0 ? Math.max(0, (1 - closePremium / premiumCollected) * 100) : 0;
-      await sb.from('paper_trades').update({
+      await recordTradeClose({
+        tradeId: pos.id,
+        closePrice: closePremium,
+        closeReason: '50pct_profit',
         status: 'CLOSED',
-        close_price: closePremium,
-        pnl: closePnl,
-        pnl_percent: (closePnl / (pos.option_capital_req ?? pos.option_strike * 100)) * 100,
-        closed_at: new Date().toISOString(),
-        close_reason: '50pct_profit',
-        option_close_pct: closeProfitPct,
-      }).eq('id', pos.id);
+        orderId: ibClose.orderId,
+        accountType: 'paper',
+        overridePnl: closePnl,
+        overridePnlPct: (closePnl / (pos.option_capital_req ?? pos.option_strike * 100)) * 100,
+        overridePnlSource: 'ib_fill_calculated',
+        extraUpdates: { option_close_pct: closeProfitPct },
+      });
 
       result.closed50Pct.push(pos.ticker);
       persistEvent(pos.ticker, 'success',
@@ -599,20 +611,18 @@ export async function runOptionsManageCycle(): Promise<ManageCycleResult> {
         const closePnl = (premiumCollected - closePremium) * 100;
         const closeProfitPct = premiumCollected > 0 ? Math.max(0, (1 - closePremium / premiumCollected) * 100) : 0;
         const closeReason = '21dte_profit';
-        const { error: closeError } = await sb.from('paper_trades').update({
+        await recordTradeClose({
+          tradeId: pos.id,
+          closePrice: closePremium,
+          closeReason,
           status: 'CLOSED',
-          close_price: closePremium,
-          pnl: closePnl,
-          pnl_percent: (closePnl / (pos.option_capital_req ?? pos.option_strike * 100)) * 100,
-          closed_at: new Date().toISOString(),
-          close_reason: closeReason,
-          option_close_pct: closeProfitPct,
-        }).eq('id', pos.id).eq('status', 'FILLED');
-
-        if (closeError) {
-          console.error(`[Options Manager] 21 DTE close failed for ${pos.ticker} ${pos.id}:`, closeError.message);
-          continue;
-        }
+          orderId: ibClose.orderId,
+          accountType: 'paper',
+          overridePnl: closePnl,
+          overridePnlPct: (closePnl / (pos.option_capital_req ?? pos.option_strike * 100)) * 100,
+          overridePnlSource: 'ib_fill_calculated',
+          extraUpdates: { option_close_pct: closeProfitPct },
+        });
 
         result.rollAlerts.push(pos.ticker);
         console.log(`[Options Manager] 21 DTE CLOSE (winner): ${pos.ticker} $${pos.option_strike}P — profit +$${closePnl.toFixed(0)} (${dte}d left, IB fill @ $${closePremium.toFixed(4)})`);
@@ -653,20 +663,18 @@ export async function runOptionsManageCycle(): Promise<ManageCycleResult> {
         const deepClosePnl = (premiumCollected - deepClosePremium) * 100;
         const deepCloseProfitPct = premiumCollected > 0 ? Math.max(0, (1 - deepClosePremium / premiumCollected) * 100) : 0;
         const closeReason = '21dte_close';
-        const { error: closeError } = await sb.from('paper_trades').update({
+        await recordTradeClose({
+          tradeId: pos.id,
+          closePrice: deepClosePremium,
+          closeReason,
           status: 'CLOSED',
-          close_price: deepClosePremium,
-          pnl: deepClosePnl,
-          pnl_percent: (deepClosePnl / (pos.option_capital_req ?? pos.option_strike * 100)) * 100,
-          closed_at: new Date().toISOString(),
-          close_reason: closeReason,
-          option_close_pct: deepCloseProfitPct,
-        }).eq('id', pos.id).eq('status', 'FILLED');
-
-        if (closeError) {
-          console.error(`[Options Manager] 21 DTE close failed for ${pos.ticker} ${pos.id}:`, closeError.message);
-          continue;
-        }
+          orderId: ibCloseDeep.orderId,
+          accountType: 'paper',
+          overridePnl: deepClosePnl,
+          overridePnlPct: (deepClosePnl / (pos.option_capital_req ?? pos.option_strike * 100)) * 100,
+          overridePnlSource: 'ib_fill_calculated',
+          extraUpdates: { option_close_pct: deepCloseProfitPct },
+        });
 
         result.rollAlerts.push(pos.ticker);
         console.log(`[Options Manager] 21 DTE CLOSE (deep loser): ${pos.ticker} $${pos.option_strike}P — loss -$${Math.abs(deepClosePnl).toFixed(0)} exceeds premium $${premiumInDollars.toFixed(0)} (${dte}d left, IB fill @ $${deepClosePremium.toFixed(4)})`);
@@ -776,13 +784,16 @@ export async function runOptionsManageCycle(): Promise<ManageCycleResult> {
 
     // Check A: Expired worthless (stock stayed below call strike) — keep premium
     if (dte <= 0) {
-      await sb.from('paper_trades').update({
+      await recordTradeClose({
+        tradeId: pos.id,
+        closePrice: 0,
+        closeReason: 'expired_worthless',
         status: 'CLOSED',
-        close_price: 0,
-        pnl: premiumCollected * 100,
-        closed_at: new Date().toISOString(),
-        close_reason: 'expired_worthless',
-      }).eq('id', pos.id);
+        accountType: 'paper',
+        overridePnl: premiumCollected * 100,
+        overridePnlPct: (premiumCollected / pos.option_strike) * 100,
+        overridePnlSource: 'ib_fill_calculated',
+      });
       persistEvent(pos.ticker, 'success',
         `✅ ${pos.ticker} $${pos.option_strike} covered call expired worthless — kept $${(premiumCollected * 100).toFixed(0)} premium`,
         { action: 'closed', source: 'options', metadata: { reason: 'expired_worthless', premium: premiumCollected * 100 } }
@@ -822,14 +833,18 @@ export async function runOptionsManageCycle(): Promise<ManageCycleResult> {
       const callClosePremium = ibCloseCall.avgFillPrice;
       const callClosePnl = (premiumCollected - callClosePremium) * 100;
       const callCloseProfitPct = premiumCollected > 0 ? Math.max(0, (1 - callClosePremium / premiumCollected) * 100) : 0;
-      await sb.from('paper_trades').update({
+      await recordTradeClose({
+        tradeId: pos.id,
+        closePrice: callClosePremium,
+        closeReason: '50pct_profit',
         status: 'CLOSED',
-        close_price: callClosePremium,
-        pnl: callClosePnl,
-        closed_at: new Date().toISOString(),
-        close_reason: '50pct_profit',
-        option_close_pct: callCloseProfitPct,
-      }).eq('id', pos.id);
+        orderId: ibCloseCall.orderId,
+        accountType: 'paper',
+        overridePnl: callClosePnl,
+        overridePnlPct: (callClosePnl / (pos.option_capital_req ?? pos.option_strike * 100)) * 100,
+        overridePnlSource: 'ib_fill_calculated',
+        extraUpdates: { option_close_pct: callCloseProfitPct },
+      });
       result.closed50Pct.push(pos.ticker);
       persistEvent(pos.ticker, 'success',
         `💰 ${pos.ticker} $${pos.option_strike} covered call closed at ${callCloseProfitPct.toFixed(0)}% profit (target ${profitClosePct}%) — captured $${callClosePnl.toFixed(0)} (IB fill @ $${callClosePremium.toFixed(4)})`,
@@ -853,14 +868,18 @@ export async function runOptionsManageCycle(): Promise<ManageCycleResult> {
       const call21ClosePremium = ibCloseCall21.avgFillPrice;
       const call21ClosePnl = (premiumCollected - call21ClosePremium) * 100;
       const call21CloseProfitPct = premiumCollected > 0 ? Math.max(0, (1 - call21ClosePremium / premiumCollected) * 100) : 0;
-      await sb.from('paper_trades').update({
+      await recordTradeClose({
+        tradeId: pos.id,
+        closePrice: call21ClosePremium,
+        closeReason: '21dte_close',
         status: 'CLOSED',
-        close_price: call21ClosePremium,
-        pnl: call21ClosePnl,
-        closed_at: new Date().toISOString(),
-        close_reason: '21dte_close',
-        option_close_pct: call21CloseProfitPct,
-      }).eq('id', pos.id);
+        orderId: ibCloseCall21.orderId,
+        accountType: 'paper',
+        overridePnl: call21ClosePnl,
+        overridePnlPct: (call21ClosePnl / (pos.option_capital_req ?? pos.option_strike * 100)) * 100,
+        overridePnlSource: 'ib_fill_calculated',
+        extraUpdates: { option_close_pct: call21CloseProfitPct },
+      });
       persistEvent(pos.ticker, 'success',
         `📅 ${pos.ticker} $${pos.option_strike} covered call closed at 21 DTE — captured $${call21ClosePnl.toFixed(0)} (${call21CloseProfitPct.toFixed(0)}% of premium, IB fill @ $${call21ClosePremium.toFixed(4)})`,
         { action: 'closed', source: 'options', metadata: { reason: '21dte_close', pnl: call21ClosePnl, dte, call21CloseProfitPct, ibOrderId: ibCloseCall21.orderId } }
@@ -883,14 +902,18 @@ export async function runOptionsManageCycle(): Promise<ManageCycleResult> {
       const callStopClosePremium = ibCloseCallStop.avgFillPrice;
       const callStopClosePnl = (premiumCollected - callStopClosePremium) * 100;
       const callStopCloseProfitPct = premiumCollected > 0 ? Math.max(0, (1 - callStopClosePremium / premiumCollected) * 100) : 0;
-      await sb.from('paper_trades').update({
+      await recordTradeClose({
+        tradeId: pos.id,
+        closePrice: callStopClosePremium,
+        closeReason: 'stop_loss',
         status: 'CLOSED',
-        close_price: callStopClosePremium,
-        pnl: callStopClosePnl,
-        closed_at: new Date().toISOString(),
-        close_reason: 'stop_loss',
-        option_close_pct: callStopCloseProfitPct,
-      }).eq('id', pos.id);
+        orderId: ibCloseCallStop.orderId,
+        accountType: 'paper',
+        overridePnl: callStopClosePnl,
+        overridePnlPct: (callStopClosePnl / (pos.option_capital_req ?? pos.option_strike * 100)) * 100,
+        overridePnlSource: 'ib_fill_calculated',
+        extraUpdates: { option_close_pct: callStopCloseProfitPct },
+      });
       persistEvent(pos.ticker, 'warning',
         `🛑 ${pos.ticker} $${pos.option_strike} covered call stopped — buyback $${callStopClosePremium.toFixed(2)} > ${callStopMultiplier}× collected $${premiumCollected.toFixed(2)}, P&L $${callStopClosePnl.toFixed(0)} (IB fill @ $${callStopClosePremium.toFixed(4)})`,
         { action: 'closed', source: 'options', metadata: { reason: 'call_stop', pnl: callStopClosePnl, dte, callStopClosePremium, premiumCollected, ibOrderId: ibCloseCallStop.orderId } }
@@ -1020,15 +1043,18 @@ async function evaluateAndRollCall(
   const rollCallClosePremium = ibCloseOldCall.avgFillPrice;
   const pnl = (premiumCollected - rollCallClosePremium) * 100;
 
-  await sb.from('paper_trades').update({
+  await recordTradeClose({
+    tradeId: pos.id,
+    closePrice: rollCallClosePremium,
+    closeReason: 'rolled',
     status: 'CLOSED',
-    close_price: rollCallClosePremium,
-    pnl,
-    pnl_percent: (pnl / capital) * 100,
-    closed_at: new Date().toISOString(),
-    close_reason: 'rolled',
-    option_close_pct: Math.max(0, (1 - rollCallClosePremium / premiumCollected) * 100),
-  }).eq('id', pos.id);
+    orderId: ibCloseOldCall.orderId,
+    accountType: 'paper',
+    overridePnl: pnl,
+    overridePnlPct: (pnl / capital) * 100,
+    overridePnlSource: 'ib_fill_calculated',
+    extraUpdates: { option_close_pct: Math.max(0, (1 - rollCallClosePremium / premiumCollected) * 100) },
+  });
 
   // 2. Open new call leg
   const newExpiryISO = `${newExpiry.slice(0, 4)}-${newExpiry.slice(4, 6)}-${newExpiry.slice(6, 8)}`;
@@ -1103,14 +1129,17 @@ export async function handleAssignment(positionId: string): Promise<void> {
   if (!pos) return;
 
   // Close the put position
-  await sb.from('paper_trades').update({
+  const assignmentPnl = -(pos.option_strike - pos.option_premium - (pos.fill_price ?? pos.option_strike)) * 100;
+  await recordTradeClose({
+    tradeId: positionId,
+    closePrice: pos.option_strike,
+    closeReason: 'assigned',
     status: 'CLOSED',
-    close_reason: 'assigned',
-    option_assigned: true,
-    closed_at: new Date().toISOString(),
-    close_price: pos.option_strike,
-    pnl: -(pos.option_strike - pos.option_premium - (pos.fill_price ?? pos.option_strike)) * 100,
-  }).eq('id', positionId);
+    accountType: 'paper',
+    overridePnl: assignmentPnl,
+    overridePnlSource: 'ib_fill_calculated',
+    extraUpdates: { option_assigned: true },
+  });
 
   // Log assignment event
   persistEvent(pos.ticker, 'warning',
