@@ -4887,6 +4887,7 @@ async function checkDipBuyOpportunities(
   positions: EnrichedPosition[],
 ): Promise<void> {
   if (!config.dipBuyEnabled || !config.accountId) return;
+  if (!isModeEnabled(config, 'LONG_TERM')) return;
   // Resolve LONG_TERM routing for dip buys
   let dipConnections: RoutedConnection[];
   try {
