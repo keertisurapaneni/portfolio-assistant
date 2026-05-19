@@ -6419,7 +6419,8 @@ async function runSchedulerCycle(): Promise<void> {
       log('Suggested Finds module disabled — skipping');
     }
 
-    // Load scanner ideas once per cycle (used by generic-video queue + scanner execution)
+    // Load scanner ideas FIRST — this calls the trade-scanner edge function (Gemini AI,
+    // no Finnhub dependency) and must not be starved by the options scanner's Finnhub usage.
     let allIdeas: TradeIdea[] = [];
     let scannerIdeasLoaded = false;
 
@@ -6428,9 +6429,18 @@ async function runSchedulerCycle(): Promise<void> {
       log('Trade Signals module disabled — skipping scanner + video signals');
     } else {
       try {
+        const scanStart = Date.now();
         const data = await fetchTradeIdeas();
+        const dayCount = (data.dayTrades ?? []).length;
+        const swingCount = (data.swingTrades ?? []).length;
         allIdeas = [...(data.dayTrades ?? []), ...(data.swingTrades ?? [])];
         scannerIdeasLoaded = true;
+        log(`Trade scanner: ${dayCount} day + ${swingCount} swing ideas (${((Date.now() - scanStart) / 1000).toFixed(1)}s)`);
+        if (swingCount > 0) {
+          for (const s of data.swingTrades ?? []) {
+            log(`  SWING ${s.signal} ${s.ticker} conf=${s.confidence} — ${s.reason}`);
+          }
+        }
       } catch (err) {
         const msg = `Scanner fetch failed: ${err instanceof Error ? err.message : 'unknown'}`;
         log(msg);
