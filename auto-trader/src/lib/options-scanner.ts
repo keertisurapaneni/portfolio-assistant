@@ -36,7 +36,7 @@
 import { getSupabase, createAutoTradeEvent } from './supabase.js';
 import { ACTIVE_STATUSES } from '../../../shared/trade-status-sets.js';
 import { getOptionsChain, type OptionGreeks, type ExpiryConstraints } from './options-chain.js';
-import { isConnected, placeOptionsOrder, getDefaultAccount } from '../ib-connection.js';
+import { isConnected, placeOptionsOrder, getDefaultAccount, getPaperConnection } from '../ib-connection.js';
 import { fetchDailyBars, fetchQuote, sma as calcSma, estimateHistoricalVol } from './yahoo-finance.js';
 import { getFundamentalGrade } from './fundamental-grader.js';
 
@@ -1157,6 +1157,27 @@ export async function autoTradeOption(ticket: OptionsTradeTicket): Promise<{ tra
       metadata: { strike: ticket.strike, expiry: ticket.expiry, premium: ticket.premium, contracts: ticket.contracts ?? 1, paper: true },
     }).catch(() => {});
     return { tradeId, ibOrderId: null, isLive: false };
+  }
+
+  // Validate contract exists on IB before placing order.
+  // Prevents wasted order attempts when chain data came from synthetic fallback.
+  const conn = getPaperConnection();
+  if (conn) {
+    const conId = await conn.resolveOptionConId(ticket.ticker, 'P', ticket.strike, ticket.expiry);
+    if (!conId) {
+      console.warn(`[Options Auto-Trade] IB cannot resolve ${ticket.ticker} $${ticket.strike}P exp ${ticket.expiry} — falling back to paper trade`);
+      const tradeId = await paperTradeOption(ticket);
+      createAutoTradeEvent({
+        ticker: ticket.ticker,
+        event_type: 'warning',
+        action: 'executed',
+        source: 'scanner',
+        mode: 'OPTIONS_PUT',
+        message: `Paper trade opened — IB contract not found (options data subscription may be needed). Sold ${ticket.contracts ?? 1}x $${ticket.strike}P exp ${ticket.expiry}, premium $${ticket.premium.toFixed(2)}/contract`,
+        metadata: { strike: ticket.strike, expiry: ticket.expiry, premium: ticket.premium, contracts: ticket.contracts ?? 1, paper: true, reason: 'contract_not_found' },
+      }).catch(() => {});
+      return { tradeId, ibOrderId: null, isLive: false };
+    }
   }
 
   try {

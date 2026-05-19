@@ -335,6 +335,7 @@ async function getOptionGreeksForContract(
         right: optionType === 'P' ? OptionType.Put : OptionType.Call,
         lastTradeDateOrContractMonth: expiry,
         multiplier: 100,
+        tradingClass: symbol.toUpperCase(),
       };
 
       function finish(result: OptionGreeks | null) {
