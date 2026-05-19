@@ -326,8 +326,6 @@ export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], 
   }, [events, filterMode, sortKey, sortDir, tradesByTicker]);
 
   const filteredPnl = useMemo(() => computeEventPnl(filteredSortedEvents), [filteredSortedEvents, tradesByTicker]);
-  const useIbPnl = filterMode === 'all' && effectiveIbPnl != null;
-  const displayPnl = useIbPnl ? effectiveIbPnl : filteredPnl;
   const pnlLabel = filterMode === 'all' ? "Today's Realized P&L"
     : filterMode === 'day' ? 'Day Trade P&L'
     : filterMode === 'penny' ? 'Penny P&L'
@@ -342,36 +340,35 @@ export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], 
 
   return (
     <div className="space-y-3">
-      {/* Header P&L: IB is the single source of truth */}
+      {/* Header P&L: our calculated P&L is primary, IB is secondary comparison */}
       {filterMode === 'all' ? (
         <div className="flex items-center justify-between rounded-lg bg-[hsl(var(--secondary))] px-4 py-2.5">
-          <div className="flex items-center gap-2">
-            <span className="text-sm font-medium text-[hsl(var(--muted-foreground))]">{pnlLabel}</span>
-            {useIbPnl && (
-              <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 font-semibold">IB</span>
-            )}
+          <span className="text-sm font-medium text-[hsl(var(--muted-foreground))]">{pnlLabel}</span>
+          <div className="flex items-center gap-3">
+            <span className={cn('text-sm font-bold tabular-nums', filteredPnl > 0 ? 'text-emerald-600' : filteredPnl < 0 ? 'text-red-600' : '')}>
+              {fmtUsd(filteredPnl, 2, true)}
+            </span>
+            {effectiveIbPnl != null && (() => {
+              const mismatch = Math.abs(filteredPnl - effectiveIbPnl) > 5;
+              return (
+                <span className={cn('text-[11px] tabular-nums', mismatch ? 'text-amber-600' : 'text-gray-400')}>
+                  IB: {fmtUsd(effectiveIbPnl, 2, true)} {mismatch ? '⚠️' : '✓'}
+                </span>
+              );
+            })()}
             {ibSyncing && (
-              <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 font-semibold animate-pulse">Syncing...</span>
+              <span className="text-[11px] text-gray-400">IB: Syncing...</span>
             )}
             {ibOffline && (
-              <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-100 text-gray-500 font-semibold">IB Offline</span>
+              <span className="text-[11px] text-gray-400">IB: Offline</span>
             )}
           </div>
-          {useIbPnl && (
-            <span className={cn('text-sm font-bold tabular-nums', effectiveIbPnl! > 0 ? 'text-emerald-600' : effectiveIbPnl! < 0 ? 'text-red-600' : '')}>
-              {fmtUsd(effectiveIbPnl!, 2, true)}
-            </span>
-          )}
-          {ibSyncing && <span className="text-xs text-amber-600">—</span>}
-          {ibOffline && <span className="text-xs text-gray-400">—</span>}
         </div>
-      ) : displayPnl !== 0 && (
+      ) : filteredPnl !== 0 && (
         <div className="flex items-center justify-between rounded-lg bg-[hsl(var(--secondary))] px-4 py-2.5">
-          <div className="flex items-center gap-2">
-            <span className="text-sm font-medium text-[hsl(var(--muted-foreground))]">{pnlLabel}</span>
-          </div>
-          <span className={cn('text-sm font-bold tabular-nums', displayPnl > 0 ? 'text-emerald-600' : displayPnl < 0 ? 'text-red-600' : '')}>
-            {fmtUsd(displayPnl, 2, true)}
+          <span className="text-sm font-medium text-[hsl(var(--muted-foreground))]">{pnlLabel}</span>
+          <span className={cn('text-sm font-bold tabular-nums', filteredPnl > 0 ? 'text-emerald-600' : filteredPnl < 0 ? 'text-red-600' : '')}>
+            {fmtUsd(filteredPnl, 2, true)}
           </span>
         </div>
       )}
@@ -472,6 +469,7 @@ export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], 
               const qtyMatch = sharesMatch ?? externalMatch;
 
               const isExternalSignal = event.source === 'external_signal'
+                || event.message?.toLowerCase().includes('external signal')
                 || matched?.notes?.startsWith('External signal')
                 || matched?.scanner_reason?.includes('External');
 
