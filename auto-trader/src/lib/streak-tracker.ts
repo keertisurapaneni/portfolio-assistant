@@ -69,7 +69,7 @@ export async function getStreakMultiplier(mode: string, accountType: AccountType
       return 1.0;
     }
 
-    const wins = trades.filter(t => (t.pnl ?? 0) > 0).length;
+    const wins = trades.filter(t => t.pnl > 0).length;
     const winRate = wins / trades.length;
 
     const { data: stateRow } = await sb

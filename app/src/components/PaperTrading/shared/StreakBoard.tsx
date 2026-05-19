@@ -98,7 +98,7 @@ export function StreakBoard() {
           if (row.modes.includes(t.mode)) {
             const key = `${row.key}|${dateStr}`;
             const existing = byModeDate.get(key) ?? { pnl: 0, count: 0 };
-            existing.pnl += t.pnl ?? 0;
+            existing.pnl += t.pnl!;
             existing.count += 1;
             byModeDate.set(key, existing);
           }

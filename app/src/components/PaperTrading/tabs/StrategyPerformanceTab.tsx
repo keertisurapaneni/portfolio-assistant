@@ -1346,13 +1346,13 @@ export function StrategyPerformanceTab({ sources, videos, statuses, onRefresh }:
                                         <td className="py-1.5 text-right text-[hsl(var(--muted-foreground))]">—</td>
                                         <td className={cn(
                                           'py-1.5 text-right tabular-nums font-medium',
-                                          (trade.pnlPercent ?? 0) > 0 ? 'text-emerald-600' : (trade.pnlPercent ?? 0) < 0 ? 'text-red-600' : 'text-[hsl(var(--muted-foreground))]'
+                                          trade.pnlPercent != null && trade.pnlPercent > 0 ? 'text-emerald-600' : trade.pnlPercent != null && trade.pnlPercent < 0 ? 'text-red-600' : 'text-[hsl(var(--muted-foreground))]'
                                         )}>
                                           {trade.pnlPercent == null ? '—' : `${trade.pnlPercent >= 0 ? '+' : ''}${trade.pnlPercent.toFixed(2)}%`}
                                         </td>
                                         <td className={cn(
                                           'py-1.5 text-right tabular-nums font-semibold',
-                                          (trade.pnl ?? 0) > 0 ? 'text-emerald-600' : (trade.pnl ?? 0) < 0 ? 'text-red-600' : 'text-[hsl(var(--muted-foreground))]'
+                                          trade.pnl != null && trade.pnl > 0 ? 'text-emerald-600' : trade.pnl != null && trade.pnl < 0 ? 'text-red-600' : 'text-[hsl(var(--muted-foreground))]'
                                         )}>
                                           {trade.pnl == null ? 'Open' : fmtUsd(trade.pnl, 2, true)}
                                         </td>
