@@ -96,4 +96,5 @@ export interface PaperTrade {
   price_peak?: number | null;
   price_peak_date?: string | null;
   missing_since?: string | null;
+  pnl_source?: string | null;
 }

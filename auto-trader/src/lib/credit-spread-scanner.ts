@@ -15,6 +15,7 @@
 
 import { findSpreadStrikes, type SpreadStrikeResult } from './options-chain.js';
 import { getSupabase, createAutoTradeEvent } from './supabase.js';
+import { recordTradeClose } from './trade-closer.js';
 import { ACTIVE_STATUSES } from '../../../shared/trade-status-sets.js';
 import { fetchDailyBars, fetchQuote, sma as calcSma } from './yahoo-finance.js';
 import { isConnected, placeVerticalSpreadOrder, getDefaultAccount } from '../ib-connection.js';
@@ -511,14 +512,17 @@ export async function manageCreditSpreadPositions(): Promise<void> {
           continue;
         }
 
-        await sb.from('paper_trades').update({
+        await recordTradeClose({
+          tradeId: pos.id,
+          closePrice: currentSpreadValue,
+          closeReason,
           status: 'CLOSED',
-          close_reason: closeReason,
-          close_price: currentSpreadValue,
-          pnl: pnlTotal,
-          pnl_percent: maxGainTotal > 0 ? (pnlTotal / maxGainTotal) * 100 : 0,
-          closed_at: new Date().toISOString(),
-        }).eq('id', pos.id);
+          orderId: ibCloseOrderId ?? undefined,
+          accountType: 'paper',
+          overridePnl: pnlTotal,
+          overridePnlPct: maxGainTotal > 0 ? (pnlTotal / maxGainTotal) * 100 : 0,
+          overridePnlSource: ibCloseOrderId ? 'ib_fill_calculated' : 'estimated',
+        });
 
         const ibTag = ibCloseOrderId ? ` (IB #${ibCloseOrderId})` : ' (model-based, IB disconnected)';
         await createAutoTradeEvent({

@@ -83,6 +83,7 @@ import {
 } from './lib/feedback.js';
 import { logLongTermPerformance } from './lib/performanceLog.js';
 import { logClosedTradePerformance } from './lib/tradePerformanceLog.js';
+import { recordTradeClose } from './lib/trade-closer.js';
 import { generateSuggestedFinds, discoverDipStocks } from './lib/discovery.js';
 import { fetchRecentDailyCandles, detectCandlePatterns } from './lib/candle-patterns.js';
 import { runOptionsScan, autoTradeOption, getOptionsAutoTradeConfig } from './lib/options-scanner.js';
@@ -696,23 +697,15 @@ async function closeAllDayTrades(config: AutoTraderConfig): Promise<void> {
 
         if (!fillResult) continue;
 
-        const entryFillPrice = trade.fill_price ?? trade.entry_price ?? 0;
-        const isLong = trade.signal === 'BUY';
-        const pnl = isLong
-          ? (fillResult.avgFillPrice - entryFillPrice) * qty
-          : (entryFillPrice - fillResult.avgFillPrice) * qty;
-        const costBasis = entryFillPrice * qty;
-        const pnlPct = costBasis > 0 ? (pnl / costBasis) * 100 : 0;
-
-        await updatePaperTrade(trade.id, {
+        await recordTradeClose({
+          tradeId: trade.id,
+          closePrice: fillResult.avgFillPrice,
+          closeReason: 'eod_close',
           status: 'CLOSED',
-          close_reason: 'eod_close',
-          close_price: fillResult.avgFillPrice,
-          pnl: parseFloat(pnl.toFixed(2)),
-          pnl_percent: parseFloat(pnlPct.toFixed(2)),
-          closed_at: new Date().toISOString(),
-        }, acctType);
-        log(`${trade.ticker}: EOD closed [${acctType}] (${qty} shares ${closeSide}) @ $${fillResult.avgFillPrice.toFixed(2)} — P&L $${pnl.toFixed(2)}`);
+          orderId: (fillResult as { orderId?: number }).orderId,
+          accountType: acctType,
+        });
+        log(`${trade.ticker}: EOD closed [${acctType}] (${qty} shares ${closeSide}) @ $${fillResult.avgFillPrice.toFixed(2)}`);
       } catch (err) {
         log(`EOD sweep: ${trade.ticker} — close failed: ${err instanceof Error ? err.message : 'unknown'}`);
       }
@@ -794,23 +787,15 @@ async function softCloseDayTrades(positions: EnrichedPosition[]): Promise<void> 
 
         if (!fillResult) continue;
 
-        const closePrice = fillResult.avgFillPrice;
-        const isBuyTrade = trade.signal === 'BUY';
-        const pnl = isBuyTrade
-          ? (closePrice - fillPrice) * qty
-          : (fillPrice - closePrice) * qty;
-        const costBasis = fillPrice * qty;
-        const pnlPct = costBasis > 0 ? (pnl / costBasis) * 100 : 0;
-
-        await updatePaperTrade(trade.id, {
-          status:       'CLOSED',
-          close_reason: 'soft_eod_close',
-          close_price:  closePrice,
-          pnl:          parseFloat(pnl.toFixed(2)),
-          pnl_percent:  parseFloat(pnlPct.toFixed(2)),
-          closed_at:    new Date().toISOString(),
-        }, acctType);
-        log(`${trade.ticker}: [SoftClose:${acctType}] DB marked closed — ${reason} — fill $${closePrice.toFixed(2)}, P&L $${pnl.toFixed(2)}`);
+        await recordTradeClose({
+          tradeId: trade.id,
+          closePrice: fillResult.avgFillPrice,
+          closeReason: 'soft_eod_close',
+          status: 'CLOSED',
+          orderId: (fillResult as { orderId?: number }).orderId,
+          accountType: acctType,
+        });
+        log(`${trade.ticker}: [SoftClose:${acctType}] DB marked closed — ${reason} — fill $${fillResult.avgFillPrice.toFixed(2)}`);
         closed++;
       } catch (err) {
         log(`${trade.ticker}: [SoftClose] close failed — ${err instanceof Error ? err.message : 'unknown'}`);
@@ -858,18 +843,15 @@ async function checkStaleDayTrades(positions: EnrichedPosition[]): Promise<void>
     if (!ibPos || Math.abs(ibPos.position) === 0) {
       const staleClosePrice = await getQuotePrice(trade.ticker);
       const actual = staleClosePrice ?? fillPrice;
-      const stalePnl = isLong ? (actual - fillPrice) * qty : (fillPrice - actual) * qty;
-      const staleCost = fillPrice * qty;
-      const stalePnlPct = staleCost > 0 ? (stalePnl / staleCost) * 100 : 0;
-      await updatePaperTrade(trade.id, {
-        status:       'CLOSED',
-        close_reason: 'stale_eod_reconcile',
-        close_price:  actual,
-        pnl:          parseFloat(stalePnl.toFixed(2)),
-        pnl_percent:  parseFloat(stalePnlPct.toFixed(2)),
-        closed_at:    new Date().toISOString(),
-      });
-      log(`  ${trade.ticker}: no IB position found — marked CLOSED (reconciled) — P&L $${stalePnl.toFixed(2)}`);
+      await recordTradeClose({
+        tradeId: trade.id,
+        closePrice: actual,
+        closeReason: 'stale_eod_reconcile',
+        status: 'CLOSED',
+        accountType: 'paper',
+        overridePnlSource: staleClosePrice ? 'quote_fallback' : 'estimated',
+      } as Parameters<typeof recordTradeClose>[0]);
+      log(`  ${trade.ticker}: no IB position found — marked CLOSED (reconciled)`);
       continue;
     }
 
@@ -877,19 +859,16 @@ async function checkStaleDayTrades(positions: EnrichedPosition[]): Promise<void>
     if (qty <= 0) continue;
 
     try {
-      const { avgFillPrice } = await placeMarketOrder({ symbol: trade.ticker, side: closeSide, quantity: qty });
-      const stalePnl = isLong ? (avgFillPrice - fillPrice) * qty : (fillPrice - avgFillPrice) * qty;
-      const staleCost = fillPrice * qty;
-      const stalePnlPct = staleCost > 0 ? (stalePnl / staleCost) * 100 : 0;
-      await updatePaperTrade(trade.id, {
-        status:       'CLOSED',
-        close_reason: 'stale_eod_close',
-        close_price:  avgFillPrice,
-        pnl:          parseFloat(stalePnl.toFixed(2)),
-        pnl_percent:  parseFloat(stalePnlPct.toFixed(2)),
-        closed_at:    new Date().toISOString(),
+      const result = await placeMarketOrder({ symbol: trade.ticker, side: closeSide, quantity: qty });
+      await recordTradeClose({
+        tradeId: trade.id,
+        closePrice: result.avgFillPrice,
+        closeReason: 'stale_eod_close',
+        status: 'CLOSED',
+        orderId: result.orderId,
+        accountType: 'paper',
       });
-      log(`  ${trade.ticker}: stale position closed via market order @ $${avgFillPrice.toFixed(2)} — P&L $${stalePnl.toFixed(2)}`);
+      log(`  ${trade.ticker}: stale position closed via market order @ $${result.avgFillPrice.toFixed(2)}`);
     } catch (err) {
       log(`  ${trade.ticker}: stale close failed — ${err instanceof Error ? err.message : 'unknown'}`);
     }
@@ -4555,9 +4534,6 @@ async function _syncPositionsForAccount(
       const status: import('../../shared/trade-types.js').TradeStatus = closeReason === 'stop_loss' ? 'STOPPED'
         : closeReason === 'target_hit' ? 'TARGET_HIT' : 'CLOSED';
 
-      const closedAt = new Date().toISOString();
-      const pnlVal = parseFloat(pnl.toFixed(2));
-      const pnlPct = fillPrice > 0 ? parseFloat(((pnl / (fillPrice * qty)) * 100).toFixed(2)) : null;
       let rMultiple: number | null = null;
       if (trade.stop_loss != null && trade.entry_price != null && trade.entry_price !== trade.stop_loss) {
         const riskPerShare = Math.abs(trade.entry_price - trade.stop_loss);
@@ -4566,14 +4542,21 @@ async function _syncPositionsForAccount(
           : (fillPrice - actual) / riskPerShare;
         rMultiple = parseFloat(rMultiple.toFixed(2));
       }
-      await updatePaperTrade(trade.id, {
-        status, close_reason: closeReason, close_price: actual,
-        closed_at: closedAt,
-        pnl: pnlVal,
-        pnl_percent: pnlPct,
-        r_multiple: rMultiple,
-        missing_since: null,
-      }, syncAcct);
+
+      const pnlSource = hasConfirmedFill ? 'ib_fill_calculated' : (closePrice ? 'quote_fallback' : 'estimated');
+      const closedAt = new Date().toISOString();
+      const pnlVal = parseFloat(pnl.toFixed(2));
+      const pnlPct = fillPrice > 0 ? parseFloat(((pnl / (fillPrice * qty)) * 100).toFixed(2)) : null;
+      await recordTradeClose({
+        tradeId: trade.id,
+        closePrice: actual,
+        closeReason,
+        status,
+        orderId: tpId || slId || undefined,
+        accountType: syncAcct,
+        overridePnlSource: pnlSource as 'ib_fill_calculated' | 'quote_fallback' | 'estimated',
+        extraUpdates: { r_multiple: rMultiple, missing_since: null },
+      } as Parameters<typeof recordTradeClose>[0]);
       log(`${trade.ticker}: Closed [${syncAcct}] (${closeReason}) — P&L $${pnl.toFixed(2)}${hasConfirmedFill ? '' : ' [fallback price]'}`);
       const closedTrade = {
         ...trade,
@@ -5068,21 +5051,20 @@ async function checkSwingHoldExpiry(
 
     for (const { connection: swingConn, accountType: swAcct } of swingConnections) {
       try {
-        await swingConn.placeMarketOrder({ symbol: trade.ticker, side, quantity: qty });
-        await createPaperTrade({
-          ticker: trade.ticker, mode: 'SWING_TRADE', signal: side,
-          entry_price: ibPos.mktPrice,
-          quantity: qty,
-          position_size: qty * ibPos.mktPrice,
-          status: 'SUBMITTED',
-          notes: `Auto-exit: swing held ${daysHeld} days (max ${maxDays}) — P&L ${gainPct}%`,
-          entry_trigger_type: 'swing_expiry',
-        }, swAcct);
+        const result = await swingConn.placeMarketOrder({ symbol: trade.ticker, side, quantity: qty });
+        await recordTradeClose({
+          tradeId: trade.id,
+          closePrice: result.avgFillPrice,
+          closeReason: 'swing_expiry',
+          status: 'CLOSED',
+          orderId: result.orderId,
+          accountType: swAcct,
+        });
 
         log(`${trade.ticker}: SWING EXPIRY [${swAcct}] — held ${daysHeld} days, closing ${qty} shares at ${gainPct}% P&L`);
         persistEvent(trade.ticker, 'success',
           `${trade.ticker} swing auto-closed after ${daysHeld} days (max ${maxDays}d) — P&L ${gainPct}% — capital freed`,
-          { action: 'executed', source: 'swing_expiry', mode: 'SWING_TRADE',
+          { action: 'closed', source: 'swing_expiry', mode: 'SWING_TRADE',
             metadata: { daysHeld, maxDays, gainPct, qty } },
           swAcct,
         );
@@ -5311,21 +5293,19 @@ async function checkLongTermAutoSell(
 
     for (const { connection: ltConn, accountType: ltAcctType } of ltConnections) {
       try {
-        const { avgFillPrice } = await ltConn.placeMarketOrder({ symbol: trade.ticker, side, quantity: qty });
-        const fillPnl = ibPos.position > 0
-          ? (avgFillPrice - ibPos.avgCost) * qty
-          : (ibPos.avgCost - avgFillPrice) * qty;
+        const result = await ltConn.placeMarketOrder({ symbol: trade.ticker, side, quantity: qty });
+        const avgFillPrice = result.avgFillPrice;
         const fillPnlPct = ibPos.avgCost > 0
           ? ((avgFillPrice - ibPos.avgCost) / ibPos.avgCost) * 100
           : gainPct;
-        await updatePaperTrade(trade.id, {
+        await recordTradeClose({
+          tradeId: trade.id,
+          closePrice: avgFillPrice,
+          closeReason: reason,
           status: 'CLOSED',
-          close_price: avgFillPrice,
-          pnl: fillPnl,
-          pnl_percent: fillPnlPct,
-          close_reason: reason,
-          closed_at: new Date().toISOString(),
-        }, ltAcctType);
+          orderId: result.orderId,
+          accountType: ltAcctType,
+        });
 
         const label = reason.startsWith('dd_profit_take') ? 'Dip Discovery profit-take'
           : reason.startsWith('dd_stop_loss')    ? 'Dip Discovery stop-loss'
@@ -5389,21 +5369,20 @@ async function makeRoomForTrade(
     const side: 'BUY' | 'SELL' = candidate.ibPos.position > 0 ? 'SELL' : 'BUY';
 
     try {
-      await placeMarketOrder({ symbol: candidate.trade.ticker, side, quantity: qty });
-      await createPaperTrade({
-        ticker: candidate.trade.ticker, mode: 'SWING_TRADE', signal: side,
-        entry_price: candidate.ibPos.mktPrice,
-        quantity: qty,
-        position_size: candidate.marketValue,
-        status: 'SUBMITTED',
-        notes: `Capital pressure exit: freed $${candidate.marketValue.toFixed(0)} at +${candidate.gainPct.toFixed(1)}%`,
-        entry_trigger_type: 'capital_pressure',
+      const result = await placeMarketOrder({ symbol: candidate.trade.ticker, side, quantity: qty });
+      await recordTradeClose({
+        tradeId: candidate.trade.id,
+        closePrice: result.avgFillPrice,
+        closeReason: 'capital_pressure',
+        status: 'CLOSED',
+        orderId: result.orderId,
+        accountType: 'paper',
       });
 
       log(`Capital pressure: closed ${candidate.trade.ticker} (+${candidate.gainPct.toFixed(1)}%) to free $${candidate.marketValue.toFixed(0)}`);
       persistEvent(candidate.trade.ticker, 'success',
         `♻️ ${candidate.trade.ticker} closed to free capital (+${candidate.gainPct.toFixed(1)}% gain) — $${candidate.marketValue.toFixed(0)} freed for new signal`,
-        { action: 'executed', source: 'capital_pressure', mode: 'SWING_TRADE',
+        { action: 'closed', source: 'capital_pressure', mode: 'SWING_TRADE',
           metadata: { gainPct: candidate.gainPct, freed: candidate.marketValue } }
       );
       return candidate.marketValue;
@@ -5585,25 +5564,19 @@ async function checkDayTradeTrailingStops(
       }
 
       try {
-        const { avgFillPrice } = await conn.placeMarketOrder({ symbol: trade.ticker, side: closeSide, quantity: qty });
-        const pnl = isBuy
-          ? parseFloat(((avgFillPrice - fillPrice) * qty).toFixed(2))
-          : parseFloat(((fillPrice - avgFillPrice) * qty).toFixed(2));
-        const pnlPct = fillPrice > 0
-          ? parseFloat(((pnl / (fillPrice * qty)) * 100).toFixed(2))
-          : null;
-        await updatePaperTrade(trade.id, {
-          status:       'CLOSED',
-          close_reason: 'trailing_stop',
-          close_price:  avgFillPrice,
-          pnl,
-          pnl_percent:  pnlPct,
-          closed_at:    new Date().toISOString(),
-        }, acctType);
+        const result = await conn.placeMarketOrder({ symbol: trade.ticker, side: closeSide, quantity: qty });
+        await recordTradeClose({
+          tradeId: trade.id,
+          closePrice: result.avgFillPrice,
+          closeReason: 'trailing_stop',
+          status: 'CLOSED',
+          orderId: result.orderId,
+          accountType: acctType,
+        });
         log(
           `${trade.ticker}: DAY_TRADE trailing stop closed [${acctType}] — peak ${newPeak.toFixed(2)}, ` +
           `current ${currentPrice.toFixed(2)}, trail stop ${trailStop.toFixed(2)}, ` +
-          `P&L $${pnl.toFixed(2)}`,
+          `fill $${result.avgFillPrice.toFixed(2)}`,
         );
       } catch (err) {
         log(`${trade.ticker}: trailing stop close failed — ${err instanceof Error ? err.message : 'unknown'}`);
@@ -5674,24 +5647,37 @@ async function checkLossCutOpportunities(
 
       try {
         const side = ibPos.position > 0 ? 'SELL' : 'BUY';
-        await conn.placeMarketOrder({ symbol: trade.ticker, side: side as 'BUY' | 'SELL', quantity: sellQty });
+        const result = await conn.placeMarketOrder({ symbol: trade.ticker, side: side as 'BUY' | 'SELL', quantity: sellQty });
 
-        await createPaperTrade({
-          ticker: trade.ticker, mode: trade.mode as 'LONG_TERM' | 'SWING_TRADE',
-          signal: 'SELL', entry_price: ibPos.mktPrice,
-          quantity: sellQty,
-          position_size: sellQty * ibPos.mktPrice,
-          status: 'SUBMITTED',
-          notes: `Loss cut ${triggered.label} at -${lossPct.toFixed(1)}%`,
-          entry_trigger_type: 'loss_cut',
-        }, acctType);
+        // If this is a full exit (Tier 3), close the original trade
+        if (triggered.sellPct >= 100) {
+          await recordTradeClose({
+            tradeId: trade.id,
+            closePrice: result.avgFillPrice,
+            closeReason: `loss_cut_${triggered.label.toLowerCase().replace(/\s+/g, '_')}`,
+            status: 'STOPPED',
+            orderId: result.orderId,
+            accountType: acctType,
+          });
+        } else {
+          // Partial loss cut — create a SELL record (can't close the original since position remains)
+          await createPaperTrade({
+            ticker: trade.ticker, mode: trade.mode as 'LONG_TERM' | 'SWING_TRADE',
+            signal: 'SELL', entry_price: ibPos.mktPrice,
+            quantity: sellQty,
+            position_size: sellQty * ibPos.mktPrice,
+            status: 'SUBMITTED',
+            notes: `Loss cut ${triggered.label} at -${lossPct.toFixed(1)}%`,
+            entry_trigger_type: 'loss_cut',
+          }, acctType);
+        }
 
         const realizedLoss = ibPos.position > 0
           ? sellQty * (ibPos.avgCost - ibPos.mktPrice)
           : sellQty * (ibPos.mktPrice - ibPos.avgCost);
         log(`${trade.ticker}: LOSS CUT ${triggered.label} [${acctType}] — sold ${sellQty} shares at -${lossPct.toFixed(1)}% ($${realizedLoss.toFixed(2)})`);
         persistEvent(trade.ticker, 'success', `Loss cut ${triggered.label}: sold ${sellQty} shares`, {
-          action: 'executed', source: 'loss_cut', mode: trade.mode,
+          action: 'closed', source: 'loss_cut', mode: trade.mode,
           metadata: { tier: triggered.label, lossPct, sellQty, realizedLoss },
         }, acctType);
       } catch (err) {
@@ -6462,22 +6448,17 @@ async function runSchedulerCycle(): Promise<void> {
                   const qty = trade.quantity ?? 0;
                   if (qty > 0) {
                     const fillResult = await placeMarketOrder({ symbol: trade.ticker, side: closeSide, quantity: qty });
-                    const closePrice = fillResult.avgFillPrice;
-                    const entryPrice = trade.fill_price ?? trade.entry_price ?? 0;
-                    const pnl = (closePrice - entryPrice) * qty;
-                    const costBasis = entryPrice * qty;
-                    const pnlPct = costBasis > 0 ? (pnl / costBasis) * 100 : 0;
-                    await updatePaperTrade(trade.id, {
+                    await recordTradeClose({
+                      tradeId: trade.id,
+                      closePrice: fillResult.avgFillPrice,
+                      closeReason: 'penny_exit',
                       status: 'CLOSED',
-                      close_reason: 'penny_exit',
-                      close_price: closePrice,
-                      pnl: parseFloat(pnl.toFixed(2)),
-                      pnl_percent: parseFloat(pnlPct.toFixed(2)),
-                      closed_at: new Date().toISOString(),
-                      notes: `${trade.notes ?? ''} | Exit: ${exitSignal.reasons.join(', ')}`,
+                      orderId: fillResult.orderId,
+                      accountType: 'paper',
+                      extraUpdates: { notes: `${trade.notes ?? ''} | Exit: ${exitSignal.reasons.join(', ')}` },
                     });
                     persistEvent(trade.ticker, 'success',
-                      `Penny exit: ${exitSignal.reasons.join(', ')} — fill $${closePrice.toFixed(2)}, P&L $${pnl.toFixed(2)}`, {
+                      `Penny exit: ${exitSignal.reasons.join(', ')} — fill $${fillResult.avgFillPrice.toFixed(2)}`, {
                         source: 'penny_scanner',
                         mode: 'DAY_PENNY',
                       });

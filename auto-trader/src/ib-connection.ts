@@ -160,6 +160,7 @@ export class IBConnection {
   private connectionListeners: Array<(state: boolean) => void> = [];
 
   private _pnlReqId = 0;
+  private _pnlSubscribed = false;
   private _dailyPnL: number | null = null;
   private _unrealizedPnL: number | null = null;
   private _realizedPnL: number | null = null;
@@ -240,6 +241,28 @@ export class IBConnection {
       this._orderFillPrices.set(orderId, dbPrice);
     }
     return dbPrice;
+  }
+
+  private _subscribeToPnlIfReady(): void {
+    if (this._pnlSubscribed) return;
+    if (this._accounts.length === 0 || this._nextOrderId === 0 || !this.ib) return;
+
+    // Cancel any stale subscription from a prior connect cycle
+    if (this._pnlReqId) {
+      try { this.ib.cancelPnL(this._pnlReqId); } catch { /* ignore */ }
+    }
+
+    this._pnlReqId = this.getNextOrderId();
+    this._dailyPnL = null;
+    this._unrealizedPnL = null;
+    this._realizedPnL = null;
+    try {
+      this.ib.reqPnL(this._pnlReqId, this._accounts[0], '');
+      this._pnlSubscribed = true;
+      console.log(`${this.tag} Subscribed to account PnL (reqId=${this._pnlReqId}, account=${this._accounts[0]})`);
+    } catch (pnlErr) {
+      console.warn(`${this.tag} reqPnL failed:`, pnlErr instanceof Error ? pnlErr.message : pnlErr);
+    }
   }
 
   // ── Connect ──────────────────────────────────────────
@@ -332,24 +355,13 @@ export class IBConnection {
     ib.on(EventName.managedAccounts, (accountsList: string) => {
       this._accounts = accountsList.split(',').map(a => a.trim()).filter(Boolean);
       console.log(`${this.tag} Managed accounts: ${this._accounts.join(', ')}`);
-
-      if (this._accounts[0] && this.ib) {
-        this._pnlReqId = this.getNextOrderId();
-        this._dailyPnL = null;
-        this._unrealizedPnL = null;
-        this._realizedPnL = null;
-        try {
-          this.ib.reqPnL(this._pnlReqId, this._accounts[0], '');
-          console.log(`${this.tag} Subscribed to account PnL (reqId=${this._pnlReqId}, account=${this._accounts[0]})`);
-        } catch (pnlErr) {
-          console.warn(`${this.tag} reqPnL failed:`, pnlErr instanceof Error ? pnlErr.message : pnlErr);
-        }
-      }
+      this._subscribeToPnlIfReady();
     });
 
     ib.on(EventName.nextValidId, (orderId: number) => {
       this._nextOrderId = orderId;
       console.log(`${this.tag} Next valid order ID: ${this._nextOrderId}`);
+      this._subscribeToPnlIfReady();
     });
 
     ib.on(EventName.pnl, (reqId: number, dailyPnL: number, unrealizedPnL?: number, realizedPnL?: number) => {
@@ -1005,6 +1017,7 @@ export class IBConnection {
     this._dailyPnL = null;
     this._unrealizedPnL = null;
     this._realizedPnL = null;
+    this._pnlSubscribed = false;
     this._connected = false;
   }
 }
