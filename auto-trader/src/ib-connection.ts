@@ -98,6 +98,7 @@ export interface OptionsOrderParams {
   limitPrice: number;
   account?: string;
   action?: 'BUY' | 'SELL';
+  tradingClass?: string;
 }
 
 export interface OptionsOrderResult {
@@ -801,6 +802,7 @@ export class IBConnection {
         right: right === 'P' ? OptionType.Put : OptionType.Call,
         lastTradeDateOrContractMonth: expiry,
         multiplier: 100,
+        tradingClass: params.tradingClass ?? symbol.toUpperCase(),
       };
 
       const orderId = this.getNextOrderId();
@@ -881,6 +883,7 @@ export class IBConnection {
           right: right === 'P' ? OptionType.Put : OptionType.Call,
           lastTradeDateOrContractMonth: expiry,
           multiplier: 100,
+          tradingClass: symbol.toUpperCase(),
         });
       });
     } finally {
