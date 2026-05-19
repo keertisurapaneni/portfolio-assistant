@@ -30,13 +30,13 @@ Return a single JSON object (no markdown, no code block) with these fields. Use 
 {
   "source_name": "Display name of creator/channel (e.g. 'Somesh | Day Trader | Investor', 'Casper Clipping')",
   "source_handle": "Instagram/Twitter handle if mentioned (e.g. 'kaycapitals', 'casperclipping'). Lowercase, no @.",
-  "strategy_type": "daily_signal" | "daily_penny" | "generic_strategy",
+  "strategy_type": "daily_signal" | "daily_penny" | "options_signal" | "generic_strategy",
   "video_heading": "Short title summarizing the strategy (e.g. '4 stocks day-trading gameplan for Thursday')",
-  "trade_date": "YYYY-MM-DD if date-specific (daily_signal), else null",
+  "trade_date": "YYYY-MM-DD if date-specific (daily_signal/options_signal), else null",
   "timeframe": "DAY_TRADE" | "SWING_TRADE" | "LONG_TERM" | null,
   "applicable_timeframes": ["DAY_TRADE"] | ["SWING_TRADE"] | ["DAY_TRADE","SWING_TRADE"] | [],
   "execution_window_et": {"start":"09:35","end":"10:30"} | null,
-  "setup_type": "breakout" | "momentum" | "pullback_vwap" | "range" | null,
+  "setup_type": "breakout" | "momentum" | "pullback_vwap" | "range" | "pocket_pivot" | "bullish_engulfing" | "volume_breakout" | null,
   "extracted_signals": [{"ticker":"TSLA","longTriggerAbove":414,"longTargets":[416.9,420],"shortTriggerBelow":409,"shortTargets":[405.3,402.65]}] | [],
   "summary": "1-2 sentence summary of the strategy"
 }
@@ -44,6 +44,7 @@ Return a single JSON object (no markdown, no code block) with these fields. Use 
 Rules:
 - daily_signal: video gives concrete levels (entry, stop, target) for specific stocks today. Use extracted_signals.
 - daily_penny: video discusses a penny stock / small-cap watchlist for the day — stocks typically $2-$20, low float, momentum/gap plays. Creators like Ross Cameron / Warrior Trading. Use extracted_signals for the tickers mentioned as watchlist candidates (set longTriggerAbove to the current price or breakout level if given, targets optional). Key difference from daily_signal: these are low-priced, speculative momentum names — not large-cap level-based setups.
+- options_signal: video identifies daily chart "pocket" setups (consolidation breakouts) and the creator trades them with OPTIONS (calls for bullish, puts for bearish). Look for phrases like "pocket", "pocket pivot", "consolidation breakout", "daily breakout", "looking for calls", "buying puts". These videos give a list of tickers with entry conditions (e.g. "above today's high", "above $25.58") and target prices, intending to buy call or put options. Use extracted_signals with the OPTIONS format described below.
 - generic_strategy: general rules, patterns, SMC concepts (no specific levels). extracted_signals = [].
 - source_name: from intro ("Hey it's Somesh from Kay Capitals"), outro, or channel branding. Humanize (e.g. "Kay Capitals" → "Somesh | Day Trader | Investor" if known).
 - source_handle: Instagram handle if mentioned. Infer from source_name (e.g. "Casper Clipping" → "casperclipping").
@@ -54,11 +55,28 @@ Rules:
 - trade_date: for daily_signal or daily_penny when date is explicit (e.g. "for Thursday", "today's levels", "Monday morning watchlist").
 - execution_window_et: only if time window is specified (e.g. "9:30-9:35 levels", "first candle rule").
 - setup_type: how the influencer intends execution:
-    "breakout"     — enter when price breaks above/below a pre-market high/low with volume (most common for daily signals with trigger levels)
-    "momentum"     — buy/short the directional move in the first hour, market order or aggressive limit
-    "pullback_vwap"— wait for a pullback to VWAP or a support level before entering (patient entry)
-    "range"        — stock is in a range; play the bounce off support or rejection at resistance
-    null           — unclear or generic strategy with no specific setup type`;
+    "breakout"         — enter when price breaks above/below a pre-market high/low with volume (most common for daily signals with trigger levels)
+    "momentum"         — buy/short the directional move in the first hour, market order or aggressive limit
+    "pullback_vwap"    — wait for a pullback to VWAP or a support level before entering (patient entry)
+    "range"            — stock is in a range; play the bounce off support or rejection at resistance
+    "pocket_pivot"     — daily chart consolidation "pocket" breakout — price compressing in a tight range, then breaking out on volume
+    "bullish_engulfing"— bullish engulfing candle or strong reversal pattern on daily chart
+    "volume_breakout"  — already broke out on above-average volume, continuation expected
+    null               — unclear or generic strategy with no specific setup type
+
+OPTIONS SIGNAL FORMAT (for strategy_type = "options_signal"):
+When the video discusses pocket/breakout setups where the creator buys calls or puts, use this format for extracted_signals:
+  {"ticker":"SNOW","signal":"BUY_CALL","entry_context":"above_todays_high","trigger_price":null,"targets":[170,175],"setup_type":"pocket_pivot"}
+  {"ticker":"OSCR","signal":"BUY_CALL","entry_context":"above_level","trigger_price":25.58,"targets":[28,29.70],"setup_type":"volume_breakout"}
+  {"ticker":"XYZ","signal":"BUY_PUT","entry_context":"below_todays_low","trigger_price":null,"targets":[45,43],"setup_type":"breakout"}
+
+Fields:
+  - signal: "BUY_CALL" (bullish — buying calls) or "BUY_PUT" (bearish — buying puts)
+  - entry_context: "above_todays_high" (trigger when price exceeds today's high), "above_level" (trigger above a specific price), "below_todays_low" (trigger below today's low), "below_level" (trigger below a specific price)
+  - trigger_price: the specific dollar price to trigger entry (e.g. 25.58). null when entry_context is "above_todays_high" or "below_todays_low" (resolved at runtime)
+  - targets: array of target prices for the underlying stock [26, 27]
+  - setup_type: "pocket_pivot", "breakout", "bullish_engulfing", or "volume_breakout"
+Do NOT use the longTriggerAbove/shortTriggerBelow format for options_signal videos. Use the format above.`;
 
 async function callGroq(apiKey: string, systemPrompt: string, userPrompt: string): Promise<string> {
   const res = await fetch(GROQ_URL, {
@@ -259,7 +277,7 @@ Deno.serve(async (req) => {
     }
   }
 
-  const VALID_STRATEGY_TYPES = ['daily_signal', 'daily_penny', 'generic_strategy'] as const;
+  const VALID_STRATEGY_TYPES = ['daily_signal', 'daily_penny', 'options_signal', 'generic_strategy'] as const;
   const extractedStrategyType = VALID_STRATEGY_TYPES.includes(extracted.strategy_type as typeof VALID_STRATEGY_TYPES[number])
     ? (extracted.strategy_type as string) : null;
   let strategy_type = extractedStrategyType;
@@ -348,7 +366,7 @@ Deno.serve(async (req) => {
   }
 
   const summary = extracted.summary ? String(extracted.summary).trim() : null;
-  const VALID_SETUP_TYPES = ['breakout', 'momentum', 'pullback_vwap', 'range'] as const;
+  const VALID_SETUP_TYPES = ['breakout', 'momentum', 'pullback_vwap', 'range', 'pocket_pivot', 'bullish_engulfing', 'volume_breakout'] as const;
   const setup_type = VALID_SETUP_TYPES.includes(extracted.setup_type as typeof VALID_SETUP_TYPES[number])
     ? (extracted.setup_type as string)
     : null;
@@ -388,7 +406,7 @@ Deno.serve(async (req) => {
 
   // For daily_signal videos with extracted signals: auto-import into external_strategy_signals
   // so the auto-trader picks them up on trade_date. Fire-and-forget (non-blocking).
-  if ((strategy_type === 'daily_signal' || strategy_type === 'daily_penny') && extracted_signals.length > 0) {
+  if ((strategy_type === 'daily_signal' || strategy_type === 'daily_penny' || strategy_type === 'options_signal') && extracted_signals.length > 0) {
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
     const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
     fetch(`${supabaseUrl}/functions/v1/import-strategy-signals`, {

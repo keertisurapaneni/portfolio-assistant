@@ -22,5 +22,14 @@
     "sourceUrl": "https://www.instagram.com/caspersmcwisdom/",
     "firstSeenAt": "2026-02-19",
     "notes": "Shared reel: https://www.instagram.com/reel/DU53Z_nEcZh/?igsh=MXAyN3V3bHRnamtiYQ%3D%3D"
+  },
+  {
+    "platform": "unknown",
+    "sourceName": "Pocket Trader",
+    "handle": "pocket_trader",
+    "sourceUrl": null,
+    "strategyType": "options_signal",
+    "firstSeenAt": "2026-05-19",
+    "notes": "Daily chart pocket/consolidation breakout setups — trades with options (calls/puts). Handle and URL TBD — update once confirmed."
   }
 ]

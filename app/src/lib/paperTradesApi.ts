@@ -860,7 +860,7 @@ export interface StrategySignalStatusSummary {
   videoId: string | null;
   videoHeading: string | null;
   platform: 'instagram' | 'twitter' | 'youtube' | null;
-  strategyType: 'daily_signal' | 'daily_penny' | 'generic_strategy' | null;
+  strategyType: 'daily_signal' | 'daily_penny' | 'generic_strategy' | 'options_signal' | null;
   applicableDate: string | null;
   /** For generic_strategy: DAY_TRADE, SWING_TRADE, or both */
   applicableTimeframes: Array<'DAY_TRADE' | 'SWING_TRADE'> | null;
@@ -1267,7 +1267,7 @@ export async function getStrategySignalStatusSummaries(): Promise<StrategySignal
   const nowMs = Date.now();
 
   const grouped = new Map<string, StrategySignalStatusSummary & { sortKey: string }>();
-  const trackedTypeByKey = new Map<string, 'daily_signal' | 'daily_penny' | 'generic_strategy'>();
+  const trackedTypeByKey = new Map<string, 'daily_signal' | 'daily_penny' | 'generic_strategy' | 'options_signal'>();
   const trackedTimeframesByKey = new Map<string, Array<'DAY_TRADE' | 'SWING_TRADE'>>();
   for (const row of data as Array<{
     source_name: string | null;
@@ -1346,7 +1346,7 @@ export async function getStrategySignalStatusSummaries(): Promise<StrategySignal
           : (item.canonical_url ?? item.reel_url ?? null);
 
         const key = `${source}::${videoId ?? videoHeading}`;
-        const strategyType = item.strategy_type === 'daily_signal' || item.strategy_type === 'daily_penny' || item.strategy_type === 'generic_strategy'
+        const strategyType = item.strategy_type === 'daily_signal' || item.strategy_type === 'daily_penny' || item.strategy_type === 'generic_strategy' || item.strategy_type === 'options_signal'
           ? item.strategy_type
           : null;
         if (strategyType) {

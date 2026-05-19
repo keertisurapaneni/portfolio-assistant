@@ -17,7 +17,7 @@ import {
 const router = Router();
 
 const VALID_SIGNALS = new Set(['BUY', 'SELL']);
-const VALID_MODES = new Set(['DAY_TRADE', 'DAY_PENNY', 'SWING_TRADE', 'LONG_TERM']);
+const VALID_MODES = new Set(['DAY_TRADE', 'DAY_PENNY', 'SWING_TRADE', 'LONG_TERM', 'OPTIONS_CALL', 'OPTIONS_PUT']);
 const VALID_STATUSES = new Set(['PENDING', 'EXECUTED', 'FAILED', 'SKIPPED', 'EXPIRED', 'CANCELLED']);
 
 function parseOptionalNumber(value: unknown): number | null {
