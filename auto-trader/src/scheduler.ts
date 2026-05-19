@@ -3030,9 +3030,10 @@ async function executeScannerTrade(
 
   // ── Recent-loss cooldown gate ─────────────────────────────────────────
   // Block re-entry on any ticker that lost money in the last N days.
-  // SWING_TRADE uses 14 days; DAY_TRADE uses 5 days (intraday patterns reset faster).
+  // Both swing and day trades use 5 days — swing setups change weekly,
+  // a 14-day cooldown was too aggressive and blocked valid re-entries.
   {
-    const lookbackDays = mode === 'SWING_TRADE' ? 14 : 5;
+    const lookbackDays = 5;
     if (await hasRecentLoss(ticker, lookbackDays, { excludeOptions: true })) {
       log(`${ticker}: skipped — recent loss within ${lookbackDays}d cooldown`);
       persistEvent(ticker, 'skipped', `Re-entry blocked — ticker had a loss within ${lookbackDays} days`, {
@@ -3112,42 +3113,19 @@ async function executeScannerTrade(
 
   // ── Swing trade quality gates ─────────────────────────────────────────
   // Swing trades bypass the ORB/VWAP gates above (intraday metrics don't apply
-  // to multi-day holds), so we enforce quality via the scanner's own ML features.
-  //
-  // Chop gate: scanner records market_condition='chop' when the stock has no
-  // clear trend structure. Entering a swing trade in chop is low-probability —
-  // the AI narrative can say "bullish" but the regime label doesn't lie.
-  //
-  // Volume gate: volume_vs_10d_avg < 0.3 means the stock is trading at less than
-  // 30% of its normal volume. Low-conviction entries in thin conditions gap through
-  // stop-loss levels rather than filling cleanly (as seen with AAON on 2026-04-28,
-  // which had 0.06x volume and blew through its stop by $1.04, costing -1.32R).
+  // to multi-day holds). Swing-specific gates are RELAXED compared to day trades:
+  // - Chop/consolidation is WHERE swing entries form (accumulation, base building)
+  // - Low intraday volume is normal during pullbacks and consolidation
+  // - Wyckoff volume divergence applies to breakouts, not pullback entries
   if (mode === 'SWING_TRADE') {
-    if (idea.market_condition === 'chop') {
-      log(`${ticker}: swing trade skipped — market_condition=chop`);
-      persistEvent(ticker, 'skipped', `Swing trade skipped: choppy market conditions`, {
-        action: 'skipped', source: 'scanner', mode, skip_reason: 'swing_chop',
-      });
-      return 'skipped:swing_chop';
-    }
-    if (idea.volumeVs10dAvg != null && idea.volumeVs10dAvg < 0.3) {
-      log(`${ticker}: swing trade skipped — volume ${idea.volumeVs10dAvg.toFixed(2)}x avg (< 0.3x threshold)`);
-      persistEvent(ticker, 'skipped', `Swing trade skipped: low volume (${idea.volumeVs10dAvg.toFixed(2)}x 10d avg)`, {
+    // Only block on extremely thin volume (< 0.15x) where fills are unreliable.
+    // Normal low volume (0.15-1.0x) is expected during swing entry conditions.
+    if (idea.volumeVs10dAvg != null && idea.volumeVs10dAvg < 0.15) {
+      log(`${ticker}: swing trade skipped — volume ${idea.volumeVs10dAvg.toFixed(2)}x avg (< 0.15x, dangerously thin)`);
+      persistEvent(ticker, 'skipped', `Swing trade skipped: dangerously thin volume (${idea.volumeVs10dAvg.toFixed(2)}x 10d avg)`, {
         action: 'skipped', source: 'scanner', mode, skip_reason: 'swing_low_volume',
       });
       return 'skipped:swing_low_volume';
-    }
-
-    // Wyckoff "Four More Phase" gate: new move on volume weaker than the prior 20-day peak.
-    // If today's volume is < 65% of the highest-volume session in the last 20 days,
-    // the move lacks institutional conviction — smart money likely already distributed.
-    // This is the same pattern Somesh calls the "Four More Phase" (Wyckoff Distribution).
-    if (signal === 'BUY' && idea.volumeVsPriorPeak != null && idea.volumeVsPriorPeak < 0.65) {
-      log(`${ticker}: swing trade skipped — volume divergence ${idea.volumeVsPriorPeak.toFixed(2)}x prior peak (< 0.65x threshold) — Wyckoff Four More Phase risk`);
-      persistEvent(ticker, 'skipped', `Swing trade skipped: Wyckoff volume divergence (${idea.volumeVsPriorPeak.toFixed(2)}x prior 20d peak)`, {
-        action: 'skipped', source: 'scanner', mode, skip_reason: 'swing_volume_divergence',
-      });
-      return 'skipped:swing_volume_divergence';
     }
   }
 
