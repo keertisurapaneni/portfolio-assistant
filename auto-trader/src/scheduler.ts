@@ -93,6 +93,8 @@ import { runOptionsManageCycle } from './lib/options-manager.js';
 import { runEndOfDayReconciliation } from './lib/reconcile-executions.js';
 import { runDipWatcher } from './lib/dip-watcher.js';
 import { checkSpxLevelSetups } from './lib/spx-level-scanner.js';
+import { checkVwapConfluenceSetups, type ConfluenceResult } from './lib/vwap-confluence-scanner.js';
+import { checkFibRetraceSetups, type FibRetraceResult } from './lib/fib-retrace-scanner.js';
 import { isInsideOrb } from './lib/orb.js';
 import { evaluateVwapAlignment, detectVwapReclaim } from './lib/vwap.js';
 import { checkTrendFilter } from './lib/trend-filter.js';
@@ -3058,8 +3060,10 @@ async function executeScannerTrade(
   // Somesh's rule: one 5-min candle closing above VWAP signals chop is ending.
   // Gate is non-blocking on data failure (isInsideOrb returns false when unavailable).
   // Gate expires after 12 PM ET — the opening range is stale by afternoon.
+  // Skip for vwap_confluence — the strategy IS a chop-exit play.
   const etMinutes = getETMinutes();
-  if (mode === 'DAY_TRADE' && etMinutes < 12 * 60) {
+  const skipOrbGate = idea.tags?.includes('vwap_confluence');
+  if (mode === 'DAY_TRADE' && etMinutes < 12 * 60 && !skipOrbGate) {
     const choppy = await isInsideOrb(ticker, signal as 'BUY' | 'SELL');
     if (choppy) {
       const reclaim = await detectVwapReclaim(ticker, signal as 'BUY' | 'SELL');
@@ -3124,8 +3128,10 @@ async function executeScannerTrade(
   // Day trades only, after 10 AM ET. Adds +0.3 confidence when price is
   // near VWAP and the trade direction aligns with institutional flow.
   // Always non-blocking: missing data, pre-10AM, or far-from-VWAP = 0 delta.
+  // Skip for vwap_confluence — VWAP is already baked into the strategy's scoring.
+  const skipVwapModifier = idea.tags?.includes('vwap_confluence');
   let adjustedConf = scannerConf;
-  if (mode === 'DAY_TRADE') {
+  if (mode === 'DAY_TRADE' && !skipVwapModifier) {
     const etHour = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/New_York' })).getHours();
     const { delta: vwapDelta, log: vwapLog } = await evaluateVwapAlignment(ticker, signal as 'BUY' | 'SELL', etHour);
     if (vwapDelta !== 0) {
@@ -6326,6 +6332,108 @@ async function runSchedulerCycle(): Promise<void> {
       }
     } catch (err) {
       log(`[SpxScanner] Error: ${err instanceof Error ? err.message : 'unknown'}`);
+    }
+
+    // 12a-ii. VWAP Confluence scanner — deterministic zone detector
+    if (isModeEnabled(config, 'DAY_TRADE')) {
+      try {
+        await checkVwapConfluenceSetups(async (result: ConfluenceResult) => {
+          const idea: TradeIdea = {
+            ticker: result.ticker,
+            name: result.ticker,
+            price: result.entry,
+            change: 0,
+            changePercent: 0,
+            signal: result.signal,
+            confidence: result.confidence,
+            reason:
+              `VWAP confluence: VWAP=$${result.zoneLevels.vwap} EMA8=$${result.zoneLevels.ema8} ` +
+              `EMA21=$${result.zoneLevels.ema21} SMA200=$${result.zoneLevels.sma200} ` +
+              `(spread ${result.spreadPct}%) → ${result.signal} @ $${result.entry}`,
+            tags: ['vwap_confluence'],
+            mode: 'DAY_TRADE',
+            entryPrice: result.entry,
+            stopLoss: result.stop,
+            targetPrice: result.target,
+            riskReward: result.riskReward,
+          };
+
+          if (await hasActiveTrade(result.ticker, { excludeOptions: true })) {
+            log(`[VWAPConfluence] ${result.ticker}: already has an active trade — skipping`);
+            return;
+          }
+          if (await isDayTradeLossGateActive(config)) {
+            log('[VWAPConfluence] Day-trade loss gate active — skipping');
+            return;
+          }
+
+          const refreshedPositions = await getEnrichedPositions();
+          const execResult = await executeScannerTrade(idea, config, refreshedPositions);
+          log(`[VWAPConfluence] ${result.ticker} ${result.signal} @ $${result.entry}: ${execResult}`);
+          persistEvent(result.ticker, execResult.startsWith('executed') ? 'success' : 'skipped',
+            `VWAP confluence: ${execResult}`, {
+              source: 'vwap_confluence_scanner',
+              zone_spread_pct: result.spreadPct,
+              vwap: result.zoneLevels.vwap,
+              ema8: result.zoneLevels.ema8,
+              ema21: result.zoneLevels.ema21,
+              sma200: result.zoneLevels.sma200,
+            });
+        });
+      } catch (err) {
+        log(`[VWAPConfluence] Error: ${err instanceof Error ? err.message : 'unknown'}`);
+      }
+    }
+
+    // 12a-iii. Fibonacci 0.236 retracement rejection scanner
+    if (isModeEnabled(config, 'DAY_TRADE')) {
+      try {
+        await checkFibRetraceSetups(async (result: FibRetraceResult) => {
+          const idea: TradeIdea = {
+            ticker: result.ticker,
+            name: result.ticker,
+            price: result.entry,
+            change: 0,
+            changePercent: 0,
+            signal: result.signal,
+            confidence: result.confidence,
+            reason:
+              `Fib 0.236 rejection (${result.trendDirection} trend): ` +
+              `swing H=$${result.swingHigh} L=$${result.swingLow} | ` +
+              `fib236=$${result.fib236Level} → ${result.signal} @ $${result.entry}`,
+            tags: ['fib_236'],
+            mode: 'DAY_TRADE',
+            entryPrice: result.entry,
+            stopLoss: result.stop,
+            targetPrice: result.target,
+            riskReward: result.riskReward,
+          };
+
+          if (await hasActiveTrade(result.ticker, { excludeOptions: true })) {
+            log(`[FibRetrace] ${result.ticker}: already has an active trade — skipping`);
+            return;
+          }
+          if (await isDayTradeLossGateActive(config)) {
+            log('[FibRetrace] Day-trade loss gate active — skipping');
+            return;
+          }
+
+          const refreshedPositions = await getEnrichedPositions();
+          const execResult = await executeScannerTrade(idea, config, refreshedPositions);
+          log(`[FibRetrace] ${result.ticker} ${result.signal} @ $${result.entry}: ${execResult}`);
+          persistEvent(result.ticker, execResult.startsWith('executed') ? 'success' : 'skipped',
+            `Fib 0.236 rejection: ${execResult}`, {
+              source: 'fib_retrace_scanner',
+              trend: result.trendDirection,
+              swing_high: result.swingHigh,
+              swing_low: result.swingLow,
+              fib_236: result.fib236Level,
+              fib_382: result.fib382Level,
+            });
+        });
+      } catch (err) {
+        log(`[FibRetrace] Error: ${err instanceof Error ? err.message : 'unknown'}`);
+      }
     }
 
     // 12b. Penny stock momentum scanner (Ross Cameron's mechanical rules)
