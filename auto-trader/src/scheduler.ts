@@ -1083,6 +1083,7 @@ export async function reconcileIBShorts(): Promise<{ closed: string[]; errors: s
           close_price: avgFillPrice,
           pnl: coverPnl,
           pnl_percent: pos.avgCost > 0 ? parseFloat(((coverPnl / (pos.avgCost * qty)) * 100).toFixed(2)) : null,
+          pnl_source: 'ib_fill_calculated',
           ib_order_id: String(coverOrderId),
           notes: `Cover orderId=${coverOrderId} filled @ $${avgFillPrice.toFixed(2)} by reconcileIBShorts at ${new Date().toISOString()}`,
         }).eq('id', orphan.id);
@@ -4613,6 +4614,7 @@ async function _syncPositionsForAccount(
                 close_reason: closeReason,
                 pnl: parseFloat(pnl.toFixed(2)),
                 pnl_percent: originalFillPrice > 0 ? parseFloat(((pnl / (originalFillPrice * qty)) * 100).toFixed(2)) : null,
+                pnl_source: 'ib_fill_calculated',
                 closed_at: closedAt,
               }, syncAcct);
               log(`${trade.ticker}: SELL closed immediately — fill @ $${fillPrice}, P&L $${pnl.toFixed(2)}`);
@@ -5444,6 +5446,7 @@ async function checkProfitTakeOpportunities(
           status: 'CLOSED',
           ib_order_id: String(orderId),
           pnl: realizedPnl,
+          pnl_source: 'ib_fill_calculated',
           close_reason: 'profit_take',
           closed_at: new Date().toISOString(),
           notes: `Profit take ${triggered.label} at +${gainPct.toFixed(1)}%`,
@@ -5577,8 +5580,9 @@ async function checkDayTradeTrailingStops(
 async function checkLossCutOpportunities(
   config: AutoTraderConfig,
   positions: EnrichedPosition[],
-): Promise<void> {
-  if (!config.lossCutEnabled || !config.accountId) return;
+): Promise<Set<string>> {
+  const actedTickers = new Set<string>();
+  if (!config.lossCutEnabled || !config.accountId) return actedTickers;
 
   // Loss cuts may apply to both paper and live accounts
   for (const acctType of ['paper', 'live'] as AccountType[]) {
@@ -5661,6 +5665,7 @@ async function checkLossCutOpportunities(
           }, acctType);
         }
 
+        actedTickers.add(trade.ticker.toUpperCase());
         const realizedLoss = ibPos.position > 0
           ? sellQty * (ibPos.avgCost - ibPos.mktPrice)
           : sellQty * (ibPos.mktPrice - ibPos.avgCost);
@@ -5674,6 +5679,7 @@ async function checkLossCutOpportunities(
       }
     }
   }
+  return actedTickers;
 }
 
 // ── Portfolio Snapshot ───────────────────────────────────
@@ -6167,9 +6173,10 @@ async function runSchedulerCycle(): Promise<void> {
     await checkDayTradeTrailingStops(config, positions);       // software trailing stop for day trades in profit (+1R)
     await checkDipBuyOpportunities(config, positions);
     const trimmedTickers = await checkProfitTakeOpportunities(config, positions);
-    await checkLossCutOpportunities(config, positions);
+    const lossCutTickers = await checkLossCutOpportunities(config, positions);
     await checkSwingHoldExpiry(config, positions);     // free capital from stale swing trades
-    await checkLongTermAutoSell(config, positions, trimmedTickers);
+    const skipTickers = new Set([...trimmedTickers, ...lossCutTickers]);
+    await checkLongTermAutoSell(config, positions, skipTickers);
 
     // ── New entries below — only run when auto-trading is enabled ─────────────
     if (!newEntriesEnabled) {
