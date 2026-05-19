@@ -71,9 +71,10 @@ export function HistoryTab({ trades, pendingSignals, accountView }: HistoryTabPr
 
   const activeTrades = trades.filter(t => ['SUBMITTED', 'FILLED', 'PARTIAL', 'PENDING'].includes(t.status));
   const totalPendingLike = activeTrades.length + pendingSignals.length;
-  const totalPnl = trades.reduce((s, t) => s + (t.pnl ?? 0), 0);
-  const wins = trades.filter(t => (t.pnl ?? 0) > 0).length;
-  const losses = trades.filter(t => (t.pnl ?? 0) < 0).length;
+  const confirmedPnl = (t: typeof trades[0]) => t.pnl_source != null ? t.pnl : null;
+  const totalPnl = trades.reduce((s, t) => s + (confirmedPnl(t) ?? 0), 0);
+  const wins = trades.filter(t => (confirmedPnl(t) ?? 0) > 0).length;
+  const losses = trades.filter(t => (confirmedPnl(t) ?? 0) < 0).length;
 
   return (
     <div className="space-y-3">
@@ -196,8 +197,8 @@ export function HistoryTab({ trades, pendingSignals, accountView }: HistoryTabPr
                   <td className="px-4 py-3 text-right tabular-nums">
                     {trade.close_price ? `$${trade.close_price.toFixed(2)}` : '—'}
                   </td>
-                  <td className={`px-4 py-3 text-right tabular-nums font-semibold ${(trade.pnl ?? 0) > 0 ? 'text-emerald-600' : (trade.pnl ?? 0) < 0 ? 'text-red-600' : ''}`}>
-                    {trade.pnl != null ? fmtUsd(trade.pnl, 2, true) : '—'}
+                  <td className={`px-4 py-3 text-right tabular-nums font-semibold ${(confirmedPnl(trade) ?? 0) > 0 ? 'text-emerald-600' : (confirmedPnl(trade) ?? 0) < 0 ? 'text-red-600' : ''}`}>
+                    {confirmedPnl(trade) != null ? fmtUsd(confirmedPnl(trade)!, 2, true) : '—'}
                   </td>
                   <td className="px-4 py-3">
                     <StatusBadge status={trade.status} />

@@ -4460,26 +4460,9 @@ async function _syncPositionsForAccount(
         log(`${trade.ticker}: Filled @ $${fillPrice.toFixed(2)}`);
       }
 
-      if (trade.status === 'FILLED' && ibPos.mktPrice > 0 && trade.fill_price) {
-        const qty = trade.quantity ?? 1;
-        const isLong = trade.signal === 'BUY';
-
-        // For a SELL that reduced a long position (partial profit take), P&L is realized:
-        // (sell_price - avg_cost) × qty. Using short-position formula gives wrong results
-        // when the stock rises after the sale.
-        const isSellIntoLong = !isLong && ibPos.position > 0 && ibPos.avgCost > 0;
-        const unrealizedPnl = isSellIntoLong
-          ? (trade.fill_price - ibPos.avgCost) * qty
-          : isLong
-            ? (ibPos.mktPrice - trade.fill_price) * qty
-            : (trade.fill_price - ibPos.mktPrice) * qty;
-        const costBasis = isSellIntoLong ? ibPos.avgCost * qty : trade.fill_price * qty;
-
-        await updatePaperTrade(trade.id, {
-          pnl: parseFloat(unrealizedPnl.toFixed(2)),
-          pnl_percent: parseFloat(((unrealizedPnl / costBasis) * 100).toFixed(2)),
-        }, syncAcct);
-      }
+      // Unrealized P&L for open trades is computed on-the-fly by the frontend.
+      // Do NOT write it to the pnl field — that field is reserved for realized P&L
+      // set by recordTradeClose() with a confirmed pnl_source.
     } else if (trade.status === 'FILLED') {
       // Position gone — closed by bracket TP/SL or manual action.
       // 2-cycle guard: don't auto-close on first detection. Set missing_since,
