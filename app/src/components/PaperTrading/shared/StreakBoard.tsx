@@ -76,7 +76,7 @@ export function StreakBoard() {
 
       const { data: trades } = await supabase
         .from('paper_trades')
-        .select('mode, pnl, closed_at')
+        .select('mode, pnl, closed_at, opened_at')
         .in('status', [...CLOSED_STATUSES])
         .not('pnl', 'is', null)
         .not('fill_price', 'is', null)
@@ -90,10 +90,15 @@ export function StreakBoard() {
 
       setStreakStates((coldStates ?? []) as StreakState[]);
 
+      const DAY_MODES = new Set(['DAY_TRADE', 'DAY_PENNY']);
+      const daySet = new Set(tradingDays);
       const byModeDate = new Map<string, { pnl: number; count: number }>();
       for (const t of trades ?? []) {
         if (!t.closed_at) continue;
-        const dateStr = t.closed_at.slice(0, 10);
+        const closedDate = t.closed_at.slice(0, 10);
+        // Day trades: attribute to opened_at date (they close same day; stale closes shouldn't shift P&L)
+        const openedDate = (DAY_MODES.has(t.mode) && t.opened_at) ? t.opened_at.slice(0, 10) : null;
+        const dateStr = (openedDate && daySet.has(openedDate)) ? openedDate : closedDate;
         for (const row of ROW_CONFIG) {
           if (row.modes.includes(t.mode)) {
             const key = `${row.key}|${dateStr}`;
