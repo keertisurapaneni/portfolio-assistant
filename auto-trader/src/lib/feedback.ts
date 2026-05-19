@@ -239,17 +239,17 @@ export async function recalculatePerformance(): Promise<boolean> {
 
   if (error || !trades || trades.length === 0) return false;
 
-  const completed = trades.filter((t: { fill_price: unknown }) => t.fill_price != null);
-  const wins = completed.filter((t: { pnl: number }) => (t.pnl ?? 0) > 0);
-  const losses = completed.filter((t: { pnl: number }) => (t.pnl ?? 0) < 0);
-  const breakevens = completed.filter((t: { pnl: number }) => (t.pnl ?? 0) === 0);
+  const completed = trades.filter((t: { fill_price: unknown; pnl: unknown }) => t.fill_price != null && t.pnl != null);
+  const wins = completed.filter((t: { pnl: number }) => t.pnl > 0);
+  const losses = completed.filter((t: { pnl: number }) => t.pnl < 0);
+  const breakevens = completed.filter((t: { pnl: number }) => t.pnl === 0);
 
-  const totalPnl = completed.reduce((sum: number, t: { pnl: number }) => sum + (t.pnl ?? 0), 0);
+  const totalPnl = completed.reduce((sum: number, t: { pnl: number }) => sum + t.pnl, 0);
   const avgPnl = completed.length > 0 ? totalPnl / completed.length : 0;
-  const avgWin = wins.length > 0 ? wins.reduce((s: number, t: { pnl: number }) => s + (t.pnl ?? 0), 0) / wins.length : 0;
-  const avgLoss = losses.length > 0 ? losses.reduce((s: number, t: { pnl: number }) => s + (t.pnl ?? 0), 0) / losses.length : 0;
-  const bestPnl = Math.max(...completed.map((t: { pnl: number }) => t.pnl ?? 0), 0);
-  const worstPnl = Math.min(...completed.map((t: { pnl: number }) => t.pnl ?? 0), 0);
+  const avgWin = wins.length > 0 ? wins.reduce((s: number, t: { pnl: number }) => s + t.pnl, 0) / wins.length : 0;
+  const avgLoss = losses.length > 0 ? losses.reduce((s: number, t: { pnl: number }) => s + t.pnl, 0) / losses.length : 0;
+  const bestPnl = Math.max(...completed.map((t: { pnl: number }) => t.pnl), 0);
+  const worstPnl = Math.min(...completed.map((t: { pnl: number }) => t.pnl), 0);
 
   const { error: updateErr } = await sb
     .from('trade_performance')

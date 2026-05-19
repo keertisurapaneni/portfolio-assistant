@@ -751,11 +751,12 @@ export async function recalculatePerformance(accountView: AccountView = 'paper')
 
   if (error || !trades || trades.length === 0) return null;
 
-  // Only count trades that actually filled — exclude expired/unfilled orders
-  const completed = (trades as PaperTrade[]).filter(t => t.fill_price != null);
-  const wins = completed.filter(t => (t.pnl ?? 0) > 0);
-  const losses = completed.filter(t => (t.pnl ?? 0) < 0);
-  const breakevens = completed.filter(t => (t.pnl ?? 0) === 0);
+  // Only count trades that actually filled AND have computed P&L
+  // Trades with null pnl (legacy closes before recordTradeClose) are excluded
+  const completed = (trades as PaperTrade[]).filter(t => t.fill_price != null && t.pnl != null);
+  const wins = completed.filter(t => t.pnl! > 0);
+  const losses = completed.filter(t => t.pnl! < 0);
+  const breakevens = completed.filter(t => t.pnl === 0);
 
   const totalPnl = completed.reduce((sum, t) => sum + (t.pnl ?? 0), 0);
   const avgPnl = completed.length > 0 ? totalPnl / completed.length : 0;
@@ -950,10 +951,10 @@ export async function recalculatePerformanceByCategory(accountView: AccountView 
 
     const active = meaningful.filter(t => (ACTIVE_STATUSES as readonly string[]).includes(t.status));
     const completed = meaningful.filter(
-      t => (CLOSED_STATUSES as readonly string[]).includes(t.status) && t.fill_price != null
+      t => (CLOSED_STATUSES as readonly string[]).includes(t.status) && t.fill_price != null && t.pnl != null
     );
-    const wins = completed.filter(t => (t.pnl ?? 0) > 0);
-    const losses = completed.filter(t => (t.pnl ?? 0) < 0);
+    const wins = completed.filter(t => t.pnl! > 0);
+    const losses = completed.filter(t => t.pnl! < 0);
 
     const realizedPnl = completed.reduce((s, t) => s + (t.pnl ?? 0), 0);
     const avgPnl = completed.length > 0 ? realizedPnl / completed.length : 0;
@@ -1052,14 +1053,13 @@ export async function recalculatePerformanceByStrategySource(accountView: Accoun
       }
     }
 
-    if (closedStatusSet.has(trade.status) && trade.fill_price != null) {
+    if (closedStatusSet.has(trade.status) && trade.fill_price != null && trade.pnl != null) {
       curr.closedCount += 1;
-      const pnl = trade.pnl ?? 0;
-      curr.closedPnl += pnl;
-      if (pnl > 0) curr.wins += 1;
-      if (pnl < 0) curr.losses += 1;
+      curr.closedPnl += trade.pnl;
+      if (trade.pnl > 0) curr.wins += 1;
+      if (trade.pnl < 0) curr.losses += 1;
       curr.closedOutcomes.push({
-        pnl,
+        pnl: trade.pnl,
         at: trade.closed_at ?? trade.opened_at ?? '',
       });
     }
@@ -1194,18 +1194,17 @@ export async function recalculatePerformanceByStrategyVideo(accountView: Account
       }
     }
 
-    if (closedStatusSet.has(trade.status) && trade.fill_price != null) {
+    if (closedStatusSet.has(trade.status) && trade.fill_price != null && trade.pnl != null) {
       curr.closedCount += 1;
-      const pnl = trade.pnl ?? 0;
-      curr.closedPnl += pnl;
-      if (pnl > 0) curr.wins += 1;
-      if (pnl < 0) curr.losses += 1;
+      curr.closedPnl += trade.pnl;
+      if (trade.pnl > 0) curr.wins += 1;
+      if (trade.pnl < 0) curr.losses += 1;
       curr.closedOutcomes.push({
-        pnl,
+        pnl: trade.pnl,
         at: trade.closed_at ?? trade.opened_at ?? '',
       });
       if (trade.fill_price && trade.quantity) {
-        curr.returns.push((pnl / (trade.fill_price * trade.quantity)) * 100);
+        curr.returns.push((trade.pnl / (trade.fill_price * trade.quantity)) * 100);
       }
     }
 
