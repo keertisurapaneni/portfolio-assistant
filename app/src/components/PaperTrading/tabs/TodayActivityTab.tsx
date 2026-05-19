@@ -471,8 +471,16 @@ export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], 
               const externalMatch = msg.match(/(?:BUY|SELL)\s+(\d+)\s+@\s*~?\$?([\d.]+)/i);
               const qtyMatch = sharesMatch ?? externalMatch;
 
-              const sourceLabel = event.source === 'scanner' ? 'Trade signal'
-                : event.source === 'external_signal' ? `External signal + ${event.strategy_source}`
+              const isExternalSignal = event.source === 'external_signal'
+                || matched?.notes?.startsWith('External signal')
+                || matched?.scanner_reason?.includes('External');
+
+              const externalInfluencer = event.strategy_source
+                ?? matched?.scanner_reason?.match(/External strategy signal from (.+?)(?:\s*\||$)/)?.[1]
+                ?? null;
+
+              const sourceLabel = isExternalSignal ? (externalInfluencer ? `External signal + ${externalInfluencer}` : 'External signal')
+                : event.source === 'scanner' ? 'Trade signal'
                 : event.source === 'suggested_finds' ? 'Suggested find'
                 : event.source === 'dip_buy' ? 'Dip buy'
                 : event.source === 'profit_take' ? 'Profit take'

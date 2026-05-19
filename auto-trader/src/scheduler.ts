@@ -952,6 +952,14 @@ async function promoteDayTradeGainersToWatchlist(): Promise<void> {
 // Safe to call at any time: it only acts on negative (short) stock positions.
 // Exposed via POST /api/scheduler/reconcile-ib so the user can trigger it from
 // the UI or curl without waiting for tomorrow's stale-trade check.
+//
+// NOTE: Unlike reconcileIBLongs(), this function DOES auto-cover orphaned shorts.
+// This is intentional: short positions carry unlimited downside risk. An untracked
+// short can accumulate unbounded losses overnight or over a weekend. Auto-covering
+// is a safety mechanism — the worst case of a false positive is a small realized
+// loss on a position we meant to hold, which is far better than an unmonitored
+// short blowing up. Longs have bounded risk (max loss = position value) so they
+// only get logged for manual review, never auto-liquidated.
 
 export async function reconcileIBShorts(): Promise<{ closed: string[]; errors: string[] }> {
   log('[IBReconcile] Fetching live IB positions…');
@@ -1194,26 +1202,33 @@ export async function reconcileIBLongs(): Promise<{ closed: string[]; errors: st
       metadata: { symbols: unknownPositions.map(p => p.symbol) },
     });
 
-    // Check if any unknown positions have a CLOSED paper_trade from today that
-    // likely represents a failed close (DB marked CLOSED but IB still holds shares).
-    // Indicators: close_price is null, or close_reason is 'eod_close'/'soft_eod_close'.
+    // Check if any unknown positions have a CLOSED paper_trade from the last 7 days
+    // that likely represents a failed EOD close (DB marked CLOSED but IB still holds shares).
+    // Classification:
+    //   STALE_CLOSE — a CLOSED paper_trade exists within 7 days → auto-reopen
+    //   UNKNOWN     — no recent paper_trade found → manual review required
     const unknownTickers = unknownPositions.map(p => p.symbol.toUpperCase());
+    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
     const { data: failedCloses } = await sb
       .from('paper_trades')
       .select('id, ticker, status, close_price, close_reason, quantity')
       .eq('signal', 'BUY')
       .eq('status', 'CLOSED')
       .in('ticker', unknownTickers)
-      .gte('opened_at', `${todayEt}T00:00:00Z`);
+      .gte('opened_at', sevenDaysAgo)
+      .order('opened_at', { ascending: false });
 
     const reopened: string[] = [];
+    const staleCloseTickers = new Set<string>();
     for (const fc of (failedCloses ?? [])) {
       const ibPos = unknownPositions.find(p => p.symbol.toUpperCase() === fc.ticker.toUpperCase());
       if (!ibPos) continue;
+      if (staleCloseTickers.has(fc.ticker.toUpperCase())) continue;
       const isSuspect = fc.close_price == null
         || ['eod_close', 'soft_eod_close'].includes(fc.close_reason ?? '');
       if (!isSuspect) continue;
 
+      staleCloseTickers.add(fc.ticker.toUpperCase());
       await sb.from('paper_trades').update({
         status: 'FILLED',
         pnl: null,
@@ -1223,16 +1238,24 @@ export async function reconcileIBLongs(): Promise<{ closed: string[]; errors: st
         close_price: null,
       }).eq('id', fc.id);
       reopened.push(fc.ticker);
-      log(`[IBLongReconcile] Reopened ${fc.ticker} — DB said CLOSED but IB still holds ${Math.round(ibPos.position)} shares`);
+      log(`[IBLongReconcile] REOPENED ${fc.ticker} — found stale-closed paper_trade ${fc.id}, IB still holds ${Math.round(ibPos.position)} shares [STALE_CLOSE]`);
     }
+
+    // Log truly unknown orphans (no recent paper_trade) — manual review required
+    const unknownOrphans = unknownPositions.filter(p => !staleCloseTickers.has(p.symbol.toUpperCase()));
+    if (unknownOrphans.length > 0) {
+      const symbols = unknownOrphans.map(p => `${p.symbol}(${Math.round(p.position)})`).join(', ');
+      log(`[IBLongReconcile] ${unknownOrphans.length} UNKNOWN orphan(s) — no CLOSED paper_trade in last 7 days, manual review required: ${symbols}`);
+    }
+
     if (reopened.length > 0) {
       await createAutoTradeEvent({
         ticker: reopened.join(','),
         event_type: 'warning',
         action: 'executed',
         source: 'system',
-        message: `[IBLongReconcile] Reopened ${reopened.length} trade(s) that were marked CLOSED but IB still holds: ${reopened.join(', ')}`,
-        metadata: { reopened },
+        message: `[IBLongReconcile] Reopened ${reopened.length} STALE_CLOSE trade(s) — IB still holds positions: ${reopened.join(', ')}`,
+        metadata: { reopened, classification: 'STALE_CLOSE' },
       });
     }
   }
