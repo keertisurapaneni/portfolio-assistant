@@ -33,7 +33,7 @@ type StrategyRow = {
   videoId: string | null;
   videoHeading: string;
   platform: 'instagram' | 'twitter' | 'youtube' | null;
-  strategyType: 'daily_signal' | 'daily_penny' | 'generic_strategy' | null;
+  strategyType: 'daily_signal' | 'daily_penny' | 'generic_strategy' | 'options_signal' | null;
   applicableTimeframes: Array<'DAY_TRADE' | 'SWING_TRADE'> | null;
   totalTrades: number;
   activeTrades: number;
@@ -395,7 +395,7 @@ export function StrategyPerformanceTab({ sources, videos, statuses, onRefresh }:
         source_handle: opt.sourceHandle,
         source_name: opt.sourceName,
         video_ids: [videoId],
-        strategy_type: sel.category ? (sel.category as 'daily_signal' | 'daily_penny' | 'generic_strategy') : undefined,
+        strategy_type: sel.category ? (sel.category as 'daily_signal' | 'daily_penny' | 'generic_strategy' | 'options_signal') : undefined,
       });
       if (assigned > 0) onRefresh();
     } finally {
@@ -414,7 +414,7 @@ export function StrategyPerformanceTab({ sources, videos, statuses, onRefresh }:
         source_handle: opt.sourceHandle,
         source_name: opt.sourceName,
         video_ids: [videoId],
-        strategy_type: sel.category ? (sel.category as 'daily_signal' | 'daily_penny' | 'generic_strategy') : undefined,
+        strategy_type: sel.category ? (sel.category as 'daily_signal' | 'daily_penny' | 'generic_strategy' | 'options_signal') : undefined,
       });
       if (assigned > 0) {
         setChangingSourceVideoId(null);
@@ -425,7 +425,7 @@ export function StrategyPerformanceTab({ sources, videos, statuses, onRefresh }:
     }
   };
 
-  const handleCategoryChange = async (videoId: string, strategyType: 'daily_signal' | 'daily_penny' | 'generic_strategy') => {
+  const handleCategoryChange = async (videoId: string, strategyType: 'daily_signal' | 'daily_penny' | 'generic_strategy' | 'options_signal') => {
     if (!onRefresh) return;
     setUpdatingCategoryVideoId(videoId);
     try {
@@ -992,6 +992,9 @@ export function StrategyPerformanceTab({ sources, videos, statuses, onRefresh }:
                                                 </button>
                                               </span>
                                             )}
+                                            {video.strategyType === 'options_signal' && (
+                                              <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-purple-100 text-purple-800 shrink-0" title="Options: conditional entry signals">options</span>
+                                            )}
                                             {video.strategyType === 'generic_strategy' && (
                                               <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-slate-100 text-slate-700 shrink-0" title="Ongoing: applies across dates">
                                                 generic
@@ -1194,7 +1197,7 @@ export function StrategyPerformanceTab({ sources, videos, statuses, onRefresh }:
                                                 )}>3</span>
                                                 <span className="text-[hsl(var(--muted-foreground))]">Metadata:</span>
                                                 {video.ingestStatus === 'done' && video.strategyType ? (
-                                                  <span className="text-emerald-600 font-medium">Extracted ({video.strategyType === 'daily_signal' ? 'daily' : 'generic'})</span>
+                                                  <span className="text-emerald-600 font-medium">Extracted ({video.strategyType === 'daily_signal' ? 'daily' : video.strategyType === 'options_signal' ? 'options' : video.strategyType === 'daily_penny' ? 'penny' : 'generic'})</span>
                                                 ) : video.ingestStatus === 'done' ? (
                                                   <div className="flex items-center gap-1.5">
                                                     <span className="text-amber-600 font-medium">Not extracted</span>
@@ -1242,6 +1245,7 @@ export function StrategyPerformanceTab({ sources, videos, statuses, onRefresh }:
                                               >
                                                 <option value="daily_signal">Daily signal</option>
                                                 <option value="daily_penny">Daily penny</option>
+                                                <option value="options_signal">Options signal</option>
                                                 <option value="generic_strategy">Generic strategy</option>
                                               </select>
                                               {KNOWN_SIGNAL_GENERATORS.has(videoAssignSelections[baseKey]?.source ?? '') && (videoAssignSelections[baseKey]?.category ?? '') === 'generic_strategy' && (
@@ -1271,6 +1275,7 @@ export function StrategyPerformanceTab({ sources, videos, statuses, onRefresh }:
                                               >
                                                 <option value="daily_signal">Daily signal</option>
                                                 <option value="daily_penny">Daily penny</option>
+                                                <option value="options_signal">Options signal</option>
                                                 <option value="generic_strategy">Generic strategy</option>
                                               </select>
                                               {KNOWN_SIGNAL_GENERATORS.has(sourceName) && (video.strategyType ?? 'generic_strategy') === 'generic_strategy' && (

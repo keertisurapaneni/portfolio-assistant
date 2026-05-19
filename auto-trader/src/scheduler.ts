@@ -26,6 +26,8 @@ import {
   getPaperConnection,
   getLiveConnection,
   getConnectionForAccount,
+  placeOptionsOrder,
+  getDefaultAccount,
   type PositionData,
   type IBConnection,
 } from './ib-connection.js';
@@ -87,6 +89,7 @@ import { recordTradeClose } from './lib/trade-closer.js';
 import { generateSuggestedFinds, discoverDipStocks } from './lib/discovery.js';
 import { fetchRecentDailyCandles, detectCandlePatterns } from './lib/candle-patterns.js';
 import { runOptionsScan, autoTradeOption, getOptionsAutoTradeConfig } from './lib/options-scanner.js';
+import { getOptionsChain } from './lib/options-chain.js';
 import { runEarningsScan, closeExpiredEarningsPositions } from './lib/earnings-scanner.js';
 import { runWatchlistScreener } from './lib/watchlist-screener.js';
 import { runOptionsManageCycle } from './lib/options-manager.js';
@@ -3898,7 +3901,15 @@ async function executeExternalStrategySignal(
   }
 
   if (effectiveEntryPrice != null && quote != null && !skipConfirmationGates) {
-    if (signal.signal === 'BUY' && quote < effectiveEntryPrice) {
+    // OPTIONS_PUT: entry_price is a breakdown level — trigger when price drops BELOW it
+    if (signal.mode === 'OPTIONS_PUT' && quote > effectiveEntryPrice) {
+      const reason = `Entry trigger not reached: price $${quote.toFixed(2)} above put breakdown level $${effectiveEntryPrice.toFixed(2)}`;
+      summaryLog(`${ticker}: waiting — ${reason}`);
+      await updateExternalStrategySignal(signal.id, { failure_reason: reason });
+      return 'waiting';
+    }
+    // OPTIONS_CALL / stock BUY: entry_price is a breakout level — trigger when price rises ABOVE it
+    if (signal.mode !== 'OPTIONS_PUT' && signal.signal === 'BUY' && quote < effectiveEntryPrice) {
       const reason = `Entry trigger not reached: price $${quote.toFixed(2)} below ${isInfluencerSignal ? 'influencer' : ''} entry $${effectiveEntryPrice.toFixed(2)}`;
       summaryLog(`${ticker}: waiting — ${reason}`);
       await updateExternalStrategySignal(signal.id, { failure_reason: reason });
@@ -4093,6 +4104,16 @@ async function executeExternalStrategySignal(
     log(`${ticker}: order validation OK — ${orderCheck.reason}`);
   }
 
+  // ── OPTIONS path: buy a call or put when signal mode is OPTIONS_CALL/OPTIONS_PUT ──
+  if (signal.mode === 'OPTIONS_CALL' || signal.mode === 'OPTIONS_PUT') {
+    return executeExternalOptionsSignal(signal, ticker, referencePrice, extConnections, resolvedSource, {
+      effectiveEntryPrice,
+      effectiveTargetPrice,
+      allocationSplit,
+      allocationIndex,
+    });
+  }
+
   let primaryResult: 'executed' | 'failed' | undefined;
   for (const { connection: extConnection, accountType: acctType } of extConnections) {
     if (!extConnection.isConnected()) {
@@ -4233,6 +4254,207 @@ async function executeExternalStrategySignal(
     }
   }
   return primaryResult ?? 'failed';
+}
+
+/**
+ * Execute an external strategy signal as an options BUY order (long call or long put).
+ *
+ * Flow:
+ *   1. Select strike: ATM or slightly ITM via options chain
+ *   2. Select expiry: nearest Friday 10-20 days out
+ *   3. Place a limit BUY order for 1 contract at the ask price
+ *   4. Record the paper_trade with options metadata
+ */
+async function executeExternalOptionsSignal(
+  signal: ExternalStrategySignal,
+  ticker: string,
+  stockPrice: number,
+  extConnections: RoutedConnection[],
+  resolvedSource: AutoTradeSource,
+  context: {
+    effectiveEntryPrice: number | null;
+    effectiveTargetPrice: number | null;
+    allocationSplit: number;
+    allocationIndex: number;
+  },
+): Promise<'executed' | 'failed'> {
+  const right: 'C' | 'P' = signal.mode === 'OPTIONS_CALL' ? 'C' : 'P';
+  const rightLabel = right === 'C' ? 'call' : 'put';
+  const splitLabel = context.allocationSplit > 1
+    ? ` | allocation ${context.allocationIndex}/${context.allocationSplit}`
+    : '';
+
+  log(`${ticker}: OPTIONS ${rightLabel.toUpperCase()} signal — selecting strike/expiry (stock $${stockPrice.toFixed(2)})`);
+
+  // Select strike: for BUY calls, ATM or slightly ITM (strike at/below price).
+  // For BUY puts, ATM or slightly ITM (strike at/above price).
+  // Use getOptionsChain with a 0.50 delta target (ATM) for directional long options.
+  const chain = await getOptionsChain(ticker, stockPrice, null, 0.50, 14).catch((err) => {
+    log(`${ticker}: options chain fetch failed — ${err instanceof Error ? err.message : err}`);
+    return null;
+  });
+
+  let strike: number;
+  let expiry: string; // YYYYMMDD
+  let limitPrice: number;
+
+  if (right === 'C' && chain?.bestCall) {
+    strike = chain.bestCall.strike;
+    expiry = chain.bestCall.expiry;
+    limitPrice = chain.bestCall.ask > 0 ? chain.bestCall.ask : chain.bestCall.mid;
+    log(`${ticker}: chain found — $${strike}C exp ${expiry}, ask $${limitPrice.toFixed(2)}`);
+  } else if (right === 'P' && chain?.bestPut) {
+    strike = chain.bestPut.strike;
+    expiry = chain.bestPut.expiry;
+    limitPrice = chain.bestPut.ask > 0 ? chain.bestPut.ask : chain.bestPut.mid;
+    log(`${ticker}: chain found — $${strike}P exp ${expiry}, ask $${limitPrice.toFixed(2)}`);
+  } else {
+    // Fallback: synthesize ATM strike and ~2 week Friday expiry
+    const interval = stockPrice < 25 ? 1 : stockPrice < 200 ? 2.5 : 5;
+    if (right === 'C') {
+      strike = Math.floor(stockPrice / interval) * interval;
+    } else {
+      strike = Math.ceil(stockPrice / interval) * interval;
+    }
+    expiry = getNextFridayExpiry(14);
+    // Estimate limit using rough 2% of stock price for ATM with ~2 weeks DTE
+    limitPrice = stockPrice * 0.025;
+    log(`${ticker}: no chain available — using fallback strike $${strike}${right} exp ${expiry}, est. premium $${limitPrice.toFixed(2)}`);
+  }
+
+  if (limitPrice <= 0) {
+    await updateExternalStrategySignal(signal.id, { status: 'FAILED', failure_reason: 'Options premium is zero or negative' });
+    return 'failed';
+  }
+
+  const contracts = 1;
+  const positionSize = limitPrice * 100 * contracts;
+
+  // Execute on first available connection
+  let primaryResult: 'executed' | 'failed' | undefined;
+  for (const { connection: extConnection, accountType: acctType } of extConnections) {
+    if (!extConnection.isConnected()) {
+      if (primaryResult) { log(`${ticker}: [${acctType}] connection down — skipping options`); continue; }
+      await updateExternalStrategySignal(signal.id, { status: 'FAILED', failure_reason: 'IB Gateway not connected' });
+      return 'failed';
+    }
+
+    try {
+      const orderResult = await placeOptionsOrder({
+        symbol: ticker,
+        right,
+        strike,
+        expiry,
+        contracts,
+        limitPrice,
+        action: 'BUY',
+        account: getDefaultAccount() ?? undefined,
+      });
+
+      log(`${ticker}: OPTIONS ${rightLabel} order FILLED — IB#${orderResult.orderId}, ${orderResult.filledQty} contracts @ $${orderResult.avgFillPrice.toFixed(2)}`);
+
+      const fillPremium = orderResult.avgFillPrice;
+      const expiryISO = `${expiry.slice(0, 4)}-${expiry.slice(4, 6)}-${expiry.slice(6, 8)}`;
+
+      const trade = await createPaperTrade({
+        ticker,
+        mode: signal.mode,
+        signal: 'BUY',
+        strategy_source: signal.source_name,
+        strategy_source_url: signal.source_url,
+        strategy_video_id: signal.strategy_video_id,
+        strategy_video_heading: signal.strategy_video_heading,
+        scanner_confidence: signal.confidence,
+        entry_price: stockPrice,
+        fill_price: fillPremium,
+        target_price: context.effectiveTargetPrice,
+        quantity: contracts,
+        position_size: positionSize,
+        status: 'FILLED',
+        filled_at: new Date().toISOString(),
+        opened_at: new Date().toISOString(),
+        entry_trigger_type: 'external_options_signal',
+        ib_order_id: String(orderResult.orderId),
+        option_strike: strike,
+        option_expiry: expiryISO,
+        option_premium: fillPremium,
+        option_contracts: contracts,
+        option_capital_req: positionSize,
+        scanner_reason: `External options signal from ${signal.source_name}`,
+        notes: signal.notes
+          ? `External ${rightLabel} signal${splitLabel} | strike $${strike} exp ${expiryISO} | ${signal.notes}`
+          : `External ${rightLabel} signal${splitLabel} | strike $${strike} exp ${expiryISO}`,
+      }, acctType);
+
+      if (!primaryResult) {
+        await updateExternalStrategySignal(signal.id, {
+          status: 'EXECUTED',
+          executed_trade_id: trade.id,
+          executed_at: new Date().toISOString(),
+          failure_reason: null,
+        });
+      }
+
+      persistEvent(ticker, 'success', `External options ${rightLabel} executed [${acctType}]: BUY ${contracts}x $${strike}${right} @ $${fillPremium.toFixed(2)}`, {
+        action: 'executed',
+        source: resolvedSource,
+        mode: signal.mode,
+        strategy_source: signal.source_name,
+        strategy_source_url: signal.source_url,
+        strategy_video_id: signal.strategy_video_id,
+        strategy_video_heading: signal.strategy_video_heading,
+        metadata: {
+          external_signal_id: signal.id,
+          strike,
+          expiry: expiryISO,
+          premium: fillPremium,
+          contracts,
+          right,
+          allocation_split: context.allocationSplit,
+          allocation_index: context.allocationIndex,
+        },
+      }, acctType);
+      if (!primaryResult) primaryResult = 'executed';
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'unknown';
+      log(`${ticker}: OPTIONS ${rightLabel} order FAILED — ${message}`);
+      if (!primaryResult) {
+        await updateExternalStrategySignal(signal.id, { status: 'FAILED', failure_reason: message });
+      }
+      persistEvent(ticker, 'error', `External options ${rightLabel} failed [${acctType}]: ${message}`, {
+        action: 'failed',
+        source: resolvedSource,
+        mode: signal.mode,
+        strategy_source: signal.source_name,
+        strategy_source_url: signal.source_url,
+        strategy_video_id: signal.strategy_video_id,
+        strategy_video_heading: signal.strategy_video_heading,
+        metadata: { external_signal_id: signal.id, strike, expiry, right },
+      }, acctType);
+      if (!primaryResult) primaryResult = 'failed';
+    }
+  }
+  return primaryResult ?? 'failed';
+}
+
+/** Find the nearest Friday expiry that is at least `minDays` out. */
+function getNextFridayExpiry(minDays: number): string {
+  const now = new Date();
+  const target = new Date(now.getTime() + minDays * 86_400_000);
+  // Move to the next Friday (day 5)
+  const day = target.getDay();
+  const daysUntilFriday = (5 - day + 7) % 7 || 7;
+  const friday = new Date(target.getTime() + daysUntilFriday * 86_400_000);
+  // If the computed Friday is less than minDays away (can happen when target IS Friday),
+  // use the following Friday
+  const daysFromNow = Math.ceil((friday.getTime() - now.getTime()) / 86_400_000);
+  if (daysFromNow < minDays) {
+    friday.setDate(friday.getDate() + 7);
+  }
+  const y = friday.getFullYear();
+  const m = String(friday.getMonth() + 1).padStart(2, '0');
+  const d = String(friday.getDate()).padStart(2, '0');
+  return `${y}${m}${d}`;
 }
 
 async function processExternalStrategySignals(

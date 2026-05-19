@@ -29,6 +29,12 @@ interface ExtractedSignal {
   shortTargets?: number[];
   stopLoss?: number | null;
   notes?: string | null;
+  // Options signal fields (from options_signal strategy_type)
+  signal?: 'BUY_CALL' | 'BUY_PUT';
+  entry_context?: 'above_todays_high' | 'above_level' | 'below_todays_low' | 'below_level';
+  trigger_price?: number | null;
+  targets?: number[];
+  setup_type?: string | null;
 }
 
 interface ExecutionWindow {
@@ -112,14 +118,15 @@ Deno.serve(async (req) => {
     });
   }
 
-  if (video.strategy_type !== 'daily_signal' && video.strategy_type !== 'daily_penny') {
+  if (video.strategy_type !== 'daily_signal' && video.strategy_type !== 'daily_penny' && video.strategy_type !== 'options_signal') {
     return new Response(
-      JSON.stringify({ ok: true, skipped: true, reason: 'Not a daily_signal or daily_penny — no signals to import' }),
+      JSON.stringify({ ok: true, skipped: true, reason: 'Not a daily_signal, daily_penny, or options_signal — no signals to import' }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
   }
 
   const isPenny = video.strategy_type === 'daily_penny';
+  const isOptionsSignal = video.strategy_type === 'options_signal';
 
   const signals = (Array.isArray(video.extracted_signals) ? video.extracted_signals : []) as ExtractedSignal[];
   if (signals.length === 0) {
@@ -238,6 +245,31 @@ Deno.serve(async (req) => {
     }
   }
 
+  /** Fetch Finnhub quote for a ticker — returns { c: current, h: high, l: low, pc: prevClose } or null */
+  async function getFinnhubQuote(ticker: string): Promise<{ c: number; h: number; l: number; pc: number } | null> {
+    if (!finnhubApiKey) return null;
+    try {
+      const res = await fetch(
+        `https://finnhub.io/api/v1/quote?symbol=${encodeURIComponent(ticker)}&token=${finnhubApiKey}`,
+        { signal: AbortSignal.timeout(5_000) }
+      );
+      if (!res.ok) return null;
+      const data = await res.json() as Record<string, unknown>;
+      if (!data?.c || data.c === 0) return null;
+      return data as unknown as { c: number; h: number; l: number; pc: number };
+    } catch {
+      return null;
+    }
+  }
+
+  /** Compute next trading day after tradeDate (skips weekends) */
+  function nextTradingDay(dateStr: string): string {
+    const d = new Date(`${dateStr}T12:00:00Z`);
+    d.setUTCDate(d.getUTCDate() + 1);
+    while (d.getUTCDay() === 0 || d.getUTCDay() === 6) d.setUTCDate(d.getUTCDate() + 1);
+    return d.toISOString().split('T')[0];
+  }
+
   const toInsert: Record<string, unknown>[] = [];
 
   for (const sig of signals) {
@@ -261,6 +293,7 @@ Deno.serve(async (req) => {
     const allPriceLevels = [
       sig.longTriggerAbove, sig.shortTriggerBelow,
       ...(sig.longTargets ?? []), ...(sig.shortTargets ?? []),
+      sig.trigger_price, ...(sig.targets ?? []),
     ].filter((p): p is number => p != null);
     if (priceFloor && allPriceLevels.some(p => p < priceFloor)) {
       console.warn(`[import-strategy-signals] Skipping ${ticker} — price levels ${JSON.stringify(allPriceLevels)} below minimum $${priceFloor} (likely extraction error)`);
@@ -269,6 +302,74 @@ Deno.serve(async (req) => {
 
     const stopLoss = sig.stopLoss ?? null;
     const noteText = sig.notes ?? null;
+
+    // Options signal path (BUY_CALL / BUY_PUT from pocket/breakout setups)
+    if (isOptionsSignal && (sig.signal === 'BUY_CALL' || sig.signal === 'BUY_PUT')) {
+      const isCall = sig.signal === 'BUY_CALL';
+      const mode = isCall ? 'OPTIONS_CALL' : 'OPTIONS_PUT';
+      const targets = sig.targets ?? [];
+      const primaryTarget = targets[0] ?? null;
+      const targetSummary = targets.length > 0
+        ? targets.map((t, i) => `T${i + 1}: ${t}`).join(', ')
+        : null;
+
+      let entryPrice = sig.trigger_price ?? null;
+      const entryCtx = sig.entry_context ?? 'above_level';
+
+      // Resolve "above_todays_high" / "below_todays_low" using Finnhub quote
+      if (entryPrice == null && (entryCtx === 'above_todays_high' || entryCtx === 'below_todays_low')) {
+        const quote = await getFinnhubQuote(ticker);
+        if (quote) {
+          // Pre-market: use previous close as proxy; during market hours: use day high/low
+          const nowHourET = new Date().toLocaleString('en-US', { timeZone: 'America/New_York', hour: 'numeric', hour12: false });
+          const hourET = parseInt(nowHourET);
+          if (entryCtx === 'above_todays_high') {
+            const raw = (hourET >= 10 && hourET < 16 && quote.h > 0) ? quote.h : quote.pc;
+            entryPrice = Math.round(raw * 1.002 * 100) / 100; // +0.2% buffer
+          } else {
+            const raw = (hourET >= 10 && hourET < 16 && quote.l > 0) ? quote.l : quote.pc;
+            entryPrice = Math.round(raw * 0.998 * 100) / 100; // -0.2% buffer
+          }
+          console.log(`[import-strategy-signals] ${ticker}: resolved ${entryCtx} → $${entryPrice} (from Finnhub ${hourET >= 10 ? 'intraday' : 'prevClose'})`);
+        } else {
+          console.warn(`[import-strategy-signals] ${ticker}: could not resolve ${entryCtx} — no Finnhub quote, skipping`);
+          continue;
+        }
+      }
+
+      // Options signals expire at end of next trading day (generous window for breakout triggers)
+      const optionsExpiresAt = toUtcTimestamp(nextTradingDay(tradeDate), '16:00');
+      const optionsExecuteAt = toUtcTimestamp(tradeDate, '09:35');
+
+      const setupLabel = sig.setup_type ?? setupType ?? 'breakout';
+      const notesParts = [
+        `${isCall ? 'Call' : 'Put'} — ${setupLabel}`,
+        entryCtx === 'above_todays_high' ? 'above today\'s high' :
+          entryCtx === 'below_todays_low' ? 'below today\'s low' :
+          entryPrice != null ? `${isCall ? 'above' : 'below'} $${entryPrice}` : null,
+        targetSummary ? `targets: ${targetSummary}` : null,
+      ].filter(Boolean).join(' | ');
+
+      toInsert.push({
+        source_name: video.source_name,
+        source_url: sourceUrl,
+        ticker,
+        signal: 'BUY',
+        mode,
+        confidence: 7,
+        entry_price: entryPrice,
+        stop_loss: null,
+        target_price: primaryTarget,
+        execute_on_date: tradeDate,
+        execute_at: optionsExecuteAt,
+        expires_at: optionsExpiresAt,
+        notes: notesParts,
+        status: 'PENDING',
+        strategy_video_id: videoId,
+        strategy_video_heading: video.video_heading ?? null,
+      });
+      continue;
+    }
 
     // Long (BUY) signal — one row per entry level (unique constraint is on ticker+signal+entry_price+date).
     // Use the first target as primary; additional targets go into notes for human reference.
