@@ -617,12 +617,11 @@ export async function getStrategySourcePerformance(): Promise<StrategySourcePerf
       }
     }
 
-    if (closedStatuses.has(trade.status) && trade.fill_price != null) {
+    if (closedStatuses.has(trade.status) && trade.fill_price != null && trade.pnl != null) {
       curr.closedCount += 1;
-      const pnl = trade.pnl ?? 0;
-      curr.closedPnl += pnl;
-      if (pnl > 0) curr.wins += 1;
-      if (pnl < 0) curr.losses += 1;
+      curr.closedPnl += trade.pnl;
+      if (trade.pnl > 0) curr.wins += 1;
+      if (trade.pnl < 0) curr.losses += 1;
     }
 
     bySource.set(source, curr);
