@@ -5,7 +5,7 @@ import { supabase } from '../../../lib/supabaseClient';
 import { CLOSED_STATUSES } from '../../../../../shared/trade-status-sets.ts';
 import { fmtUsd } from '../utils';
 
-type StrategyRow = 'DAY_TRADE' | 'DAY_PENNY' | 'SWING_TRADE' | 'OVERALL';
+type StrategyRow = 'DAY_TRADE' | 'DAY_PENNY' | 'SWING_TRADE' | 'LONG_TERM' | 'OVERALL';
 
 interface DayCell {
   date: string;
@@ -26,7 +26,8 @@ const ROW_CONFIG: { key: StrategyRow; label: string; modes: string[] }[] = [
   { key: 'DAY_TRADE', label: 'Day Trades', modes: ['DAY_TRADE'] },
   { key: 'DAY_PENNY', label: 'Penny', modes: ['DAY_PENNY'] },
   { key: 'SWING_TRADE', label: 'Swing', modes: ['SWING_TRADE'] },
-  { key: 'OVERALL', label: 'Overall', modes: ['DAY_TRADE', 'DAY_PENNY', 'SWING_TRADE'] },
+  { key: 'LONG_TERM', label: 'Long Term', modes: ['LONG_TERM'] },
+  { key: 'OVERALL', label: 'Overall', modes: ['DAY_TRADE', 'DAY_PENNY', 'SWING_TRADE', 'LONG_TERM'] },
 ];
 
 const DAYS = 10;
@@ -79,7 +80,7 @@ export function StreakBoard() {
         .in('status', [...CLOSED_STATUSES])
         .not('pnl', 'is', null)
         .not('fill_price', 'is', null)
-        .in('mode', ['DAY_TRADE', 'DAY_PENNY', 'SWING_TRADE'])
+        .in('mode', ['DAY_TRADE', 'DAY_PENNY', 'SWING_TRADE', 'LONG_TERM'])
         .gte('closed_at', since + 'T00:00:00')
         .order('closed_at', { ascending: true });
 
