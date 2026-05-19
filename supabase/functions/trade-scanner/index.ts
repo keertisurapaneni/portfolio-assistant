@@ -864,18 +864,20 @@ Respond with a JSON array ONLY (no markdown, no backticks):
 Stocks:
 {{STOCK_DATA}}`;
 
-const SWING_SCAN_USER = `Evaluate these stocks for SWING trades (multi-day holds). For each, decide BUY, SELL, or SKIP.
-NOTE: You only have indicators (no candle data). For extreme movers (>20%), max confidence 6-7 — you'd need candles to be sure.
+const SWING_SCAN_USER = `Evaluate these stocks for SWING trades (2-10 day holds). For each, decide BUY, SELL, or SKIP.
+NOTE: You only have indicators (no candle data). A deeper analysis with full candle data will validate winners later.
 
 ${SWING_TRADE_RULES}
 
-- This is a SCREENING pass — be generous with BUY/SELL signals. A deeper analysis with full candle data will validate later.
-- Look for: pullbacks to support in uptrends, oversold bounces, breakout setups, breakdown setups, mean-reversion plays.
-- Even in a bearish market, quality stocks at support with good risk/reward are valid BUY candidates.
-- SELL (short) setups are equally valid — stocks breaking below SMA50/SMA200, bearish MACD crossovers.
-- SKIP only when there is truly no setup (flat, no volume, no catalyst, stuck in the middle of a range with no direction).
-- Aim to identify 6-10 actionable ideas from this list. The next pass will filter further.
-- Confidence reflects how promising the SETUP looks, not certainty of outcome.
+SCREENING INSTRUCTIONS — READ CAREFULLY:
+- You are a SETUP FINDER. Your job is to surface every stock that has an identifiable swing pattern. The next pass filters.
+- A stock pulling back to SMA(20) in an uptrend IS a setup. Give it BUY 6-7.
+- A stock consolidating at support with low volume IS a setup (accumulation). Give it BUY 5-6.
+- A stock with RSI < 35 above SMA(200) IS a mean-reversion setup. Give it BUY 6-7.
+- A stock breaking below SMA(50) on volume IS a setup. Give it SELL 5-6.
+- SKIP only stocks with NO identifiable pattern — stuck mid-range, no support/resistance nearby, no trend, no setup.
+- You should identify 6-10 actionable ideas. If you're SKIPping more than 60% of the list, you're being too conservative.
+- Confidence = how clean the SETUP is (not certainty of profit). Clean pullback to support = 6-7. Messy = 4-5. No setup = SKIP.
 
 Respond with a JSON array ONLY (no markdown, no backticks):
 [{"ticker":"AAPL","signal":"BUY"|"SELL"|"SKIP","confidence":0-10,"reason":"1 sentence"}]
@@ -2406,9 +2408,13 @@ Deno.serve(async (req) => {
           swingAISucceeded = true;
           const quoteMap = new Map(candidates.map(q => [q.symbol, q]));
 
-          // Log ALL Pass 1 results for diagnostics
+          // Log ALL Pass 1 results for diagnostics — confidence distribution helps tune thresholds
           const allSignals = evals.map(e => `${e.ticker}:${e.signal}/${e.confidence}`);
           console.log(`[Trade Scanner] Swing Pass 1 ALL (${evals.length}): ${allSignals.join(', ')}`);
+          const confDist = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]; // 0-10
+          for (const e of evals) confDist[Math.min(10, Math.max(0, e.confidence))]++;
+          const skipCount = evals.filter(e => e.signal === 'SKIP' || e.signal === 'HOLD').length;
+          console.log(`[Trade Scanner] Swing Pass 1 distribution: SKIP/HOLD=${skipCount} | conf: ${confDist.map((c, i) => c > 0 ? `${i}→${c}` : '').filter(Boolean).join(', ')}`);
 
           const nonSkip = evals.filter(e => e.signal !== 'SKIP' && e.signal !== 'HOLD').sort((a, b) => b.confidence - a.confidence);
           console.log(`[Trade Scanner] Swing Pass 1 non-SKIP (${nonSkip.length}): ${nonSkip.map(e => `${e.ticker}:${e.signal}/${e.confidence}`).join(', ') || 'none'}`);
