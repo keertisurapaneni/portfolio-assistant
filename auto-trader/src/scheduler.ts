@@ -1079,6 +1079,17 @@ export async function reconcileIBShorts(): Promise<{ closed: string[]; errors: s
       // The actual cover fill price will be written by runEndOfDayReconciliation (4:15 PM)
       // once the IB execution is available. We store the cover orderId so the reconciler
       // can match the fill by orderId in ib_fills.
+      // Try to fetch IB's actual realized P&L from ib_fills (may already be present since fill completed)
+      const { data: ibFillRow } = await sb
+        .from('ib_fills')
+        .select('realized_pnl')
+        .eq('order_id', coverOrderId)
+        .not('realized_pnl', 'is', null)
+        .maybeSingle();
+      const ibRealizedPnl: number | null = (ibFillRow as { realized_pnl: number | null } | null)?.realized_pnl ?? null;
+      const finalPnl = ibRealizedPnl ?? coverPnl;
+      const pnlSource = ibRealizedPnl != null ? 'ib_realized' : 'ib_fill_calculated';
+
       const since = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString();
       const { data: orphanTrades } = await sb
         .from('paper_trades')
@@ -1096,15 +1107,36 @@ export async function reconcileIBShorts(): Promise<{ closed: string[]; errors: s
         await sb.from('paper_trades').update({
           close_reason: 'reconcile_cover',
           close_price: avgFillPrice,
-          pnl: coverPnl,
-          pnl_percent: pos.avgCost > 0 ? parseFloat(((coverPnl / (pos.avgCost * qty)) * 100).toFixed(2)) : null,
-          pnl_source: 'ib_fill_calculated',
+          pnl: finalPnl,
+          pnl_percent: pos.avgCost > 0 ? parseFloat(((finalPnl / (pos.avgCost * qty)) * 100).toFixed(2)) : null,
+          pnl_source: pnlSource,
           ib_order_id: String(coverOrderId),
           notes: `Cover orderId=${coverOrderId} filled @ $${avgFillPrice.toFixed(2)} by reconcileIBShorts at ${new Date().toISOString()}`,
         }).eq('id', orphan.id);
-        log(`[IBReconcile] Linked cover orderId=${coverOrderId} to paper_trade ${orphan.id} for ${pos.symbol} (pnl $${coverPnl.toFixed(2)})`);
+        log(`[IBReconcile] Linked cover orderId=${coverOrderId} to paper_trade ${orphan.id} for ${pos.symbol} (pnl $${finalPnl.toFixed(2)}, source=${pnlSource})`);
       } else {
-        log(`[IBReconcile] No orphaned SELL paper_trade found for ${pos.symbol} — EOD reconciler will log as orphaned execution`);
+        // No orphaned SELL paper_trade found — insert a new one so this cover appears
+        // in Today's Activity with the correct IB P&L. The Postgres trigger will upgrade
+        // pnl_source to 'ib_realized' if the realized_pnl arrives later via execDetails.
+        const nowIso = new Date().toISOString();
+        await sb.from('paper_trades').insert({
+          ticker: pos.symbol,
+          signal: 'BUY',
+          mode: 'DAY_TRADE',
+          quantity: qty,
+          fill_price: avgFillPrice,
+          close_price: avgFillPrice,
+          pnl: finalPnl,
+          pnl_source: pnlSource,
+          status: 'CLOSED',
+          ib_order_id: String(coverOrderId),
+          close_reason: 'ib_reconciliation_cover',
+          opened_at: nowIso,
+          filled_at: nowIso,
+          closed_at: nowIso,
+          notes: `Short cover orderId=${coverOrderId} filled @ $${avgFillPrice.toFixed(2)} by reconcileIBShorts (avg cost $${pos.avgCost.toFixed(2)})`,
+        });
+        log(`[IBReconcile] Inserted cover paper_trade for ${pos.symbol} (pnl $${finalPnl.toFixed(2)}, source=${pnlSource})`);
       }
 
       await createAutoTradeEvent({
