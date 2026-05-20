@@ -627,13 +627,52 @@ export class IBConnection {
         transmit: true,
       };
 
+      // Wait for IB to acknowledge the parent order (PreSubmitted or Submitted)
+      // before resolving. Without this, placeOrder() is fire-and-forget and the
+      // order can silently vanish if IB is in a transient state — leaving our DB
+      // with a SUBMITTED paper_trade that IB has no record of.
+      let ackResolved = false;
+      const ACK_TIMEOUT_MS = 8_000;
+
+      const ackTimer = setTimeout(() => {
+        if (ackResolved) return;
+        ackResolved = true;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (this.ib as any).off(EventName.orderStatus, onOrderStatus);
+        reject(new Error(`Bracket order ${parentId} (${symbol}) not acknowledged by IB within ${ACK_TIMEOUT_MS / 1000}s — IB may not have received it`));
+      }, ACK_TIMEOUT_MS);
+
+      const onOrderStatus = (ordId: number, status: string) => {
+        if (ordId !== parentId || ackResolved) return;
+        if (status === 'PreSubmitted' || status === 'Submitted' || status === 'Filled') {
+          ackResolved = true;
+          clearTimeout(ackTimer);
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          (this.ib as any).off(EventName.orderStatus, onOrderStatus);
+          console.log(`${this.tag} Bracket order acknowledged by IB: ${side} ${quantity}x ${symbol} entry=$${entryPrice} tp=$${takeProfit} sl=$${stopLoss} (status=${status})`);
+          resolve({ parentOrderId: parentId, takeProfitOrderId: tpId, stopLossOrderId: slId });
+        } else if (status === 'Cancelled' || status === 'Inactive') {
+          ackResolved = true;
+          clearTimeout(ackTimer);
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          (this.ib as any).off(EventName.orderStatus, onOrderStatus);
+          reject(new Error(`Bracket order ${parentId} (${symbol}) rejected by IB — status: ${status}`));
+        }
+      };
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (this.ib as any).on(EventName.orderStatus, onOrderStatus);
+
       try {
         this.ib.placeOrder(parentId, contract, parentOrder);
         this.ib.placeOrder(tpId, contract, takeProfitOrder);
         this.ib.placeOrder(slId, contract, stopLossOrder);
-        console.log(`${this.tag} Bracket order placed: ${side} ${quantity}x ${symbol} entry=$${entryPrice} tp=$${takeProfit} sl=$${stopLoss}`);
-        resolve({ parentOrderId: parentId, takeProfitOrderId: tpId, stopLossOrderId: slId });
+        console.log(`${this.tag} Bracket order dispatched: ${side} ${quantity}x ${symbol} entry=$${entryPrice} tp=$${takeProfit} sl=$${stopLoss} (parentId=${parentId}) — awaiting IB ack...`);
       } catch (err) {
+        ackResolved = true;
+        clearTimeout(ackTimer);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (this.ib as any).off(EventName.orderStatus, onOrderStatus);
         reject(err);
       }
     });
