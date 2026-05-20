@@ -847,7 +847,10 @@ export class IBConnection {
         }
         const msg = `IB options order ${orderId} (${symbol} $${strike}${right}) timed out after ${OPT_ORDER_TIMEOUT_MS / 1000}s — no fill/reject received`;
         console.error(`${this.tag} ${msg}`);
-        reject(new Error(msg));
+        // Resolve with a sentinel so the caller can save orderId as SUBMITTED
+        // rather than leaving the trade fully orphaned. The fill will arrive
+        // via execDetails when the order eventually fills (e.g. next market open).
+        resolve({ orderId, avgFillPrice: 0, filledQty: 0, timedOut: true } as unknown as OptionsOrderResult);
       }, OPT_ORDER_TIMEOUT_MS);
 
       this._pendingOrderCallbacks.set(orderId, { resolve, reject, timer, symbol });

@@ -49,6 +49,18 @@ router.get('/options/strike-sniper', async (req, res) => {
  * Place an IB order for an existing paper trade that was recorded without one (paper fallback).
  * Body: { tradeId }
  */
+/** Returns true if current time is within regular US equity market hours (9:30–16:00 ET, Mon–Fri). */
+function isMarketOpen(): boolean {
+  const now = new Date();
+  const etOffset = -4; // EDT (May–Nov); adjust to -5 for EST if needed
+  const etHour = (now.getUTCHours() + etOffset + 24) % 24;
+  const etMin = now.getUTCMinutes();
+  const etDay = new Date(now.getTime() + etOffset * 3600_000).getUTCDay(); // 0=Sun,6=Sat
+  if (etDay === 0 || etDay === 6) return false;
+  const etMins = etHour * 60 + etMin;
+  return etMins >= 9 * 60 + 30 && etMins < 16 * 60;
+}
+
 router.post('/options/place-order', async (req, res) => {
   try {
     const { tradeId } = req.body;
@@ -58,6 +70,10 @@ router.post('/options/place-order', async (req, res) => {
 
     if (!isConnected()) {
       return res.status(503).json({ error: 'IB Gateway not connected' });
+    }
+
+    if (!isMarketOpen()) {
+      return res.status(503).json({ error: 'Market is closed. Options orders can only be submitted during market hours (9:30 AM – 4:00 PM ET, Mon–Fri).' });
     }
 
     const sb = getSupabase();
