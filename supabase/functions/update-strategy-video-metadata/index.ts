@@ -71,11 +71,12 @@ Deno.serve(async (req) => {
     Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
   );
 
+  // Match by video_id only — platform filter caused silent failures when the
+  // column is null (common for older rows inserted without explicit platform).
   const { data, error } = await supabase
     .from('strategy_videos')
     .update(updates)
     .eq('video_id', video_id)
-    .eq('platform', platform)
     .select('id, video_id, platform, source_name, strategy_type')
     .maybeSingle();
 
