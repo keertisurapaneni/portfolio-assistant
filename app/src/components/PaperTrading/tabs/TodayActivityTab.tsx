@@ -45,6 +45,8 @@ function AccountDot({ type }: { type?: 'paper' | 'live' }) {
 export interface TodayActivityTabProps {
   events: AutoTradeEventRecord[];
   trades: PaperTrade[];
+  /** Today's trades from paper_trades — primary source of truth, driven by ib_fills trigger */
+  todayTrades?: PaperTrade[];
   todaySignalsForExecute?: PendingStrategySignal[];
   onExecuteSignal?: () => void;
   ibRealizedPnl?: number | null;
@@ -61,7 +63,7 @@ function isTradingDay(): boolean {
   return day !== 0 && day !== 6; // 0=Sun, 6=Sat
 }
 
-export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], onExecuteSignal, ibRealizedPnl, accountView }: TodayActivityTabProps) {
+export function TodayActivityTab({ events, trades, todayTrades, todaySignalsForExecute = [], onExecuteSignal, ibRealizedPnl }: TodayActivityTabProps) {
   const [executingId, setExecutingId] = useState<string | null>(null);
   const [executingAll, setExecutingAll] = useState(false);
   const [filterMode, setFilterMode] = useState<FilterMode>('all');
@@ -129,17 +131,27 @@ export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], 
     }
   };
   const todayISO = todayStart.toISOString();
-  const tradesByTicker = new Map<string, PaperTrade[]>();
-  for (const t of trades) {
+
+  // Primary data source: todayTrades (from paper_trades, kept accurate by ib_fills trigger).
+  // Fall back to filtering allTrades for backward compatibility.
+  const primaryTrades: PaperTrade[] = todayTrades ?? trades.filter(t => {
     const openedToday = t.opened_at && t.opened_at >= todayISO;
     const closedToday = t.closed_at && t.closed_at >= todayISO;
-    if (!openedToday && !closedToday) continue;
+    return openedToday || closedToday;
+  });
+
+  // Legacy lookup: events for system-only messages (reconcile warnings, orphan alerts)
+  const tradesByTicker = new Map<string, PaperTrade[]>();
+  for (const t of primaryTrades) {
     const arr = tradesByTicker.get(t.ticker) || [];
     arr.push(t);
     tradesByTicker.set(t.ticker, arr);
   }
 
-  if (events.length === 0) {
+  // System-only events (no mode = reconcile / orphan alerts)
+  const systemEvents = events.filter(e => e.source === 'system' && !e.mode);
+
+  if (primaryTrades.length === 0) {
     return (
       <div className="space-y-4">
         <div className="text-center py-12">
@@ -237,28 +249,9 @@ export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], 
     );
   }
 
-  const terminalStatuses = [...CLOSED_STATUSES];
-
-  const computeEventPnl = (evList: typeof events) => {
-    const countedTradeIds = new Set<string>();
-    let sum = 0;
-    for (const ev of evList) {
-      const matched = tradesByTicker.get(ev.ticker)
-        ?.sort((a, b) => {
-          const aTerminal = terminalStatuses.includes(a.status) ? 0 : 1;
-          const bTerminal = terminalStatuses.includes(b.status) ? 0 : 1;
-          return aTerminal - bTerminal;
-        })
-        ?.find(t =>
-          t.pnl != null && t.pnl_source != null && !countedTradeIds.has(t.id)
-        );
-      if (matched) {
-        countedTradeIds.add(matched.id);
-        sum += matched.pnl!;
-      }
-    }
-    return sum;
-  };
+  // P&L computed directly from trade records (accurate via ib_fills trigger)
+  const computeTradePnl = (tradeList: PaperTrade[]) =>
+    tradeList.reduce((sum, t) => sum + (t.pnl ?? 0), 0);
 
   const effectiveIbPnl = isTradingDay() ? ibRealizedPnl : null;
 
@@ -278,21 +271,17 @@ export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], 
       : <ChevronDown className="inline w-3 h-3 ml-0.5 opacity-80" />;
   }
 
-  const filteredSortedEvents = useMemo(() => {
-    let filtered = events;
+  const filteredSortedTrades = useMemo(() => {
+    let filtered = primaryTrades;
 
     if (filterMode !== 'all') {
-      filtered = events.filter(ev => {
-        const mode = ev.mode;
+      filtered = primaryTrades.filter(t => {
+        const mode = t.mode;
         if (filterMode === 'day') return mode === 'DAY_TRADE' || mode === 'DAY_PENNY';
         if (filterMode === 'penny') return mode === 'DAY_PENNY';
         if (filterMode === 'long_term') return mode === 'LONG_TERM' || mode === 'SWING_TRADE';
-        if (filterMode === 'gainers' || filterMode === 'losers') {
-          const trade = tradesByTicker.get(ev.ticker)?.find(t => t.pnl != null && t.pnl_source != null);
-          const pnl = trade?.pnl ?? null;
-          if (filterMode === 'gainers') return pnl != null && pnl > 0;
-          if (filterMode === 'losers') return pnl != null && pnl < 0;
-        }
+        if (filterMode === 'gainers') return t.pnl != null && t.pnl > 0;
+        if (filterMode === 'losers') return t.pnl != null && t.pnl < 0;
         return true;
       });
     }
@@ -307,13 +296,11 @@ export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], 
         aVal = a.ticker;
         bVal = b.ticker;
       } else if (sortKey === 'time') {
-        aVal = a.created_at;
-        bVal = b.created_at;
+        aVal = a.opened_at;
+        bVal = b.opened_at;
       } else if (sortKey === 'pnl') {
-        const matchA = tradesByTicker.get(a.ticker)?.find(t => t.pnl != null);
-        const matchB = tradesByTicker.get(b.ticker)?.find(t => t.pnl != null);
-        aVal = matchA?.pnl ?? null;
-        bVal = matchB?.pnl ?? null;
+        aVal = a.pnl ?? null;
+        bVal = b.pnl ?? null;
       }
 
       if (aVal === null && bVal === null) return 0;
@@ -323,9 +310,9 @@ export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], 
       const cmp = aVal < bVal ? -1 : aVal > bVal ? 1 : 0;
       return sortDir === 'asc' ? cmp : -cmp;
     });
-  }, [events, filterMode, sortKey, sortDir, tradesByTicker]);
+  }, [primaryTrades, filterMode, sortKey, sortDir]);
 
-  const filteredPnl = useMemo(() => computeEventPnl(filteredSortedEvents), [filteredSortedEvents, tradesByTicker]);
+  const filteredPnl = useMemo(() => computeTradePnl(filteredSortedTrades), [filteredSortedTrades]);
   const pnlLabel = filterMode === 'all' ? "Today's Realized P&L"
     : filterMode === 'day' ? 'Day Trade P&L'
     : filterMode === 'penny' ? 'Penny P&L'
@@ -413,7 +400,7 @@ export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], 
         </button>
         {filterMode !== 'all' && (
           <span className="text-[10px] text-[hsl(var(--muted-foreground))] ml-1">
-            {filteredSortedEvents.length} of {events.length}
+            {filteredSortedTrades.length} of {primaryTrades.length}
           </span>
         )}
       </div>
@@ -447,93 +434,75 @@ export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], 
             </tr>
           </thead>
           <tbody className="divide-y divide-[hsl(var(--border))]">
-            {filteredSortedEvents.map((event) => {
-              const matched = tradesByTicker.get(event.ticker)?.find(t =>
-                t.pnl != null || t.status === 'FILLED' || t.status === 'TARGET_HIT' || t.status === 'STOPPED' || t.status === 'CLOSED'
-              );
-
-              const isPositionSync = event.source === 'system' && !event.mode;
-              const AUTO_CLOSE_SOURCES = new Set(['lt_auto_sell', 'swing_expiry', 'capital_pressure']);
-              const isAutoClose = AUTO_CLOSE_SOURCES.has(event.source ?? '');
-              const metaPnl = isPositionSync && event.metadata ? (event.metadata as { pnl?: number }).pnl : undefined;
+            {filteredSortedTrades.map((trade) => {
               const terminalStatuses = [...CLOSED_STATUSES, ...EXCLUDED_STATUSES] as string[];
-              const isRealizedClose = matched?.close_price != null || terminalStatuses.includes(matched?.status ?? '');
-              const eventPnl = metaPnl ?? (isRealizedClose ? matched?.pnl : undefined);
-              const pnl = eventPnl ?? null;
-              const isClosed = isPositionSync || isAutoClose || (matched?.close_price != null) || terminalStatuses.includes(matched?.status ?? '');
-              const isActive = !isClosed && matched && ['FILLED', 'PARTIAL'].includes(matched.status);
-              const msg = event.message;
-              // Match "7 shares @ $675" OR "BUY 7 @ $675" (external signal format)
-              const sharesMatch = msg.match(/(\d+)\s+shares.*?@\s*~?\$?([\d.]+)/i);
-              const externalMatch = msg.match(/(?:BUY|SELL)\s+(\d+)\s+@\s*~?\$?([\d.]+)/i);
-              const qtyMatch = sharesMatch ?? externalMatch;
+              const isClosed = trade.close_price != null
+                || terminalStatuses.includes(trade.status)
+                || trade.closed_at != null;
+              const isActive = !isClosed && ['FILLED', 'PARTIAL'].includes(trade.status);
 
-              const isExternalSignal = event.source === 'external_signal'
-                || event.message?.toLowerCase().includes('external signal')
-                || matched?.notes?.startsWith('External signal')
-                || matched?.scanner_reason?.includes('External');
+              const pnl = trade.pnl ?? null;
 
-              const externalInfluencer = event.strategy_source
-                ?? matched?.scanner_reason?.match(/External strategy signal from (.+?)(?:\s*\||$)/)?.[1]
+              const isExternalSignal = trade.scanner_reason?.includes('External')
+                || trade.notes?.startsWith('External signal');
+              const externalInfluencer = trade.strategy_source
+                ?? trade.scanner_reason?.match(/External strategy signal from (.+?)(?:\s*\||$)/)?.[1]
                 ?? null;
 
-              const sourceLabel = isExternalSignal ? (externalInfluencer ? `External signal + ${externalInfluencer}` : 'External signal')
-                : event.source === 'scanner' ? 'Trade signal'
-                : event.source === 'suggested_finds' ? 'Suggested find'
-                : event.source === 'dip_buy' ? 'Dip buy'
-                : event.source === 'profit_take' ? 'Profit take'
-                : event.source === 'loss_cut' ? 'Loss cut'
-                : event.source === 'lt_auto_sell' ? 'LT auto-exit'
-                : event.source === 'swing_expiry' ? 'Swing expiry'
-                : event.source === 'capital_pressure' ? 'Capital freed'
-                : event.source === 'system' ? 'System'
-                : event.source === 'manual' ? 'Manual'
-                : 'Trade';
+              const sourceLabel = isExternalSignal
+                ? (externalInfluencer ? `External signal · ${externalInfluencer}` : 'External signal')
+                : trade.mode === 'LONG_TERM' ? 'Suggested find'
+                : 'Trade signal';
 
-              const modeLabel = event.mode === 'DAY_TRADE' ? 'Day'
-                : event.mode === 'DAY_PENNY' ? 'Penny'
-                : event.mode === 'SWING_TRADE' ? 'Swing'
-                : event.mode === 'LONG_TERM' ? 'Long Term'
-                : isPositionSync ? 'Close' : '—';
+              const modeLabel = trade.mode === 'DAY_TRADE' ? 'Day'
+                : trade.mode === 'DAY_PENNY' ? 'Penny'
+                : trade.mode === 'SWING_TRADE' ? 'Swing'
+                : trade.mode === 'LONG_TERM' ? 'Long Term'
+                : (trade.mode === 'OPTIONS_PUT' || trade.mode === 'OPTIONS_CALL'
+                   || trade.mode === 'CALENDAR_SPREAD' || trade.mode === 'CREDIT_SPREAD') ? 'Options'
+                : '—';
 
-              const SELL_SOURCES = new Set(['loss_cut', 'profit_take', 'lt_auto_sell', 'swing_expiry', 'capital_pressure']);
-              const inferredSignal = isPositionSync ? '—'
-                : SELL_SOURCES.has(event.source ?? '') ? 'SELL'
-                : 'BUY';
-              const entrySignal = event.scanner_signal ?? inferredSignal;
+              const entrySignal = trade.signal ?? 'BUY';
               const isSell = entrySignal === 'SELL';
-              const signalLabel = entrySignal;
-              const signalColor = isSell ? 'bg-red-100 text-red-700'
-                : isPositionSync ? 'bg-slate-100 text-slate-600'
-                : 'bg-emerald-100 text-emerald-700';
+              const signalColor = isSell ? 'bg-red-100 text-red-700' : 'bg-emerald-100 text-emerald-700';
+
+              const qty = trade.quantity;
+              const entryPrice = trade.fill_price;
+              const closePrice = trade.close_price;
+
+              const acctType = (trade as PaperTrade & { _accountType?: 'paper' | 'live' })._accountType;
 
               return (
-                <tr key={event.id} className={cn('hover:bg-[hsl(var(--secondary))]/50', (isPositionSync || isAutoClose) && 'bg-slate-50/50')}>
+                <tr key={trade.id} className="hover:bg-[hsl(var(--secondary))]/50">
                   <td className="px-4 py-3 font-bold">
                     <span className="inline-flex items-center gap-1.5">
-                      {accountView === 'live' && <AccountDot type="live" />}
-                      {event.ticker}
+                      {acctType === 'live' && <AccountDot type="live" />}
+                      {trade.ticker}
                     </span>
                   </td>
                   <td className="px-4 py-3">
                     <span className={cn('inline-flex px-1.5 py-0.5 rounded text-[10px] font-bold', signalColor)}>
-                      {signalLabel}
+                      {entrySignal}
                     </span>
                   </td>
                   <td className="px-4 py-3">
-                    <span className={cn(
-                      'text-[10px] px-1.5 py-0.5 rounded font-medium',
-                      isPositionSync ? 'bg-purple-50 text-purple-600' : 'bg-slate-100 text-slate-600'
-                    )}>
+                    <span className="text-[10px] px-1.5 py-0.5 rounded font-medium bg-slate-100 text-slate-600">
                       {modeLabel}
                     </span>
                   </td>
                   <td className="px-4 py-3 text-xs text-[hsl(var(--muted-foreground))]">
                     <span className="font-medium text-[hsl(var(--foreground))]">{sourceLabel}</span>
-                    {qtyMatch
-                      ? <span> · {qtyMatch[1]} shares @ ${qtyMatch[2]}</span>
-                      : <span> · {msg.replace(/^External signal executed:\s*/i, '').slice(0, 45)}</span>
-                    }
+                    {qty != null && entryPrice != null && (
+                      <span> · {qty} shares @ ${entryPrice.toFixed(2)}</span>
+                    )}
+                    {closePrice != null && (
+                      <span className="ml-1 text-[10px]">→ ${closePrice.toFixed(2)}</span>
+                    )}
+                    {trade.strategy_video_heading && (
+                      <p className="text-[10px] text-[hsl(var(--muted-foreground))] truncate max-w-[180px] mt-0.5" title={trade.strategy_video_heading}>
+                        {trade.strategy_video_heading}
+                      </p>
+                    )}
                   </td>
                   <td className={cn(
                     'px-4 py-3 text-right tabular-nums font-semibold',
@@ -551,11 +520,42 @@ export function TodayActivityTab({ events, trades, todaySignalsForExecute = [], 
                     )}
                   </td>
                   <td className="px-4 py-3 text-right text-xs text-[hsl(var(--muted-foreground))] tabular-nums">
-                    {new Date(event.created_at).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}
+                    {new Date(trade.filled_at ?? trade.opened_at).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}
                   </td>
                 </tr>
               );
             })}
+            {/* System/reconcile events shown as supplementary rows */}
+            {systemEvents.map((ev) => (
+              <tr key={ev.id} className="bg-slate-50/50 hover:bg-[hsl(var(--secondary))]/50">
+                <td className="px-4 py-3 font-bold text-slate-500">
+                  <span className="inline-flex items-center gap-1.5">
+                    {ev.ticker}
+                  </span>
+                </td>
+                <td className="px-4 py-3">
+                  <span className="inline-flex px-1.5 py-0.5 rounded text-[10px] font-bold bg-slate-100 text-slate-600">—</span>
+                </td>
+                <td className="px-4 py-3">
+                  <span className="text-[10px] px-1.5 py-0.5 rounded font-medium bg-purple-50 text-purple-600">Close</span>
+                </td>
+                <td className="px-4 py-3 text-xs text-[hsl(var(--muted-foreground))]">
+                  <span className="font-medium text-[hsl(var(--foreground))]">System</span>
+                  <span> · {ev.message?.slice(0, 60)}</span>
+                </td>
+                <td className="px-4 py-3 text-right tabular-nums font-semibold text-slate-400">
+                  {(ev.metadata as { pnl?: number } | null)?.pnl != null
+                    ? fmtUsd((ev.metadata as { pnl: number }).pnl, 2, true)
+                    : '—'}
+                </td>
+                <td className="px-4 py-3">
+                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-50 text-blue-700 font-medium">Closed</span>
+                </td>
+                <td className="px-4 py-3 text-right text-xs text-[hsl(var(--muted-foreground))] tabular-nums">
+                  {new Date(ev.created_at).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}
+                </td>
+              </tr>
+            ))}
           </tbody>
         </table>
       </div>

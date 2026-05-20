@@ -61,6 +61,7 @@ import {
   getTodaySignalsForManualExecute,
   getAutoTradeEvents,
   getTodaysExecutedEvents,
+  getTodayTrades,
   getDayTradeValidationReport,
   getSwingTradeValidationReport,
   clearSharedTradesCache,
@@ -114,6 +115,7 @@ interface PageCache {
   performance: TradePerformance | null;
   persistedEvents: AutoTradeEventRecord[];
   todaysExecuted: AutoTradeEventRecord[];
+  todayTrades: PaperTrade[];
   ibPositions: IBPosition[];
   ibOrders: IBLiveOrder[];
   allTrades: PaperTrade[];
@@ -147,6 +149,7 @@ export function PaperTrading() {
   const [ibOrders, setIbOrders] = useState<IBLiveOrder[]>(cached?.ibOrders ?? []);
   const [persistedEvents, setPersistedEvents] = useState<AutoTradeEventRecord[]>(cached?.persistedEvents ?? []);
   const [todaysExecuted, setTodaysExecuted] = useState<AutoTradeEventRecord[]>(cached?.todaysExecuted ?? []);
+  const [todayTrades, setTodayTrades] = useState<PaperTrade[]>(cached?.todayTrades ?? []);
   const [categoryPerf, setCategoryPerf] = useState<CategoryPerformance[]>(cached?.categoryPerf ?? []);
   const [sourcePerf, setSourcePerf] = useState<StrategySourcePerformance[]>(cached?.sourcePerf ?? []);
   const [videoPerf, setVideoPerf] = useState<StrategyVideoPerformance[]>(cached?.videoPerf ?? []);
@@ -172,7 +175,7 @@ export function PaperTrading() {
 
   // Refs for cache snapshot on unmount
   const stateRef = useRef({
-    performance, persistedEvents, todaysExecuted, ibPositions, ibOrders,
+    performance, persistedEvents, todaysExecuted, todayTrades, ibPositions, ibOrders,
     allTrades, pendingSignals, todaySignalsForExecute, categoryPerf,
     sourcePerf, videoPerf, strategyStatuses, validationReport,
     swingValidationReport, totalDeployed, marketRegime, kellyMultiplier, lastCycleSummary,
@@ -180,7 +183,7 @@ export function PaperTrading() {
   });
   useEffect(() => {
     stateRef.current = {
-      performance, persistedEvents, todaysExecuted, ibPositions, ibOrders,
+      performance, persistedEvents, todaysExecuted, todayTrades, ibPositions, ibOrders,
       allTrades, pendingSignals, todaySignalsForExecute, categoryPerf,
       sourcePerf, videoPerf, strategyStatuses, validationReport,
       swingValidationReport, totalDeployed, marketRegime, kellyMultiplier, lastCycleSummary,
@@ -195,14 +198,16 @@ export function PaperTrading() {
 
   // ── Core data: header stats + activity log (always visible) ──
   const loadCoreData = useCallback(async () => {
-    const [perf, savedEvents, todayEvents] = await Promise.all([
+    const [perf, savedEvents, todayEvents, todayTradesResult] = await Promise.all([
       getPerformance(),
       getAutoTradeEvents(100, accountView),
       getTodaysExecutedEvents(accountView),
+      getTodayTrades(accountView),
     ]);
     setPerformance(perf);
     setPersistedEvents(savedEvents);
     setTodaysExecuted(todayEvents);
+    setTodayTrades(todayTradesResult);
     fetch('http://localhost:3001/api/scheduler/status')
       .then((r) => r.json())
       .then((d) => setLastCycleSummary(d.lastCycleSummary ?? []))
@@ -337,6 +342,7 @@ export function PaperTrading() {
     loadTabData(tab, forceRefresh);
     if (forceRefresh) {
       getTodaysExecutedEvents(accountView).then(setTodaysExecuted).catch(() => {});
+      getTodayTrades(accountView).then(setTodayTrades).catch(() => {});
       loadIBData();
     }
   }, [tab]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -403,8 +409,9 @@ export function PaperTrading() {
     fetchedRef.current.delete('todaySignals');
     clearSharedTradesCache();
     await Promise.all([loadCoreData(), loadIBData()]);
+    getTodayTrades(accountView).then(setTodayTrades).catch(() => {});
     await loadTabData(tab, true);
-  }, [loadCoreData, loadIBData, loadTabData, tab]);
+  }, [loadCoreData, loadIBData, loadTabData, tab, accountView]);
 
   const updateConfig = async (updates: Partial<AutoTraderConfig>) => {
     const updated = await saveAutoTraderConfig(updates);
@@ -606,7 +613,7 @@ export function PaperTrading() {
         <div className="flex gap-1 bg-white/60 p-1 rounded-xl border border-[hsl(var(--border))] w-max sm:w-auto min-w-full">
           {[
             { id: 'portfolio' as Tab,   label: 'IB Portfolio',    short: 'Portfolio',   icon: Briefcase,     count: ibPositions.length },
-            { id: 'today' as Tab,       label: "Today's Activity", short: 'Today',       icon: Zap,           count: dedupedToday.length },
+            { id: 'today' as Tab,       label: "Today's Activity", short: 'Today',       icon: Zap,           count: todayTrades.length },
             { id: 'history' as Tab,     label: 'Trade History',    short: 'History',     icon: Clock,         count: allTrades.length },
             { id: 'performance' as Tab, label: 'Performance',      short: 'Perf',        icon: BarChart2 },
             { id: 'strategies' as Tab,  label: 'Influencers',      short: 'Influencers', icon: BarChart3,     count: sourcePerf.length },
@@ -682,6 +689,7 @@ export function PaperTrading() {
             <TodayActivityTab
               events={dedupedToday}
               trades={allTrades}
+              todayTrades={todayTrades}
               todaySignalsForExecute={todaySignalsForExecute}
               onExecuteSignal={refreshAfterAction}
               ibRealizedPnl={ibAccountPnl?.realizedPnL ?? null}

@@ -217,6 +217,34 @@ export async function getAllTrades(limit = 50, accountView: AccountView = 'paper
   return (data ?? []) as PaperTradeWithAccount[];
 }
 
+/**
+ * Get today's trades from paper_trades directly (IB fills as source of truth).
+ * Returns all trades opened or closed today, ordered newest first.
+ * P&L comes from paper_trades.pnl which is kept accurate by the Postgres trigger
+ * on ib_fills (sync_ib_fill_to_paper_trades).
+ */
+export async function getTodayTrades(accountView: AccountView = 'paper'): Promise<PaperTradeWithAccount[]> {
+  const todayStart = new Date();
+  todayStart.setHours(0, 0, 0, 0);
+  const todayISO = todayStart.toISOString();
+
+  async function fetchForTable(table: 'paper_trades' | 'live_trades', acct?: AccountType): Promise<PaperTradeWithAccount[]> {
+    const { data, error } = await supabase
+      .from(table)
+      .select('*')
+      .or(`opened_at.gte.${todayISO},closed_at.gte.${todayISO}`)
+      .order('opened_at', { ascending: false });
+
+    if (error) return [];
+    const rows = (data ?? []) as PaperTrade[];
+    if (acct) return rows.map(t => ({ ...t, _accountType: acct }));
+    return rows;
+  }
+
+  if (accountView === 'live') return fetchForTable('live_trades', 'live');
+  return fetchForTable('paper_trades');
+}
+
 /** Day trade validation report — answers: trend vs chop? confidence ≥7 predictive? */
 export interface DayTradeValidationReport {
   trendVsChop: Array<{

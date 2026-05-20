@@ -4597,6 +4597,10 @@ async function processExternalStrategySignals(
   const nowMs = Date.now();
   const nowEtMinutes = getETMinutes();
 
+  // Prevent same ticker from executing two opposing conditional signals in the same batch
+  // (e.g. QQQ BUY above 500 + QQQ SELL below 495 both firing when price is between them).
+  const executedTickersThisBatch = new Set<string>();
+
   for (const signal of pending) {
     const executeAtMs = signal.execute_at ? new Date(signal.execute_at).getTime() : null;
     if (executeAtMs && nowMs < executeAtMs) {
@@ -4636,13 +4640,51 @@ async function processExternalStrategySignals(
       }
     }
 
+    // ── Price trigger gate ──────────────────────────────────────────────────
+    // If the signal has an entry_price, verify the current market price has
+    // actually reached (or crossed) that level before executing.
+    // BUY signals: execute only if currentPrice >= entry_price (breakout/long above)
+    // SELL signals: execute only if currentPrice <= entry_price (short/breakdown below)
+    // This prevents both legs of an opposing pair (e.g. QQQ BUY above X + SELL below Y)
+    // from simultaneously firing when only one trigger is actually crossed.
+    if (signal.entry_price != null) {
+      const currentPrice = await getQuotePrice(signal.ticker).catch(() => null);
+      if (currentPrice != null) {
+        const triggerCrossed = signal.signal === 'BUY'
+          ? currentPrice >= signal.entry_price
+          : currentPrice <= signal.entry_price;
+        if (!triggerCrossed) {
+          const direction = signal.signal === 'BUY' ? 'above' : 'below';
+          const triggerReason = `Entry trigger not reached: price $${currentPrice.toFixed(2)} not ${direction} entry $${signal.entry_price.toFixed(2)}`;
+          log(`${signal.ticker} [${signal.signal}]: ${triggerReason} — skipping this cycle`);
+          await updateExternalStrategySignal(signal.id, { failure_reason: triggerReason });
+          waiting += 1;
+          continue;
+        }
+      }
+    }
+
+    // ── Per-batch ticker dedup ──────────────────────────────────────────────
+    // Once a ticker has been executed this batch, skip any other signals for it.
+    // Prevents the duplicate-P&L issue where BUY and SELL for the same ticker
+    // both execute within the same scheduler cycle.
+    const tickerKey = `${signal.ticker.toUpperCase()}`;
+    if (executedTickersThisBatch.has(tickerKey)) {
+      log(`${signal.ticker}: already executed this cycle — skipping duplicate signal`);
+      waiting += 1;
+      continue;
+    }
+
     const result = await executeExternalStrategySignal(
       signal,
       config,
       positions,
       executionOptionsBySignalId.get(signal.id),
     );
-    if (result === 'executed') executed += 1;
+    if (result === 'executed') {
+      executed += 1;
+      executedTickersThisBatch.add(tickerKey);
+    }
     if (result === 'skipped') skipped += 1;
     if (result === 'failed') failed += 1;
     if (result === 'waiting') waiting += 1;
