@@ -53,7 +53,7 @@ export interface TodayActivityTabProps {
   accountView?: AccountView;
 }
 
-type FilterMode = 'all' | 'day' | 'penny' | 'swing' | 'long_term' | 'options' | 'gainers' | 'losers';
+type FilterMode = 'all' | 'day' | 'penny' | 'swing' | 'long_term' | 'gainers' | 'losers';
 type SortKey = 'ticker' | 'pnl' | 'time' | null;
 type SortDir = 'asc' | 'desc';
 
@@ -132,13 +132,16 @@ export function TodayActivityTab({ events, trades, todayTrades, todaySignalsForE
   };
   const todayISO = todayStart.toISOString();
 
+  const OPTIONS_MODES = new Set(['OPTIONS_PUT', 'OPTIONS_CALL', 'CALENDAR_SPREAD', 'CREDIT_SPREAD', 'EARNINGS_CALENDAR']);
+
   // Primary data source: todayTrades (from paper_trades, kept accurate by ib_fills trigger).
+  // Exclude options — they are managed in the Options Wheel tab and their P&L is not IB-fill-based.
   // Fall back to filtering allTrades for backward compatibility.
-  const primaryTrades: PaperTrade[] = todayTrades ?? trades.filter(t => {
+  const primaryTrades: PaperTrade[] = (todayTrades ?? trades.filter(t => {
     const openedToday = t.opened_at && t.opened_at >= todayISO;
     const closedToday = t.closed_at && t.closed_at >= todayISO;
     return openedToday || closedToday;
-  });
+  })).filter(t => !OPTIONS_MODES.has(t.mode));
 
   // Legacy lookup: events for system-only messages (reconcile warnings, orphan alerts)
   const tradesByTicker = new Map<string, PaperTrade[]>();
@@ -281,7 +284,6 @@ export function TodayActivityTab({ events, trades, todayTrades, todaySignalsForE
         if (filterMode === 'penny') return mode === 'DAY_PENNY';
         if (filterMode === 'swing') return mode === 'SWING_TRADE';
         if (filterMode === 'long_term') return mode === 'LONG_TERM';
-        if (filterMode === 'options') return mode === 'OPTIONS_PUT' || mode === 'OPTIONS_CALL' || mode === 'CALENDAR_SPREAD' || mode === 'CREDIT_SPREAD' || mode === 'EARNINGS_CALENDAR';
         if (filterMode === 'gainers') return t.pnl != null && t.pnl > 0;
         if (filterMode === 'losers') return t.pnl != null && t.pnl < 0;
         return true;
@@ -320,7 +322,6 @@ export function TodayActivityTab({ events, trades, todayTrades, todaySignalsForE
     : filterMode === 'penny' ? 'Penny P&L'
     : filterMode === 'swing' ? 'Swing P&L'
     : filterMode === 'long_term' ? 'Long Term P&L'
-    : filterMode === 'options' ? 'Options P&L'
     : filterMode === 'gainers' ? 'Gainers P&L'
     : 'Losers P&L';
 
@@ -372,7 +373,6 @@ export function TodayActivityTab({ events, trades, todayTrades, todaySignalsForE
           { id: 'penny',     label: 'Penny' },
           { id: 'swing',     label: 'Swing' },
           { id: 'long_term', label: 'Long Term' },
-          { id: 'options',   label: 'Options' },
         ] as { id: FilterMode; label: string }[]).map(f => (
           <button
             key={f.id}
