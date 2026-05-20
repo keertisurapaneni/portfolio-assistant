@@ -467,6 +467,7 @@ export function StrategyPerformanceTab({ sources, videos, statuses, onRefresh }:
       onRefresh?.();
     } catch (err) {
       console.error('[handleRemoveVideo]', err);
+      alert(`Failed to remove video: ${err instanceof Error ? err.message : 'Unknown error'}`);
     } finally {
       setRemovingVideoId(null);
     }
