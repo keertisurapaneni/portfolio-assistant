@@ -108,6 +108,9 @@ export async function recordTradeClose(params: CloseTradeParams): Promise<void> 
     pnl_percent: pnlPct != null ? parseFloat(pnlPct.toFixed(2)) : null,
     pnl_source: pnlSource,
     closed_at: new Date().toISOString(),
+    // Store close orderId so the trigger can retroactively patch pnl with
+    // IB's net realized_pnl when the commission report arrives asynchronously.
+    ...(orderId != null ? { ib_close_order_id: orderId.toString() } : {}),
     ...(extraUpdates ?? {}),
   };
 
