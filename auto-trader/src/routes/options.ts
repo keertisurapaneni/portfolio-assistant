@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { findBestContractForStrike } from '../lib/options-chain.js';
+import { findBestContractForStrike, getOptionsChain } from '../lib/options-chain.js';
 import { fetchQuote } from '../lib/yahoo-finance.js';
 import { getFundamentalGrade } from '../lib/fundamental-grader.js';
 import { isConnected, placeOptionsOrder, getDefaultAccount, getPaperConnection } from '../ib-connection.js';
@@ -78,31 +78,57 @@ router.post('/options/place-order', async (req, res) => {
     let expiry = trade.option_expiry.replace(/-/g, '');
 
     // Allow overriding limit price via request body (premium may have changed)
-    const limitPrice = req.body.limitPrice ?? trade.option_premium;
+    let limitPrice: number = req.body.limitPrice ?? trade.option_premium;
+    let resolvedStrike: number = trade.option_strike;
 
-    // Resolve correct IB expiry — try the stored date, then ±1 day (IB can use
-    // settlement date vs last trade date which differs by a day for monthlies)
+    // ── Step 1: Try to resolve the exact stored contract (strike + expiry) ──
+    // resolveOptionConId now retries ±1/2 day expiry offsets internally.
     const conn = getPaperConnection();
-    let resolvedExpiry: string | null = null;
-    for (const offset of [0, 1, -1, 2]) {
-      const d = new Date(
-        parseInt(expiry.slice(0, 4)),
-        parseInt(expiry.slice(4, 6)) - 1,
-        parseInt(expiry.slice(6, 8)) + offset,
-      );
-      const candidate = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
-      const conId = await conn.resolveOptionConId(trade.ticker, right, trade.option_strike, candidate);
-      if (conId) {
-        resolvedExpiry = candidate;
-        break;
+    const exactConId = await conn.resolveOptionConId(trade.ticker, right, trade.option_strike, expiry);
+
+    if (exactConId) {
+      // Re-derive which expiry offset worked (the resolved expiry is embedded in
+      // resolveOptionConId's retry logic — we just need the order to go through).
+      console.log(`[place-order] Exact contract resolved for ${trade.ticker} $${trade.option_strike}${right} — placing order`);
+    } else {
+      // ── Step 2: Exact strike not in IB (came from synthetic pricing) ──
+      // Fetch IB's real options chain and find the nearest listed contract.
+      console.log(`[place-order] Exact strike $${trade.option_strike}${right} not in IB — fetching live chain for ${trade.ticker}`);
+
+      const quote = await fetchQuote(trade.ticker);
+      const currentPrice = quote?.price ?? trade.option_strike * 1.05; // rough fallback
+
+      const chain = await getOptionsChain(trade.ticker, currentPrice, null);
+      const bestPut = chain?.bestPut;
+
+      if (!bestPut) {
+        return res.status(422).json({
+          error: `No options chain available for ${trade.ticker} in IB. Ensure IB Gateway is connected and the ticker has listed options.`,
+        });
       }
+
+      resolvedStrike = bestPut.strike;
+      expiry = bestPut.expiry;
+      // Use the live market bid as limit price (conservative fill, same as scanner logic)
+      limitPrice = bestPut.bid > 0 ? bestPut.bid : bestPut.mid;
+
+      console.log(`[place-order] Snapped to nearest IB contract: ${trade.ticker} $${resolvedStrike}${right} exp ${expiry} @ $${limitPrice.toFixed(2)}`);
+
+      // Update the paper_trade to reflect the IB-corrected contract details so
+      // the UI shows the real position, not the synthetic one.
+      await sb.from('paper_trades').update({
+        option_strike: resolvedStrike,
+        option_expiry: `${expiry.slice(0, 4)}-${expiry.slice(4, 6)}-${expiry.slice(6, 8)}`,
+        option_premium: limitPrice,
+        option_net_price: resolvedStrike - limitPrice,
+        pnl: null, // will be set by trigger when fill arrives
+      }).eq('id', tradeId);
     }
-    if (resolvedExpiry) expiry = resolvedExpiry;
 
     const { orderId, avgFillPrice, filledQty } = await placeOptionsOrder({
       symbol: trade.ticker,
       right,
-      strike: trade.option_strike,
+      strike: resolvedStrike,
       expiry,
       contracts: 1,
       limitPrice,
@@ -112,6 +138,7 @@ router.post('/options/place-order', async (req, res) => {
     await sb.from('paper_trades').update({
       ib_order_id: orderId,
       fill_price: avgFillPrice,
+      option_premium: avgFillPrice,
       status: 'FILLED',
       filled_at: new Date().toISOString(),
     }).eq('id', tradeId);
@@ -122,8 +149,8 @@ router.post('/options/place-order', async (req, res) => {
       action: 'executed',
       source: 'scanner',
       mode: trade.mode,
-      message: `IB order filled #${orderId} — Sold ${filledQty}x $${trade.option_strike}${right} exp ${trade.option_expiry} @ $${avgFillPrice.toFixed(2)}/contract (manual placement)`,
-      metadata: { ibOrderId: orderId, strike: trade.option_strike, expiry: trade.option_expiry, premium: avgFillPrice, contracts: filledQty },
+      message: `IB order filled #${orderId} — Sold ${filledQty}x $${resolvedStrike}${right} exp ${expiry} @ $${avgFillPrice.toFixed(2)}/contract (manual placement${resolvedStrike !== trade.option_strike ? `, snapped from synthetic $${trade.option_strike}` : ''})`,
+      metadata: { ibOrderId: orderId, strike: resolvedStrike, expiry, premium: avgFillPrice, contracts: filledQty },
     }).catch(() => {});
 
     res.json({
@@ -132,7 +159,9 @@ router.post('/options/place-order', async (req, res) => {
       avgFillPrice,
       filledQty,
       ticker: trade.ticker,
-      strike: trade.option_strike,
+      strike: resolvedStrike,
+      originalStrike: trade.option_strike,
+      snapped: resolvedStrike !== trade.option_strike,
     });
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : 'Unknown error';
