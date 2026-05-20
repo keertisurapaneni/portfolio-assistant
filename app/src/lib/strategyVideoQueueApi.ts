@@ -291,35 +291,27 @@ export async function triggerTranscriptIngest(): Promise<{ ok: boolean; triggere
 /** Trigger processing of pending queue items (creates strategy_videos entries) */
 /**
  * Delete a strategy video and cascade:
- * - Expires any PENDING signals (preserves history for closed trades)
+ * - Clears strategy_video_id from all signals so they no longer appear in the status view
  * - Removes from strategy_video_queue
  * - Deletes the strategy_videos record
+ *
+ * NOTE: paper_trades.strategy_video_id is intentionally NOT nulled — those records are
+ * historical trade data. The UI falls back to heading-based grouping for trades whose
+ * video no longer has a status entry (see StrategyPerformanceTab rowsBySource).
  */
 export async function deleteStrategyVideo(videoId: string): Promise<void> {
   const { supabase } = await import('./supabaseClient');
 
+  // Clear the video association from all signals so the video disappears from the status view.
   await supabase
     .from('external_strategy_signals')
-    .update({ status: 'EXPIRED' })
-    .eq('strategy_video_id', videoId)
-    .eq('status', 'PENDING');
+    .update({ strategy_video_id: null })
+    .eq('strategy_video_id', videoId);
 
   await supabase
     .from('strategy_video_queue')
     .delete()
     .eq('video_id', videoId);
-
-  // Clear strategy_video_id from paper_trades and live_trades so the video
-  // no longer appears in the Strategy Performance tab after deletion.
-  await supabase
-    .from('paper_trades')
-    .update({ strategy_video_id: null })
-    .eq('strategy_video_id', videoId);
-
-  await supabase
-    .from('live_trades')
-    .update({ strategy_video_id: null })
-    .eq('strategy_video_id', videoId);
 
   const { error } = await supabase
     .from('strategy_videos')
