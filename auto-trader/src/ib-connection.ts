@@ -802,7 +802,10 @@ export class IBConnection {
         right: right === 'P' ? OptionType.Put : OptionType.Call,
         lastTradeDateOrContractMonth: expiry,
         multiplier: 100,
-        tradingClass: params.tradingClass ?? symbol.toUpperCase(),
+        // tradingClass intentionally omitted — let IB resolve by symbol/strike/expiry.
+        // Hardcoding the symbol as tradingClass causes rejections for tickers where
+        // IB's internal trading class differs (e.g. ADI, DOCU, RBRK).
+        ...(params.tradingClass ? { tradingClass: params.tradingClass } : {}),
       };
 
       const orderId = this.getNextOrderId();
@@ -867,49 +870,75 @@ export class IBConnection {
     symbol: string, right: 'P' | 'C', strike: number, expiry: string,
   ): Promise<number | null> {
     if (!this.ib || !this._connected) return null;
-    await this.acquireRequestSlot();
-    try {
-      return await new Promise<number | null>((resolve) => {
-        const reqId = this.getNextOrderId();
-        const emitter = this.ib! as unknown as NodeJS.EventEmitter;
-        let resolved = false;
-        const timeout = setTimeout(() => {
-          if (resolved) return;
-          resolved = true;
-          emitter.removeAllListeners(`contractDetails-${reqId}`);
-          resolve(null);
-        }, 8_000);
 
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        emitter.once(EventName.contractDetails, (_rId: number, details: any) => {
-          if (resolved) return;
-          resolved = true;
-          clearTimeout(timeout);
-          resolve(details?.contract?.conId ?? null);
-        });
+    // Helper that fires one reqContractDetails request and waits up to 8s.
+    // We deliberately omit `tradingClass` — setting it causes exact-match failures
+    // for tickers where IB's internal trading class differs from the ticker symbol
+    // (e.g. ADI, DOCU, RBRK). IB resolves to the correct series without it.
+    const tryResolve = async (expDate: string): Promise<number | null> => {
+      await this.acquireRequestSlot();
+      try {
+        return await new Promise<number | null>((resolve) => {
+          const reqId = this.getNextOrderId();
+          const emitter = this.ib! as unknown as NodeJS.EventEmitter;
+          let resolved = false;
 
-        this.registerReqErrorCallback(reqId, () => {
-          if (resolved) return;
-          resolved = true;
-          clearTimeout(timeout);
-          resolve(null);
-        });
+          const finish = (conId: number | null) => {
+            if (resolved) return;
+            resolved = true;
+            clearTimeout(timeout);
+            this.unregisterReqErrorCallback(reqId);
+            resolve(conId);
+          };
 
-        this.ib!.reqContractDetails(reqId, {
-          symbol: symbol.toUpperCase(),
-          secType: SecType.OPT,
-          exchange: 'SMART',
-          currency: 'USD',
-          strike,
-          right: right === 'P' ? OptionType.Put : OptionType.Call,
-          lastTradeDateOrContractMonth: expiry,
-          multiplier: 100,
-          tradingClass: symbol.toUpperCase(),
+          const timeout = setTimeout(() => finish(null), 8_000);
+
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const onDetails = (_rId: number, details: any) => {
+            // Filter to our reqId to avoid cross-wiring concurrent requests
+            if (_rId !== reqId) return;
+            emitter.removeListener(EventName.contractDetails, onDetails);
+            finish(details?.contract?.conId ?? null);
+          };
+          emitter.on(EventName.contractDetails, onDetails);
+
+          this.registerReqErrorCallback(reqId, () => {
+            emitter.removeListener(EventName.contractDetails, onDetails);
+            finish(null);
+          });
+
+          this.ib!.reqContractDetails(reqId, {
+            symbol: symbol.toUpperCase(),
+            secType: SecType.OPT,
+            exchange: 'SMART',
+            currency: 'USD',
+            strike,
+            right: right === 'P' ? OptionType.Put : OptionType.Call,
+            lastTradeDateOrContractMonth: expDate,
+            multiplier: 100,
+            // tradingClass intentionally omitted — let IB resolve by symbol
+          });
         });
-      });
-    } finally {
-      this.releaseRequestSlot();
+      } finally {
+        this.releaseRequestSlot();
+      }
+    };
+
+    // Try the exact expiry first, then ±1 day (IB settlement vs last-trade-date
+    // differs by a day for monthly options).
+    const base = new Date(
+      parseInt(expiry.slice(0, 4)),
+      parseInt(expiry.slice(4, 6)) - 1,
+      parseInt(expiry.slice(6, 8)),
+    );
+    for (const offsetDays of [0, 1, -1, 2]) {
+      const d = new Date(base);
+      d.setDate(d.getDate() + offsetDays);
+      const candidate = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
+      const conId = await tryResolve(candidate);
+      if (conId) return conId;
     }
+    return null;
   }
 
   // ── Calendar Spread ──────────────────────────────────

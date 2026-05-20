@@ -1159,13 +1159,15 @@ export async function autoTradeOption(ticket: OptionsTradeTicket): Promise<{ tra
     return { tradeId, ibOrderId: null, isLive: false };
   }
 
-  // Validate contract exists on IB before placing order.
-  // Prevents wasted order attempts when chain data came from synthetic fallback.
+  // Validate the contract exists in IB before placing — resolveOptionConId now tries
+  // the exact expiry plus ±1/±2 day offsets and omits tradingClass for maximum
+  // compatibility. If it still returns null after all retries, the options chain
+  // genuinely doesn't list this contract (strike too far OTM, no market, etc.).
   const conn = getPaperConnection();
   if (conn) {
     const conId = await conn.resolveOptionConId(ticket.ticker, 'P', ticket.strike, ticket.expiry);
     if (!conId) {
-      console.warn(`[Options Auto-Trade] IB cannot resolve ${ticket.ticker} $${ticket.strike}P exp ${ticket.expiry} — falling back to paper trade`);
+      console.warn(`[Options Auto-Trade] IB cannot resolve ${ticket.ticker} $${ticket.strike}P exp ${ticket.expiry} after expiry-offset retries — falling back to paper trade`);
       const tradeId = await paperTradeOption(ticket);
       createAutoTradeEvent({
         ticker: ticket.ticker,
@@ -1173,7 +1175,7 @@ export async function autoTradeOption(ticket: OptionsTradeTicket): Promise<{ tra
         action: 'executed',
         source: 'scanner',
         mode: 'OPTIONS_PUT',
-        message: `Paper trade opened — IB contract not found (options data subscription may be needed). Sold ${ticket.contracts ?? 1}x $${ticket.strike}P exp ${ticket.expiry}, premium $${ticket.premium.toFixed(2)}/contract`,
+        message: `Paper trade opened — no IB options contract found for $${ticket.strike}P exp ${ticket.expiry}. Sold ${ticket.contracts ?? 1}x @ $${ticket.premium.toFixed(2)}/contract (synthetic pricing). Use "Submit to IB" to retry once market opens.`,
         metadata: { strike: ticket.strike, expiry: ticket.expiry, premium: ticket.premium, contracts: ticket.contracts ?? 1, paper: true, reason: 'contract_not_found' },
       }).catch(() => {});
       return { tradeId, ibOrderId: null, isLive: false };
