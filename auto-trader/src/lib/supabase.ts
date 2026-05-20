@@ -893,8 +893,17 @@ export async function writeScanEvaluations(
       .select('auto_evaluations')
       .eq('id', scanId)
       .single();
+    // Prune stale evaluations older than 4 hours before merging
+    const staleThreshold = Date.now() - 4 * 60 * 60 * 1000;
+    const prev = existing?.auto_evaluations ?? {};
+    const pruned: Record<string, ScanEvaluation> = {};
+    for (const [t, ev] of Object.entries(prev) as [string, ScanEvaluation][]) {
+      if (ev.evaluated_at && new Date(ev.evaluated_at).getTime() > staleThreshold) {
+        pruned[t] = ev;
+      }
+    }
     const merged: Record<string, ScanEvaluation> = {
-      ...(existing?.auto_evaluations ?? {}),
+      ...pruned,
       ...Object.fromEntries(
         Object.entries(evals).map(([ticker, ev]) => [ticker, { ...ev, evaluated_at }])
       ),
