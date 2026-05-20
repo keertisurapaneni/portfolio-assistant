@@ -72,6 +72,9 @@ export function StrategyPerformanceTab({ sources, videos, statuses, onRefresh }:
   const [transcriptSubmitSuccess, setTranscriptSubmitSuccess] = useState<string | null>(null);
   const [removingVideoId, setRemovingVideoId] = useState<string | null>(null);
   const [confirmRemoveVideoId, setConfirmRemoveVideoId] = useState<string | null>(null);
+  const [categoryChangeError, setCategoryChangeError] = useState<string | null>(null);
+  const [deletingHeading, setDeletingHeading] = useState<string | null>(null);
+  const [confirmDeleteHeading, setConfirmDeleteHeading] = useState<string | null>(null);
   const [fetchingCaptionsVideoId, setFetchingCaptionsVideoId] = useState<string | null>(null);
   const [videoAssignSelections, setVideoAssignSelections] = useState<Record<string, { source: string; category: string }>>({});
   const autoFixAttempted = useRef(false);
@@ -431,6 +434,7 @@ export function StrategyPerformanceTab({ sources, videos, statuses, onRefresh }:
 
   const handleCategoryChange = async (videoId: string, strategyType: 'daily_signal' | 'daily_penny' | 'generic_strategy' | 'options_signal') => {
     if (!onRefresh) return;
+    setCategoryChangeError(null);
     setUpdatingCategoryVideoId(videoId);
     try {
       await updateStrategyVideoMetadata({ video_id: videoId, strategy_type: strategyType });
@@ -438,8 +442,29 @@ export function StrategyPerformanceTab({ sources, videos, statuses, onRefresh }:
         await reimportSignalsForVideo(videoId);
       }
       onRefresh();
+    } catch (err) {
+      setCategoryChangeError(err instanceof Error ? err.message : 'Failed to update category');
     } finally {
       setUpdatingCategoryVideoId(null);
+    }
+  };
+
+  const handleDeleteOrphanedHeading = async (source: string, videoHeading: string) => {
+    if (!onRefresh) return;
+    const key = `${source}::${videoHeading}`;
+    setDeletingHeading(key);
+    setConfirmDeleteHeading(null);
+    try {
+      const { supabase } = await import('../../../lib/supabaseClient');
+      await supabase
+        .from('external_strategy_signals')
+        .delete()
+        .eq('source_name', source)
+        .eq('strategy_video_heading', videoHeading)
+        .is('strategy_video_id', null);
+      onRefresh();
+    } finally {
+      setDeletingHeading(null);
     }
   };
 
@@ -997,6 +1022,36 @@ export function StrategyPerformanceTab({ sources, videos, statuses, onRefresh }:
                                                 </button>
                                               </span>
                                             )}
+                                            {!video.videoId && video.videoHeading && confirmDeleteHeading !== `${sourceName}::${video.videoHeading}` && (
+                                              <button
+                                                type="button"
+                                                onClick={() => setConfirmDeleteHeading(`${sourceName}::${video.videoHeading}`)}
+                                                className="ml-auto shrink-0 text-[10px] px-1.5 py-0.5 rounded text-red-500 hover:text-red-700 hover:bg-red-50 border border-red-200"
+                                                title="Delete orphaned signals for this heading"
+                                              >
+                                                Remove
+                                              </button>
+                                            )}
+                                            {!video.videoId && video.videoHeading && confirmDeleteHeading === `${sourceName}::${video.videoHeading}` && (
+                                              <span className="ml-auto shrink-0 flex items-center gap-1">
+                                                <span className="text-[10px] text-red-600">Delete signals?</span>
+                                                <button
+                                                  type="button"
+                                                  onClick={() => handleDeleteOrphanedHeading(sourceName, video.videoHeading)}
+                                                  disabled={deletingHeading === `${sourceName}::${video.videoHeading}`}
+                                                  className="text-[10px] px-1.5 py-0.5 rounded bg-red-600 text-white hover:bg-red-700 disabled:opacity-50"
+                                                >
+                                                  {deletingHeading === `${sourceName}::${video.videoHeading}` ? '…' : 'Yes'}
+                                                </button>
+                                                <button
+                                                  type="button"
+                                                  onClick={() => setConfirmDeleteHeading(null)}
+                                                  className="text-[10px] px-1.5 py-0.5 rounded border hover:bg-gray-50"
+                                                >
+                                                  No
+                                                </button>
+                                              </span>
+                                            )}
                                             {video.strategyType === 'options_signal' && (
                                               <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-purple-100 text-purple-800 shrink-0" title="Options: conditional entry signals">options</span>
                                             )}
@@ -1288,6 +1343,9 @@ export function StrategyPerformanceTab({ sources, videos, statuses, onRefresh }:
                                               )}
                                               {updatingCategoryVideoId === video.videoId && (
                                                 <span className="text-[10px] text-[hsl(var(--muted-foreground))]">Updating & re-importing signals…</span>
+                                              )}
+                                              {categoryChangeError && updatingCategoryVideoId !== video.videoId && (
+                                                <span className="text-[10px] text-red-600">{categoryChangeError}</span>
                                               )}
                                             </div>
                                           )}
