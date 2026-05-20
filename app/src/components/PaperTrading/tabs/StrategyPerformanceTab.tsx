@@ -196,16 +196,14 @@ export function StrategyPerformanceTab({ sources, videos, statuses, onRefresh }:
       const key = `${video.source}::${video.videoId ?? video.videoHeading}`;
       const status = statusByKey.get(key);
       // If this trade row has a videoId but no matching status entry, the video was deleted.
-      // Fall back to heading-based grouping so the trades don't appear as an un-removable
-      // dangling row — they'll merge with other heading-based entries or sit quietly.
-      const effectiveVideoId = (video.videoId && !status) ? null : video.videoId;
-      const effectiveKey = `${video.source}::${effectiveVideoId ?? video.videoHeading}`;
-      const effectiveStatus = effectiveVideoId ? status : statusByKey.get(effectiveKey);
+      // Skip it entirely — trades from a deleted video should not appear as orphaned rows.
+      if (video.videoId && !status) continue;
+      const effectiveStatus = status;
       const sourceMarkedX = sourcePerfByName.get(video.source)?.isMarkedX ?? false;
       upsertRow({
         source: video.source,
         sourceUrl: video.sourceUrl,
-        videoId: effectiveVideoId,
+        videoId: video.videoId,
         videoHeading: video.videoHeading,
         platform: effectiveStatus?.platform ?? null,
         strategyType: effectiveStatus?.strategyType ?? null,
