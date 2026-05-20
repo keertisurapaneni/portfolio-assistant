@@ -669,21 +669,49 @@ async function closeAllDayTrades(config: AutoTraderConfig): Promise<void> {
 
         if (trade.status === 'SUBMITTED' || trade.status === 'PARTIAL') {
           const orderId = trade.ib_order_id ? parseInt(trade.ib_order_id, 10) : NaN;
+
+          // Before cancelling, check if the order already filled in IB (race condition:
+          // market orders can fill between placement and EOD sweep). If filled, treat as
+          // OPEN so the sweep closes it properly rather than orphaning the position.
+          let alreadyFilled = false;
           if (!Number.isNaN(orderId)) {
             try {
-              conn.cancelOrder(orderId);
-              log(`${trade.ticker}: EOD — cancelled open entry IB order #${orderId}`);
-            } catch (cancelErr) {
-              log(`${trade.ticker}: EOD — cancel IB order #${orderId} failed (${cancelErr instanceof Error ? cancelErr.message : 'unknown'}) — continuing`);
-            }
+              const { getSupabase } = await import('./lib/supabase.js');
+              const { data: existingFill } = await getSupabase()
+                .from('ib_fills')
+                .select('fill_price, quantity')
+                .eq('order_id', orderId)
+                .not('fill_price', 'is', null)
+                .maybeSingle();
+              if (existingFill) {
+                alreadyFilled = true;
+                log(`${trade.ticker}: EOD — order #${orderId} already filled in ib_fills @ $${(existingFill as { fill_price: number }).fill_price} — treating as OPEN, will close`);
+                await updatePaperTrade(trade.id, {
+                  status: 'OPEN',
+                  fill_price: (existingFill as { fill_price: number }).fill_price,
+                  quantity: (existingFill as { fill_price: number; quantity: number }).quantity,
+                }, acctType);
+              }
+            } catch { /* non-fatal — fall through to cancel */ }
           }
-          await updatePaperTrade(trade.id, {
-            status: 'CANCELLED',
-            close_reason: 'never_filled',
-            closed_at: new Date().toISOString(),
-          }, acctType);
-          log(`${trade.ticker}: EOD cancelled (unfilled SUBMITTED order — no IB position to close)`);
-          continue;
+
+          if (!alreadyFilled) {
+            if (!Number.isNaN(orderId)) {
+              try {
+                conn.cancelOrder(orderId);
+                log(`${trade.ticker}: EOD — cancelled open entry IB order #${orderId}`);
+              } catch (cancelErr) {
+                log(`${trade.ticker}: EOD — cancel IB order #${orderId} failed (${cancelErr instanceof Error ? cancelErr.message : 'unknown'}) — continuing`);
+              }
+            }
+            await updatePaperTrade(trade.id, {
+              status: 'CANCELLED',
+              close_reason: 'never_filled',
+              closed_at: new Date().toISOString(),
+            }, acctType);
+            log(`${trade.ticker}: EOD cancelled (unfilled SUBMITTED order — no IB position to close)`);
+            continue;
+          }
         }
 
         // Cancel bracket TP/SL orders to prevent duplicate sells during hard close
