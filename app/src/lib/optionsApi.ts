@@ -136,6 +136,7 @@ export interface OpenOptionsPosition {
   closed_at: string | null;
   notes: string | null;
   scanner_reason: string | null;
+  ib_order_id: string | null;
 }
 
 export interface OptionsMonthlyStats {
@@ -257,7 +258,7 @@ export async function getRecentOptionsScan(daysBack = 3): Promise<OptionsScanOpp
 export async function getOpenOptionsPositions(): Promise<OpenOptionsPosition[]> {
   const { data, error } = await supabase
     .from('paper_trades')
-    .select('id, ticker, mode, option_strike, option_expiry, option_premium, option_contracts, option_capital_req, option_prob_profit, option_iv_rank, option_annual_yield, option_net_price, option_delta, option_assigned, status, close_reason, pnl, opened_at, closed_at, notes, scanner_reason')
+    .select('id, ticker, mode, option_strike, option_expiry, option_premium, option_contracts, option_capital_req, option_prob_profit, option_iv_rank, option_annual_yield, option_net_price, option_delta, option_assigned, status, close_reason, pnl, opened_at, closed_at, notes, scanner_reason, ib_order_id')
     .in('mode', ['OPTIONS_PUT', 'OPTIONS_CALL'])
     .in('status', [...ACTIVE_STATUSES])
     .order('option_expiry', { ascending: true });

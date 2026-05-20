@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { RefreshCw, Plus, X, AlertTriangle, CheckCircle, Activity, Pencil, Check, TrendingUp, DollarSign, Crosshair, Search, Loader2 } from 'lucide-react';
+import { RefreshCw, Plus, X, AlertTriangle, CheckCircle, Activity, Pencil, Check, TrendingUp, DollarSign, Crosshair, Search, Loader2, Send } from 'lucide-react';
 import { cn } from '../../../lib/utils';
 import { fmtUsd } from '../utils';
 import {
@@ -76,12 +76,29 @@ function PositionCard({
   currentPrice,
   atRisk,
   atRiskReason,
+  onSubmitToIB,
 }: {
   pos: OpenOptionsPosition;
   currentPrice?: TickerQuote;
   atRisk?: boolean;
   atRiskReason?: string;
+  onSubmitToIB?: (id: string) => Promise<void>;
 }) {
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+
+  const handleSubmit = async () => {
+    if (!onSubmitToIB) return;
+    setSubmitting(true);
+    setSubmitError(null);
+    try {
+      await onSubmitToIB(pos.id);
+    } catch (err) {
+      setSubmitError(err instanceof Error ? err.message : 'Failed to submit');
+    } finally {
+      setSubmitting(false);
+    }
+  };
   const dte = daysUntil(pos.option_expiry);
   const annualROC = calcAnnualizedROC(pos.pnl, pos.option_capital_req, pos.opened_at, pos.closed_at);
 
@@ -98,11 +115,20 @@ function PositionCard({
   return (
     <div className={cn('rounded-xl border p-3', borderClass)}>
       <div className="flex items-center justify-between mb-2">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           <span className="text-sm font-bold text-[hsl(var(--foreground))]">{pos.ticker}</span>
           <span className="text-[10px] px-1.5 py-0.5 rounded bg-violet-100 text-violet-700 font-medium">
             {pos.mode === 'OPTIONS_CALL' ? 'CALL' : 'PUT'}
           </span>
+          {pos.ib_order_id ? (
+            <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 font-medium">
+              ✓ IB #{pos.ib_order_id}
+            </span>
+          ) : (
+            <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 font-medium">
+              Paper only
+            </span>
+          )}
           {pos.option_assigned && (
             <span className="text-[10px] px-1.5 py-0.5 rounded bg-red-100 text-red-700 font-medium">ASSIGNED</span>
           )}
@@ -218,6 +244,23 @@ function PositionCard({
         <div className="mt-2 rounded-lg bg-blue-50 border border-blue-200 px-2 py-1.5">
           <p className="text-[10px] font-semibold text-blue-700">📌 Wheel step 2 — you now own 100 shares</p>
           <p className="text-[10px] text-blue-600 mt-0.5">Sell a covered call above your net cost to keep collecting premium.</p>
+        </div>
+      )}
+
+      {/* Submit to IB — only shown for paper-only positions */}
+      {!pos.ib_order_id && onSubmitToIB && (
+        <div className="mt-2 space-y-1">
+          <button
+            onClick={handleSubmit}
+            disabled={submitting}
+            className="w-full flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg bg-violet-600 text-white text-[11px] font-semibold hover:bg-violet-700 disabled:opacity-50 transition-colors"
+          >
+            {submitting ? <Loader2 className="w-3 h-3 animate-spin" /> : <Send className="w-3 h-3" />}
+            {submitting ? 'Submitting to IB…' : 'Submit to IB'}
+          </button>
+          {submitError && (
+            <p className="text-[10px] text-red-600 text-center">{submitError}</p>
+          )}
         </div>
       )}
     </div>
@@ -696,6 +739,30 @@ export function OptionsTab() {
     await load();
   }
 
+  /**
+   * Manually submit a paper-only options position to IB.
+   * Calls the auto-trader's /api/options/place-order endpoint with the
+   * position's contract details. On success the ib_order_id is written to
+   * paper_trades by the auto-trader, so we reload to pick up the badge update.
+   */
+  async function handleSubmitToIB(positionId: string): Promise<void> {
+    // The auto-trader route fetches contract details from paper_trades — just pass the ID.
+    const res = await fetch('http://localhost:3001/api/options/place-order', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: AbortSignal.timeout(140_000), // 2 min 20s — generous for IB round-trip
+      body: JSON.stringify({ tradeId: positionId }),
+    });
+
+    const body = await res.json().catch(() => ({})) as { error?: string; orderId?: number; avgFillPrice?: number };
+    if (!res.ok) {
+      throw new Error(body.error ?? `IB rejected the order (HTTP ${res.status})`);
+    }
+
+    // Reload so the ✓ IB badge appears
+    await load();
+  }
+
   // Split open positions into needs-attention and healthy, computing the reason for each flagged position.
   const deployed = openPositions.reduce((s, p) => {
     return s + (p.option_strike * 100 * (p.option_contracts ?? 1));
@@ -862,6 +929,7 @@ export function OptionsTab() {
                       currentPrice={openPrices.get(pos.ticker)}
                       atRisk
                       atRiskReason={atRiskReasons.get(pos.id)}
+                      onSubmitToIB={handleSubmitToIB}
                     />
                   ))}
                 </div>
@@ -882,6 +950,7 @@ export function OptionsTab() {
                       key={pos.id}
                       pos={pos}
                       currentPrice={openPrices.get(pos.ticker)}
+                      onSubmitToIB={handleSubmitToIB}
                     />
                   ))}
                 </div>
