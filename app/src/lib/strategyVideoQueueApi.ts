@@ -309,6 +309,18 @@ export async function deleteStrategyVideo(videoId: string): Promise<void> {
     .delete()
     .eq('video_id', videoId);
 
+  // Clear strategy_video_id from paper_trades and live_trades so the video
+  // no longer appears in the Strategy Performance tab after deletion.
+  await supabase
+    .from('paper_trades')
+    .update({ strategy_video_id: null })
+    .eq('strategy_video_id', videoId);
+
+  await supabase
+    .from('live_trades')
+    .update({ strategy_video_id: null })
+    .eq('strategy_video_id', videoId);
+
   const { error } = await supabase
     .from('strategy_videos')
     .delete()
