@@ -53,7 +53,7 @@ export interface TodayActivityTabProps {
   accountView?: AccountView;
 }
 
-type FilterMode = 'all' | 'day' | 'penny' | 'long_term' | 'gainers' | 'losers';
+type FilterMode = 'all' | 'day' | 'penny' | 'swing' | 'long_term' | 'options' | 'gainers' | 'losers';
 type SortKey = 'ticker' | 'pnl' | 'time' | null;
 type SortDir = 'asc' | 'desc';
 
@@ -279,7 +279,9 @@ export function TodayActivityTab({ events, trades, todayTrades, todaySignalsForE
         const mode = t.mode;
         if (filterMode === 'day') return mode === 'DAY_TRADE' || mode === 'DAY_PENNY';
         if (filterMode === 'penny') return mode === 'DAY_PENNY';
-        if (filterMode === 'long_term') return mode === 'LONG_TERM' || mode === 'SWING_TRADE';
+        if (filterMode === 'swing') return mode === 'SWING_TRADE';
+        if (filterMode === 'long_term') return mode === 'LONG_TERM';
+        if (filterMode === 'options') return mode === 'OPTIONS_PUT' || mode === 'OPTIONS_CALL' || mode === 'CALENDAR_SPREAD' || mode === 'CREDIT_SPREAD' || mode === 'EARNINGS_CALENDAR';
         if (filterMode === 'gainers') return t.pnl != null && t.pnl > 0;
         if (filterMode === 'losers') return t.pnl != null && t.pnl < 0;
         return true;
@@ -316,7 +318,9 @@ export function TodayActivityTab({ events, trades, todayTrades, todaySignalsForE
   const pnlLabel = filterMode === 'all' ? "Today's Realized P&L"
     : filterMode === 'day' ? 'Day Trade P&L'
     : filterMode === 'penny' ? 'Penny P&L'
-    : filterMode === 'long_term' ? 'LT / Swing P&L'
+    : filterMode === 'swing' ? 'Swing P&L'
+    : filterMode === 'long_term' ? 'Long Term P&L'
+    : filterMode === 'options' ? 'Options P&L'
     : filterMode === 'gainers' ? 'Gainers P&L'
     : 'Losers P&L';
 
@@ -362,18 +366,25 @@ export function TodayActivityTab({ events, trades, todayTrades, todaySignalsForE
 
       {/* Filter + count bar */}
       <div className="flex items-center gap-1.5 flex-wrap">
-        {(['all', 'day', 'penny', 'long_term'] as FilterMode[]).map(f => (
+        {([
+          { id: 'all',       label: 'All' },
+          { id: 'day',       label: 'Day Trades' },
+          { id: 'penny',     label: 'Penny' },
+          { id: 'swing',     label: 'Swing' },
+          { id: 'long_term', label: 'Long Term' },
+          { id: 'options',   label: 'Options' },
+        ] as { id: FilterMode; label: string }[]).map(f => (
           <button
-            key={f}
-            onClick={() => setFilterMode(f)}
+            key={f.id}
+            onClick={() => setFilterMode(f.id)}
             className={cn(
               'px-2.5 py-1 text-[11px] font-medium rounded-md border transition-colors',
-              filterMode === f
+              filterMode === f.id
                 ? 'bg-[hsl(var(--foreground))] text-[hsl(var(--background))] border-[hsl(var(--foreground))]'
                 : 'bg-white text-[hsl(var(--muted-foreground))] border-[hsl(var(--border))] hover:border-[hsl(var(--foreground))]/40'
             )}
           >
-            {f === 'all' ? 'All' : f === 'day' ? 'Day Trades' : f === 'penny' ? 'Penny' : 'LT / Swing'}
+            {f.label}
           </button>
         ))}
         <button
