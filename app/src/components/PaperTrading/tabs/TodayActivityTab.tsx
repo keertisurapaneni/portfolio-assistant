@@ -141,7 +141,7 @@ export function TodayActivityTab({ events, trades, todayTrades, todaySignalsForE
     const openedToday = t.opened_at && t.opened_at >= todayISO;
     const closedToday = t.closed_at && t.closed_at >= todayISO;
     return openedToday || closedToday;
-  })).filter(t => !OPTIONS_MODES.has(t.mode));
+  })).filter(t => !OPTIONS_MODES.has(t.mode) && t.status !== 'CANCELLED');
 
   // Legacy lookup: events for system-only messages (reconcile warnings, orphan alerts)
   const tradesByTicker = new Map<string, PaperTrade[]>();
