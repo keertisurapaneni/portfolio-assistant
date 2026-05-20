@@ -195,28 +195,34 @@ export function StrategyPerformanceTab({ sources, videos, statuses, onRefresh }:
     for (const video of videos) {
       const key = `${video.source}::${video.videoId ?? video.videoHeading}`;
       const status = statusByKey.get(key);
+      // If this trade row has a videoId but no matching status entry, the video was deleted.
+      // Fall back to heading-based grouping so the trades don't appear as an un-removable
+      // dangling row — they'll merge with other heading-based entries or sit quietly.
+      const effectiveVideoId = (video.videoId && !status) ? null : video.videoId;
+      const effectiveKey = `${video.source}::${effectiveVideoId ?? video.videoHeading}`;
+      const effectiveStatus = effectiveVideoId ? status : statusByKey.get(effectiveKey);
       const sourceMarkedX = sourcePerfByName.get(video.source)?.isMarkedX ?? false;
       upsertRow({
         source: video.source,
         sourceUrl: video.sourceUrl,
-        videoId: video.videoId,
+        videoId: effectiveVideoId,
         videoHeading: video.videoHeading,
-        platform: status?.platform ?? null,
-        strategyType: status?.strategyType ?? null,
-        applicableTimeframes: status?.applicableTimeframes ?? null,
+        platform: effectiveStatus?.platform ?? null,
+        strategyType: effectiveStatus?.strategyType ?? null,
+        applicableTimeframes: effectiveStatus?.applicableTimeframes ?? null,
         totalTrades: video.totalTrades,
         activeTrades: video.activeTrades,
         winRate: video.winRate,
         avgReturnPct: video.avgReturnPct,
         totalPnl: video.totalPnl,
         isMarkedX: video.isMarkedX || sourceMarkedX,
-        applicableDate: status?.applicableDate ?? null,
+        applicableDate: effectiveStatus?.applicableDate ?? null,
         lastTradeAt: video.lastTradeAt,
         recentTrades: video.recentTrades ?? [],
-        latestSignalStatus: status?.latestSignalStatus ?? null,
-        transcript: status?.transcript ?? null,
-        ingestStatus: status?.ingestStatus ?? null,
-        ingestError: status?.ingestError ?? null,
+        latestSignalStatus: effectiveStatus?.latestSignalStatus ?? null,
+        transcript: effectiveStatus?.transcript ?? null,
+        ingestStatus: effectiveStatus?.ingestStatus ?? null,
+        ingestError: effectiveStatus?.ingestError ?? null,
       });
     }
 
