@@ -143,6 +143,7 @@ interface WatchlistEntry {
   notes: string | null;
   tier: WatchlistTier;
   is_index_etf: boolean;
+  sector: string | null;
 }
 
 /**
@@ -397,6 +398,24 @@ async function getStockSector(ticker: string): Promise<string> {
   return sector;
 }
 
+// ── Earnings Date Daily Cache ─────────────────────────────
+// Keyed by ticker, reset once per calendar day. Avoids re-fetching earnings
+// on the 1:30 PM re-scan (105 tickers × 1 call each = 105 saved Finnhub hits).
+let earningsCacheDate = '';
+const earningsCache = new Map<string, Date | null>();
+
+async function getEarningsDateCached(ticker: string): Promise<Date | null> {
+  const today = new Date().toISOString().slice(0, 10);
+  if (earningsCacheDate !== today) {
+    earningsCacheDate = today;
+    earningsCache.clear();
+  }
+  if (earningsCache.has(ticker)) return earningsCache.get(ticker)!;
+  const result = await getEarningsDate(ticker);
+  earningsCache.set(ticker, result);
+  return result;
+}
+
 // ── IV Spike Detection ────────────────────────────────────
 
 async function checkIvSpike(ticker: string, currentIv: number): Promise<{ spiked: boolean; delta: number }> {
@@ -553,6 +572,7 @@ async function checkStock(
   leverageFactor = 1,
   tier: WatchlistTier = 'GROWTH',
   isIndexEtf = false,
+  prefetchedSector?: string | null,
 ): Promise<OptionsTradeTicket | { ticker: string; skipped: true; reason: string }> {
   const tierCfg = TIER_CONFIG[tier];
   const checks: Record<string, boolean | string> = {};
@@ -672,8 +692,8 @@ async function checkStock(
     checks.marketDiscount = high52w !== null ? `dip_entry_exempt` : 'no_52w_data';
   }
 
-  // Check 4: Earnings blackout
-  const earningsDate = await getEarningsDate(ticker);
+  // Check 4: Earnings blackout — use daily cache to avoid re-fetching on 1:30 PM re-scan
+  const earningsDate = await getEarningsDateCached(ticker);
   const daysToEarnings = earningsDate ? daysUntil(earningsDate) : 999;
   checks.earningsBlackout = daysToEarnings > EARNINGS_BLACKOUT_DAYS;
   if (daysToEarnings <= EARNINGS_BLACKOUT_DAYS) return { ticker, skipped: true, reason: `earnings_in_${daysToEarnings}d` };
@@ -697,8 +717,11 @@ async function checkStock(
     return { ticker, skipped: true, reason: `negative_sentiment:${newsSentiment.score.toFixed(2)}` };
   }
 
-  // Check 4.6: Sector concentration — max 2 positions per sector
-  const sector = await getStockSector(ticker);
+  // Check 4.6: Sector concentration — use pre-fetched sector from DB when available,
+  // falling back to Finnhub only when the watchlist didn't have it stored.
+  const sector = prefetchedSector != null
+    ? (sectorCache.set(ticker, prefetchedSector), prefetchedSector)
+    : await getStockSector(ticker);
   const sectorCount = ctx.openCountBySector.get(sector) ?? 0;
   checks.sectorConcentration = `${sector}(${sectorCount}/${MAX_SECTOR_POSITIONS})`;
   if (sectorCount >= MAX_SECTOR_POSITIONS) {
@@ -995,10 +1018,10 @@ export async function runOptionsScan(freeCapital = 100_000): Promise<OptionsScan
   const sb = getSupabase();
   const scanDate = new Date().toISOString().slice(0, 10);
 
-  // Load active watchlist
+  // Load active watchlist (include sector to avoid Finnhub profile2 call per ticker)
   const { data: watchlist } = await sb
     .from('options_watchlist')
-    .select('ticker, min_price, notes, tier, is_index_etf')
+    .select('ticker, min_price, notes, tier, is_index_etf, sector')
     .eq('active', true)
     .order('ticker');
 
@@ -1019,14 +1042,35 @@ export async function runOptionsScan(freeCapital = 100_000): Promise<OptionsScan
     .join(', ') || 'none';
   console.log(`\n[Options Scanner] ━━━ Starting scan — ${total} tickers | VIX ${ctx.vix.toFixed(1)} | ${ctx.spyAboveSma200 ? 'Bull' : 'Bear'} mode | δ target ${ctx.deltaTarget} | free capital $${(freeCapital / 1000).toFixed(0)}k | crowded weeks: ${crowdedWeeksSummary} ━━━`);
 
+  // STABLE-tier frequency gate: only scan STABLE tickers on Mon/Wed/Fri.
+  // On Tue/Thu they qualify very rarely (low IV) and waste ~35 Finnhub calls.
+  const todayDow = new Date().getUTCDay(); // 0=Sun,1=Mon,2=Tue,3=Wed,4=Thu,5=Fri,6=Sat
+  const isStableDay = todayDow === 1 || todayDow === 3 || todayDow === 5; // Mon/Wed/Fri
+
   // Scan each ticker (sequential to avoid IB request flooding)
   for (const [i, entry] of (watchlist as WatchlistEntry[]).entries()) {
     const leverageFactor = parseLeverageFactor(entry.notes);
     const tier: WatchlistTier = (entry.tier as WatchlistTier) ?? 'GROWTH';
     const num = `[${String(i + 1).padStart(2, '0')}/${total}]`;
 
+    // Skip STABLE tickers on Tue/Thu — they're low-IV names that rarely qualify
+    // and account for ~30% of API budget on days when they almost never pass IV gates.
+    if (tier === 'STABLE' && !isStableDay) {
+      console.log(`[Options Scanner] ${num} ${entry.ticker.padEnd(5)} ✗  stable_tier_off_day`);
+      skipped.push({ ticker: entry.ticker, reason: 'stable_tier_off_day' });
+      continue;
+    }
+
     try {
-      const result = await checkStock(entry.ticker, entry.min_price, ctx, leverageFactor, tier, entry.is_index_etf ?? false);
+      const result = await checkStock(
+        entry.ticker,
+        entry.min_price,
+        ctx,
+        leverageFactor,
+        tier,
+        entry.is_index_etf ?? false,
+        entry.sector,
+      );
 
       if ('skipped' in result) {
         console.log(`[Options Scanner] ${num} ${entry.ticker.padEnd(5)} ✗  ${result.reason}`);
@@ -1041,6 +1085,11 @@ export async function runOptionsScan(freeCapital = 100_000): Promise<OptionsScan
         const newExpIso = expiryToIso(result.expiry);
         const newWk = expiryWeekKey(newExpIso);
         ctx.openExpiryWeekCount.set(newWk, (ctx.openExpiryWeekCount.get(newWk) ?? 0) + 1);
+
+        // Track last qualification time so stale watchlist entries can be evicted
+        void sb.from('options_watchlist')
+          .update({ last_qualified_at: new Date().toISOString() } as Record<string, unknown>)
+          .eq('ticker', entry.ticker);
       }
     } catch (err) {
       // Don't let one bad ticker crash the entire scan — record the error and continue
