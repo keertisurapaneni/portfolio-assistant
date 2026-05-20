@@ -819,8 +819,29 @@ export class IBConnection {
         ...(account ? { account } : {}),
       };
 
-      const timer = setTimeout(() => {
+      const timer = setTimeout(async () => {
         this._pendingOrderCallbacks.delete(orderId);
+        // Before declaring a timeout failure, check ib_fills — the order may have
+        // filled in IB but the execDetails callback arrived after our deadline.
+        try {
+          const { getSupabase } = await import('./lib/supabase.js');
+          const sb = getSupabase();
+          // Give IB a few extra seconds to write the fill, then check
+          await new Promise(r => setTimeout(r, 5_000));
+          const { data: fillRow } = await sb
+            .from('ib_fills')
+            .select('fill_price, quantity, filled_at')
+            .eq('order_id', orderId)
+            .not('fill_price', 'is', null)
+            .maybeSingle();
+          if (fillRow) {
+            console.log(`${this.tag} Options order ${orderId} (${symbol}) timed out locally but fill found in ib_fills — resolving`);
+            resolve({ orderId, avgFillPrice: (fillRow as { fill_price: number; quantity: number; filled_at: string }).fill_price, filledQty: (fillRow as { fill_price: number; quantity: number; filled_at: string }).quantity });
+            return;
+          }
+        } catch {
+          // fall through to reject
+        }
         const msg = `IB options order ${orderId} (${symbol} $${strike}${right}) timed out after ${OPT_ORDER_TIMEOUT_MS / 1000}s — no fill/reject received`;
         console.error(`${this.tag} ${msg}`);
         reject(new Error(msg));
