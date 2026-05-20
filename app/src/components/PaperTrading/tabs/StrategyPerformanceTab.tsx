@@ -72,7 +72,7 @@ export function StrategyPerformanceTab({ sources, videos, statuses, onRefresh }:
   const [transcriptSubmitSuccess, setTranscriptSubmitSuccess] = useState<string | null>(null);
   const [removingVideoId, setRemovingVideoId] = useState<string | null>(null);
   const [confirmRemoveVideoId, setConfirmRemoveVideoId] = useState<string | null>(null);
-  const [categoryChangeError, setCategoryChangeError] = useState<string | null>(null);
+  const [categoryChangeError, setCategoryChangeError] = useState<{ videoId: string; message: string } | null>(null);
   const [deletingHeading, setDeletingHeading] = useState<string | null>(null);
   const [confirmDeleteHeading, setConfirmDeleteHeading] = useState<string | null>(null);
   const [fetchingCaptionsVideoId, setFetchingCaptionsVideoId] = useState<string | null>(null);
@@ -443,7 +443,7 @@ export function StrategyPerformanceTab({ sources, videos, statuses, onRefresh }:
       }
       onRefresh();
     } catch (err) {
-      setCategoryChangeError(err instanceof Error ? err.message : 'Failed to update category');
+      setCategoryChangeError({ videoId, message: err instanceof Error ? err.message : 'Failed to update category' });
     } finally {
       setUpdatingCategoryVideoId(null);
     }
@@ -1344,8 +1344,8 @@ export function StrategyPerformanceTab({ sources, videos, statuses, onRefresh }:
                                               {updatingCategoryVideoId === video.videoId && (
                                                 <span className="text-[10px] text-[hsl(var(--muted-foreground))]">Updating & re-importing signals…</span>
                                               )}
-                                              {categoryChangeError && updatingCategoryVideoId !== video.videoId && (
-                                                <span className="text-[10px] text-red-600">{categoryChangeError}</span>
+                                              {categoryChangeError?.videoId === video.videoId && (
+                                                <span className="text-[10px] text-red-600">{categoryChangeError.message}</span>
                                               )}
                                             </div>
                                           )}
