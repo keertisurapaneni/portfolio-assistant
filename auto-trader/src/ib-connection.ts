@@ -272,6 +272,58 @@ export class IBConnection {
     } catch (pnlErr) {
       console.warn(`${this.tag} reqPnL failed:`, pnlErr instanceof Error ? pnlErr.message : pnlErr);
     }
+
+    // Reconcile any SUBMITTED paper_trades that were cancelled while we were offline.
+    // Give IB 2s to finish sending startup orderStatus events before we check.
+    setTimeout(() => this._reconcileSubmittedOrders(), 2000);
+  }
+
+  private _reconcileSubmittedOrders(): void {
+    if (!this.ib) return;
+    const emitter = this.ib as unknown as { on: Function; off: Function };
+
+    const openIbOrderIds = new Set<number>();
+    const orderHandler = (orderId: number) => { openIbOrderIds.add(orderId); };
+    const endHandler = () => {
+      emitter.off(EventName.openOrder, orderHandler);
+      emitter.off(EventName.openOrderEnd, endHandler);
+
+      import('./lib/supabase.js').then(({ getSupabase }) => {
+        getSupabase()
+          .from('paper_trades')
+          .select('id, ticker, ib_order_id')
+          .eq('status', 'SUBMITTED')
+          .not('ib_order_id', 'is', null)
+          .then(({ data, error }) => {
+            if (error || !data?.length) return;
+            const toCancel = data.filter(t => !openIbOrderIds.has(Number(t.ib_order_id)));
+            if (!toCancel.length) {
+              console.log(`${this.tag} Reconcile: all SUBMITTED orders still open in IB`);
+              return;
+            }
+            const ids = toCancel.map(t => t.ib_order_id!);
+            console.log(`${this.tag} Reconcile: cancelling ${toCancel.length} order(s) missing from IB: ${toCancel.map(t => `${t.ticker}#${t.ib_order_id}`).join(', ')}`);
+            getSupabase()
+              .from('paper_trades')
+              .update({ status: 'CANCELLED', close_reason: 'IB order cancelled (reconciled at startup)' })
+              .in('ib_order_id', ids)
+              .eq('status', 'SUBMITTED')
+              .then(({ error: updErr }) => {
+                if (updErr) console.warn(`${this.tag} Reconcile update failed: ${updErr.message}`);
+              });
+          });
+      }).catch(() => {});
+    };
+
+    emitter.on(EventName.openOrder, orderHandler);
+    emitter.on(EventName.openOrderEnd, endHandler);
+    try {
+      this.ib.reqAllOpenOrders();
+      console.log(`${this.tag} Reconcile: checking SUBMITTED orders vs IB open orders...`);
+    } catch {
+      emitter.off(EventName.openOrder, orderHandler);
+      emitter.off(EventName.openOrderEnd, endHandler);
+    }
   }
 
   // ── Connect ──────────────────────────────────────────
@@ -413,13 +465,14 @@ export class IBConnection {
           this._pendingOrderCallbacks.delete(orderId);
           console.error(`${this.tag} Order ${orderId} (${pending.symbol}) ${status}`);
           pending.reject(new Error(`IB order ${orderId} (${pending.symbol}) ${status}`));
-        } else {
-          // Order was already timed out (saved as SUBMITTED in DB) — sync cancellation back.
-          console.log(`${this.tag} Order ${orderId} ${status} by IB/user — syncing to DB`);
+        } else if (status === 'Cancelled') {
+          // Only hard-cancel in DB for true Cancelled status — never for Inactive,
+          // which is a normal transient state for GTC orders outside market hours.
+          console.log(`${this.tag} Order ${orderId} Cancelled by IB/user — syncing to DB`);
           import('./lib/supabase.js').then(({ getSupabase }) => {
             getSupabase()
               .from('paper_trades')
-              .update({ status: 'CANCELLED', close_reason: `IB order ${status.toLowerCase()}` })
+              .update({ status: 'CANCELLED', close_reason: 'IB order cancelled' })
               .eq('ib_order_id', String(orderId))
               .eq('status', 'SUBMITTED')
               .then(({ error }) => {
