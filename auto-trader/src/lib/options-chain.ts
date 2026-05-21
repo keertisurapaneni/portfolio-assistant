@@ -276,7 +276,7 @@ async function getOptionChainParams(conId: number, symbol: string): Promise<Opti
         resolve(result);
       };
 
-      const timeout = setTimeout(() => finish(allParams[0] ?? null), 15_000);
+      const timeout = setTimeout(() => finish(allParams[0] ?? null), 30_000);
 
       registerReqErrorCallback(reqId, () => finish(null));
 
@@ -536,6 +536,11 @@ export async function getOptionsChain(
   constraints?: ExpiryConstraints,
 ): Promise<OptionsChainSummary | null> {
   const syntheticFallback = async () => {
+    // When IB is connected, never fall back to synthetic Black-Scholes chains.
+    // BS generates mathematically valid but IB-unlisted strikes — orders using
+    // them always fail resolveOptionConId. Return null so the scanner skips the
+    // ticker cleanly instead of creating a fake trade.
+    if (isConnected()) return null;
     const s = await getSyntheticOptionsChain(symbol, underlyingPrice, deltaTarget, dteDays, constraints);
     if (s) s.ivRank = storedIvRank;
     return s;
