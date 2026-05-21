@@ -295,7 +295,7 @@ async function ibBuyToCloseOption(
   const expiry = expiryISO.replace(/-/g, '');
   const buyLimit = Math.max(0.01, currentPremium * 1.05);
   try {
-    return await placeOptionsOrder({
+    const result = await placeOptionsOrder({
       symbol: ticker,
       right,
       strike,
@@ -305,6 +305,14 @@ async function ibBuyToCloseOption(
       action: 'BUY',
       account: getDefaultAccount() ?? undefined,
     });
+    if (result.timedOut) {
+      // Order is live in IB as GTC but didn't fill within the timeout window.
+      // Return null so callers don't record a premature close at $0.
+      // The position stays open; the GTC order will fill later (or the user cancels it).
+      console.warn(`[Options Manager] IB buy-to-close for ${ticker} $${strike}${right} timed out (order #${result.orderId}) — leaving position open until fill confirmed`);
+      return null;
+    }
+    return result;
   } catch (err) {
     console.warn(`[Options Manager] IB buy-to-close FAILED for ${ticker} $${strike}${right}: ${err instanceof Error ? err.message : err}`);
     return null;
