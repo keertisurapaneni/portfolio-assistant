@@ -307,7 +307,7 @@ async function getOptionChainParams(conId: number, symbol: string): Promise<Opti
 
 // ── Get Greeks for a Specific Option Contract ─────────────
 
-async function getOptionGreeksForContract(
+export async function getOptionGreeksForContract(
   symbol: string,
   strike: number,
   expiry: string,

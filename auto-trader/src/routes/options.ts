@@ -187,7 +187,7 @@ router.post('/options/place-order', async (req, res) => {
     const snappedNote = resolvedStrike !== trade.option_strike ? `, snapped from synthetic $${trade.option_strike}` : '';
 
     if (timedOut) {
-      // Order is live in IB as a pending DAY LMT — awaiting fill. Record as SUBMITTED.
+      // Order is live in IB as a pending GTC LMT — awaiting fill. Record as SUBMITTED.
       await sb.from('paper_trades').update({
         ib_order_id: orderId,
         status: 'SUBMITTED',

@@ -13,7 +13,7 @@
  * Exit rules: 50% profit take, 100% stop loss, 21 DTE time exit.
  */
 
-import { findSpreadStrikes, type SpreadStrikeResult } from './options-chain.js';
+import { findSpreadStrikes, getOptionGreeksForContract, type SpreadStrikeResult } from './options-chain.js';
 import { getSupabase, createAutoTradeEvent } from './supabase.js';
 import { recordTradeClose } from './trade-closer.js';
 import { ACTIVE_STATUSES } from '../../../shared/trade-status-sets.js';
@@ -414,7 +414,7 @@ export async function manageCreditSpreadPositions(): Promise<void> {
     .from('paper_trades')
     .select('*')
     .eq('mode', 'CREDIT_SPREAD')
-    .in('status', [...ACTIVE_STATUSES]);
+    .in('status', ['FILLED', 'PARTIAL']); // exclude SUBMITTED — those are GTC orders pending fill
 
   if (!positions?.length) return;
 
@@ -431,22 +431,25 @@ export async function manageCreditSpreadPositions(): Promise<void> {
       const quote = await getStockQuote(pos.ticker);
       if (!quote) continue;
 
-      // Estimate current spread value using the original spread parameters
-      const spread = await findSpreadStrikes(
-        pos.ticker,
-        quote.price,
-        pos.spread_type === 'BULL_PUT' ? 'P' : 'C',
-        undefined,
-        0, // no min credit for valuation
-      );
-
-      // If can't re-price, use DTE-based estimate
       const expiryDate = pos.option_expiry ? new Date(pos.option_expiry) : null;
       const dte = expiryDate ? Math.ceil((expiryDate.getTime() - Date.now()) / 86_400_000) : 999;
+      const spreadRight = pos.spread_type === 'BULL_PUT' ? 'P' as const : 'C' as const;
+      const expiryStr = pos.option_expiry ? pos.option_expiry.replace(/-/g, '') : '';
 
-      let currentSpreadValue = netCredit; // default: no P&L
-      if (spread) {
-        currentSpreadValue = spread.netCredit;
+      // Price the HELD spread by fetching bid/ask for each specific leg.
+      // Buy-to-close cost = short leg ask (to buy back) − long leg bid (to sell back).
+      // Falls back to netCredit (no P&L) if IB can't price either leg.
+      let currentSpreadValue = netCredit;
+      if (expiryStr && pos.spread_short_strike && pos.spread_long_strike) {
+        const [shortGreeks, longGreeks] = await Promise.all([
+          getOptionGreeksForContract(pos.ticker, pos.spread_short_strike, expiryStr, spreadRight, quote.price).catch(() => null),
+          getOptionGreeksForContract(pos.ticker, pos.spread_long_strike, expiryStr, spreadRight, quote.price).catch(() => null),
+        ]);
+        if (shortGreeks && longGreeks) {
+          // Buy back cost: pay ask on the short leg, receive bid on the long leg
+          const buybackCost = shortGreeks.ask - longGreeks.bid;
+          currentSpreadValue = Math.max(0, buybackCost);
+        }
       }
 
       // P&L = what we sold for - what it costs to buy back
