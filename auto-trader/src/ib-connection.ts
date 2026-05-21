@@ -1113,7 +1113,7 @@ export class IBConnection {
       orderType: OrderType.LMT,
       totalQuantity: contracts,
       lmtPrice: limitPrice,
-      tif: TimeInForce.DAY,
+      tif: TimeInForce.GTC,
       transmit: true,
       ...(account ? { account } : {}),
     };
@@ -1173,7 +1173,7 @@ export class IBConnection {
       orderType: OrderType.LMT,
       totalQuantity: contracts,
       lmtPrice: limitPrice,
-      tif: TimeInForce.DAY,
+      tif: TimeInForce.GTC,
       transmit: true,
       ...(account ? { account } : {}),
     };
