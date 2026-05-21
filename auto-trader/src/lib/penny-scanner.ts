@@ -57,6 +57,7 @@ interface PennyEntrySignal {
 
 import { finnhubFetch, FINNHUB_KEY } from './finnhub.js';
 
+// Used by fetch1mCandles (Yahoo v8/chart — stable endpoint, no auth needed)
 const YAHOO_HEADERS = {
   'User-Agent': 'Mozilla/5.0 (compatible; PortfolioAssistant/1.0)',
   Accept: 'application/json',
@@ -154,52 +155,56 @@ export function pennyPositionSize(config: AutoTraderConfig): number {
   return fullSize * 0.5;
 }
 
-// ── Discovery: Yahoo Gainers + Finnhub Enrichment ────────
+// ── Discovery: IB Scanner + Finnhub Enrichment ───────────
 
-interface YahooScreenerQuote {
-  symbol: string;
-  regularMarketPrice?: { raw?: number } | number;
-  regularMarketVolume?: { raw?: number } | number;
-  regularMarketChangePercent?: { raw?: number } | number;
-  averageDailyVolume10Day?: { raw?: number } | number;
+export interface IBGainerResult {
+  ticker: string;
+  distancePct: number | null;
 }
 
-function rawVal(v: unknown): number {
-  if (typeof v === 'number') return v;
-  if (v && typeof v === 'object' && 'raw' in v) return (v as { raw: number }).raw ?? 0;
-  return 0;
-}
+/**
+ * Discover penny gapper candidates.
+ * Accepts pre-fetched IB scanner results (passed from scheduler which has the IB connection).
+ * Falls back to an empty list if not provided — callers should always pass ibGainers.
+ */
+export async function runPennyDiscovery(ibGainers: IBGainerResult[] = []): Promise<PennyCandidate[]> {
+  if (!ibGainers.length) {
+    console.log('[PennyScanner] No IB gainers provided — nothing to enrich');
+    return [];
+  }
 
-export async function runPennyDiscovery(): Promise<PennyCandidate[]> {
-  // Step 1: Yahoo day_gainers screener
-  const gainers = await fetchYahooGainers();
-  if (!gainers.length) return [];
+  console.log(`[PennyScanner] Enriching ${ibGainers.length} IB gainer(s) via Finnhub`);
 
-  // Step 2: Filter by Cameron's price + change + volume criteria
-  const filtered = gainers.filter(q => {
-    const price = rawVal(q.regularMarketPrice);
-    const vol = rawVal(q.regularMarketVolume);
-    const changePct = rawVal(q.regularMarketChangePercent);
-    return price >= PRICE_MIN && price <= PRICE_MAX
-      && changePct >= MIN_CHANGE_PCT
-      && vol >= MIN_VOLUME;
-  });
-
-  if (!filtered.length) return [];
-
-  // Step 3: Enrich with Finnhub (float, news, relative volume)
+  // Enrich each IB-scanned ticker with Finnhub quote, float, and news
   const candidates: PennyCandidate[] = [];
-  for (const q of filtered.slice(0, 10)) {
-    const ticker = q.symbol;
-    const price = rawVal(q.regularMarketPrice);
-    const volume = rawVal(q.regularMarketVolume);
-    const changePct = rawVal(q.regularMarketChangePercent);
-    const avgVolume = rawVal(q.averageDailyVolume10Day);
-    const relativeVolume = avgVolume > 0 ? volume / avgVolume : 0;
+  for (const g of ibGainers.slice(0, 15)) {
+    const ticker = g.ticker;
 
+    // Fetch live quote from Finnhub for price/volume confirmation
+    const quote = await fetchFinnhub<{ c?: number; v?: number; pc?: number }>(
+      `https://finnhub.io/api/v1/quote?symbol=${ticker}&token=${FINNHUB_KEY}`
+    );
+    if (!quote) continue;
+
+    const price = quote.c ?? 0;
+    const volume = quote.v ?? 0;
+    const prevClose = quote.pc ?? price;
+    const changePct = prevClose > 0 ? ((price - prevClose) / prevClose) * 100 : (g.distancePct ?? 0);
+
+    // Re-apply Cameron's price and change filters (IB scanner may include prices outside range)
+    if (price < PRICE_MIN || price > PRICE_MAX) continue;
+    if (changePct < MIN_CHANGE_PCT) continue;
+    if (volume < MIN_VOLUME) continue;
+
+    // Relative volume via Finnhub metric
+    const metric = await fetchFinnhub<{ metric?: { '10DayAverageTradingVolume'?: number } }>(
+      `https://finnhub.io/api/v1/stock/metric?symbol=${ticker}&metric=all&token=${FINNHUB_KEY}`
+    );
+    const avgVolume = (metric?.metric?.['10DayAverageTradingVolume'] ?? 0) * 1_000_000;
+    const relativeVolume = avgVolume > 0 ? volume / avgVolume : 0;
     if (relativeVolume < MIN_RELATIVE_VOLUME) continue;
 
-    // Float check via Finnhub
+    // Float check
     const floatShares = await getFloat(ticker);
     if (floatShares != null && floatShares > MAX_FLOAT_MILLIONS) continue;
 
@@ -224,30 +229,8 @@ export async function runPennyDiscovery(): Promise<PennyCandidate[]> {
   // Rank by % change, take top 3
   candidates.sort((a, b) => b.changePct - a.changePct);
   candidates.forEach((c, i) => { c.rank = i + 1; });
+  console.log(`[PennyScanner] ${candidates.length} candidate(s) passed all filters`);
   return candidates.slice(0, 3);
-}
-
-async function fetchYahooGainers(): Promise<YahooScreenerQuote[]> {
-  try {
-    const url = new URL('https://query1.finance.yahoo.com/v1/finance/screener/predefined/saved');
-    url.searchParams.set('formatted', 'false');
-    url.searchParams.set('scrIds', 'day_gainers');
-    url.searchParams.set('start', '0');
-    url.searchParams.set('count', '25');
-    url.searchParams.set('lang', 'en-US');
-    url.searchParams.set('region', 'US');
-    const res = await fetch(url.toString(), {
-      headers: YAHOO_HEADERS,
-      signal: AbortSignal.timeout(TIMEOUT_MS),
-    });
-    if (!res.ok) return [];
-    const data = await res.json() as Record<string, unknown>;
-    const result = (data?.finance as Record<string, unknown>)?.result as Record<string, unknown>[] | undefined;
-    const quotes = result?.[0]?.quotes as YahooScreenerQuote[] | undefined;
-    return quotes ?? [];
-  } catch {
-    return [];
-  }
 }
 
 async function getFloat(ticker: string): Promise<number | null> {
