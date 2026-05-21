@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { findBestContractForStrike, getOptionsChain } from '../lib/options-chain.js';
+import { findBestContractForStrike } from '../lib/options-chain.js';
 import { fetchQuote } from '../lib/yahoo-finance.js';
 import { getFundamentalGrade } from '../lib/fundamental-grader.js';
 import { isConnected, placeOptionsOrder, getDefaultAccount, getPaperConnection } from '../ib-connection.js';
@@ -119,77 +119,54 @@ router.post('/options/place-order', async (req, res) => {
       }
       console.log(`[place-order] Contract resolved for ${trade.ticker} $${trade.option_strike}${right} conId=${exactResult.conId} exp=${expiry} — placing order`);
     } else {
-      // ── Step 2: Exact strike not in IB (came from synthetic pricing) ──
-      // Fetch IB's real options chain and find the nearest listed contract.
-      console.log(`[place-order] Exact strike $${trade.option_strike}${right} not in IB — fetching live chain for ${trade.ticker}`);
+      // ── Step 2: Exact strike not resolvable — snap to nearest standard IB strike ──
+      // Skip getOptionsChain() here: it consumes IB request slots (rate-limited to 8
+      // concurrent) and may return synthetic Black-Scholes data with phantom strikes.
+      // Instead, compute candidate strikes mathematically from the stored strike and
+      // resolve each directly. This keeps the IB request count low and avoids
+      // starvation when the scanner is running concurrently.
+      console.log(`[place-order] Exact strike $${trade.option_strike}${right} not resolved — trying nearby standard strikes for ${trade.ticker}`);
 
-      const quote = await fetchQuote(trade.ticker);
-      const currentPrice = quote?.price ?? trade.option_strike * 1.05; // rough fallback
-
-      const chain = await getOptionsChain(trade.ticker, currentPrice, null);
-      const bestPut = chain?.bestPut;
-
-      if (!bestPut) {
-        return res.status(422).json({
-          error: `No options chain available for ${trade.ticker} in IB. Ensure IB Gateway is connected and the ticker has listed options.${lastIbError ? ` (${lastIbError})` : ''}`,
-        });
+      // Build candidates: stored strike first, then $5/$2.5/$1 floor/ceil neighbors
+      const candidateStrikes = new Set<number>([trade.option_strike]);
+      for (const inc of [5, 2.5, 1]) {
+        candidateStrikes.add(Math.round(Math.floor(trade.option_strike / inc) * inc * 100) / 100);
+        candidateStrikes.add(Math.round(Math.ceil(trade.option_strike / inc) * inc * 100) / 100);
       }
-
-      resolvedStrike = bestPut.strike;
-      expiry = bestPut.expiry;
-      // Use the live market bid as limit price (conservative fill, same as scanner logic)
-      limitPrice = bestPut.bid > 0 ? bestPut.bid : bestPut.mid;
-
-      // Verify the chain-snapped contract is a real IB-listed option, not synthetic
-      // Black-Scholes data. getOptionsChain() falls back to B-S when IB can't provide
-      // real chain data (e.g. no options listed, no market data subscription). B-S uses
-      // $2.5 strike increments but IB may only list $5 increments (e.g. VIK $72.5 →
-      // real strikes are $70/$75). When the exact strike fails, search nearby standard
-      // increments so we can always find the real IB-listed contract closest to target.
-      let chainConResult: { conId: number; resolvedExpiry: string } | null = null;
-
-      // Build candidate strikes: exact first, then floor/ceil at $5 and $2.5 increments
-      const candidateStrikes = new Set<number>([resolvedStrike]);
-      for (const inc of [5, 2.5]) {
-        candidateStrikes.add(Math.round(Math.floor(resolvedStrike / inc) * inc * 100) / 100);
-        candidateStrikes.add(Math.round(Math.ceil(resolvedStrike / inc) * inc * 100) / 100);
-      }
-      // Sort by distance from the original target strike, ascending
       const sortedStrikes = [...candidateStrikes].sort(
-        (a, b) => Math.abs(a - resolvedStrike) - Math.abs(b - resolvedStrike)
+        (a, b) => Math.abs(a - trade.option_strike) - Math.abs(b - trade.option_strike)
       );
 
+      let snapResult: { conId: number; resolvedExpiry: string } | null = null;
       for (const candidateStrike of sortedStrikes) {
-        chainConResult = await conn.resolveOptionConId(trade.ticker, right, candidateStrike, expiry, captureIbError);
-        if (chainConResult) {
-          if (candidateStrike !== resolvedStrike) {
-            console.log(`[place-order] Strike snapped: ${trade.ticker} synthetic $${resolvedStrike} → IB-listed $${candidateStrike} (nearest real strike)`);
+        snapResult = await conn.resolveOptionConId(trade.ticker, right, candidateStrike, expiry, captureIbError);
+        if (snapResult) {
+          if (candidateStrike !== trade.option_strike) {
+            console.log(`[place-order] Strike snapped: ${trade.ticker} $${trade.option_strike} → IB-listed $${candidateStrike}`);
           }
           resolvedStrike = candidateStrike;
           break;
         }
       }
 
-      if (!chainConResult) {
+      if (!snapResult) {
         return res.status(422).json({
-          error: `${trade.ticker} options could not be verified in IB near $${bestPut.strike}${right} exp ${expiry} — tried strikes ${sortedStrikes.join(', ')}.${lastIbError ? ` (${lastIbError})` : ''}`,
+          error: `Could not verify ${trade.ticker} $${trade.option_strike}${right} exp ${expiry} in IB — tried strikes ${sortedStrikes.join(', ')}.${lastIbError ? ` ${lastIbError}.` : ' Check IB Gateway connection and market data subscription.'}`,
         });
       }
-      // Override expiry with the one that actually resolved (may differ by ±1 day)
-      expiry = chainConResult.resolvedExpiry;
-      resolvedConId = chainConResult.conId;
 
-      console.log(`[place-order] Snapped to nearest IB contract: ${trade.ticker} $${resolvedStrike}${right} exp ${expiry} @ $${limitPrice.toFixed(2)} conId=${chainConResult.conId}`);
+      expiry = snapResult.resolvedExpiry;
+      resolvedConId = snapResult.conId;
 
-      // Update the paper_trade to reflect the IB-corrected contract details so
-      // the UI shows the real position, not the synthetic one.
-      await sb.from('paper_trades').update({
-        option_strike: resolvedStrike,
-        option_expiry: `${expiry.slice(0, 4)}-${expiry.slice(4, 6)}-${expiry.slice(6, 8)}`,
-        option_premium: limitPrice,
-        option_net_price: resolvedStrike - limitPrice,
-        pnl: null, // will be set by trigger when fill arrives
-      }).eq('id', tradeId);
+      console.log(`[place-order] Snapped to nearest IB contract: ${trade.ticker} $${resolvedStrike}${right} exp ${expiry} @ $${limitPrice.toFixed(2)} conId=${snapResult.conId}`);
+
+      // Update paper_trade if strike or expiry changed (synthetic → real IB contract)
+      if (resolvedStrike !== trade.option_strike || expiry !== trade.option_expiry.replace(/-/g, '')) {
+        await sb.from('paper_trades').update({
+          option_strike: resolvedStrike,
+          option_expiry: `${expiry.slice(0, 4)}-${expiry.slice(4, 6)}-${expiry.slice(6, 8)}`,
+        }).eq('id', tradeId);
+      }
     }
     const { orderId, avgFillPrice, filledQty, timedOut } = await placeOptionsOrder({
       symbol: trade.ticker,
