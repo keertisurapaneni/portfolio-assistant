@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { RefreshCw, Plus, X, AlertTriangle, CheckCircle, Activity, Pencil, Check, TrendingUp, DollarSign, Crosshair, Search, Loader2, Send } from 'lucide-react';
+import { RefreshCw, Plus, X, AlertTriangle, CheckCircle, Activity, Pencil, Check, TrendingUp, DollarSign, Crosshair, Search, Loader2, Send, Trash2 } from 'lucide-react';
 import { cn } from '../../../lib/utils';
 import { fmtUsd } from '../utils';
 import {
@@ -77,15 +77,18 @@ function PositionCard({
   atRisk,
   atRiskReason,
   onSubmitToIB,
+  onDiscard,
 }: {
   pos: OpenOptionsPosition;
   currentPrice?: TickerQuote;
   atRisk?: boolean;
   atRiskReason?: string;
   onSubmitToIB?: (id: string) => Promise<void>;
+  onDiscard?: (id: string) => Promise<void>;
 }) {
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const [discarding, setDiscarding] = useState(false);
 
   const handleSubmit = async () => {
     if (!onSubmitToIB) return;
@@ -97,6 +100,16 @@ function PositionCard({
       setSubmitError(err instanceof Error ? err.message : 'Failed to submit');
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const handleDiscard = async () => {
+    if (!onDiscard) return;
+    setDiscarding(true);
+    try {
+      await onDiscard(pos.id);
+    } finally {
+      setDiscarding(false);
     }
   };
   const dte = daysUntil(pos.option_expiry);
@@ -247,17 +260,32 @@ function PositionCard({
         </div>
       )}
 
-      {/* Submit to IB — only shown for paper-only positions */}
-      {!pos.ib_order_id && onSubmitToIB && (
+      {/* Submit to IB / Discard — only shown for paper-only positions */}
+      {!pos.ib_order_id && (onSubmitToIB || onDiscard) && (
         <div className="mt-2 space-y-1">
-          <button
-            onClick={handleSubmit}
-            disabled={submitting}
-            className="w-full flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg bg-violet-600 text-white text-[11px] font-semibold hover:bg-violet-700 disabled:opacity-50 transition-colors"
-          >
-            {submitting ? <Loader2 className="w-3 h-3 animate-spin" /> : <Send className="w-3 h-3" />}
-            {submitting ? 'Submitting to IB…' : 'Submit to IB'}
-          </button>
+          <div className="flex gap-1.5">
+            {onSubmitToIB && (
+              <button
+                onClick={handleSubmit}
+                disabled={submitting || discarding}
+                className="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg bg-violet-600 text-white text-[11px] font-semibold hover:bg-violet-700 disabled:opacity-50 transition-colors"
+              >
+                {submitting ? <Loader2 className="w-3 h-3 animate-spin" /> : <Send className="w-3 h-3" />}
+                {submitting ? 'Submitting…' : 'Submit to IB'}
+              </button>
+            )}
+            {onDiscard && (
+              <button
+                onClick={handleDiscard}
+                disabled={discarding || submitting}
+                title="Discard — remove this paper trade without submitting to IB"
+                className="flex items-center justify-center gap-1 px-2.5 py-1.5 rounded-lg border border-red-200 text-red-600 text-[11px] font-semibold hover:bg-red-50 disabled:opacity-50 transition-colors"
+              >
+                {discarding ? <Loader2 className="w-3 h-3 animate-spin" /> : <Trash2 className="w-3 h-3" />}
+                {discarding ? '' : 'Discard'}
+              </button>
+            )}
+          </div>
           {submitError && (
             <p className="text-[10px] text-red-600 text-center">{submitError}</p>
           )}
@@ -763,6 +791,19 @@ export function OptionsTab() {
     await load();
   }
 
+  async function handleDiscardPaperTrade(positionId: string): Promise<void> {
+    const res = await fetch('http://localhost:3001/api/options/discard', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tradeId: positionId }),
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({})) as { error?: string };
+      throw new Error(body.error ?? `Discard failed (HTTP ${res.status})`);
+    }
+    await load();
+  }
+
   // Split open positions into needs-attention and healthy, computing the reason for each flagged position.
   const deployed = openPositions.reduce((s, p) => {
     return s + (p.option_strike * 100 * (p.option_contracts ?? 1));
@@ -930,6 +971,7 @@ export function OptionsTab() {
                       atRisk
                       atRiskReason={atRiskReasons.get(pos.id)}
                       onSubmitToIB={handleSubmitToIB}
+                      onDiscard={handleDiscardPaperTrade}
                     />
                   ))}
                 </div>
@@ -951,6 +993,7 @@ export function OptionsTab() {
                       pos={pos}
                       currentPrice={openPrices.get(pos.ticker)}
                       onSubmitToIB={handleSubmitToIB}
+                      onDiscard={handleDiscardPaperTrade}
                     />
                   ))}
                 </div>

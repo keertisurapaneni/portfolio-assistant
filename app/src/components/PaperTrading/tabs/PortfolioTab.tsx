@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import React, { useState } from 'react';
 import {
   Briefcase,
   WifiOff,
@@ -200,55 +200,121 @@ export function PortfolioTab({ positions, orders, pendingSignals, connected, onR
               <tr className="bg-[hsl(var(--secondary))]/50 text-[hsl(var(--muted-foreground))] text-xs">
                 <th className="text-left px-4 py-2.5 font-medium">Symbol</th>
                 <th className="text-left px-4 py-2.5 font-medium">Side</th>
-                <th className="text-left px-4 py-2.5 font-medium">Type</th>
-                <th className="text-right px-4 py-2.5 font-medium">Price</th>
                 <th className="text-right px-4 py-2.5 font-medium">Qty</th>
+                <th className="px-4 py-2.5 font-medium">Protection</th>
                 <th className="text-left px-4 py-2.5 font-medium">Status</th>
-                <th className="text-left px-4 py-2.5 font-medium">Role</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-[hsl(var(--border))]">
-              {orders.map((order, i) => {
-                const isChild = order.parentId && order.parentId !== 0;
-                const isStop = order.orderType === 'STP';
-                const isLimit = order.orderType === 'LMT';
-                let role = 'Entry';
-                if (isChild && isStop) role = 'Stop Loss';
-                else if (isChild && isLimit) role = 'Take Profit';
-                return (
-                  <tr key={`${order.orderId}-${i}`} className={`hover:bg-[hsl(var(--secondary))]/50 ${isChild ? 'bg-slate-50/50' : ''}`}>
-                    <td className={`px-4 py-2.5 ${isChild ? 'pl-8 text-[hsl(var(--muted-foreground))]' : 'font-bold'}`}>
-                      {order.ticker}
-                    </td>
-                    <td className="px-4 py-2.5">
-                      <span className={`inline-flex px-2 py-0.5 rounded text-[10px] font-bold ${order.side === 'BUY' ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'}`}>
-                        {order.side}
-                      </span>
-                    </td>
-                    <td className="px-4 py-2.5 text-xs text-[hsl(var(--muted-foreground))]">{order.orderType}</td>
-                    <td className="px-4 py-2.5 text-right tabular-nums">
-                      {order.price ? `$${Number(order.price).toFixed(2)}` : '—'}
-                    </td>
-                    <td className="px-4 py-2.5 text-right tabular-nums">{order.quantity}</td>
-                    <td className="px-4 py-2.5">
-                      <span className={`inline-flex px-2 py-0.5 rounded text-[10px] font-bold ${
-                        order.status === 'Filled' ? 'bg-emerald-100 text-emerald-700'
-                          : order.status === 'Cancelled' ? 'bg-slate-100 text-slate-500'
-                          : 'bg-blue-100 text-blue-700'
-                      }`}>
-                        {order.status}
-                      </span>
-                    </td>
-                    <td className="px-4 py-2.5 text-xs text-[hsl(var(--muted-foreground))]">
-                      {isChild ? (
-                        <span className={`inline-flex px-1.5 py-0.5 rounded text-[10px] font-medium ${isStop ? 'bg-red-50 text-red-600' : 'bg-emerald-50 text-emerald-600'}`}>
-                          {role}
+              {(() => {
+                // Group bracket child pairs (same parentId, STP + LMT) into single rows.
+                // Standalone orders (no parentId or unmatched) render as individual rows.
+                const bracketMap = new Map<number, { stp?: typeof orders[0]; lmt?: typeof orders[0] }>();
+                const standalone: typeof orders = [];
+
+                for (const order of orders) {
+                  if (order.parentId && order.parentId !== 0) {
+                    const group = bracketMap.get(order.parentId) ?? {};
+                    if (order.orderType === 'STP') group.stp = order;
+                    else if (order.orderType === 'LMT') group.lmt = order;
+                    else standalone.push(order);
+                    bracketMap.set(order.parentId, group);
+                  } else {
+                    standalone.push(order);
+                  }
+                }
+
+                const rows: React.ReactNode[] = [];
+
+                // Bracket pairs — one row per bracket
+                bracketMap.forEach((group, parentId) => {
+                  const { stp, lmt } = group;
+                  if (stp && lmt) {
+                    const representative = stp;
+                    const slPrice = Number(stp.price).toFixed(2);
+                    const tpPrice = Number(lmt.price).toFixed(2);
+                    const statusOrder = stp.status === 'Filled' || lmt.status === 'Filled' ? 'Filled'
+                      : stp.status === 'Cancelled' || lmt.status === 'Cancelled' ? 'Cancelled'
+                      : stp.status;
+                    rows.push(
+                      <tr key={`bracket-${parentId}`} className="hover:bg-[hsl(var(--secondary))]/50">
+                        <td className="px-4 py-3 font-bold">{representative.ticker}</td>
+                        <td className="px-4 py-3">
+                          <span className={`inline-flex px-2 py-0.5 rounded text-[10px] font-bold ${representative.side === 'BUY' ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'}`}>
+                            {representative.side}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 text-right tabular-nums">{representative.quantity}</td>
+                        <td className="px-4 py-3">
+                          <div className="flex items-center gap-1.5 text-xs">
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-red-50 text-red-600 font-medium tabular-nums">
+                              SL ${slPrice}
+                            </span>
+                            <span className="text-[hsl(var(--muted-foreground))] select-none">←——→</span>
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-50 text-emerald-600 font-medium tabular-nums">
+                              TP ${tpPrice}
+                            </span>
+                          </div>
+                        </td>
+                        <td className="px-4 py-3">
+                          <span className={`inline-flex px-2 py-0.5 rounded text-[10px] font-bold ${
+                            statusOrder === 'Filled' ? 'bg-emerald-100 text-emerald-700'
+                              : statusOrder === 'Cancelled' ? 'bg-slate-100 text-slate-500'
+                              : 'bg-blue-100 text-blue-700'
+                          }`}>
+                            {statusOrder}
+                          </span>
+                        </td>
+                      </tr>
+                    );
+                  } else {
+                    // Unmatched child (only STP or only LMT) — fall through to standalone
+                    if (stp) standalone.push(stp);
+                    if (lmt) standalone.push(lmt);
+                  }
+                });
+
+                // Standalone orders (entries, unmatched legs, MKT orders)
+                for (const order of standalone) {
+                  const isStop = order.orderType === 'STP';
+                  const isLimit = order.orderType === 'LMT';
+                  const isChild = order.parentId && order.parentId !== 0;
+                  let role = 'Entry';
+                  if (isChild && isStop) role = 'Stop Loss';
+                  else if (isChild && isLimit) role = 'Take Profit';
+                  rows.push(
+                    <tr key={`${order.orderId}`} className="hover:bg-[hsl(var(--secondary))]/50">
+                      <td className="px-4 py-3 font-bold">{order.ticker}</td>
+                      <td className="px-4 py-3">
+                        <span className={`inline-flex px-2 py-0.5 rounded text-[10px] font-bold ${order.side === 'BUY' ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'}`}>
+                          {order.side}
                         </span>
-                      ) : role}
-                    </td>
-                  </tr>
-                );
-              })}
+                      </td>
+                      <td className="px-4 py-3 text-right tabular-nums">{order.quantity}</td>
+                      <td className="px-4 py-3 text-xs text-[hsl(var(--muted-foreground))]">
+                        <span className="tabular-nums">{order.price ? `$${Number(order.price).toFixed(2)}` : '—'}</span>
+                        <span className="ml-1.5 text-[10px] opacity-60">{order.orderType}</span>
+                        {isChild && (
+                          <span className={`ml-2 inline-flex px-1.5 py-0.5 rounded text-[10px] font-medium ${isStop ? 'bg-red-50 text-red-600' : 'bg-emerald-50 text-emerald-600'}`}>
+                            {role}
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3">
+                        <span className={`inline-flex px-2 py-0.5 rounded text-[10px] font-bold ${
+                          order.status === 'Filled' ? 'bg-emerald-100 text-emerald-700'
+                            : order.status === 'Cancelled' ? 'bg-slate-100 text-slate-500'
+                            : 'bg-blue-100 text-blue-700'
+                        }`}>
+                          {order.status}
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                }
+
+                return rows;
+              })()}
             </tbody>
           </table>
         </div>

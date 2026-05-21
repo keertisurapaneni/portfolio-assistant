@@ -99,6 +99,9 @@ export interface OptionsOrderParams {
   account?: string;
   action?: 'BUY' | 'SELL';
   tradingClass?: string;
+  /** When provided, IB routes by conId rather than symbol/strike/expiry — avoids
+   *  code=200 rejections when the working expiry offset differs from the stored date. */
+  conId?: number;
 }
 
 export interface OptionsOrderResult {
@@ -832,20 +835,25 @@ export class IBConnection {
       const tick = params.limitPrice >= 3.0 ? 0.05 : 0.01;
       const limitPrice = Math.round(params.limitPrice / tick) * tick;
 
-      const contract: Contract = {
-        symbol: symbol.toUpperCase(),
-        secType: SecType.OPT,
-        exchange: 'SMART',
-        currency: 'USD',
-        strike,
-        right: right === 'P' ? OptionType.Put : OptionType.Call,
-        lastTradeDateOrContractMonth: expiry,
-        multiplier: 100,
-        // tradingClass intentionally omitted — let IB resolve by symbol/strike/expiry.
-        // Hardcoding the symbol as tradingClass causes rejections for tickers where
-        // IB's internal trading class differs (e.g. ADI, DOCU, RBRK).
-        ...(params.tradingClass ? { tradingClass: params.tradingClass } : {}),
-      };
+      // When a conId is provided (from resolveOptionConId), use it as the sole
+      // contract identifier — IB resolves the exact series from its database,
+      // bypassing any symbol/strike/expiry mismatch (e.g. settlement date offset).
+      const contract: Contract = params.conId
+        ? { conId: params.conId, exchange: 'SMART', currency: 'USD' }
+        : {
+            symbol: symbol.toUpperCase(),
+            secType: SecType.OPT,
+            exchange: 'SMART',
+            currency: 'USD',
+            strike,
+            right: right === 'P' ? OptionType.Put : OptionType.Call,
+            lastTradeDateOrContractMonth: expiry,
+            multiplier: 100,
+            // tradingClass intentionally omitted — let IB resolve by symbol/strike/expiry.
+            // Hardcoding the symbol as tradingClass causes rejections for tickers where
+            // IB's internal trading class differs (e.g. ADI, DOCU, RBRK).
+            ...(params.tradingClass ? { tradingClass: params.tradingClass } : {}),
+          };
 
       const orderId = this.getNextOrderId();
 
@@ -910,7 +918,7 @@ export class IBConnection {
 
   async resolveOptionConId(
     symbol: string, right: 'P' | 'C', strike: number, expiry: string,
-  ): Promise<number | null> {
+  ): Promise<{ conId: number; resolvedExpiry: string } | null> {
     if (!this.ib || !this._connected) return null;
 
     // Helper that fires one reqContractDetails request and waits up to 8s.
@@ -978,7 +986,10 @@ export class IBConnection {
       d.setDate(d.getDate() + offsetDays);
       const candidate = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
       const conId = await tryResolve(candidate);
-      if (conId) return conId;
+      // Return both the conId AND the expiry date that actually worked —
+      // callers must use resolvedExpiry (not the original) when placing orders
+      // to avoid IB rejecting with code=200 "No security definition found".
+      if (conId) return { conId, resolvedExpiry: candidate };
     }
     return null;
   }
@@ -994,13 +1005,15 @@ export class IBConnection {
 
     const { symbol, right, strike, frontExpiry, backExpiry, contracts, account } = params;
 
-    const [frontConId, backConId] = await Promise.all([
+    const [frontResult, backResult] = await Promise.all([
       this.resolveOptionConId(symbol, right, strike, frontExpiry),
       this.resolveOptionConId(symbol, right, strike, backExpiry),
     ]);
-    if (!frontConId || !backConId) {
+    if (!frontResult || !backResult) {
       throw new Error(`Could not resolve conIds for ${symbol} ${strike}${right} ${frontExpiry}/${backExpiry}`);
     }
+    const frontConId = frontResult.conId;
+    const backConId = backResult.conId;
 
     const tick = params.limitPrice >= 3.0 ? 0.05 : 0.01;
     const limitPrice = Math.round(params.limitPrice / tick) * tick;
@@ -1048,13 +1061,15 @@ export class IBConnection {
 
     const { symbol, right, sellStrike, buyStrike, expiry, contracts, account } = params;
 
-    const [sellConId, buyConId] = await Promise.all([
+    const [sellResult, buyResult] = await Promise.all([
       this.resolveOptionConId(symbol, right, sellStrike, expiry),
       this.resolveOptionConId(symbol, right, buyStrike, expiry),
     ]);
-    if (!sellConId || !buyConId) {
+    if (!sellResult || !buyResult) {
       throw new Error(`Could not resolve conIds for ${symbol} ${sellStrike}/${buyStrike}${right} ${expiry}`);
     }
+    const sellConId = sellResult.conId;
+    const buyConId = buyResult.conId;
 
     const tick = params.limitPrice >= 3.0 ? 0.05 : 0.01;
     const limitPrice = Math.round(params.limitPrice / tick) * tick;

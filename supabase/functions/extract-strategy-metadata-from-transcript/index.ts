@@ -37,7 +37,7 @@ Return a single JSON object (no markdown, no code block) with these fields. Use 
   "applicable_timeframes": ["DAY_TRADE"] | ["SWING_TRADE"] | ["DAY_TRADE","SWING_TRADE"] | [],
   "execution_window_et": {"start":"09:35","end":"10:30"} | null,
   "setup_type": "breakout" | "momentum" | "pullback_vwap" | "range" | "pocket_pivot" | "bullish_engulfing" | "volume_breakout" | null,
-  "extracted_signals": [{"ticker":"TSLA","longTriggerAbove":414,"longTargets":[416.9,420],"shortTriggerBelow":409,"shortTargets":[405.3,402.65]}] | [],
+  "extracted_signals": [{"ticker":"TSLA","longTriggerAbove":414,"longTargets":[416.9,420],"shortTriggerBelow":409,"shortTargets":[405.3,402.65]}] | [{"ticker":"SWKS","entry_context":"above_todays_high","longTriggerAbove":null,"longTargets":[80],"shortTriggerBelow":null,"shortTargets":[]}] | [],
   "summary": "1-2 sentence summary of the strategy"
 }
 
@@ -52,6 +52,7 @@ Rules:
 - longTriggerAbove / shortTriggerBelow / longTargets / shortTargets: MUST be actual dollar prices, NOT percentages. META trades near $600, TSLA near $300-$500, NVDA near $100-$200, SPY near $500-$700, QQQ near $400-$600. If the numbers you extracted are in single digits or look like percentages (e.g. 5.96, 6.1), you made an error — re-read the transcript and extract the real dollar price. A number like "6.1" for META means nothing; the real level would be something like $610 or $608.
 - ATH / all-time-high language: if the transcript says "above ATH" or "new all-time high" for the long trigger without giving a specific number, set longTriggerAbove = shortTriggerBelow (use the short trigger level as a proxy). If shortTriggerBelow is also missing, use shortTargets[0]. Never leave BOTH longTriggerAbove and shortTriggerBelow null when the transcript gives any price levels for that ticker.
 - "below X" always maps to shortTriggerBelow=X. "above X" always maps to longTriggerAbove=X. Extract these directly from the transcript — do not leave them null if a number is present.
+- Conditional entry (no explicit price): if the transcript says "if and only if we can get above today's high", "above today's high", "if it breaks above yesterday's high", or similar phrases WITHOUT giving a specific dollar price for the entry, set longTriggerAbove=null and add entry_context="above_todays_high". The system will resolve the actual price at import time. Similarly, "below today's low" / "below yesterday's low" without a price → shortTriggerBelow=null, entry_context="below_todays_low". If a specific price IS given alongside the condition (e.g. "above today's high at $95"), use longTriggerAbove=95 and entry_context="above_level". Never silently drop a ticker because the entry is conditional — always emit the signal with entry_context set.
 - trade_date: for daily_signal or daily_penny when date is explicit (e.g. "for Thursday", "today's levels", "Monday morning watchlist").
 - execution_window_et: only if time window is specified (e.g. "9:30-9:35 levels", "first candle rule").
 - setup_type: how the influencer intends execution:
