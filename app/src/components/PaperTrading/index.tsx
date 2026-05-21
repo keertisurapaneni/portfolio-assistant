@@ -613,7 +613,7 @@ export function PaperTrading() {
         <div className="flex gap-1 bg-white/60 p-1 rounded-xl border border-[hsl(var(--border))] w-max sm:w-auto min-w-full">
           {[
             { id: 'portfolio' as Tab,   label: 'IB Portfolio',    short: 'Portfolio',   icon: Briefcase,     count: ibPositions.length },
-            { id: 'today' as Tab,       label: "Today's Activity", short: 'Today',       icon: Zap,           count: todayTrades.length },
+            { id: 'today' as Tab,       label: "Today's Activity", short: 'Today',       icon: Zap,           count: todayTrades.filter(t => !['OPTIONS_PUT','OPTIONS_CALL','CALENDAR_SPREAD','CREDIT_SPREAD','EARNINGS_CALENDAR'].includes(t.mode) && t.status !== 'CANCELLED').length },
             { id: 'history' as Tab,     label: 'Trade History',    short: 'History',     icon: Clock,         count: allTrades.length },
             { id: 'performance' as Tab, label: 'Performance',      short: 'Perf',        icon: BarChart2 },
             { id: 'strategies' as Tab,  label: 'Influencers',      short: 'Influencers', icon: BarChart3,     count: sourcePerf.length },
