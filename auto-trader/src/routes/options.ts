@@ -127,11 +127,16 @@ router.post('/options/place-order', async (req, res) => {
       // starvation when the scanner is running concurrently.
       console.log(`[place-order] Exact strike $${trade.option_strike}${right} not resolved — trying nearby standard strikes for ${trade.ticker}`);
 
-      // Build candidates: stored strike first, then $5/$2.5/$1 floor/ceil neighbors
+      // Build candidates: stored strike first, then neighbors at $5/$2.5/$1 increments.
+      // Use explicit ± steps (not just floor/ceil) so that when the stored strike is
+      // already a round number (e.g. $75), we still generate the adjacent strikes
+      // ($70, $80) instead of a singleton set that only contains $75.
       const candidateStrikes = new Set<number>([trade.option_strike]);
       for (const inc of [5, 2.5, 1]) {
         candidateStrikes.add(Math.round(Math.floor(trade.option_strike / inc) * inc * 100) / 100);
         candidateStrikes.add(Math.round(Math.ceil(trade.option_strike / inc) * inc * 100) / 100);
+        candidateStrikes.add(Math.round((trade.option_strike - inc) * 100) / 100);
+        candidateStrikes.add(Math.round((trade.option_strike + inc) * 100) / 100);
       }
       const sortedStrikes = [...candidateStrikes].sort(
         (a, b) => Math.abs(a - trade.option_strike) - Math.abs(b - trade.option_strike)
