@@ -967,7 +967,8 @@ export class IBConnection {
           this.ib!.reqContractDetails(reqId, {
             symbol: symbol.toUpperCase(),
             secType: SecType.OPT,
-            exchange: 'SMART',
+            // exchange intentionally omitted — IB returns the canonical contract
+            // definition across all exchanges; SMART routing is applied at order time
             currency: 'USD',
             strike,
             right: right === 'P' ? OptionType.Put : OptionType.Call,
