@@ -9,6 +9,7 @@
  * 2. For each extracted signal: create PENDING external_strategy_signals rows
  *    - longTriggerAbove  → BUY signal
  *    - shortTriggerBelow → SELL signal
+ *    - entry_context (above_todays_high / below_todays_low) → resolves via Finnhub → BUY/SELL signal
  * 3. If execution_window_et present: set execute_at / expires_at (ET timezone)
  * 4. Skip if signal already exists for same video_id + ticker + signal direction (idempotent)
  */
@@ -380,15 +381,47 @@ Deno.serve(async (req) => {
       continue;
     }
 
+    // Resolve entry_context for stock signals when the LLM did not give an explicit price.
+    // e.g. "above today's high" / "below today's low" — fetch Finnhub to get a concrete level.
+    let resolvedLongTrigger = sig.longTriggerAbove ?? null;
+    let resolvedShortTrigger = sig.shortTriggerBelow ?? null;
+    const stockEntryCtx = sig.entry_context ?? null;
+
+    if (stockEntryCtx && (resolvedLongTrigger == null || resolvedShortTrigger == null)) {
+      const quote = await getFinnhubQuote(ticker);
+      if (quote) {
+        const nowHourET = new Date().toLocaleString('en-US', { timeZone: 'America/New_York', hour: 'numeric', hour12: false });
+        const hourET = parseInt(nowHourET);
+        const intraday = hourET >= 10 && hourET < 16;
+
+        if (resolvedLongTrigger == null && (stockEntryCtx === 'above_todays_high' || stockEntryCtx === 'above_level')) {
+          const raw = (intraday && quote.h > 0) ? quote.h : quote.pc;
+          resolvedLongTrigger = Math.round(raw * 1.002 * 100) / 100; // +0.2% buffer above high
+          console.log(`[import-strategy-signals] ${ticker}: resolved ${stockEntryCtx} → long trigger $${resolvedLongTrigger} (Finnhub ${intraday ? 'intraday high' : 'prevClose'})`);
+        }
+        if (resolvedShortTrigger == null && (stockEntryCtx === 'below_todays_low' || stockEntryCtx === 'below_level')) {
+          const raw = (intraday && quote.l > 0) ? quote.l : quote.pc;
+          resolvedShortTrigger = Math.round(raw * 0.998 * 100) / 100; // -0.2% buffer below low
+          console.log(`[import-strategy-signals] ${ticker}: resolved ${stockEntryCtx} → short trigger $${resolvedShortTrigger} (Finnhub ${intraday ? 'intraday low' : 'prevClose'})`);
+        }
+      } else {
+        console.warn(`[import-strategy-signals] ${ticker}: entry_context="${stockEntryCtx}" but no Finnhub quote — skipping`);
+        continue;
+      }
+    }
+
     // Long (BUY) signal — one row per entry level (unique constraint is on ticker+signal+entry_price+date).
     // Use the first target as primary; additional targets go into notes for human reference.
-    if (sig.longTriggerAbove != null) {
-      const entryPrice = sig.longTriggerAbove;
+    if (resolvedLongTrigger != null) {
+      const entryPrice = resolvedLongTrigger;
       const longTargets = sig.longTargets ?? [];
       const primaryTarget = longTargets[0] ?? null;
       const targetSummary = longTargets.length > 0
         ? longTargets.map((t, i) => `T${i + 1}: ${t}`).join(', ')
         : null;
+      const entryDesc = stockEntryCtx === 'above_todays_high'
+        ? `Long above today's high (~${entryPrice})`
+        : `Long above ${entryPrice}`;
       toInsert.push({
         source_name: video.source_name,
         source_url: sourceUrl,
@@ -397,12 +430,12 @@ Deno.serve(async (req) => {
         mode: primaryMode,
         confidence: 7,
         entry_price: entryPrice,
-        stop_loss: stopLoss ?? (sig.shortTriggerBelow ?? null),
+        stop_loss: stopLoss ?? (resolvedShortTrigger ?? null),
         target_price: primaryTarget,
         execute_on_date: tradeDate,
         execute_at: executeAt,
         expires_at: expiresAt,
-        notes: noteText ?? `Long above ${entryPrice}${targetSummary ? ` — targets: ${targetSummary}` : ''}`,
+        notes: noteText ?? `${entryDesc}${targetSummary ? ` — targets: ${targetSummary}` : ''}`,
         status: 'PENDING',
         strategy_video_id: videoId,
         strategy_video_heading: video.video_heading ?? null,
@@ -410,13 +443,16 @@ Deno.serve(async (req) => {
     }
 
     // Short (SELL) signal — one row per entry level.
-    if (sig.shortTriggerBelow != null) {
-      const entryPrice = sig.shortTriggerBelow;
+    if (resolvedShortTrigger != null) {
+      const entryPrice = resolvedShortTrigger;
       const shortTargets = sig.shortTargets ?? [];
       const primaryTarget = shortTargets[0] ?? null;
       const targetSummary = shortTargets.length > 0
         ? shortTargets.map((t, i) => `T${i + 1}: ${t}`).join(', ')
         : null;
+      const entryDesc = stockEntryCtx === 'below_todays_low'
+        ? `Short below today's low (~${entryPrice})`
+        : `Short below ${entryPrice}`;
       toInsert.push({
         source_name: video.source_name,
         source_url: sourceUrl,
@@ -425,12 +461,12 @@ Deno.serve(async (req) => {
         mode: primaryMode,
         confidence: 7,
         entry_price: entryPrice,
-        stop_loss: stopLoss ?? (sig.longTriggerAbove ?? null),
+        stop_loss: stopLoss ?? (resolvedLongTrigger ?? null),
         target_price: primaryTarget,
         execute_on_date: tradeDate,
         execute_at: executeAt,
         expires_at: expiresAt,
-        notes: noteText ?? `Short below ${entryPrice}${targetSummary ? ` — targets: ${targetSummary}` : ''}`,
+        notes: noteText ?? `${entryDesc}${targetSummary ? ` — targets: ${targetSummary}` : ''}`,
         status: 'PENDING',
         strategy_video_id: videoId,
         strategy_video_heading: video.video_heading ?? null,

@@ -1208,14 +1208,19 @@ export async function autoTradeOption(ticket: OptionsTradeTicket): Promise<{ tra
     return { tradeId, ibOrderId: null, isLive: false };
   }
 
-  // Validate the contract exists in IB before placing — resolveOptionConId now tries
-  // the exact expiry plus ±1/±2 day offsets and omits tradingClass for maximum
-  // compatibility. If it still returns null after all retries, the options chain
-  // genuinely doesn't list this contract (strike too far OTM, no market, etc.).
+  // Validate the contract exists in IB before placing — resolveOptionConId tries the
+  // exact expiry plus ±1/±2 day offsets and omits tradingClass for maximum compatibility.
+  // It returns both the conId AND the expiry that actually resolved (which may differ by
+  // a day from the stored date for settlement-date vs last-trade-date differences).
+  // We pass the conId to placeOptionsOrder so IB routes by contract ID, bypassing any
+  // remaining symbol/expiry/tradingClass mismatch (e.g. ADI, DOCU, RBRK, VIK).
   const conn = getPaperConnection();
+  let resolvedConId: number | undefined;
+  let resolvedExpiry: string = ticket.expiry;
+
   if (conn) {
-    const conId = await conn.resolveOptionConId(ticket.ticker, 'P', ticket.strike, ticket.expiry);
-    if (!conId) {
+    const resolved = await conn.resolveOptionConId(ticket.ticker, 'P', ticket.strike, ticket.expiry);
+    if (!resolved) {
       console.warn(`[Options Auto-Trade] IB cannot resolve ${ticket.ticker} $${ticket.strike}P exp ${ticket.expiry} after expiry-offset retries — falling back to paper trade`);
       const tradeId = await paperTradeOption(ticket);
       createAutoTradeEvent({
@@ -1229,6 +1234,11 @@ export async function autoTradeOption(ticket: OptionsTradeTicket): Promise<{ tra
       }).catch(() => {});
       return { tradeId, ibOrderId: null, isLive: false };
     }
+    resolvedConId = resolved.conId;
+    resolvedExpiry = resolved.resolvedExpiry;
+    if (resolvedExpiry !== ticket.expiry) {
+      console.log(`[Options Auto-Trade] Expiry offset: ${ticket.ticker} $${ticket.strike}P stored=${ticket.expiry} → IB resolved=${resolvedExpiry} (settlement-date difference)`);
+    }
   }
 
   try {
@@ -1236,9 +1246,10 @@ export async function autoTradeOption(ticket: OptionsTradeTicket): Promise<{ tra
       symbol: ticket.ticker,
       right: 'P',
       strike: ticket.strike,
-      expiry: ticket.expiry,
+      expiry: resolvedExpiry,
       contracts: ticket.contracts ?? 1,
       limitPrice: ticket.premium,
+      conId: resolvedConId,
       account: getDefaultAccount() ?? undefined,
     });
 

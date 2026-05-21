@@ -378,8 +378,47 @@ export function startScheduler(): void {
     } catch (err) {
       console.error('[EOD Position Check] Failed:', err instanceof Error ? err.message : err);
     }
+
+    // Auto-discard paper-only options trades that were never submitted to IB.
+    // These are trades the scanner recorded when IB was offline or the contract
+    // couldn't be resolved. If they weren't manually submitted by end of day,
+    // the strike/premium data is stale — tomorrow's scan will find fresh opportunities.
+    try {
+      const sb = getSupabase();
+      const { data: stale } = await sb
+        .from('paper_trades')
+        .select('id, ticker, option_strike, option_expiry, mode')
+        .in('mode', ['OPTIONS_PUT', 'OPTIONS_CALL'])
+        .in('status', ['FILLED', 'SUBMITTED'])
+        .is('ib_order_id', null);
+
+      if (stale?.length) {
+        const now = new Date().toISOString();
+        for (const row of stale as Array<{ id: string; ticker: string; option_strike: number; option_expiry: string; mode: string }>) {
+          await sb.from('paper_trades').update({
+            status: 'CANCELLED',
+            close_reason: 'discarded',
+            closed_at: now,
+            notes: `[AUTO-DISCARD] Paper-only trade never submitted to IB — discarded at EOD`,
+          }).eq('id', row.id);
+
+          createAutoTradeEvent({
+            ticker: row.ticker,
+            event_type: 'info',
+            action: 'skipped',
+            source: 'scanner',
+            mode: row.mode as 'OPTIONS_PUT' | 'OPTIONS_CALL',
+            message: `🗑 ${row.ticker} $${row.option_strike}P exp ${row.option_expiry} auto-discarded at EOD — paper-only, never submitted to IB`,
+            metadata: { tradeId: row.id, reason: 'eod_auto_discard' },
+          }).catch(() => {});
+        }
+        log(`[EOD] Auto-discarded ${stale.length} paper-only options trade(s) never submitted to IB`);
+      }
+    } catch (err) {
+      console.error('[EOD Auto-Discard] Failed:', err instanceof Error ? err.message : err);
+    }
   }, { timezone: 'America/New_York' });
-  log('EOD position check: 4:10 PM ET (IB-level short + long detection)');
+  log('EOD position check: 4:10 PM ET (IB-level short + long detection + paper-only options discard)');
 
   // EOD reconciliation — 4:15 PM ET: compare today's IB executions against paper_trades,
   // correct any fill_price / P&L discrepancies, and recalculate global performance.
@@ -3930,6 +3969,25 @@ async function executeExternalStrategySignal(
       accountType: extAccountType,
     })) {
       return skipExternalSignal('Duplicate active trade for ticker', 'duplicate_active_trade');
+    }
+
+    // Bracket-oversell guard: never execute a SELL external signal when there is an
+    // active LONG (BUY) position for the same ticker, and vice versa.
+    // The existing IB bracket (STP + LMT) fires at the same price level — placing a
+    // second SELL order would oversell and create an accidental short.
+    // This mirrors the CSCO/AMAT scenario from May 15 2026.
+    const oppositeSignal = signal.signal === 'SELL' ? 'BUY' : 'SELL';
+    const hasOpposingPosition = await hasActiveTrade(ticker, {
+      ...(signal.mode !== 'LONG_TERM' ? { excludeMode: 'LONG_TERM' as const } : {}),
+      signal: oppositeSignal,
+      excludeOptions: true,
+      accountType: extAccountType,
+    });
+    if (hasOpposingPosition) {
+      return skipExternalSignal(
+        `Active ${oppositeSignal === 'BUY' ? 'LONG' : 'SHORT'} position already open for ${ticker} — ${signal.signal} signal blocked to prevent bracket oversell`,
+        'opposing_position_blocks_signal',
+      );
     }
   }
 

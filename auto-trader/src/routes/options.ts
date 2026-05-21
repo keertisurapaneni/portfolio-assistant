@@ -98,14 +98,21 @@ router.post('/options/place-order', async (req, res) => {
     let resolvedStrike: number = trade.option_strike;
 
     // ── Step 1: Try to resolve the exact stored contract (strike + expiry) ──
-    // resolveOptionConId now retries ±1/2 day expiry offsets internally.
+    // resolveOptionConId retries ±1/2 day expiry offsets internally and returns
+    // BOTH the conId and the expiry date that actually matched. We must use the
+    // resolvedExpiry (not the stored date) in the order, otherwise IB rejects with
+    // code=200 "No security definition" when the stored date is off by one day.
+    // We also pass conId so IB routes by contract ID, bypassing tradingClass
+    // mismatches (e.g. ADI, DOCU, RBRK, VIK).
     const conn = getPaperConnection();
-    const exactConId = await conn.resolveOptionConId(trade.ticker, right, trade.option_strike, expiry);
+    const exactResult = await conn.resolveOptionConId(trade.ticker, right, trade.option_strike, expiry);
 
-    if (exactConId) {
-      // Re-derive which expiry offset worked (the resolved expiry is embedded in
-      // resolveOptionConId's retry logic — we just need the order to go through).
-      console.log(`[place-order] Exact contract resolved for ${trade.ticker} $${trade.option_strike}${right} — placing order`);
+    if (exactResult) {
+      expiry = exactResult.resolvedExpiry;
+      if (expiry !== trade.option_expiry.replace(/-/g, '')) {
+        console.log(`[place-order] Expiry offset applied: ${trade.ticker} $${trade.option_strike}${right} stored=${trade.option_expiry} → IB resolved=${expiry}`);
+      }
+      console.log(`[place-order] Contract resolved for ${trade.ticker} $${trade.option_strike}${right} conId=${exactResult.conId} exp=${expiry} — placing order`);
     } else {
       // ── Step 2: Exact strike not in IB (came from synthetic pricing) ──
       // Fetch IB's real options chain and find the nearest listed contract.
@@ -148,6 +155,7 @@ router.post('/options/place-order', async (req, res) => {
       expiry,
       contracts: 1,
       limitPrice,
+      conId: exactResult?.conId,
       account: getDefaultAccount() ?? undefined,
     });
 
@@ -182,6 +190,65 @@ router.post('/options/place-order', async (req, res) => {
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : 'Unknown error';
     console.error('[Route: options/place-order]', errMsg);
+    res.status(500).json({ error: errMsg });
+  }
+});
+
+/**
+ * POST /api/options/discard
+ * Discard a paper-only options trade that was never submitted to IB.
+ * Only allowed if the trade has no ib_order_id (i.e., hasn't been submitted).
+ * Body: { tradeId }
+ */
+router.post('/options/discard', async (req, res) => {
+  try {
+    const { tradeId } = req.body;
+    if (!tradeId) {
+      return res.status(400).json({ error: 'tradeId is required' });
+    }
+
+    const sb = getSupabase();
+    const { data: trade, error } = await sb
+      .from('paper_trades')
+      .select('id, ticker, mode, option_strike, option_expiry, ib_order_id, status')
+      .eq('id', tradeId)
+      .single();
+
+    if (error || !trade) {
+      return res.status(404).json({ error: 'Trade not found' });
+    }
+    if (trade.ib_order_id) {
+      return res.status(400).json({ error: 'Cannot discard a trade that has already been submitted to IB' });
+    }
+
+    const { error: updateError } = await sb
+      .from('paper_trades')
+      .update({
+        status: 'CANCELLED',
+        close_reason: 'discarded',
+        closed_at: new Date().toISOString(),
+        notes: `[DISCARDED] Paper-only trade removed manually — never submitted to IB`,
+      })
+      .eq('id', tradeId);
+
+    if (updateError) {
+      return res.status(500).json({ error: updateError.message });
+    }
+
+    createAutoTradeEvent({
+      ticker: trade.ticker,
+      event_type: 'info',
+      action: 'skipped',
+      source: 'scanner',
+      mode: trade.mode,
+      message: `🗑 ${trade.ticker} $${trade.option_strike}P exp ${trade.option_expiry} discarded — paper-only trade removed without submitting to IB`,
+      metadata: { tradeId, reason: 'manual_discard' },
+    }).catch(() => {});
+
+    res.json({ success: true, tradeId });
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : 'Unknown error';
+    console.error('[Route: options/discard]', errMsg);
     res.status(500).json({ error: errMsg });
   }
 });
