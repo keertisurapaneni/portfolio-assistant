@@ -406,12 +406,28 @@ export class IBConnection {
         }, this.label).catch(fillErr => console.warn(`${this.tag} Failed to persist orderStatus fill: ${fillErr instanceof Error ? fillErr.message : fillErr}`));
       }
 
-      if ((status === 'Cancelled' || status === 'Inactive') && this._pendingOrderCallbacks.has(orderId)) {
-        const pending = this._pendingOrderCallbacks.get(orderId)!;
-        clearTimeout(pending.timer);
-        this._pendingOrderCallbacks.delete(orderId);
-        console.error(`${this.tag} Order ${orderId} (${pending.symbol}) ${status}`);
-        pending.reject(new Error(`IB order ${orderId} (${pending.symbol}) ${status}`));
+      if (status === 'Cancelled' || status === 'Inactive') {
+        if (this._pendingOrderCallbacks.has(orderId)) {
+          const pending = this._pendingOrderCallbacks.get(orderId)!;
+          clearTimeout(pending.timer);
+          this._pendingOrderCallbacks.delete(orderId);
+          console.error(`${this.tag} Order ${orderId} (${pending.symbol}) ${status}`);
+          pending.reject(new Error(`IB order ${orderId} (${pending.symbol}) ${status}`));
+        } else {
+          // Order was already timed out (saved as SUBMITTED in DB) — sync cancellation back.
+          console.log(`${this.tag} Order ${orderId} ${status} by IB/user — syncing to DB`);
+          import('./lib/supabase.js').then(({ getSupabase }) => {
+            getSupabase()
+              .from('paper_trades')
+              .update({ status: 'CANCELLED', close_reason: `IB order ${status.toLowerCase()}` })
+              .eq('ib_order_id', String(orderId))
+              .eq('status', 'SUBMITTED')
+              .then(({ error }) => {
+                if (error) console.warn(`${this.tag} Failed to sync cancellation for order ${orderId}: ${error.message}`);
+                else console.log(`${this.tag} Order ${orderId} marked CANCELLED in DB`);
+              });
+          }).catch(() => {});
+        }
       }
     });
 

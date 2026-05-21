@@ -133,7 +133,11 @@ function PositionCard({
           <span className="text-[10px] px-1.5 py-0.5 rounded bg-violet-100 text-violet-700 font-medium">
             {pos.mode === 'OPTIONS_CALL' ? 'CALL' : 'PUT'}
           </span>
-          {pos.ib_order_id ? (
+          {pos.ib_order_id && pos.status === 'SUBMITTED' ? (
+            <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 font-medium">
+              ⏳ Pending #{pos.ib_order_id}
+            </span>
+          ) : pos.ib_order_id ? (
             <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 font-medium">
               ✓ IB #{pos.ib_order_id}
             </span>
