@@ -1242,7 +1242,7 @@ export async function autoTradeOption(ticket: OptionsTradeTicket): Promise<{ tra
   }
 
   try {
-    const { orderId, avgFillPrice, filledQty } = await placeOptionsOrder({
+    const { orderId, avgFillPrice, filledQty, timedOut } = await placeOptionsOrder({
       symbol: ticket.ticker,
       right: 'P',
       strike: ticket.strike,
@@ -1253,13 +1253,27 @@ export async function autoTradeOption(ticket: OptionsTradeTicket): Promise<{ tra
       account: getDefaultAccount() ?? undefined,
     });
 
+    if (timedOut) {
+      // Order is live in IB as a pending DAY LMT — paperTradeOption already set SUBMITTED.
+      console.log(`[Options Auto-Trade] IB order ${orderId} SUBMITTED for ${ticket.ticker} $${ticket.strike}P — awaiting fill`);
+      const tradeId = await paperTradeOption({ ...ticket }, orderId);
+      createAutoTradeEvent({
+        ticker: ticket.ticker,
+        event_type: 'success',
+        action: 'executed',
+        source: 'scanner',
+        mode: 'OPTIONS_PUT',
+        message: `Order submitted to IB #${orderId} — $${ticket.strike}P exp ${ticket.expiry} @ $${ticket.premium.toFixed(2)} limit — awaiting fill`,
+        metadata: { ibOrderId: orderId, strike: ticket.strike, expiry: ticket.expiry, limitPrice: ticket.premium, contracts: ticket.contracts ?? 1 },
+      }).catch(() => {});
+      return { tradeId, ibOrderId: orderId, isLive: true };
+    }
+
     console.log(`[Options Auto-Trade] IB order ${orderId} FILLED for ${ticket.ticker} $${ticket.strike}P @ $${avgFillPrice.toFixed(2)} (${filledQty} contracts)`);
 
-    // Record with real IB fill price — no SUBMITTED state needed since we awaited confirmation
     const realPremium = avgFillPrice;
     const tradeId = await paperTradeOption({ ...ticket, premium: realPremium }, orderId);
 
-    // Immediately mark as FILLED with real fill price (paperTradeOption sets SUBMITTED for live orders)
     if (tradeId) {
       const sb = getSupabase();
       await sb.from('paper_trades').update({

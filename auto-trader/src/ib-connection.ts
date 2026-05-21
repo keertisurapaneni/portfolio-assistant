@@ -108,6 +108,10 @@ export interface OptionsOrderResult {
   orderId: number;
   avgFillPrice: number;
   filledQty: number;
+  /** True when the order was placed but no fill/reject arrived before the timeout.
+   *  The order is live in IB as a pending DAY order — callers must record it as
+   *  SUBMITTED (not FILLED) and wait for the execDetails callback to update status. */
+  timedOut?: boolean;
 }
 
 export interface CalendarSpreadOrderParams {
@@ -864,7 +868,7 @@ export class IBConnection {
         orderType: OrderType.LMT,
         totalQuantity: contracts,
         lmtPrice: limitPrice,
-        tif: TimeInForce.DAY,
+        tif: TimeInForce.GTC,
         transmit: true,
         ...(account ? { account } : {}),
       };
@@ -897,7 +901,7 @@ export class IBConnection {
         // Resolve with a sentinel so the caller can save orderId as SUBMITTED
         // rather than leaving the trade fully orphaned. The fill will arrive
         // via execDetails when the order eventually fills (e.g. next market open).
-        resolve({ orderId, avgFillPrice: 0, filledQty: 0, timedOut: true } as unknown as OptionsOrderResult);
+        resolve({ orderId, avgFillPrice: 0, filledQty: 0, timedOut: true });
       }, OPT_ORDER_TIMEOUT_MS);
 
       this._pendingOrderCallbacks.set(orderId, { resolve, reject, timer, symbol });
@@ -918,6 +922,7 @@ export class IBConnection {
 
   async resolveOptionConId(
     symbol: string, right: 'P' | 'C', strike: number, expiry: string,
+    onIbError?: (error: string) => void,
   ): Promise<{ conId: number; resolvedExpiry: string } | null> {
     if (!this.ib || !this._connected) return null;
 
@@ -952,7 +957,8 @@ export class IBConnection {
           };
           emitter.on(EventName.contractDetails, onDetails);
 
-          this.registerReqErrorCallback(reqId, () => {
+          this.registerReqErrorCallback(reqId, (code, msg) => {
+            onIbError?.(`IB error ${code}: ${msg}`);
             emitter.removeListener(EventName.contractDetails, onDetails);
             finish(null);
           });
