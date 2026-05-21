@@ -117,6 +117,7 @@ import {
   recordPennyTradeResult,
   pennyPositionSize,
   type PennyCandidate,
+  type IBGainerResult,
 } from './lib/penny-scanner.js';
 
 // ── Types ────────────────────────────────────────────────
@@ -6879,17 +6880,31 @@ async function runSchedulerCycle(): Promise<void> {
       try {
         const etNow = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }));
         const etMins = etNow.getHours() * 60 + etNow.getMinutes();
-        // Active window: 9:35 AM - 10:00 AM ET (regular hours only for now)
-        if (etMins >= 9 * 60 + 35 && etMins <= 10 * 60) {
+        // Active window: 9:35 AM - 11:30 AM ET (extended to catch later-morning gappers)
+        if (etMins >= 9 * 60 + 35 && etMins <= 11 * 60 + 30) {
           if (isPennySessionDone()) {
             log(`[PennyScanner] Session done: ${getPennySessionSummary()}`);
           } else {
-            // Discovery: find candidates
-            const pennyCandidates = await runPennyDiscovery();
-            if (pennyCandidates.length > 0) {
-              log(`[PennyScanner] Found ${pennyCandidates.length} candidate(s): ${pennyCandidates.map(c => `${c.ticker}(+${c.changePct.toFixed(0)}%)`).join(', ')}`);
+            // Step 1: IB scanner for top % gainers in penny price range
+            const paperConn = getPaperConnection();
+            let ibGainers: IBGainerResult[] = [];
+            try {
+              ibGainers = await paperConn.scanTopGainers({
+                abovePrice: 2,
+                belowPrice: 20,
+                aboveVolume: 300_000,
+                numberOfRows: 25,
+              });
+              log(`[PennyScanner] IB scan returned ${ibGainers.length} ticker(s): ${ibGainers.map(g => g.ticker).join(', ') || 'none'}`);
+            } catch (scanErr) {
+              log(`[PennyScanner] IB scan error: ${scanErr instanceof Error ? scanErr.message : 'unknown'}`);
+            }
 
-              // Write to trade_scans for UI visibility
+            // Step 2: Enrich with Finnhub and apply Cameron's criteria
+            const pennyCandidates = await runPennyDiscovery(ibGainers);
+
+            // Always write scan status to trade_scans so UI shows current state
+            {
               const sb = getSupabase();
               const scanData = pennyCandidates.map(c => ({
                 ticker: c.ticker,
@@ -6909,6 +6924,10 @@ async function runSchedulerCycle(): Promise<void> {
                 scanned_at: new Date().toISOString(),
                 expires_at: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
               });
+            }
+
+            if (pennyCandidates.length > 0) {
+              log(`[PennyScanner] Found ${pennyCandidates.length} candidate(s): ${pennyCandidates.map(c => `${c.ticker}(+${c.changePct.toFixed(0)}%)`).join(', ')}`);
 
               // Check entry signals and execute
               const pennySession = getPennySessionState();
