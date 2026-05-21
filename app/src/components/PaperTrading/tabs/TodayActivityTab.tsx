@@ -252,9 +252,14 @@ export function TodayActivityTab({ events, trades, todayTrades, todaySignalsForE
     );
   }
 
-  // P&L computed directly from trade records (accurate via ib_fills trigger)
+  // P&L computed from closed trade records only — active (unrealized) positions are excluded
+  const terminalStatusSet = new Set([...CLOSED_STATUSES, ...EXCLUDED_STATUSES] as string[]);
+  const isTradeActive = (t: PaperTrade) => {
+    const closed = t.close_price != null || terminalStatusSet.has(t.status) || t.closed_at != null;
+    return !closed && (t.status === 'FILLED' || t.status === 'PARTIAL');
+  };
   const computeTradePnl = (tradeList: PaperTrade[]) =>
-    tradeList.reduce((sum, t) => sum + (t.pnl ?? 0), 0);
+    tradeList.filter(t => !isTradeActive(t)).reduce((sum, t) => sum + (t.pnl ?? 0), 0);
 
   const effectiveIbPnl = isTradingDay() ? ibRealizedPnl : null;
 
@@ -452,7 +457,8 @@ export function TodayActivityTab({ events, trades, todayTrades, todaySignalsForE
                 || trade.closed_at != null;
               const isActive = !isClosed && ['FILLED', 'PARTIAL'].includes(trade.status);
 
-              const pnl = trade.pnl ?? null;
+              // Only show realized P&L for closed trades — active positions haven't locked in gains/losses yet
+              const pnl = isActive ? null : (trade.pnl ?? null);
 
               const isExternalSignal = trade.scanner_reason?.includes('External')
                 || trade.notes?.startsWith('External signal');
