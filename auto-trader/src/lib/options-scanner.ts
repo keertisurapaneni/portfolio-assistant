@@ -1219,25 +1219,52 @@ export async function autoTradeOption(ticket: OptionsTradeTicket): Promise<{ tra
   let resolvedExpiry: string = ticket.expiry;
 
   if (conn) {
-    const resolved = await conn.resolveOptionConId(ticket.ticker, 'P', ticket.strike, ticket.expiry);
+    // Step 1: try the exact strike from the scanner
+    let resolved = await conn.resolveOptionConId(ticket.ticker, 'P', ticket.strike, ticket.expiry);
+
+    // Step 2: if exact strike fails, snap to nearest standard IB strikes (same logic as manual route)
+    let snappedStrike: number | undefined;
     if (!resolved) {
-      console.warn(`[Options Auto-Trade] IB cannot resolve ${ticket.ticker} $${ticket.strike}P exp ${ticket.expiry} after expiry-offset retries — falling back to paper trade`);
-      const tradeId = await paperTradeOption(ticket);
+      const candidateStrikes = new Set<number>([ticket.strike]);
+      for (const inc of [5, 2.5, 1]) {
+        candidateStrikes.add(Math.round(Math.floor(ticket.strike / inc) * inc * 100) / 100);
+        candidateStrikes.add(Math.round(Math.ceil(ticket.strike / inc) * inc * 100) / 100);
+        candidateStrikes.add(Math.round((ticket.strike - inc) * 100) / 100);
+        candidateStrikes.add(Math.round((ticket.strike + inc) * 100) / 100);
+      }
+      const sortedStrikes = [...candidateStrikes].sort(
+        (a, b) => Math.abs(a - ticket.strike) - Math.abs(b - ticket.strike)
+      );
+      for (const candidate of sortedStrikes) {
+        resolved = await conn.resolveOptionConId(ticket.ticker, 'P', candidate, ticket.expiry);
+        if (resolved) {
+          snappedStrike = candidate;
+          console.log(`[Options Auto-Trade] Strike snapped: ${ticket.ticker} $${ticket.strike}P → IB-listed $${candidate}P`);
+          break;
+        }
+      }
+    }
+
+    if (!resolved) {
+      // IB is connected but contract genuinely doesn't exist — skip entirely, no paper fallback.
+      console.warn(`[Options Auto-Trade] Skipping ${ticket.ticker} $${ticket.strike}P exp ${ticket.expiry} — IB cannot resolve contract even after strike snapping`);
       createAutoTradeEvent({
         ticker: ticket.ticker,
         event_type: 'warning',
-        action: 'executed',
+        action: 'skipped',
         source: 'scanner',
         mode: 'OPTIONS_PUT',
-        message: `Paper trade opened — no IB options contract found for $${ticket.strike}P exp ${ticket.expiry}. Sold ${ticket.contracts ?? 1}x @ $${ticket.premium.toFixed(2)}/contract (synthetic pricing). Use "Submit to IB" to retry once market opens.`,
-        metadata: { strike: ticket.strike, expiry: ticket.expiry, premium: ticket.premium, contracts: ticket.contracts ?? 1, paper: true, reason: 'contract_not_found' },
+        message: `Skipped ${ticket.ticker} $${ticket.strike}P exp ${ticket.expiry} — IB contract not found (IB online, no paper fallback)`,
+        metadata: { strike: ticket.strike, expiry: ticket.expiry, reason: 'contract_not_found_ib_online' },
       }).catch(() => {});
-      return { tradeId, ibOrderId: null, isLive: false };
+      return { tradeId: null, ibOrderId: null, isLive: false };
     }
+
     resolvedConId = resolved.conId;
     resolvedExpiry = resolved.resolvedExpiry;
+    if (snappedStrike) ticket = { ...ticket, strike: snappedStrike };
     if (resolvedExpiry !== ticket.expiry) {
-      console.log(`[Options Auto-Trade] Expiry offset: ${ticket.ticker} $${ticket.strike}P stored=${ticket.expiry} → IB resolved=${resolvedExpiry} (settlement-date difference)`);
+      console.log(`[Options Auto-Trade] Expiry offset: ${ticket.ticker} $${ticket.strike}P stored=${ticket.expiry} → IB resolved=${resolvedExpiry}`);
     }
   }
 
@@ -1254,7 +1281,7 @@ export async function autoTradeOption(ticket: OptionsTradeTicket): Promise<{ tra
     });
 
     if (timedOut) {
-      // Order is live in IB as a pending DAY LMT — paperTradeOption already set SUBMITTED.
+      // Order is live in IB as a pending GTC LMT — awaiting fill.
       console.log(`[Options Auto-Trade] IB order ${orderId} SUBMITTED for ${ticket.ticker} $${ticket.strike}P — awaiting fill`);
       const tradeId = await paperTradeOption({ ...ticket }, orderId);
       createAutoTradeEvent({
