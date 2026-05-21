@@ -96,6 +96,7 @@ router.post('/options/place-order', async (req, res) => {
     // Allow overriding limit price via request body (premium may have changed)
     let limitPrice: number = req.body.limitPrice ?? trade.option_premium;
     let resolvedStrike: number = trade.option_strike;
+    let resolvedConId: number | undefined;
 
     // ── Step 1: Try to resolve the exact stored contract (strike + expiry) ──
     // resolveOptionConId retries ±1/2 day expiry offsets internally and returns
@@ -103,12 +104,16 @@ router.post('/options/place-order', async (req, res) => {
     // resolvedExpiry (not the stored date) in the order, otherwise IB rejects with
     // code=200 "No security definition" when the stored date is off by one day.
     // We also pass conId so IB routes by contract ID, bypassing tradingClass
-    // mismatches (e.g. ADI, DOCU, RBRK, VIK).
+    // mismatches (e.g. ADI, DOCU, RBRK).
     const conn = getPaperConnection();
-    const exactResult = await conn.resolveOptionConId(trade.ticker, right, trade.option_strike, expiry);
+    let lastIbError: string | undefined;
+    const captureIbError = (err: string) => { lastIbError = err; };
+
+    const exactResult = await conn.resolveOptionConId(trade.ticker, right, trade.option_strike, expiry, captureIbError);
 
     if (exactResult) {
       expiry = exactResult.resolvedExpiry;
+      resolvedConId = exactResult.conId;
       if (expiry !== trade.option_expiry.replace(/-/g, '')) {
         console.log(`[place-order] Expiry offset applied: ${trade.ticker} $${trade.option_strike}${right} stored=${trade.option_expiry} → IB resolved=${expiry}`);
       }
@@ -126,7 +131,7 @@ router.post('/options/place-order', async (req, res) => {
 
       if (!bestPut) {
         return res.status(422).json({
-          error: `No options chain available for ${trade.ticker} in IB. Ensure IB Gateway is connected and the ticker has listed options.`,
+          error: `No options chain available for ${trade.ticker} in IB. Ensure IB Gateway is connected and the ticker has listed options.${lastIbError ? ` (${lastIbError})` : ''}`,
         });
       }
 
@@ -135,7 +140,46 @@ router.post('/options/place-order', async (req, res) => {
       // Use the live market bid as limit price (conservative fill, same as scanner logic)
       limitPrice = bestPut.bid > 0 ? bestPut.bid : bestPut.mid;
 
-      console.log(`[place-order] Snapped to nearest IB contract: ${trade.ticker} $${resolvedStrike}${right} exp ${expiry} @ $${limitPrice.toFixed(2)}`);
+      // Verify the chain-snapped contract is a real IB-listed option, not synthetic
+      // Black-Scholes data. getOptionsChain() falls back to B-S when IB can't provide
+      // real chain data (e.g. no options listed, no market data subscription). B-S uses
+      // $2.5 strike increments but IB may only list $5 increments (e.g. VIK $72.5 →
+      // real strikes are $70/$75). When the exact strike fails, search nearby standard
+      // increments so we can always find the real IB-listed contract closest to target.
+      let chainConResult: { conId: number; resolvedExpiry: string } | null = null;
+
+      // Build candidate strikes: exact first, then floor/ceil at $5 and $2.5 increments
+      const candidateStrikes = new Set<number>([resolvedStrike]);
+      for (const inc of [5, 2.5]) {
+        candidateStrikes.add(Math.round(Math.floor(resolvedStrike / inc) * inc * 100) / 100);
+        candidateStrikes.add(Math.round(Math.ceil(resolvedStrike / inc) * inc * 100) / 100);
+      }
+      // Sort by distance from the original target strike, ascending
+      const sortedStrikes = [...candidateStrikes].sort(
+        (a, b) => Math.abs(a - resolvedStrike) - Math.abs(b - resolvedStrike)
+      );
+
+      for (const candidateStrike of sortedStrikes) {
+        chainConResult = await conn.resolveOptionConId(trade.ticker, right, candidateStrike, expiry, captureIbError);
+        if (chainConResult) {
+          if (candidateStrike !== resolvedStrike) {
+            console.log(`[place-order] Strike snapped: ${trade.ticker} synthetic $${resolvedStrike} → IB-listed $${candidateStrike} (nearest real strike)`);
+          }
+          resolvedStrike = candidateStrike;
+          break;
+        }
+      }
+
+      if (!chainConResult) {
+        return res.status(422).json({
+          error: `${trade.ticker} options could not be verified in IB near $${bestPut.strike}${right} exp ${expiry} — tried strikes ${sortedStrikes.join(', ')}.${lastIbError ? ` (${lastIbError})` : ''}`,
+        });
+      }
+      // Override expiry with the one that actually resolved (may differ by ±1 day)
+      expiry = chainConResult.resolvedExpiry;
+      resolvedConId = chainConResult.conId;
+
+      console.log(`[place-order] Snapped to nearest IB contract: ${trade.ticker} $${resolvedStrike}${right} exp ${expiry} @ $${limitPrice.toFixed(2)} conId=${chainConResult.conId}`);
 
       // Update the paper_trade to reflect the IB-corrected contract details so
       // the UI shows the real position, not the synthetic one.
@@ -147,35 +191,55 @@ router.post('/options/place-order', async (req, res) => {
         pnl: null, // will be set by trigger when fill arrives
       }).eq('id', tradeId);
     }
-
-    const { orderId, avgFillPrice, filledQty } = await placeOptionsOrder({
+    const { orderId, avgFillPrice, filledQty, timedOut } = await placeOptionsOrder({
       symbol: trade.ticker,
       right,
       strike: resolvedStrike,
       expiry,
       contracts: 1,
       limitPrice,
-      conId: exactResult?.conId,
+      conId: resolvedConId,
       account: getDefaultAccount() ?? undefined,
     });
 
-    await sb.from('paper_trades').update({
-      ib_order_id: orderId,
-      fill_price: avgFillPrice,
-      option_premium: avgFillPrice,
-      status: 'FILLED',
-      filled_at: new Date().toISOString(),
-    }).eq('id', tradeId);
+    const snappedNote = resolvedStrike !== trade.option_strike ? `, snapped from synthetic $${trade.option_strike}` : '';
 
-    createAutoTradeEvent({
-      ticker: trade.ticker,
-      event_type: 'success',
-      action: 'executed',
-      source: 'scanner',
-      mode: trade.mode,
-      message: `IB order filled #${orderId} — Sold ${filledQty}x $${resolvedStrike}${right} exp ${expiry} @ $${avgFillPrice.toFixed(2)}/contract (manual placement${resolvedStrike !== trade.option_strike ? `, snapped from synthetic $${trade.option_strike}` : ''})`,
-      metadata: { ibOrderId: orderId, strike: resolvedStrike, expiry, premium: avgFillPrice, contracts: filledQty },
-    }).catch(() => {});
+    if (timedOut) {
+      // Order is live in IB as a pending DAY LMT — awaiting fill. Record as SUBMITTED.
+      await sb.from('paper_trades').update({
+        ib_order_id: orderId,
+        status: 'SUBMITTED',
+      }).eq('id', tradeId);
+
+      createAutoTradeEvent({
+        ticker: trade.ticker,
+        event_type: 'success',
+        action: 'executed',
+        source: 'scanner',
+        mode: trade.mode,
+        message: `Order submitted to IB #${orderId} — $${resolvedStrike}${right} exp ${expiry} @ $${limitPrice.toFixed(2)} limit (manual placement${snappedNote}) — awaiting fill`,
+        metadata: { ibOrderId: orderId, strike: resolvedStrike, expiry, limitPrice, contracts: 1 },
+      }).catch(() => {});
+    } else {
+      // Immediate fill — record actual fill price.
+      await sb.from('paper_trades').update({
+        ib_order_id: orderId,
+        fill_price: avgFillPrice,
+        option_premium: avgFillPrice,
+        status: 'FILLED',
+        filled_at: new Date().toISOString(),
+      }).eq('id', tradeId);
+
+      createAutoTradeEvent({
+        ticker: trade.ticker,
+        event_type: 'success',
+        action: 'executed',
+        source: 'scanner',
+        mode: trade.mode,
+        message: `IB order filled #${orderId} — Sold ${filledQty}x $${resolvedStrike}${right} exp ${expiry} @ $${avgFillPrice.toFixed(2)}/contract (manual placement${snappedNote})`,
+        metadata: { ibOrderId: orderId, strike: resolvedStrike, expiry, premium: avgFillPrice, contracts: filledQty },
+      }).catch(() => {});
+    }
 
     res.json({
       success: true,

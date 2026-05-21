@@ -394,9 +394,12 @@ export async function runOptionsManageCycle(): Promise<ManageCycleResult> {
   result.profitClosePct = profitClosePct;
 
   // ── Clean up stale SUBMITTED options orders ──────────────
-  // With the fix to placeOptionsOrder (now awaits fill/reject), SUBMITTED
-  // orders should not persist. Any still SUBMITTED after 5 minutes are stale
-  // (order timed out, process restarted, etc.) — mark them CANCELLED.
+  // Only cancel SUBMITTED orders that have NO ib_order_id — those are pure
+  // paper records that never made it to IB (process restart, timeout before
+  // placeOrder was called, etc.).
+  // Orders WITH an ib_order_id are live GTC orders in IB awaiting a fill —
+  // do NOT auto-cancel them here; they will be updated when IB fills them or
+  // when the user explicitly discards them.
   {
     const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
     const { data: stale } = await sb
@@ -404,6 +407,7 @@ export async function runOptionsManageCycle(): Promise<ManageCycleResult> {
       .select('id, ticker, option_strike, ib_order_id')
       .in('mode', [...OPTIONS_MODES])
       .eq('status', 'SUBMITTED')
+      .is('ib_order_id', null)
       .lt('opened_at', fiveMinAgo);
 
     if (stale?.length) {
