@@ -10,7 +10,8 @@
  * New dual-account code uses the IBConnection class API directly.
  */
 
-import { IBApi, EventName, Contract, Order, OrderAction, OrderType, SecType, TimeInForce, OptionType } from '@stoqey/ib';
+import { IBApi, EventName, Contract, Order, OrderAction, OrderType, SecType, TimeInForce, OptionType, ScanCode, LocationCode, Instrument } from '@stoqey/ib';
+import type { ScannerSubscription } from '@stoqey/ib';
 import { insertIbFill, updateIbFillCommission, getTodayFillPrices, getFillPriceByOrderId, saveConfigPartial, createAutoTradeEvent } from './lib/supabase.js';
 import type { AccountType } from '../../shared/trade-types.js';
 
@@ -1114,6 +1115,76 @@ export class IBConnection {
     } catch (err) {
       throw err;
     }
+  }
+
+  // ── Market Scanner ───────────────────────────────────
+
+  /**
+   * Fetch top % gainers from IB's built-in market scanner.
+   * Replaces Yahoo Finance screener — no external auth needed.
+   * Returns tickers with IB-provided % gain distance string parsed as number.
+   */
+  async scanTopGainers(opts: {
+    abovePrice?: number;
+    belowPrice?: number;
+    aboveVolume?: number;
+    numberOfRows?: number;
+    openGap?: boolean;
+  } = {}): Promise<Array<{ ticker: string; distancePct: number | null }>> {
+    if (!this.ib || !this._connected) return [];
+
+    const reqId = this.getNextOrderId();
+    const params: ScannerSubscription = {
+      instrument: Instrument.STK,
+      locationCode: LocationCode.STK_US_MAJOR,
+      scanCode: opts.openGap ? ScanCode.TOP_OPEN_PERC_GAIN : ScanCode.TOP_PERC_GAIN,
+      numberOfRows: opts.numberOfRows ?? 30,
+      ...(opts.abovePrice != null ? { abovePrice: opts.abovePrice } : {}),
+      ...(opts.belowPrice != null ? { belowPrice: opts.belowPrice } : {}),
+      ...(opts.aboveVolume != null ? { aboveVolume: opts.aboveVolume } : {}),
+    };
+
+    return new Promise(resolve => {
+      const results: Array<{ ticker: string; distancePct: number | null }> = [];
+      const emitter = this.ib! as unknown as NodeJS.EventEmitter;
+      let done = false;
+
+      const finish = () => {
+        if (done) return;
+        done = true;
+        clearTimeout(timeout);
+        emitter.removeListener(EventName.scannerData, onData);
+        emitter.removeListener(EventName.scannerDataEnd, onEnd);
+        try { this.ib?.cancelScannerSubscription(reqId); } catch { /* ignore */ }
+        resolve(results);
+      };
+
+      const timeout = setTimeout(finish, 10_000);
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const onData = (rId: number, _rank: number, contractDetails: any, distance: string) => {
+        if (rId !== reqId) return;
+        const ticker = contractDetails?.contract?.symbol as string | undefined;
+        if (!ticker) return;
+        const pct = parseFloat(distance);
+        results.push({ ticker, distancePct: isNaN(pct) ? null : pct });
+      };
+
+      const onEnd = (rId: number) => {
+        if (rId !== reqId) return;
+        finish();
+      };
+
+      emitter.on(EventName.scannerData, onData);
+      emitter.on(EventName.scannerDataEnd, onEnd);
+
+      try {
+        this.ib!.reqScannerSubscription(reqId, params);
+      } catch (err) {
+        console.warn(`${this.tag} scanTopGainers failed: ${err instanceof Error ? err.message : err}`);
+        finish();
+      }
+    });
   }
 
   // ── Disconnect ───────────────────────────────────────
