@@ -638,8 +638,15 @@ export function SettingsTab({ config, onUpdate }: SettingsTabProps) {
               label="Swing Max Hold Days"
               value={config.swingMaxHoldDays}
               onChange={v => onUpdate({ swingMaxHoldDays: v })}
-              min={0} max={30} step={1}
-              help="Auto-close swing trades held longer than this (0 = off). Frees capital for fresh signals."
+              min={0} max={60} step={1}
+              help="Auto-close swing trades held longer than this many trading days (0 = off). Default: 15."
+            />
+            <SettingsInput
+              label="Swing Position Size Cap ($)"
+              value={config.swingPositionSize ?? 5000}
+              onChange={v => onUpdate({ swingPositionSize: v })}
+              min={500} max={50000} step={500}
+              help="Max $ per swing trade. Separate from day trade cap. Default: $5,000."
             />
           </div>
           <div className="flex items-center gap-3">

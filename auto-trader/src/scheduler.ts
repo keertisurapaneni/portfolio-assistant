@@ -137,6 +137,7 @@ interface TradeIdea {
   entryPrice?: number | null;
   stopLoss?: number | null;
   targetPrice?: number | null;
+  targetPrice2?: number | null;
   riskReward?: string | null;
   atr?: number | null;
   in_play_score?: number;
@@ -1639,6 +1640,31 @@ function getETTimeString(): string {
     minute: '2-digit',
     hour12: false,
   });
+}
+
+/**
+ * Count trading days (Mon–Fri, excluding US market holidays) elapsed since `from`.
+ * Covers 2025–2026. Non-blocking on weekends — a Saturday `from` still counts 0 for that day.
+ */
+function countTradingDaysSince(from: Date): number {
+  const US_HOLIDAYS = new Set([
+    '2025-01-01','2025-01-20','2025-02-17','2025-04-18','2025-05-26',
+    '2025-06-19','2025-07-04','2025-09-01','2025-11-27','2025-12-25',
+    '2026-01-01','2026-01-19','2026-02-16','2026-04-03','2026-05-25',
+    '2026-06-19','2026-07-03','2026-09-07','2026-11-26','2026-12-25',
+  ]);
+  let count = 0;
+  const cur = new Date(from);
+  cur.setHours(0, 0, 0, 0);
+  const now = new Date();
+  now.setHours(0, 0, 0, 0);
+  while (cur < now) {
+    cur.setDate(cur.getDate() + 1);
+    const day = cur.getDay();
+    if (day === 0 || day === 6) continue;
+    if (!US_HOLIDAYS.has(cur.toISOString().slice(0, 10))) count++;
+  }
+  return count;
 }
 
 function resetProcessedTickersIfNewDay(): void {
@@ -3262,22 +3288,10 @@ async function executeScannerTrade(
   }
 
   // ── Swing trade quality gates ─────────────────────────────────────────
-  // Swing trades bypass the ORB/VWAP gates above (intraday metrics don't apply
-  // to multi-day holds). Swing-specific gates are RELAXED compared to day trades:
-  // - Chop/consolidation is WHERE swing entries form (accumulation, base building)
-  // - Low intraday volume is normal during pullbacks and consolidation
-  // - Wyckoff volume divergence applies to breakouts, not pullback entries
-  if (mode === 'SWING_TRADE') {
-    // Only block on extremely thin volume (< 0.15x) where fills are unreliable.
-    // Normal low volume (0.15-1.0x) is expected during swing entry conditions.
-    if (idea.volumeVs10dAvg != null && idea.volumeVs10dAvg < 0.15) {
-      log(`${ticker}: swing trade skipped — volume ${idea.volumeVs10dAvg.toFixed(2)}x avg (< 0.15x, dangerously thin)`);
-      persistEvent(ticker, 'skipped', `Swing trade skipped: dangerously thin volume (${idea.volumeVs10dAvg.toFixed(2)}x 10d avg)`, {
-        action: 'skipped', source: 'scanner', mode, skip_reason: 'swing_low_volume',
-      });
-      return 'skipped:swing_low_volume';
-    }
-  }
+  // Swing trades bypass the ORB/VWAP/volume gates above (intraday metrics don't apply
+  // to multi-day holds). SMB methodology: low volume during consolidation is POSITIVE
+  // (rubber band coiling). Volume confirmation is only required on the breakout/entry day,
+  // which the FA call already evaluates via the LLM. Scan-day volume is irrelevant.
 
   // ── VWAP alignment confidence modifier ───────────────────────────────
   // Day trades only, after 10 AM ET. Adds +0.3 confidence when price is
@@ -3335,19 +3349,22 @@ async function executeScannerTrade(
   let entryPrice: number | null;
   let stopLoss: number | null;
   let targetPrice: number | null;
+  let targetPrice2: number | null = null;
   let faConf: number;
   let faRec: string;
   let faRiskReward: string | null;
 
-  if (mode === 'DAY_TRADE' && idea.entryPrice && idea.stopLoss && idea.targetPrice) {
-    // Scanner Pass 2 already ran FA — reuse its levels and confidence.
-    // Re-anchor to live price so the bracket order isn't stale (scanner may be 30+ min old).
+  if ((mode === 'DAY_TRADE' || mode === 'SWING_TRADE') && idea.entryPrice && idea.stopLoss && idea.targetPrice) {
+    // Scanner Pass 2 already ran FA — reuse its levels and skip the redundant FA re-call.
+    // Day trades: re-anchor tightly (3% tolerance) since intraday price moves fast.
+    // Swing trades: re-anchor loosely (6% tolerance) — GTC orders can sit at a level for days.
     const livePrice = await getQuotePrice(ticker).catch(() => null);
     const scannerEntry = idea.entryPrice;
+    const staleTolerance = mode === 'SWING_TRADE' ? 0.06 : 0.03;
 
     const r2 = (n: number) => parseFloat(n.toFixed(2));
-    if (livePrice && Math.abs(livePrice - scannerEntry) / scannerEntry <= 0.03) {
-      // Price moved < 3% since scan — shift stop/target by the same delta to preserve R:R
+    if (livePrice && Math.abs(livePrice - scannerEntry) / scannerEntry <= staleTolerance) {
+      // Price moved within tolerance — shift stop/target by the same delta to preserve R:R
       const delta = livePrice - scannerEntry;
       entryPrice = r2(livePrice);
       stopLoss = r2(idea.stopLoss + delta);
@@ -3362,27 +3379,29 @@ async function executeScannerTrade(
         targetPrice = signal === 'BUY' ? r2(entryPrice + minStopDist * 2) : r2(entryPrice - minStopDist * 2);
         log(`${ticker}: stop too tight (${actualStopDist.toFixed(2)}) — widened to min 0.8% (${minStopDist.toFixed(2)})`);
       }
-      log(`${ticker}: live price ${livePrice} (shifted ${delta > 0 ? '+' : ''}${delta.toFixed(2)} from scan entry ${scannerEntry})`);
+      log(`${ticker}: [${mode}] live price ${livePrice} (shifted ${delta > 0 ? '+' : ''}${delta.toFixed(2)} from scan entry ${scannerEntry})`);
     } else if (livePrice && idea.atr && idea.atr > 0) {
-      // Price moved > 3% — levels are too stale. Recompute from ATR around live price.
+      // Price moved beyond tolerance — levels are stale. Recompute from ATR around live price.
       const stopDist = idea.atr * 1.0;
       const targetDist = idea.atr * 2.0;
       entryPrice = r2(livePrice);
       stopLoss   = signal === 'BUY' ? r2(livePrice - stopDist) : r2(livePrice + stopDist);
       targetPrice = signal === 'BUY' ? r2(livePrice + targetDist) : r2(livePrice - targetDist);
-      log(`${ticker}: price moved >3% since scan — ATR-reanchored: entry=${entryPrice}, stop=${stopLoss}, target=${targetPrice}`);
+      log(`${ticker}: [${mode}] price moved >${(staleTolerance * 100).toFixed(0)}% since scan — ATR-reanchored: entry=${entryPrice}, stop=${stopLoss}, target=${targetPrice}`);
     } else {
       // No live price available — use scanner levels as-is
       entryPrice = idea.entryPrice;
       stopLoss = idea.stopLoss;
       targetPrice = idea.targetPrice;
     }
+    // Carry T2 from scanner if available (swing partial exit)
+    targetPrice2 = idea.targetPrice2 ?? null;
 
     faConf = effectiveScannerConf; // Pass 2 confidence adjusted by candle modifier
     faRec = signal;       // Signal already reflects FA direction from Pass 2
     faRiskReward = idea.riskReward ?? null;
   } else {
-    // Swing trades or day trades without levels: run a fresh FA call
+    // Day trades without pre-set levels or swing trades whose scan levels are missing: fresh FA call
     let fa: TradingSignalsResponse;
     try {
       const faMode = mode === 'DAY_TRADE' ? 'DAY_TRADE' : 'SWING_TRADE';
@@ -3396,6 +3415,7 @@ async function executeScannerTrade(
     entryPrice = fa.trade.entryPrice;
     stopLoss = fa.trade.stopLoss;
     targetPrice = fa.trade.targetPrice;
+    targetPrice2 = fa.trade.targetPrice2 ?? null;
     faRiskReward = fa.trade.riskReward;
   }
 
@@ -3410,6 +3430,22 @@ async function executeScannerTrade(
     const rr = parseRiskReward(faRiskReward);
     if (rr == null || rr < MIN_DAY_TRADE_RISK_REWARD) {
       return `skipped:rr_${rr?.toFixed(1) ?? 'null'}_min_${MIN_DAY_TRADE_RISK_REWARD}`;
+    }
+  }
+
+  // Swing trade: hard minimum R:R floor of 1.5:1.
+  // The prompt says "3:1 minimum" but the code never enforced it — LLMs occasionally
+  // return high-confidence, low-R:R setups that execute unfiltered. Compute R:R from actual
+  // price levels as a fallback when the string parse fails.
+  const MIN_SWING_RISK_REWARD = 1.5;
+  if (mode === 'SWING_TRADE' && entryPrice && stopLoss && targetPrice) {
+    const risk = Math.abs(entryPrice - stopLoss);
+    const reward = Math.abs(targetPrice - entryPrice);
+    const rrParsed = parseRiskReward(faRiskReward);
+    const effectiveRr = rrParsed ?? (risk > 0 ? reward / risk : 0);
+    if (effectiveRr < MIN_SWING_RISK_REWARD) {
+      log(`${ticker}: swing skipped — R:R ${effectiveRr.toFixed(2)} below min ${MIN_SWING_RISK_REWARD} (entry=${entryPrice}, stop=${stopLoss}, target=${targetPrice})`);
+      return `skipped:rr_${effectiveRr.toFixed(1)}_min_${MIN_SWING_RISK_REWARD}`;
     }
   }
 
@@ -3433,14 +3469,16 @@ async function executeScannerTrade(
     drawdownMultiplier: dd.multiplier * kellyMult * vixMult * econMult,
     streakMultiplier: streakMult,
   });
-  // Scanner trades (AI-generated, not expert-vetted) must be capped at positionSize.
-  // Dynamic sizing can produce 200-400 share positions when the stop is very tight —
-  // a gap-through on a volatile open turns a $300 expected loss into a $1,500+ wipeout.
+  // Scanner trades (AI-generated, not expert-vetted) must be capped per mode.
+  // Swing trades use a separate, larger cap (swingPositionSize, default $5K) because
+  // they're multi-day holds that need meaningful size to generate income. Day trades
+  // use positionSize ($1K default) since intraday stops are tighter and gap risk is higher.
   //
   // Confidence-based sizing: high-confidence BUY signals get larger positions.
   // Data (430 trades): conf 9 multiplied trades were net +$1,102 (+$985 vs $5K cap).
-  // The multiplier correctly sizes up into the system's highest-conviction calls.
-  const baseCap = config.positionSize > 0 ? config.positionSize : 5000;
+  const baseCap = mode === 'SWING_TRADE'
+    ? (config.swingPositionSize > 0 ? config.swingPositionSize : 5000)
+    : (config.positionSize > 0 ? config.positionSize : 5000);
   const confMultiplier = (signal === 'BUY' && scannerConf >= 9) ? 2.0
     : (signal === 'BUY' && scannerConf >= 8) ? 1.5
     : 1.0;
@@ -3448,7 +3486,31 @@ async function executeScannerTrade(
   if (confMultiplier > 1.0) {
     log(`${ticker}: confidence sizing — conf ${scannerConf} ${signal} → ${confMultiplier}x cap ($${scannerPositionCap.toFixed(0)})`);
   }
-  const cappedDollarSize = Math.min(sizingRaw.dollarSize, scannerPositionCap);
+
+  // SPY regime multiplier for swing BUY: reduce size in bearish macro conditions.
+  // SELL signals (closing longs or shorts) benefit from bearish markets — no reduction.
+  // Non-blocking: defaults to 1.0 on any data failure.
+  let spyRegimeMult = 1.0;
+  if (mode === 'SWING_TRADE' && signal === 'BUY') {
+    try {
+      const spyBars = await fetchYahooDailyBars('SPY');
+      if (spyBars && spyBars.closes.length >= 200) {
+        const closes = spyBars.closes;
+        const price = closes[closes.length - 1];
+        const sma50 = closes.slice(-50).reduce((a, b) => a + b, 0) / 50;
+        const sma200 = closes.slice(-200).reduce((a, b) => a + b, 0) / 200;
+        if (price < sma200) {
+          spyRegimeMult = 0.4;
+          log(`${ticker}: SPY below SMA200 — swing BUY size ×0.4 (bearish regime)`);
+        } else if (price < sma50) {
+          spyRegimeMult = 0.6;
+          log(`${ticker}: SPY below SMA50 — swing BUY size ×0.6 (mixed regime)`);
+        }
+      }
+    } catch { /* non-blocking */ }
+  }
+
+  const cappedDollarSize = Math.min(sizingRaw.dollarSize, scannerPositionCap) * spyRegimeMult;
   const sizing = {
     dollarSize: cappedDollarSize,
     quantity: Math.max(1, Math.floor(cappedDollarSize / entryPrice)),
@@ -3512,6 +3574,23 @@ async function executeScannerTrade(
     }
   }
 
+  // ── Partial exit split (SWING_TRADE only) ────────────────────────────
+  // If FA returned a stretch target (T2) and we have enough shares to split,
+  // place TWO independent GTC brackets each for half the quantity:
+  //   Bracket 1 — TP at T1 (targetPrice): locks in first 50% profit
+  //   Bracket 2 — TP at T2 (targetPrice2): lets the other 50% run
+  // Both start with the same stop-loss. This gives natural partial exit
+  // without needing IB order modification. Each bracket is an independent
+  // paper_trade row so P&L tracking is clean.
+  const usePartialExit = mode === 'SWING_TRADE' && targetPrice2 != null && sizing.quantity >= 4;
+  const t1Qty = usePartialExit ? Math.floor(sizing.quantity / 2) : sizing.quantity;
+  const t2Qty = usePartialExit ? sizing.quantity - t1Qty : 0;
+  if (usePartialExit) {
+    log(`${ticker}: split bracket — T1 ${t1Qty} @ $${targetPrice}, T2 ${t2Qty} @ $${targetPrice2}`);
+  }
+
+  const tif = mode === 'DAY_TRADE' ? 'DAY' : 'GTC';
+
   let primaryResult: string | undefined;
   for (const { connection, accountType } of connections) {
     if (!connection.isConnected()) {
@@ -3528,14 +3607,15 @@ async function executeScannerTrade(
     }
 
     try {
+      // ── T1 bracket (always placed) ──────────────────────────────────────
       const result = await connection.placeBracketOrder({
         symbol: ticker,
         side: signal,
-        quantity: sizing.quantity,
+        quantity: t1Qty,
         entryPrice,
         stopLoss,
         takeProfit: targetPrice,
-        tif: mode === 'DAY_TRADE' ? 'DAY' : 'GTC',
+        tif,
       });
 
       await createPaperTrade({
@@ -3546,15 +3626,15 @@ async function executeScannerTrade(
         entry_price: entryPrice,
         stop_loss: stopLoss,
         target_price: targetPrice,
-        target_price2: null,
+        target_price2: targetPrice2,
         risk_reward: faRiskReward,
-        quantity: sizing.quantity,
-        position_size: sizing.dollarSize,
+        quantity: t1Qty,
+        position_size: (t1Qty / sizing.quantity) * sizing.dollarSize,
         ib_order_id: String(result.parentOrderId),
         ib_tp_order_id: String(result.takeProfitOrderId),
         ib_sl_order_id: String(result.stopLossOrderId),
         status: 'SUBMITTED',
-        scanner_reason: idea.reason,
+        scanner_reason: usePartialExit ? `${idea.reason} [T1 tranche]` : idea.reason,
         fa_rationale: null,
         in_play_score: idea.in_play_score,
         pass1_confidence: idea.pass1_confidence,
@@ -3563,11 +3643,56 @@ async function executeScannerTrade(
       }, accountType);
 
       if (!primaryResult) recordPendingOrder(sizing.dollarSize);
-      log(`${ticker}: ORDER PLACED [${accountType}] — ${signal} ${sizing.quantity} @ $${entryPrice}`);
+      log(`${ticker}: T1 BRACKET [${accountType}] — ${signal} ${t1Qty} @ $${entryPrice}, TP=$${targetPrice}, SL=$${stopLoss}`);
+
+      // ── T2 bracket (only when partial exit is active) ───────────────────
+      if (usePartialExit && targetPrice2 != null && t2Qty > 0) {
+        try {
+          const result2 = await connection.placeBracketOrder({
+            symbol: ticker,
+            side: signal,
+            quantity: t2Qty,
+            entryPrice,
+            stopLoss,
+            takeProfit: targetPrice2,
+            tif,
+          });
+
+          await createPaperTrade({
+            ticker, mode, signal,
+            scanner_confidence: Math.round(effectiveScannerConf),
+            fa_confidence: faConf != null ? Math.round(faConf) : null,
+            fa_recommendation: faRec,
+            entry_price: entryPrice,
+            stop_loss: stopLoss,
+            target_price: targetPrice2,
+            target_price2: null,
+            risk_reward: null,
+            quantity: t2Qty,
+            position_size: (t2Qty / sizing.quantity) * sizing.dollarSize,
+            ib_order_id: String(result2.parentOrderId),
+            ib_tp_order_id: String(result2.takeProfitOrderId),
+            ib_sl_order_id: String(result2.stopLossOrderId),
+            status: 'SUBMITTED',
+            scanner_reason: `${idea.reason} [T2 tranche]`,
+            fa_rationale: null,
+            in_play_score: idea.in_play_score,
+            pass1_confidence: idea.pass1_confidence,
+            entry_trigger_type: 'bracket_limit',
+            market_condition: idea.market_condition,
+          }, accountType);
+
+          log(`${ticker}: T2 BRACKET [${accountType}] — ${signal} ${t2Qty} @ $${entryPrice}, TP=$${targetPrice2}, SL=$${stopLoss}`);
+        } catch (t2Err) {
+          // T2 failure is non-fatal — T1 is already placed and tracking the full stop
+          log(`${ticker}: T2 bracket FAILED (non-fatal) — ${t2Err instanceof Error ? t2Err.message : 'unknown'}`);
+        }
+      }
+
       if (mode === 'SWING_TRADE') {
         upsertSwingMetrics({ date: getETDateString(), swing_orders_placed: 1 }).catch(() => {});
       }
-      persistEvent(ticker, 'success', `Order placed: ${signal} ${sizing.quantity} @ $${entryPrice}`, {
+      persistEvent(ticker, 'success', `Order placed: ${signal} ${sizing.quantity} @ $${entryPrice}${usePartialExit ? ` (T1=$${targetPrice}, T2=$${targetPrice2})` : ''}`, {
         action: 'executed', source: 'scanner', mode,
         scanner_signal: signal, scanner_confidence: Math.round(effectiveScannerConf),
         fa_recommendation: faRec, fa_confidence: faConf != null ? Math.round(faConf) : null,
@@ -5080,18 +5205,20 @@ async function _syncPositionsForAccount(
         ).catch(() => {});
         log(`${trade.ticker}: Day trade expired (market closed)`);
       }
-      // Swing bracket limit: expire after 2 trading days (~48h), cancel IB order
-      const TWO_TRADING_DAYS_MS = 2 * 24 * 60 * 60 * 1000;
+      // Swing bracket limit: expire after 3 trading days (Mon–Fri, excl. holidays).
+      // Previously used 48 calendar hours which silently cancelled orders over weekends
+      // before Monday's market open. Now counts actual trading days so GTC limits
+      // placed Friday survive to give the setup time to trigger early next week.
       if (
         trade.mode === 'SWING_TRADE' &&
         trade.entry_trigger_type === 'bracket_limit' &&
-        tradeAge > TWO_TRADING_DAYS_MS
+        countTradingDaysSince(new Date(trade.opened_at)) >= 3
       ) {
         const orderId = trade.ib_order_id ? parseInt(trade.ib_order_id, 10) : NaN;
         if (!Number.isNaN(orderId)) {
           try {
             getConnectionForAccount(syncAcct).cancelOrder(orderId);
-            log(`${trade.ticker}: Swing bracket limit cancelled (expired >2 trading days)`);
+            log(`${trade.ticker}: Swing bracket limit cancelled (expired ≥3 trading days unfilled)`);
           } catch (err) {
             log(`${trade.ticker}: Cancel failed — ${err instanceof Error ? err.message : 'unknown'}`);
           }
@@ -5101,7 +5228,7 @@ async function _syncPositionsForAccount(
         await updatePaperTrade(trade.id, {
           status: 'CLOSED', close_reason: 'manual',
           closed_at: closedAt,
-          notes: (trade.notes ?? '') + ' | Expired: SWING limit not filled within 2 trading days',
+          notes: (trade.notes ?? '') + ' | Expired: SWING limit not filled within 3 trading days',
         }, syncAcct);
         logClosedTradePerformance(
           { ...trade, status: 'CLOSED', close_reason: 'manual', closed_at: closedAt } as import('./lib/supabase.js').PaperTrade,
@@ -5457,11 +5584,13 @@ async function checkSwingHoldExpiry(
   const swingAcct = swingConnections[0].accountType;
 
   const activeTrades = await getActiveTrades(swingAcct);
+  // Count trading days (Mon–Fri, excl. holidays) — calendar days inflate the count
+  // over weekends and make a 15-day hold appear as 21 calendar days.
   const stale = activeTrades.filter(t =>
     t.mode === 'SWING_TRADE' &&
     t.status === 'FILLED' &&
     t.filled_at != null &&
-    (Date.now() - new Date(t.filled_at).getTime()) / 86400000 > maxDays
+    countTradingDaysSince(new Date(t.filled_at)) > maxDays
   );
 
   for (const trade of stale) {
@@ -5470,7 +5599,7 @@ async function checkSwingHoldExpiry(
 
     const qty = Math.abs(ibPos.position);
     const side: 'BUY' | 'SELL' = ibPos.position > 0 ? 'SELL' : 'BUY';
-    const daysHeld = ((Date.now() - new Date(trade.filled_at!).getTime()) / 86400000).toFixed(1);
+    const daysHeld = countTradingDaysSince(new Date(trade.filled_at!));
     const gainPct = ibPos.avgCost > 0
       ? ((ibPos.mktPrice - ibPos.avgCost) / ibPos.avgCost * 100).toFixed(1)
       : '?';

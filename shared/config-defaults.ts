@@ -46,6 +46,8 @@ export interface AutoTraderConfig {
   /** Flat dollar size for influencer daily signal trades. 0 = use dynamic sizing. */
   externalSignalPositionSize: number;
   swingMaxHoldDays: number;
+  /** Scanner position size cap for swing trades. Separate from positionSize (day trade cap). */
+  swingPositionSize: number;
   capitalPressureEnabled: boolean;
   ltStopLossPct: number;
   ltProfitTakePct: number;
@@ -108,7 +110,8 @@ export const DEFAULT_CONFIG: AutoTraderConfig = {
   kellyAdaptiveEnabled: false,
   longTermBucketPct: 50,
   externalSignalPositionSize: 5000,
-  swingMaxHoldDays: 5,
+  swingMaxHoldDays: 15,
+  swingPositionSize: 5000,
   capitalPressureEnabled: true,
   ltStopLossPct: -12,
   ltProfitTakePct: 15,

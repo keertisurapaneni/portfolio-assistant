@@ -28,7 +28,7 @@ interface StreakConfig {
 const STREAK_CONFIGS: Record<string, StreakConfig> = {
   DAY_TRADE:  { windowSize: 10, coldThreshold: 0.35, recoveryThreshold: 0.50 },
   DAY_PENNY:  { windowSize: 10, coldThreshold: 0.25, recoveryThreshold: 0.40 },
-  SWING_TRADE: { windowSize: 5, coldThreshold: 0.30, recoveryThreshold: 0.45 },
+  SWING_TRADE: { windowSize: 10, coldThreshold: 0.30, recoveryThreshold: 0.50 },
 };
 
 const COLD_MULTIPLIER = 0.5;
