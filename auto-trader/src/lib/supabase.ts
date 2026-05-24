@@ -115,6 +115,7 @@ export async function loadConfig(): Promise<AutoTraderConfig> {
     longTermBucketPct: Number(data.long_term_bucket_pct) || DEFAULT_CONFIG.longTermBucketPct,
     externalSignalPositionSize: Number(data.external_signal_position_size) || DEFAULT_CONFIG.externalSignalPositionSize,
     swingMaxHoldDays: Number(data.swing_max_hold_days ?? DEFAULT_CONFIG.swingMaxHoldDays),
+    swingPositionSize: Number(data.swing_position_size ?? DEFAULT_CONFIG.swingPositionSize),
     capitalPressureEnabled: data.capital_pressure_enabled ?? DEFAULT_CONFIG.capitalPressureEnabled,
     ltStopLossPct: Number(data.lt_stop_loss_pct ?? DEFAULT_CONFIG.ltStopLossPct),
     ltProfitTakePct: Number(data.lt_profit_take_pct ?? DEFAULT_CONFIG.ltProfitTakePct),
