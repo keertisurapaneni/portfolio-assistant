@@ -63,6 +63,7 @@ interface TradeIdea {
   entryPrice?: number | null;
   stopLoss?: number | null;
   targetPrice?: number | null;
+  targetPrice2?: number | null;
   riskReward?: string | null;
   atr?: number | null;  // from 15m indicators — used to re-anchor levels to live price
   // Validation log (for 10–20 day analysis)
@@ -125,6 +126,7 @@ interface AIEval {
   entryPrice?: number | null;
   stopLoss?: number | null;
   targetPrice?: number | null;
+  targetPrice2?: number | null;
   riskReward?: string | null;
   atr?: number | null;
   confidence: number;  // 0-10
@@ -983,6 +985,7 @@ function buildIdea(
     entryPrice: eval_.entryPrice ?? null,
     stopLoss: eval_.stopLoss ?? null,
     targetPrice: eval_.targetPrice ?? null,
+    targetPrice2: eval_.targetPrice2 ?? null,
     riskReward: eval_.riskReward ?? null,
     atr: eval_.atr ?? null,
     in_play_score: quote._inPlayScore,
@@ -1868,15 +1871,16 @@ async function runPass2(
         const entryPrice = typeof parsed.entryPrice === 'number' ? parsed.entryPrice : null;
         const stopLoss = typeof parsed.stopLoss === 'number' ? parsed.stopLoss : null;
         const targetPrice = typeof parsed.targetPrice === 'number' ? parsed.targetPrice : null;
+        const targetPrice2 = typeof parsed.targetPrice2 === 'number' ? parsed.targetPrice2 : null;
         const riskReward = typeof parsed.riskReward === 'string' ? parsed.riskReward : null;
 
-        console.log(`[Trade Scanner] ${ticker}: ${recommendation}/${confidence} entry=${entryPrice} stop=${stopLoss} target=${targetPrice} (FA-prompt)`);
+        console.log(`[Trade Scanner] ${ticker}: ${recommendation}/${confidence} entry=${entryPrice} stop=${stopLoss} T1=${targetPrice} T2=${targetPrice2} (FA-prompt)`);
         return {
           ticker,
           signal: recommendation as AIEval['signal'],
           confidence,
           reason: typeof reason === 'string' ? reason : '',
-          entryPrice, stopLoss, targetPrice, riskReward,
+          entryPrice, stopLoss, targetPrice, targetPrice2, riskReward,
           atr: indicators.atr ?? null,
         } as AIEval;
       } catch (err) {
@@ -1933,11 +1937,13 @@ async function runPass2(
 
   const withDirection = results.filter(e => e.signal === 'BUY' || e.signal === 'SELL');
   // Day trades: use 6 as base (scanner already did 2 passes of vetting; 7 was too strict)
-  // Swing trades: try 7 first, fall back to 5 if nothing qualifies
-  // Bear market penalty (-0.5 on BUYs) can push a 6.0 AI score to 5.5 — fallback must reach 5
+  // Swing trades: strict ≥ 7, fall back to ≥ 6 if nothing qualifies.
+  // Note: fallback ideas (6-6.9) are stored in DB and visible in the UI, but the scheduler's
+  // minScannerConfidence (default 7) will skip them at execution time — they serve as
+  // "watchlist" candidates the user can manually review or lower the conf threshold for.
   const strictMinConfidence = 7;
   const baseMinConfidence = mode === 'DAY_TRADE' ? 6 : strictMinConfidence;
-  const fallbackMinConfidence = mode === 'DAY_TRADE' ? 6 : 5;
+  const fallbackMinConfidence = mode === 'DAY_TRADE' ? 6 : 6;
   const strictCandidates = withDirection.filter(e => e.confidence >= baseMinConfidence);
   const selectedCandidates = strictCandidates.length > 0
     ? strictCandidates
@@ -2426,13 +2432,13 @@ Deno.serve(async (req) => {
           const nonSkip = evals.filter(e => e.signal !== 'SKIP' && e.signal !== 'HOLD').sort((a, b) => b.confidence - a.confidence);
           console.log(`[Trade Scanner] Swing Pass 1 non-SKIP (${nonSkip.length}): ${nonSkip.map(e => `${e.ticker}:${e.signal}/${e.confidence}`).join(', ') || 'none'}`);
 
-          // Select up to 5 tickers for swing Pass 2, balanced by direction.
-          // Sequential Pass 2 with 2s delays: 5 × ~4K tokens = 20K total (under 30K TPM).
-          // Ensure both BUY and SELL directions are represented — in bear markets all BUYs
-          // may downgrade to HOLD in Pass 2, so we always include the top SELLs too.
+          // Select up to 8 tickers for swing Pass 2, balanced by direction.
+          // Sequential Pass 2 with 2s delays: 8 × ~4K tokens = 32K total (still within 60K TPM).
+          // More candidates → more chances of finding conf ≥ 7 on mixed/choppy days.
+          // Previously 5 — with only 5 shots, 0 results were common when the LLM hedged on 3-4.
           const nonSkipFiltered = nonSkip.filter(e => e.confidence >= 4);
-          const topBuys = nonSkipFiltered.filter(e => e.signal === 'BUY').slice(0, 3);
-          const topSells = nonSkipFiltered.filter(e => e.signal === 'SELL').slice(0, 2);
+          const topBuys = nonSkipFiltered.filter(e => e.signal === 'BUY').slice(0, 4);
+          const topSells = nonSkipFiltered.filter(e => e.signal === 'SELL').slice(0, 4);
           const pass1: AIEval[] = [];
           const seen = new Set<string>();
           for (const e of [...topBuys, ...topSells]) {
@@ -2440,7 +2446,7 @@ Deno.serve(async (req) => {
           }
           // Fill remaining slots with next-best by confidence
           for (const e of nonSkipFiltered) {
-            if (pass1.length >= 5) break;
+            if (pass1.length >= 8) break;
             if (!seen.has(e.ticker)) { pass1.push(e); seen.add(e.ticker); }
           }
 
