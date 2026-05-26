@@ -117,25 +117,39 @@ ib_gateway_running() {
 }
 
 if [ -f "$IBC_GATEWAY_SCRIPT" ]; then
+  # Always kill the existing IB Gateway and restart it fresh via IBC.
+  # Reusing a running Gateway after an auto-trader restart causes session
+  # degradation — the order engine stops responding (no PreSubmitted events)
+  # even though the TCP connection appears healthy. A fresh Gateway process
+  # guarantees a clean order engine for each auto-trader session.
   if ib_gateway_running; then
-    echo -e "${GREEN}📡 IB Gateway is already running on port $IB_GATEWAY_PORT${NC}"
-  else
-    echo -e "${GREEN}📡 Starting IB Gateway via IBC...${NC}"
-    # Launch detached so Gateway survives even if this shell exits.
-    nohup "$IBC_GATEWAY_SCRIPT" -inline >/tmp/ibc-launch.out.log 2>/tmp/ibc-launch.err.log &
-    IBC_PID=$!
-    echo -e "   IBC PID: $IBC_PID"
-
-    # Wait for Gateway to initialize
-    echo -e "${YELLOW}⏳ Waiting 30s for IB Gateway to start...${NC}"
-    sleep 30
-
-    if ib_gateway_running; then
-      echo -e "${GREEN}✅ IB Gateway is listening on port $IB_GATEWAY_PORT${NC}"
-    else
-      echo -e "${YELLOW}⚠️  IB Gateway did not appear on port $IB_GATEWAY_PORT yet${NC}"
-      echo "   Check /tmp/ibc-launch.err.log and ~/ibc/logs/* for login issues."
+    echo -e "${YELLOW}⚠️  Existing IB Gateway found — stopping it for a clean restart...${NC}"
+    gw_pid="$(lsof -tiTCP:"$IB_GATEWAY_PORT" -sTCP:LISTEN 2>/dev/null | head -n 1)"
+    if [ -n "$gw_pid" ]; then
+      kill -TERM "$gw_pid" 2>/dev/null || true
+      sleep 5
+      # Force-kill if still running
+      kill -KILL "$gw_pid" 2>/dev/null || true
+      sleep 2
     fi
+    echo -e "   Stopped old IB Gateway (PID $gw_pid)"
+  fi
+
+  echo -e "${GREEN}📡 Starting IB Gateway via IBC...${NC}"
+  # Launch detached so Gateway survives even if this shell exits.
+  nohup "$IBC_GATEWAY_SCRIPT" -inline >/tmp/ibc-launch.out.log 2>/tmp/ibc-launch.err.log &
+  IBC_PID=$!
+  echo -e "   IBC PID: $IBC_PID"
+
+  # Wait for Gateway to initialize
+  echo -e "${YELLOW}⏳ Waiting 30s for IB Gateway to start...${NC}"
+  sleep 30
+
+  if ib_gateway_running; then
+    echo -e "${GREEN}✅ IB Gateway is listening on port $IB_GATEWAY_PORT${NC}"
+  else
+    echo -e "${YELLOW}⚠️  IB Gateway did not appear on port $IB_GATEWAY_PORT yet${NC}"
+    echo "   Check /tmp/ibc-launch.err.log and ~/ibc/logs/* for login issues."
   fi
 else
   echo -e "${YELLOW}⚠️  IBC not found at ~/ibc/gatewaystartmacos.sh${NC}"
