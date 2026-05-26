@@ -153,11 +153,14 @@ export function TradeIdeas({ onSelectTicker }: TradeIdeasProps) {
       .then(([active, all]) => {
         const relevantModes = new Set(['DAY_TRADE', 'SWING_TRADE', 'DAY_PENNY']);
         const tickers = new Set<string>();
-        // Only include active or recent trades that were actually opened today
+        // Only include trades that were actually executed today — exclude CANCELLED,
+        // REJECTED, EXPIRED so phantom/failed orders don't light up the TRADED badge.
+        const nonTerminal = new Set(['SUBMITTED', 'ACTIVE', 'FILLED', 'CLOSED']);
         [...active, ...all]
           .filter(t =>
             relevantModes.has(t.mode ?? '') &&
-            (t.opened_at ?? '').startsWith(todayET)
+            (t.opened_at ?? '').startsWith(todayET) &&
+            nonTerminal.has(t.status ?? '')
           )
           .forEach(t => tickers.add(t.ticker.toUpperCase()));
         setTradedTickers(tickers);
