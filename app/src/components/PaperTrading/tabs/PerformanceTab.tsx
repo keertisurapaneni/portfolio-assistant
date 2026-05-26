@@ -95,6 +95,7 @@ export function PerformanceTab({
   const influencerDt = categories.find(c => c.category === 'influencer_day_trade');
   const pennyDt = categories.find(c => c.category === 'day_penny');
   const sw = categories.find(c => c.category === 'swing_trade');
+  const optWheel = categories.find(c => c.category === 'options_wheel');
   const dipBuy = categories.find(c => c.category === 'dip_buy');
   const profitTake = categories.find(c => c.category === 'profit_take');
 
@@ -157,12 +158,13 @@ export function PerformanceTab({
           </p>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
-          <SignalScorecard title="Suggested Finds" subtitle="Long-term picks" data={sf} color="indigo" />
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
           <SignalScorecard title="Scanner Day Trades" subtitle="Trade signals only" data={scannerDt} color="blue" />
           <SignalScorecard title="Influencer Day Trades" subtitle="Strategy video signals" data={influencerDt} color="emerald" />
           <SignalScorecard title="Penny Day Trades" subtitle="Momentum scanner" data={pennyDt} color="green" />
-          <SignalScorecard title="Swing Trades" subtitle="Scanner signals" data={sw} color="violet" />
+          <SignalScorecard title="Swing Trades" subtitle="Multi-day scanner signals" data={sw} color="violet" />
+          <SignalScorecard title="Options Wheel" subtitle="Cash-secured puts & calls" data={optWheel} color="amber" />
+          <SignalScorecard title="Suggested Finds" subtitle="Long-term picks" data={sf} color="indigo" />
         </div>
 
         {((dipBuy?.totalTrades ?? 0) > 0 || (profitTake?.totalTrades ?? 0) > 0) && (
