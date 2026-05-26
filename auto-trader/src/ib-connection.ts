@@ -771,6 +771,9 @@ export class IBConnection {
         this.ib.placeOrder(tpId, contract, takeProfitOrder);
         this.ib.placeOrder(slId, contract, stopLossOrder);
         console.log(`${this.tag} Bracket order dispatched: ${side} ${quantity}x ${symbol} entry=$${entryPrice} tp=$${takeProfit} sl=$${stopLoss} (parentId=${parentId}) — awaiting IB ack...`);
+        // Force IB to emit orderStatus for all submitted orders — paper account
+        // sometimes doesn't proactively push status back in degraded sessions.
+        setTimeout(() => { if (!ackResolved) this.ib?.reqAllOpenOrders(); }, 2000);
       } catch (err) {
         ackResolved = true;
         clearTimeout(ackTimer);
