@@ -73,6 +73,7 @@ export async function loadConfig(): Promise<AutoTraderConfig> {
     maxSwingPositions: data.max_swing_positions ?? DEFAULT_CONFIG.maxSwingPositions,
     positionSize: Number(data.position_size) || DEFAULT_CONFIG.positionSize,
     minScannerConfidence: data.min_scanner_confidence ?? DEFAULT_CONFIG.minScannerConfidence,
+    minSwingScannerConfidence: data.min_swing_scanner_confidence ?? DEFAULT_CONFIG.minSwingScannerConfidence,
     minFAConfidence: data.min_fa_confidence ?? DEFAULT_CONFIG.minFAConfidence,
     minSuggestedFindsConviction: data.min_suggested_finds_conviction ?? DEFAULT_CONFIG.minSuggestedFindsConviction,
     accountId: data.account_id ?? DEFAULT_CONFIG.accountId,
