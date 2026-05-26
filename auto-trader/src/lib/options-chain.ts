@@ -464,7 +464,40 @@ async function findBestPutStrike(
     if (greeks) return greeks;
   }
 
-  return null;
+  // Black-Scholes fallback — IB paper account often returns error 354 (no options
+  // data subscription) for reqMktData greeks. We use actual IB chain strikes (so
+  // they're valid and resolvable via resolveOptionConId) but compute greeks locally.
+  const iv = await estimateIV(symbol);
+  const dte = daysToExpiry(expiry);
+  if (dte <= 0 || iv <= 0) return null;
+  const T = dte / 365;
+  const r = 0.05;
+
+  let bestPut: OptionGreeks | null = null;
+  let closestDeltaErr = Infinity;
+  let closestPut: OptionGreeks | null = null;
+
+  for (const strike of candidates) {
+    const bs = bsPut(underlyingPrice, strike, T, r, iv);
+    const absDelta = Math.abs(bs.delta);
+    const spread = Math.max(bs.price * 0.05, 0.02);
+    const bid = Math.max(bs.price - spread / 2, 0.01);
+    const ask = bs.price + spread / 2;
+    const annualYield = (bid / strike) * (365 / dte) * 100;
+    const greeks: OptionGreeks = {
+      strike, expiry, optionType: 'P',
+      bid, ask, mid: Math.max(bs.price - 0.05, 0.01),
+      impliedVol: iv,
+      delta: bs.delta, theta: bs.theta, gamma: bs.gamma, vega: bs.vega,
+      probProfit: (1 - absDelta) * 100,
+      annualYield,
+    };
+    if (absDelta >= deltaLow && absDelta <= deltaHigh && !bestPut) bestPut = greeks;
+    const err = Math.abs(absDelta - deltaTarget);
+    if (err < closestDeltaErr) { closestDeltaErr = err; closestPut = greeks; }
+  }
+
+  return bestPut ?? closestPut;
 }
 
 /**
@@ -501,7 +534,46 @@ async function findBestCallStrike(
     if (greeks) return greeks;
   }
 
-  return null;
+  // Black-Scholes fallback (same rationale as findBestPutStrike — paper account
+  // error 354 blocks IB greeks; use actual IB strikes with locally computed greeks)
+  const iv = await estimateIV(symbol);
+  const dte = daysToExpiry(expiry);
+  if (dte <= 0 || iv <= 0) return null;
+  const T = dte / 365;
+  const r = 0.05;
+
+  let bestCall: OptionGreeks | null = null;
+  let closestDeltaErr = Infinity;
+  let closestCall: OptionGreeks | null = null;
+
+  for (const strike of candidates) {
+    const sqrtT = Math.sqrt(T);
+    const d1 = (Math.log(underlyingPrice / strike) + (r + 0.5 * iv * iv) * T) / (iv * sqrtT);
+    const d2 = d1 - iv * sqrtT;
+    const price = underlyingPrice * normCdf(d1) - strike * Math.exp(-r * T) * normCdf(d2);
+    const delta = normCdf(d1);
+    const gamma = normPdf(d1) / (underlyingPrice * iv * sqrtT);
+    const theta = (-(underlyingPrice * normPdf(d1) * iv) / (2 * sqrtT) - r * strike * Math.exp(-r * T) * normCdf(d2)) / -365;
+    const vega = underlyingPrice * normPdf(d1) * sqrtT / 100;
+    const absDelta = Math.abs(delta);
+    const spread = Math.max(price * 0.05, 0.02);
+    const bid = Math.max(price - spread / 2, 0.01);
+    const ask = price + spread / 2;
+    const annualYield = (bid / strike) * (365 / dte) * 100;
+    const greeks: OptionGreeks = {
+      strike, expiry, optionType: 'C',
+      bid, ask, mid: Math.max(price - 0.05, 0.01),
+      impliedVol: iv,
+      delta, theta, gamma, vega,
+      probProfit: (1 - absDelta) * 100,
+      annualYield,
+    };
+    if (absDelta >= deltaLow && absDelta <= deltaHigh && !bestCall) bestCall = greeks;
+    const err = Math.abs(absDelta - deltaTarget);
+    if (err < closestDeltaErr) { closestDeltaErr = err; closestCall = greeks; }
+  }
+
+  return bestCall ?? closestCall;
 }
 
 // ── Main Export ──────────────────────────────────────────
