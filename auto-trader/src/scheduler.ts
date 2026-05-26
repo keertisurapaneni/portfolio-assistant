@@ -6516,11 +6516,13 @@ async function runTradeExecutionOnly(): Promise<void> {
   if (!isConnected()) return;
   if (!isMarketHoursET()) return;
 
-  const config = await loadConfig();
-  if (!config.enabled || !config.accountId) return;
-  if (!isModeEnabled(config, 'DAY_TRADE') && !isModeEnabled(config, 'SWING_TRADE')) return;
-
+  // Set _running immediately (before any await) to prevent concurrent realtime executions
+  // from racing through the guard above before either one sets the flag.
   _running = true;
+
+  const config = await loadConfig();
+  if (!config.enabled || !config.accountId) { _running = false; return; }
+  if (!isModeEnabled(config, 'DAY_TRADE') && !isModeEnabled(config, 'SWING_TRADE')) { _running = false; return; }
   const startTime = Date.now();
   try {
     log('[Realtime] trade_scans updated — running trade execution');
