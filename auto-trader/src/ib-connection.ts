@@ -292,34 +292,57 @@ export class IBConnection {
       emitter.off(EventName.openOrder, orderHandler);
       emitter.off(EventName.openOrderEnd, endHandler);
 
-      import('./lib/supabase.js').then(({ getSupabase }) => {
+      import('./lib/supabase.js').then(async ({ getSupabase }) => {
         // Only reconcile orders submitted more than 10 minutes ago — very recent orders
         // may not yet be visible in reqAllOpenOrders on a fresh connection.
         const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000).toISOString();
-        getSupabase()
+        const sb = getSupabase();
+
+        const { data, error } = await sb
           .from('paper_trades')
           .select('id, ticker, ib_order_id')
           .eq('status', 'SUBMITTED')
           .not('ib_order_id', 'is', null)
-          .lt('opened_at', tenMinutesAgo)
-          .then(({ data, error }) => {
-            if (error || !data?.length) return;
-            const toCancel = data.filter(t => !openIbOrderIds.has(Number(t.ib_order_id)));
-            if (!toCancel.length) {
-              console.log(`${this.tag} Reconcile: all SUBMITTED orders still open in IB`);
-              return;
-            }
-            const ids = toCancel.map(t => t.ib_order_id!);
-            console.log(`${this.tag} Reconcile: cancelling ${toCancel.length} order(s) missing from IB: ${toCancel.map(t => `${t.ticker}#${t.ib_order_id}`).join(', ')}`);
-            getSupabase()
-              .from('paper_trades')
-              .update({ status: 'CANCELLED', close_reason: 'IB order cancelled (reconciled at startup)' })
-              .in('ib_order_id', ids)
-              .eq('status', 'SUBMITTED')
-              .then(({ error: updErr }) => {
-                if (updErr) console.warn(`${this.tag} Reconcile update failed: ${updErr.message}`);
-              });
-          });
+          .lt('opened_at', tenMinutesAgo);
+
+        if (error || !data?.length) return;
+
+        const missingFromIb = data.filter(t => !openIbOrderIds.has(Number(t.ib_order_id)));
+        if (!missingFromIb.length) {
+          console.log(`${this.tag} Reconcile: all SUBMITTED orders still open in IB`);
+          return;
+        }
+
+        // Before cancelling, check ib_fills — a filled order is no longer "open"
+        // in IB's open-orders list, so we must not treat it as cancelled.
+        const missingOrderIds = missingFromIb.map(t => Number(t.ib_order_id));
+        const { data: fills } = await sb
+          .from('ib_fills')
+          .select('order_id')
+          .in('order_id', missingOrderIds);
+
+        const filledOrderIds = new Set((fills ?? []).map(f => Number(f.order_id)));
+
+        const toActivate = missingFromIb.filter(t => filledOrderIds.has(Number(t.ib_order_id)));
+        const toCancel   = missingFromIb.filter(t => !filledOrderIds.has(Number(t.ib_order_id)));
+
+        if (toActivate.length) {
+          console.log(`${this.tag} Reconcile: ${toActivate.length} order(s) already filled in IB — marking ACTIVE: ${toActivate.map(t => `${t.ticker}#${t.ib_order_id}`).join(', ')}`);
+          await sb
+            .from('paper_trades')
+            .update({ status: 'ACTIVE' })
+            .in('ib_order_id', toActivate.map(t => t.ib_order_id!))
+            .eq('status', 'SUBMITTED');
+        }
+
+        if (toCancel.length) {
+          console.log(`${this.tag} Reconcile: cancelling ${toCancel.length} order(s) missing from IB (no fill): ${toCancel.map(t => `${t.ticker}#${t.ib_order_id}`).join(', ')}`);
+          await sb
+            .from('paper_trades')
+            .update({ status: 'CANCELLED', close_reason: 'IB order cancelled (reconciled at startup)' })
+            .in('ib_order_id', toCancel.map(t => t.ib_order_id!))
+            .eq('status', 'SUBMITTED');
+        }
       }).catch(() => {});
     };
 
