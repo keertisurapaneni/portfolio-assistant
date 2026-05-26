@@ -781,13 +781,11 @@ export interface IbFill {
 
 export async function insertIbFill(fill: IbFill, accountType: AccountType = 'paper'): Promise<void> {
   const sb = getSupabase();
-  // Upsert on (order_id, exec_id) so execDetails rows (with ticker/side) overwrite
-  // earlier orderStatus rows (empty ticker/side) for the same fill.
-  const { error } = await sb.from(fillsTable(accountType)).upsert(fill, {
-    onConflict: 'order_id,exec_id',
-    ignoreDuplicates: false,
-  });
-  if (error) {
+  // The unique index on ib_fills uses a functional expression (COALESCE(exec_id,''))
+  // which PostgREST cannot match via onConflict column names. Use plain INSERT instead;
+  // the DB trigger is idempotent so duplicate rows are harmless in practice.
+  const { error } = await sb.from(fillsTable(accountType)).insert(fill);
+  if (error && !error.message.includes('duplicate')) {
     console.warn(`[Supabase] Failed to persist IB fill for order ${fill.order_id}: ${error.message}`);
   }
 }
