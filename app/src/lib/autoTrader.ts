@@ -144,6 +144,7 @@ export async function loadAutoTraderConfig(): Promise<AutoTraderConfig> {
       const config: AutoTraderConfig = {
         enabled: data.enabled ?? DEFAULT_CONFIG.enabled,
         maxPositions: data.max_positions ?? DEFAULT_CONFIG.maxPositions,
+        maxSwingPositions: data.max_swing_positions ?? DEFAULT_CONFIG.maxSwingPositions,
         positionSize: Number(data.position_size) || DEFAULT_CONFIG.positionSize,
         minScannerConfidence: data.min_scanner_confidence ?? DEFAULT_CONFIG.minScannerConfidence,
         minFAConfidence: data.min_fa_confidence ?? DEFAULT_CONFIG.minFAConfidence,

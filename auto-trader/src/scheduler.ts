@@ -2554,6 +2554,11 @@ function isPermanentDbError(err: unknown): boolean {
     || msg.includes('duplicate key');
 }
 
+// Dedup cache: prevents the same skip/warning from being persisted more than once
+// per trading day. Key = "YYYY-MM-DD:ticker:eventType:message". Cleared at midnight.
+const _persistedToday = new Set<string>();
+let _persistDedupDate = '';
+
 async function persistEvent(
   ticker: string,
   eventType: string,
@@ -2562,6 +2567,19 @@ async function persistEvent(
   accountType: AccountType = 'paper',
 ): Promise<void> {
   const safeType = (VALID_EVENT_TYPES.has(eventType as AutoTradeEventType) ? eventType : 'info') as AutoTradeEventType;
+
+  // For 'skipped' events, only persist once per ticker+reason per trading day
+  if (eventType === 'skipped') {
+    const etDate = new Date().toLocaleDateString('en-US', { timeZone: 'America/New_York' });
+    if (etDate !== _persistDedupDate) {
+      _persistedToday.clear();
+      _persistDedupDate = etDate;
+    }
+    const dedupKey = `${etDate}:${ticker}:${eventType}:${message}`;
+    if (_persistedToday.has(dedupKey)) return;
+    _persistedToday.add(dedupKey);
+  }
+
   const payload: AutoTradeEventInput = { ticker, event_type: safeType, message, ...extra };
   const delays = [1000, 2000];
   for (let attempt = 0; attempt <= delays.length; attempt++) {
@@ -3119,31 +3137,26 @@ async function executeScannerTrade(
   if (mode === 'DAY_TRADE') {
     if (idea.price < 50) {
       log(`${ticker}: skipped — price $${idea.price.toFixed(2)} below $50 minimum (scanner price floor)`);
-      persistEvent(ticker, 'skipped', `Scanner price floor: price $${idea.price.toFixed(2)} < $50`, {
-        action: 'skipped', source: 'scanner', mode, skip_reason: 'price_floor',
-      });
+      log(`${ticker}: skipped — price floor (not persisted)`);
       return 'skipped:price_floor';
     }
-    if (idea.volumeVs10dAvg != null && idea.volumeVs10dAvg < 0.15) {
+    // Volume gate: only meaningful after 10:00 AM ET — comparing sub-30-min
+    // intraday volume to a full-day 10d average will always look "illiquid"
+    // at the open (AAPL at 9:41 legitimately shows 0.04× daily avg).
+    const nowEtHour = ((new Date().getUTCHours() - 4 + 24) % 24);
+    const nowEtMin  = new Date().getUTCMinutes();
+    const afterTenAM = nowEtHour > 10 || (nowEtHour === 10 && nowEtMin >= 0);
+    if (afterTenAM && idea.volumeVs10dAvg != null && idea.volumeVs10dAvg < 0.15) {
       log(`${ticker}: skipped — volume ${idea.volumeVs10dAvg.toFixed(2)}x avg (< 0.15x, illiquid)`);
-      persistEvent(ticker, 'skipped', `Illiquid: volume ${idea.volumeVs10dAvg.toFixed(2)}x 10d avg`, {
-        action: 'skipped', source: 'scanner', mode, skip_reason: 'illiquid',
-      });
+      // Don't persist — this is a transient gate result that fires every scan cycle
+      // and would flood the activity log. Console log is sufficient.
       return 'skipped:illiquid';
     }
   }
 
-  // For SWING_TRADE SELL signals: block unless we already hold a long to close.
-  // Multi-day shorts from scanner signals are too risky to auto-execute.
-  // For DAY_TRADE SELL signals: allow — intraday shorts are standard day trading
-  // (open short, cover same day). The EOD sweep closes any open day trades.
-  if (signal === 'SELL' && mode === 'SWING_TRADE') {
-    const hasLong = positions.some(p => p.symbol.toUpperCase() === ticker && p.position > 0);
-    if (!hasLong) {
-      log(`${ticker}: scanner SELL skipped — no long position to close (swing short not allowed)`);
-      return 'skipped:no_long_to_sell';
-    }
-  }
+  // SWING_TRADE SELL signals open a short position (bracket order with GTC TIF).
+  // Stop/target levels are correctly oriented for shorts (stop above entry, target below).
+  // The position management pipeline handles swing shorts the same as longs.
 
   // Options positions on the same ticker don't block stock day/swing trades —
   // they are different instruments and managed by a separate pipeline.
@@ -6521,13 +6534,22 @@ async function runTradeExecutionOnly(): Promise<void> {
     const rtDayEvals: Record<string, { status: ScanEvaluationStatus; reason: string }> = {};
     const rtSwingEvals: Record<string, { status: ScanEvaluationStatus; reason: string }> = {};
     if (newIdeas.length > 0) {
-      const activeCount = await countActivePositions();
-      const slots = config.maxPositions - activeCount;
-      if (slots > 0) {
-        const qualified = newIdeas
-          .filter(i => i.confidence >= config.minScannerConfidence)
+      const [activeDayCount, activeSwingCount] = await Promise.all([
+        countActivePositions('paper', 'DAY_TRADE'),
+        countActivePositions('paper', 'SWING_TRADE'),
+      ]);
+      const daySlots = Math.max(0, config.maxPositions - activeDayCount);
+      const swingSlots = Math.max(0, config.maxSwingPositions - activeSwingCount);
+      if (daySlots > 0 || swingSlots > 0) {
+        const qualifiedDay = newIdeas
+          .filter(i => i.mode !== 'SWING_TRADE' && i.confidence >= config.minScannerConfidence)
           .sort((a, b) => b.confidence - a.confidence)
-          .slice(0, slots);
+          .slice(0, daySlots);
+        const qualifiedSwing = newIdeas
+          .filter(i => i.mode === 'SWING_TRADE' && i.confidence >= config.minScannerConfidence)
+          .sort((a, b) => b.confidence - a.confidence)
+          .slice(0, swingSlots);
+        const qualified = [...qualifiedDay, ...qualifiedSwing];
         for (const idea of qualified) {
           const result = await executeScannerTrade(idea, config, positions);
           log(`  ${idea.ticker}: ${result}`);
@@ -6811,14 +6833,23 @@ async function runSchedulerCycle(): Promise<void> {
       };
 
       if (newIdeas.length > 0) {
-        const activeCount = await countActivePositions();
-        const slots = config.maxPositions - activeCount;
+        const [activeDayCount, activeSwingCount] = await Promise.all([
+          countActivePositions('paper', 'DAY_TRADE'),
+          countActivePositions('paper', 'SWING_TRADE'),
+        ]);
+        const daySlots = Math.max(0, config.maxPositions - activeDayCount);
+        const swingSlots = Math.max(0, config.maxSwingPositions - activeSwingCount);
 
-        if (slots > 0) {
-          const qualified = newIdeas
-            .filter(i => i.confidence >= config.minScannerConfidence)
+        if (daySlots > 0 || swingSlots > 0) {
+          const qualifiedDay = newIdeas
+            .filter(i => i.mode !== 'SWING_TRADE' && i.confidence >= config.minScannerConfidence)
             .sort((a, b) => b.confidence - a.confidence)
-            .slice(0, slots);
+            .slice(0, daySlots);
+          const qualifiedSwing = newIdeas
+            .filter(i => i.mode === 'SWING_TRADE' && i.confidence >= config.minScannerConfidence)
+            .sort((a, b) => b.confidence - a.confidence)
+            .slice(0, swingSlots);
+          const qualified = [...qualifiedDay, ...qualifiedSwing];
 
           for (const idea of qualified) {
             const result = await executeScannerTrade(idea, config, positions);
@@ -6830,7 +6861,7 @@ async function runSchedulerCycle(): Promise<void> {
             await new Promise(r => setTimeout(r, 2000));
           }
         } else {
-          log(`Max positions reached (${config.maxPositions}) — skipping scanner ideas`);
+          log(`Max positions reached (day: ${config.maxPositions}, swing: ${config.maxSwingPositions}) — skipping scanner ideas`);
           for (const idea of newIdeas) recordEval(idea, 'skipped:max_positions');
         }
       } else if (scannerIdeasLoaded) {
