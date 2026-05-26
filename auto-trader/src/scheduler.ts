@@ -3432,7 +3432,10 @@ async function executeScannerTrade(
     faRiskReward = fa.trade.riskReward;
   }
 
-  if (faConf < config.minFAConfidence) return `skipped:fa_conf_${faConf}`;
+  // Swings with pre-set scanner levels use scanner confidence — use the lower swing threshold.
+  // Swings without levels (fresh FA call) and day trades use minFAConfidence.
+  const confThreshold = mode === 'SWING_TRADE' ? config.minSwingScannerConfidence : config.minFAConfidence;
+  if (faConf < confThreshold) return `skipped:fa_conf_${faConf}`;
   if (faRec === 'HOLD') return 'skipped:fa_hold';
   if (faRec !== signal) return `skipped:direction_mismatch`;
 
@@ -6546,7 +6549,7 @@ async function runTradeExecutionOnly(): Promise<void> {
           .sort((a, b) => b.confidence - a.confidence)
           .slice(0, daySlots);
         const qualifiedSwing = newIdeas
-          .filter(i => i.mode === 'SWING_TRADE' && i.confidence >= config.minScannerConfidence)
+          .filter(i => i.mode === 'SWING_TRADE' && i.confidence >= config.minSwingScannerConfidence)
           .sort((a, b) => b.confidence - a.confidence)
           .slice(0, swingSlots);
         const qualified = [...qualifiedDay, ...qualifiedSwing];
@@ -6846,7 +6849,7 @@ async function runSchedulerCycle(): Promise<void> {
             .sort((a, b) => b.confidence - a.confidence)
             .slice(0, daySlots);
           const qualifiedSwing = newIdeas
-            .filter(i => i.mode === 'SWING_TRADE' && i.confidence >= config.minScannerConfidence)
+            .filter(i => i.mode === 'SWING_TRADE' && i.confidence >= config.minSwingScannerConfidence)
             .sort((a, b) => b.confidence - a.confidence)
             .slice(0, swingSlots);
           const qualified = [...qualifiedDay, ...qualifiedSwing];

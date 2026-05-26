@@ -12,6 +12,7 @@ export interface AutoTraderConfig {
   maxSwingPositions: number;
   positionSize: number;
   minScannerConfidence: number;
+  minSwingScannerConfidence: number;
   minFAConfidence: number;
   minSuggestedFindsConviction: number;
   accountId: string | null;
@@ -79,6 +80,7 @@ export const DEFAULT_CONFIG: AutoTraderConfig = {
   maxSwingPositions: 2,
   positionSize: 1000,
   minScannerConfidence: 7,
+  minSwingScannerConfidence: 7,
   minFAConfidence: 7,
   minSuggestedFindsConviction: 8,
   accountId: null,
