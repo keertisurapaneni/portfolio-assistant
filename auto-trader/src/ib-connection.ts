@@ -274,8 +274,9 @@ export class IBConnection {
     }
 
     // Reconcile any SUBMITTED paper_trades that were cancelled while we were offline.
-    // Give IB 2s to finish sending startup orderStatus events before we check.
-    setTimeout(() => this._reconcileSubmittedOrders(), 2000);
+    // Give IB 15s to finish delivering all open orders after a fresh connection —
+    // the 2s window was too short and caused false cancellations of legitimately open orders.
+    setTimeout(() => this._reconcileSubmittedOrders(), 15000);
   }
 
   private _reconcileSubmittedOrders(): void {
@@ -289,11 +290,15 @@ export class IBConnection {
       emitter.off(EventName.openOrderEnd, endHandler);
 
       import('./lib/supabase.js').then(({ getSupabase }) => {
+        // Only reconcile orders submitted more than 10 minutes ago — very recent orders
+        // may not yet be visible in reqAllOpenOrders on a fresh connection.
+        const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000).toISOString();
         getSupabase()
           .from('paper_trades')
           .select('id, ticker, ib_order_id')
           .eq('status', 'SUBMITTED')
           .not('ib_order_id', 'is', null)
+          .lt('opened_at', tenMinutesAgo)
           .then(({ data, error }) => {
             if (error || !data?.length) return;
             const toCancel = data.filter(t => !openIbOrderIds.has(Number(t.ib_order_id)));

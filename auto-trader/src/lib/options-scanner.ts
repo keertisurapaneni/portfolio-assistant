@@ -94,14 +94,16 @@ const BEAR_DEFENSIVE_SECTORS = [           // only these sectors in bear mode
 
 // Hard stops — one headline is enough (existential / regulatory)
 const RED_FLAG_HARD = [
-  'fraud', 'sec investigation', 'doj', 'department of justice',
+  'sec investigation', 'doj', 'department of justice',
   'chapter 11', 'chapter 7', 'going concern', 'delisting',
   'fda rejection', 'restatement', 'accounting irregularit',
   'whistleblower', 'ponzi', 'subpoena',
 ];
-// Soft stops — require 2+ headlines to avoid incidental mentions on large caps
+// Soft stops — require 2+ headlines to avoid incidental mentions on large caps.
+// 'fraud' moved here because AMZN/GOOGL regularly appear in headlines about
+// marketplace/ad fraud by third parties — one mention is not company-level risk.
 const RED_FLAG_SOFT = [
-  'bankruptcy', 'class action', 'recall', 'ceo resign', 'cfo resign',
+  'fraud', 'bankruptcy', 'class action', 'recall', 'ceo resign', 'cfo resign',
   'tariff', 'trade war', 'import duty', 'trade dispute',
 ];
 
@@ -1042,24 +1044,11 @@ export async function runOptionsScan(freeCapital = 100_000): Promise<OptionsScan
     .join(', ') || 'none';
   console.log(`\n[Options Scanner] ━━━ Starting scan — ${total} tickers | VIX ${ctx.vix.toFixed(1)} | ${ctx.spyAboveSma200 ? 'Bull' : 'Bear'} mode | δ target ${ctx.deltaTarget} | free capital $${(freeCapital / 1000).toFixed(0)}k | crowded weeks: ${crowdedWeeksSummary} ━━━`);
 
-  // STABLE-tier frequency gate: only scan STABLE tickers on Mon/Wed/Fri.
-  // On Tue/Thu they qualify very rarely (low IV) and waste ~35 Finnhub calls.
-  const todayDow = new Date().getUTCDay(); // 0=Sun,1=Mon,2=Tue,3=Wed,4=Thu,5=Fri,6=Sat
-  const isStableDay = todayDow === 1 || todayDow === 3 || todayDow === 5; // Mon/Wed/Fri
-
   // Scan each ticker (sequential to avoid IB request flooding)
   for (const [i, entry] of (watchlist as WatchlistEntry[]).entries()) {
     const leverageFactor = parseLeverageFactor(entry.notes);
     const tier: WatchlistTier = (entry.tier as WatchlistTier) ?? 'GROWTH';
     const num = `[${String(i + 1).padStart(2, '0')}/${total}]`;
-
-    // Skip STABLE tickers on Tue/Thu — they're low-IV names that rarely qualify
-    // and account for ~30% of API budget on days when they almost never pass IV gates.
-    if (tier === 'STABLE' && !isStableDay) {
-      console.log(`[Options Scanner] ${num} ${entry.ticker.padEnd(5)} ✗  stable_tier_off_day`);
-      skipped.push({ ticker: entry.ticker, reason: 'stable_tier_off_day' });
-      continue;
-    }
 
     try {
       const result = await checkStock(

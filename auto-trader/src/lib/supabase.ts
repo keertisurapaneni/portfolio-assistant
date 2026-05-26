@@ -70,6 +70,7 @@ export async function loadConfig(): Promise<AutoTraderConfig> {
   return {
     enabled: data.enabled ?? DEFAULT_CONFIG.enabled,
     maxPositions: data.max_positions ?? DEFAULT_CONFIG.maxPositions,
+    maxSwingPositions: data.max_swing_positions ?? DEFAULT_CONFIG.maxSwingPositions,
     positionSize: Number(data.position_size) || DEFAULT_CONFIG.positionSize,
     minScannerConfidence: data.min_scanner_confidence ?? DEFAULT_CONFIG.minScannerConfidence,
     minFAConfidence: data.min_fa_confidence ?? DEFAULT_CONFIG.minFAConfidence,
@@ -396,13 +397,15 @@ export async function getTickerWinRate(
   return { wins, losses, winRate, total };
 }
 
-export async function countActivePositions(accountType: AccountType = 'paper'): Promise<number> {
+export async function countActivePositions(accountType: AccountType = 'paper', tradeMode?: string): Promise<number> {
   const sb = getSupabase();
-  const { count } = await sb
+  let query = sb
     .from(tradesTable(accountType))
     .select('id', { count: 'exact', head: true })
     .in('status', [...ACTIVE_STATUSES])
     .not('mode', 'in', '(OPTIONS_PUT,OPTIONS_CALL)');
+  if (tradeMode) query = query.eq('mode', tradeMode);
+  const { count } = await query;
   return count ?? 0;
 }
 

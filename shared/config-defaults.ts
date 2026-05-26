@@ -9,6 +9,7 @@
 export interface AutoTraderConfig {
   enabled: boolean;
   maxPositions: number;
+  maxSwingPositions: number;
   positionSize: number;
   minScannerConfidence: number;
   minFAConfidence: number;
@@ -75,6 +76,7 @@ export interface AutoTraderConfig {
 export const DEFAULT_CONFIG: AutoTraderConfig = {
   enabled: false,
   maxPositions: 3,
+  maxSwingPositions: 2,
   positionSize: 1000,
   minScannerConfidence: 7,
   minFAConfidence: 7,
