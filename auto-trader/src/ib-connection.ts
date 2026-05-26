@@ -351,9 +351,15 @@ export class IBConnection {
       // show "connected" before they're fully ready to ack bracket orders.
       this._readyForOrdersAt = Date.now() + 60_000;
       this.reconnectAttempts = 0;
-      this.connectionListeners.forEach(fn => fn(true));
       ib.reqManagedAccts();
       ib.reqIds();
+      // Switch to delayed market data (type 3) BEFORE notifying the scheduler so
+      // options greeks reqMktData calls succeed on paper accounts without live
+      // data subscriptions. Delayed data includes Greeks and bid/ask; type 3
+      // falls back to frozen prices when the market is closed.
+      (ib as unknown as { reqMarketDataType: (type: number) => void }).reqMarketDataType(3);
+      console.log(`${this.tag} Market data type set to delayed (type 3)`);
+      this.connectionListeners.forEach(fn => fn(true));
     });
 
     ib.on(EventName.disconnected, () => {
