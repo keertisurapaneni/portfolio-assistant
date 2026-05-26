@@ -248,6 +248,8 @@ const RETRYABLE_SKIP_PREFIXES = [
   'skipped:swing_volume_divergence',
   'skipped:market_direction_bearish',
   'skipped:market_direction_bullish',
+  'failed:order',      // transient IB connectivity failure — retry next cycle
+  'failed:no_contract', // IB connection down — retry when reconnected
 ];
 
 function isRetryableSkip(result: string): boolean {
@@ -3634,6 +3636,10 @@ async function executeScannerTrade(
         tif,
       });
 
+      if (result.timedOut) {
+        log(`${ticker}: ⚠️ IB ACK timed out — saving as SUBMITTED anyway (order ${result.parentOrderId}); reconciler will verify`);
+      }
+
       await createPaperTrade({
         ticker, mode, signal,
         scanner_confidence: Math.round(effectiveScannerConf),
@@ -3673,6 +3679,10 @@ async function executeScannerTrade(
             takeProfit: targetPrice2,
             tif,
           });
+
+          if (result2.timedOut) {
+            log(`${ticker}: ⚠️ T2 IB ACK timed out — saving as SUBMITTED anyway (order ${result2.parentOrderId}); reconciler will verify`);
+          }
 
           await createPaperTrade({
             ticker, mode, signal,

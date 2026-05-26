@@ -55,6 +55,7 @@ export interface BracketOrderResult {
   parentOrderId: number;
   takeProfitOrderId: number;
   stopLossOrderId: number;
+  timedOut?: boolean; // true = IB did not ACK within timeout; treat as SUBMITTED pending reconciliation
 }
 
 export interface MarketOrderParams {
@@ -162,6 +163,7 @@ export class IBConnection {
 
   private ib: IBApi | null = null;
   private _connected = false;
+  private _readyForOrdersAt = 0; // epoch ms — orders blocked until this time after each connect
   private reconnectAttempts = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private _accounts: string[] = [];
@@ -221,6 +223,7 @@ export class IBConnection {
   // ── Public API ───────────────────────────────────────
 
   isConnected(): boolean { return this._connected; }
+  isReadyForOrders(): boolean { return this._connected && Date.now() >= this._readyForOrdersAt; }
   getAccounts(): string[] { return this._accounts; }
   getDefaultAccount(): string | null { return this._accounts[0] ?? null; }
   getIBApi(): IBApi | null { return this.ib; }
@@ -344,6 +347,9 @@ export class IBConnection {
     ib.on(EventName.connected, () => {
       console.log(`${this.tag} Connected to IB Gateway at ${IB_HOST}:${this.port}`);
       this._connected = true;
+      // Hold off new order placement for 60s after each connect — IB paper accounts
+      // show "connected" before they're fully ready to ack bracket orders.
+      this._readyForOrdersAt = Date.now() + 60_000;
       this.reconnectAttempts = 0;
       this.connectionListeners.forEach(fn => fn(true));
       ib.reqManagedAccts();
@@ -425,8 +431,16 @@ export class IBConnection {
     });
 
     ib.on(EventName.nextValidId, (orderId: number) => {
-      this._nextOrderId = orderId;
-      console.log(`${this.tag} Next valid order ID: ${this._nextOrderId}`);
+      // IB broadcasts nextValidId proactively (not just on reqIds()). Only accept
+      // the new value when it's strictly higher than our current counter — otherwise
+      // IB's stale broadcast would reset our counter backwards and cause duplicate
+      // order-ID rejections on the next placeOrder call.
+      if (orderId > this._nextOrderId) {
+        this._nextOrderId = orderId;
+        console.log(`${this.tag} Next valid order ID: ${this._nextOrderId}`);
+      } else {
+        console.log(`${this.tag} nextValidId broadcast ${orderId} ignored (current counter already at ${this._nextOrderId})`);
+      }
       this._subscribeToPnlIfReady();
     });
 
@@ -658,6 +672,10 @@ export class IBConnection {
       if (!this.ib || !this._connected) {
         return reject(new Error(`${this.tag} Not connected to IB Gateway`));
       }
+      if (!this.isReadyForOrders()) {
+        const waitSec = Math.ceil((this._readyForOrdersAt - Date.now()) / 1000);
+        return reject(new Error(`${this.tag} IB connection warming up — orders blocked for ${waitSec}s more after reconnect`));
+      }
 
       const { symbol, side, quantity, entryPrice, stopLoss, takeProfit, tif = 'GTC' } = params;
 
@@ -710,18 +728,21 @@ export class IBConnection {
       };
 
       // Wait for IB to acknowledge the parent order (PreSubmitted or Submitted)
-      // before resolving. Without this, placeOrder() is fire-and-forget and the
-      // order can silently vanish if IB is in a transient state — leaving our DB
-      // with a SUBMITTED paper_trade that IB has no record of.
+      // before resolving. We resolve with timedOut=true if IB doesn't respond in
+      // time — the caller saves a SUBMITTED paper_trade so the reconciler can
+      // verify/close it later. We never reject on timeout alone because IB paper
+      // frequently accepts bracket orders but sends the ack >30s later, creating
+      // orphaned IB positions with no corresponding DB record.
       let ackResolved = false;
-      const ACK_TIMEOUT_MS = 8_000;
+      const ACK_TIMEOUT_MS = 30_000;
 
       const ackTimer = setTimeout(() => {
         if (ackResolved) return;
         ackResolved = true;
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         (this.ib as any).off(EventName.orderStatus, onOrderStatus);
-        reject(new Error(`Bracket order ${parentId} (${symbol}) not acknowledged by IB within ${ACK_TIMEOUT_MS / 1000}s — IB may not have received it`));
+        console.warn(`${this.tag} Bracket order ${parentId} (${symbol}) not acknowledged within ${ACK_TIMEOUT_MS / 1000}s — saving as SUBMITTED for reconciler`);
+        resolve({ parentOrderId: parentId, takeProfitOrderId: tpId, stopLossOrderId: slId, timedOut: true });
       }, ACK_TIMEOUT_MS);
 
       const onOrderStatus = (ordId: number, status: string) => {
