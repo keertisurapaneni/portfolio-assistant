@@ -15,6 +15,19 @@ import { EventName, SecType, OptionType, type Contract } from '@stoqey/ib';
 import { getIBApi, getNextOrderId, isConnected, searchContract, acquireRequestSlot, releaseRequestSlot, registerReqErrorCallback, unregisterReqErrorCallback } from '../ib-connection.js';
 import { estimateHistoricalVol } from './yahoo-finance.js';
 
+// ── Session contract cache ────────────────────────────────
+// reqContractDetails (searchContract) can fail when IB Gateway is in a degraded
+// state. Caching successful lookups avoids repeated failures for the same ticker
+// across scan cycles and survives short reconnects within the same session.
+const contractCache = new Map<string, Awaited<ReturnType<typeof searchContract>>>();
+
+async function getContractInfoCached(symbol: string) {
+  if (contractCache.has(symbol)) return contractCache.get(symbol)!;
+  const info = await searchContract(symbol);
+  if (info) contractCache.set(symbol, info);
+  return info;
+}
+
 // ── Types ────────────────────────────────────────────────
 
 export interface OptionGreeks {
@@ -620,7 +633,7 @@ export async function getOptionsChain(
 
   if (!isConnected()) return syntheticFallback();
 
-  const contractInfo = await searchContract(symbol);
+  const contractInfo = await getContractInfoCached(symbol);
   if (!contractInfo) return syntheticFallback();
 
   const params = await getOptionChainParams(contractInfo.conId, symbol);
