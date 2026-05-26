@@ -822,7 +822,7 @@ export async function recalculatePerformance(accountView: AccountView = 'paper')
 // ── Category Performance (Signal Quality) ────────────────
 
 export interface CategoryPerformance {
-  category: 'suggested_finds' | 'day_trade' | 'scanner_day_trade' | 'influencer_day_trade' | 'day_penny' | 'swing_trade' | 'dip_buy' | 'profit_take';
+  category: 'suggested_finds' | 'day_trade' | 'scanner_day_trade' | 'influencer_day_trade' | 'day_penny' | 'swing_trade' | 'options_wheel' | 'dip_buy' | 'profit_take';
   totalTrades: number;
   activeTrades: number;
   wins: number;
@@ -960,6 +960,10 @@ export async function recalculatePerformanceByCategory(accountView: AccountView 
     {
       key: 'swing_trade',
       filter: (t) => t.mode === 'SWING_TRADE',
+    },
+    {
+      key: 'options_wheel',
+      filter: (t) => t.mode === 'OPTIONS_PUT' || t.mode === 'OPTIONS_CALL' || t.mode === 'CREDIT_SPREAD' || t.mode === 'CALENDAR_SPREAD',
     },
     {
       key: 'dip_buy',
