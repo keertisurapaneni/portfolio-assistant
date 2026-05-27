@@ -1071,27 +1071,58 @@ export async function reconcileIBShorts(): Promise<{ closed: string[]; errors: s
     return { closed: [], errors: [] };
   }
 
-  // Only cover OVERNIGHT orphaned shorts — NOT same-day intraday shorts.
-  // Same-day shorts (opened after today's 9:30 AM ET market open) are intentional
-  // DAY_TRADE shorts from scanner/influencer signals. Covering them here would close
-  // perfectly valid trades (e.g. a Somesh SELL signal that went short at 9:30 AM).
-  const todayOpenET = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }));
-  todayOpenET.setHours(9, 30, 0, 0);
-  const todayOpenUTC = new Date(todayOpenET.toLocaleString('en-US', { timeZone: 'UTC' }));
+  // Only cover OVERNIGHT orphaned shorts — NOT intentional shorts from the auto-trader.
+  //
+  // Two categories of intentional shorts to skip:
+  //  1. Same-day shorts (day trades / penny sells opened after today's 9:30 AM ET open)
+  //  2. Active SWING_TRADE SELL positions (multi-day holds opened any day)
+  //
+  // The timezone conversion must be done correctly to avoid a double-offset bug:
+  // Using new Date(new Date().toLocaleString(..., {tz: 'ET'})).toLocaleString(..., {tz: 'UTC'})
+  // applies the ET→local conversion TWICE on a macOS/ET machine, shifting the cutoff
+  // from 9:30 AM ET (13:30 UTC) to 1:30 PM ET (17:30 UTC), which causes trades opened
+  // before 1:30 PM ET to be missed and incorrectly covered as orphans (e.g. CHWY).
+  const etDateStr = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(new Date());
+  const probe = new Date(`${etDateStr}T12:00:00Z`);
+  const etHourAtNoon = parseInt(probe.toLocaleString('en-US', { timeZone: 'America/New_York', hour: '2-digit', hour12: false }));
+  const etOffsetHours = 12 - etHourAtNoon; // e.g. 4 for EDT (UTC-4), 5 for EST (UTC-5)
+  const todayOpenUTC = new Date(`${etDateStr}T09:30:00Z`);
+  todayOpenUTC.setUTCHours(9 + etOffsetHours, 30, 0, 0); // 9:30 AM ET expressed as UTC
 
-  // Query active SELL paper_trades opened today — these are known same-day shorts
-  const { data: sameDaySellTrades } = await getSupabase()
+  // Query active SELL paper_trades opened today (same-day shorts = intentional day/penny trades)
+  const { data: sameDaySellTrades, error: sameDayErr } = await getSupabase()
     .from('paper_trades')
     .select('ticker')
     .eq('signal', 'SELL')
     .in('status', ['SUBMITTED', 'FILLED', 'PARTIAL'])
     .gte('opened_at', todayOpenUTC.toISOString());
 
-  const sameDaySellTickers = new Set((sameDaySellTrades ?? []).map((t: { ticker: string }) => t.ticker.toUpperCase()));
+  // Also query any active SWING_TRADE SELL positions regardless of date (multi-day holds).
+  // Swing shorts are opened on day N and held for several days — the same-day filter
+  // would miss them on day N+1 and beyond, causing the reconciler to try to cover them.
+  const { data: activeSwingSells, error: swingErr } = await getSupabase()
+    .from('paper_trades')
+    .select('ticker')
+    .eq('signal', 'SELL')
+    .in('mode', ['SWING_TRADE', 'LONG_TERM'])
+    .in('status', ['SUBMITTED', 'FILLED', 'PARTIAL', 'ACTIVE']);
+
+  // If EITHER query fails, do NOT proceed — covering legitimate shorts is catastrophic.
+  // Fail safe: return without covering anything so the operator can investigate.
+  if (sameDayErr || swingErr) {
+    const msg = sameDayErr?.message ?? swingErr?.message ?? 'unknown error';
+    log(`[IBReconcile] ⚠️ DB query failed (${msg}) — skipping short reconciliation to avoid covering legitimate swing/day shorts. Will retry next cycle.`);
+    return { closed: [], errors: [msg] };
+  }
+
+  const sameDaySellTickers = new Set([
+    ...(sameDaySellTrades ?? []).map((t: { ticker: string }) => t.ticker.toUpperCase()),
+    ...(activeSwingSells ?? []).map((t: { ticker: string }) => t.ticker.toUpperCase()),
+  ]);
 
   const shorts = allShorts.filter(p => {
     if (sameDaySellTickers.has(p.symbol.toUpperCase())) {
-      log(`[IBReconcile] Skipping ${p.symbol} — active same-day SELL trade exists (intraday short, not an orphan)`);
+      log(`[IBReconcile] Skipping ${p.symbol} — active intentional SELL trade exists (not an orphan)`);
       return false;
     }
     return true;
@@ -5313,7 +5344,8 @@ async function _syncPositionsForAccount(
         : (fillPrice - actual) * qty;
 
       let closeReason: import('../../shared/trade-types.js').CloseReason = 'manual';
-      if (trade.stop_loss && trade.target_price) {
+      if (hasConfirmedFill && trade.stop_loss && trade.target_price) {
+        // Confirmed IB fill: use price vs bracket levels to determine outcome
         if (isLong) {
           if (actual >= trade.target_price) closeReason = 'target_hit';
           else if (actual <= trade.stop_loss) closeReason = 'stop_loss';
@@ -5321,9 +5353,22 @@ async function _syncPositionsForAccount(
           if (actual <= trade.target_price) closeReason = 'target_hit';
           else if (actual >= trade.stop_loss) closeReason = 'stop_loss';
         }
+        if (closeReason === 'manual' && pnl > 0) closeReason = 'target_hit';
+        if (closeReason === 'manual' && pnl < 0) closeReason = 'stop_loss';
+      } else if (!hasConfirmedFill) {
+        // No confirmed IB fill — we're using a live Finnhub quote as an approximation.
+        // The ACTUAL close price (TP or SL bracket) could be very different from the
+        // current market price (e.g. ENPH SL at $70.12 but market recovered to $71.78).
+        // Conservative default: if price is below entry for longs (above for shorts),
+        // it was more likely a stop. Otherwise treat as closed-at-market (CLOSED status).
+        // This avoids falsely crediting wins (TARGET_HIT) on positions that actually stopped.
+        if (isLong) {
+          closeReason = actual < fillPrice ? 'stop_loss' : 'manual'; // 'manual' → CLOSED status
+        } else {
+          closeReason = actual > fillPrice ? 'stop_loss' : 'manual';
+        }
+        log(`[WARN] ${trade.ticker}: Using fallback close_reason='${closeReason}' (no confirmed IB fill — actual bracket fill price unknown)`);
       }
-      if (closeReason === 'manual' && pnl > 0) closeReason = 'target_hit';
-      if (closeReason === 'manual' && pnl < 0) closeReason = 'stop_loss';
 
       const status: import('../../shared/trade-types.js').TradeStatus = closeReason === 'stop_loss' ? 'STOPPED'
         : closeReason === 'target_hit' ? 'TARGET_HIT' : 'CLOSED';
