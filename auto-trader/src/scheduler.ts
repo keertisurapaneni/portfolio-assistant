@@ -3283,17 +3283,43 @@ async function executeScannerTrade(
   // they are different instruments and managed by a separate pipeline.
   if (await hasActiveTrade(ticker, { excludeOptions: true })) return 'skipped:duplicate';
 
-  // ── Strategy Gate ─────────────────────────────────────────────────────────
-  // Hard block on (mode, direction) pairs that have proven no edge.
-  // Populated automatically by evaluateAndGateStrategies() and seeded manually.
-  // Non-blocking on error (checkStrategyGate returns null if Supabase is down).
+  // ── Manual strategy gate ─────────────────────────────────────────────────
+  // Checks strategy_gates.blocked — set ONLY by you manually, never auto-set.
+  // Use this when you explicitly decide to disable a direction (e.g. after a
+  // systematic review). The system will not block anything automatically.
   const gateBlock = await checkStrategyGate(mode, signal);
   if (gateBlock) {
-    log(`${ticker}: BLOCKED by strategy gate — ${gateBlock}`);
-    persistEvent(ticker, 'skipped', `Strategy gate active: ${mode} ${signal} has insufficient edge`, {
+    log(`${ticker}: BLOCKED by manual strategy gate — ${gateBlock}`);
+    persistEvent(ticker, 'skipped', `Manual strategy gate active: ${mode} ${signal}`, {
       action: 'skipped', source: 'scanner', mode, skip_reason: gateBlock,
     });
     return `skipped:${gateBlock}`;
+  }
+
+  // ── SWING SELL: SPY regime gate ───────────────────────────────────────────
+  // Shorting only makes sense when the broader market is in a downtrend.
+  // If SPY is above its 50-day SMA, we are in a bull market — SWING SELL signals
+  // are fighting the trend and have historically lost (14% WR, 1W/6L as of May 2026).
+  // Allow when SPY < SMA50 (mixed/bearish regime). Fully non-blocking on data failure.
+  if (mode === 'SWING_TRADE' && signal === 'SELL') {
+    try {
+      const spyBars = await fetchYahooDailyBars('SPY');
+      if (spyBars && spyBars.closes.length >= 50) {
+        const closes = spyBars.closes;
+        const spyPrice = closes[closes.length - 1];
+        const sma50 = closes.slice(-50).reduce((a: number, b: number) => a + b, 0) / 50;
+        if (spyPrice > sma50) {
+          log(`${ticker}: SWING SELL skipped — SPY $${spyPrice.toFixed(2)} above SMA50 $${sma50.toFixed(2)} (bullish regime, don't short)`);
+          persistEvent(ticker, 'skipped', `SWING SELL skipped: SPY above SMA50 (bullish regime)`, {
+            action: 'skipped', source: 'scanner', mode,
+            skip_reason: 'spy_bullish_no_shorts',
+            metadata: { spyPrice, sma50 },
+          });
+          return 'skipped:spy_bullish_no_shorts';
+        }
+        log(`${ticker}: SWING SELL allowed — SPY $${spyPrice.toFixed(2)} below SMA50 $${sma50.toFixed(2)} (bearish/mixed regime)`);
+      }
+    } catch { /* non-blocking — if SPY data unavailable, allow the trade */ }
   }
 
   // ── Same-day re-entry cooldown (DAY_TRADE only — penny has its own session state) ──
