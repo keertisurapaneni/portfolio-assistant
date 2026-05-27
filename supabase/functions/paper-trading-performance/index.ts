@@ -15,6 +15,7 @@ interface PaperTradeRow {
   ticker: string;
   mode: string;
   notes: string | null;
+  scanner_reason: string | null;
   fill_price: number | null;
   close_price: number | null;
   quantity: number | null;
@@ -26,6 +27,20 @@ interface PaperTradeRow {
   opened_at: string;
   created_at: string;
   close_reason: string | null;
+}
+
+/**
+ * Map a scanner_reason string to a short canonical scanner name.
+ * Returns null for non-scanner trades (influencer signals, manual, etc.)
+ */
+function parseScannerTag(scannerReason: string | null): string | null {
+  if (!scannerReason) return null;
+  const r = scannerReason.toLowerCase();
+  if (r.startsWith('9/21 ema pullback')) return 'ema_pullback';
+  if (r.startsWith('vwap confluence')) return 'vwap_confluence';
+  if (r.startsWith('fib 0.236')) return 'fib_236';
+  if (r.startsWith('spx key-level') || r.startsWith('spx key level')) return 'spx_key_level';
+  return null;
 }
 
 interface LogRow {
@@ -40,6 +55,7 @@ interface TradePerformanceRow {
   ticker: string;
   strategy: string;
   tag: string | null;
+  scanner_tag: string | null;
   entry_datetime: string;
   exit_datetime: string;
   entry_price: number | null;
@@ -177,7 +193,7 @@ Deno.serve(async (req) => {
     // Use paper_trades as source of truth (matches category cards)
     const { data: tradesData, error: tradesError } = await supabase
       .from('paper_trades')
-      .select('id, ticker, mode, notes, fill_price, close_price, quantity, position_size, pnl, pnl_percent, filled_at, closed_at, opened_at, created_at, close_reason')
+      .select('id, ticker, mode, notes, scanner_reason, fill_price, close_price, quantity, position_size, pnl, pnl_percent, filled_at, closed_at, opened_at, created_at, close_reason')
       .in('status', ['STOPPED', 'TARGET_HIT', 'CLOSED'])
       .not('fill_price', 'is', null)
       .not('closed_at', 'is', null)
@@ -207,6 +223,7 @@ Deno.serve(async (req) => {
           overall: emptyOverall,
           byStrategy: {},
           byTag: {},
+          byScanner: {},
           byRegime: {},
           recentClosedTrades: [],
           warnings,
@@ -240,12 +257,14 @@ Deno.serve(async (req) => {
 
       const log = logByTradeId.get(t.id);
       const tag = t.mode === 'LONG_TERM' ? (log?.tag ?? null) : null;
+      const scanner_tag = parseScannerTag(t.scanner_reason);
 
       return {
         trade_id: t.id,
         ticker: t.ticker,
         strategy: t.mode,
         tag,
+        scanner_tag,
         entry_datetime: entryDatetime,
         exit_datetime: exitDatetime,
         entry_price: entryPrice,
@@ -264,6 +283,10 @@ Deno.serve(async (req) => {
     const portfolioReturn = portfolioRealizedReturnPct(rows);
     const byStrategy = aggregateByGroup(rows, r => r.strategy);
     const byTag = aggregateByGroup(rows.filter(r => r.tag), r => r.tag!);
+    const byScanner = aggregateByGroup(
+      rows.filter(r => r.scanner_tag !== null),
+      r => r.scanner_tag!,
+    );
     const byRegime = aggregateByGroup(rows, regimeBucket);
 
     const MIN_TRADES = 10;
@@ -273,12 +296,16 @@ Deno.serve(async (req) => {
     for (const [k, m] of Object.entries(byTag)) {
       if (m.count_trades_closed < MIN_TRADES) warnings.push(`Insufficient sample size: ${k} has ${m.count_trades_closed} trades (<${MIN_TRADES})`);
     }
+    for (const [k, m] of Object.entries(byScanner)) {
+      if (m.count_trades_closed < MIN_TRADES) warnings.push(`Insufficient sample size: scanner:${k} has ${m.count_trades_closed} trades (<${MIN_TRADES})`);
+    }
 
     const payload = {
       asOf: asOfStr,
       overall: { ...overall, portfolio_realized_return_pct: portfolioReturn },
       byStrategy,
       byTag,
+      byScanner,
       byRegime,
       recentClosedTrades: rows.slice(0, 50),
       warnings,
@@ -291,16 +318,17 @@ Deno.serve(async (req) => {
     console.error('[paper-trading-performance]:', err);
     warnings.push(err instanceof Error ? err.message : 'Failed to load performance data');
     return new Response(
-      JSON.stringify({
-        asOf: asOfStr,
-        overall: emptyOverall,
-        byStrategy: {},
-        byTag: {},
-        byRegime: {},
-        recentClosedTrades: [],
-        warnings,
-      }),
-      { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        JSON.stringify({
+          asOf: asOfStr,
+          overall: emptyOverall,
+          byStrategy: {},
+          byTag: {},
+          byScanner: {},
+          byRegime: {},
+          recentClosedTrades: [],
+          warnings,
+        }),
+        { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
   }
 });

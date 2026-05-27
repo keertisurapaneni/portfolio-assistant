@@ -32,6 +32,7 @@ export interface PerformanceResponse {
   overall: GroupMetrics & { portfolio_realized_return_pct: number };
   byStrategy: Record<string, GroupMetrics>;
   byTag: Record<string, GroupMetrics>;
+  byScanner: Record<string, GroupMetrics>;
   byRegime: Record<string, GroupMetrics>;
   recentClosedTrades: RecentClosedTrade[];
   warnings: string[];

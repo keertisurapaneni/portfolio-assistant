@@ -98,6 +98,7 @@ import { runDipWatcher } from './lib/dip-watcher.js';
 import { checkSpxLevelSetups } from './lib/spx-level-scanner.js';
 import { checkVwapConfluenceSetups, type ConfluenceResult } from './lib/vwap-confluence-scanner.js';
 import { checkFibRetraceSetups, type FibRetraceResult } from './lib/fib-retrace-scanner.js';
+import { checkEmaPullbackSetups, type EmaPullbackResult } from './lib/ema-pullback-scanner.js';
 import { isInsideOrb } from './lib/orb.js';
 import { evaluateVwapAlignment, detectVwapReclaim } from './lib/vwap.js';
 import { checkTrendFilter } from './lib/trend-filter.js';
@@ -7045,6 +7046,54 @@ async function runSchedulerCycle(): Promise<void> {
         });
       } catch (err) {
         log(`[FibRetrace] Error: ${err instanceof Error ? err.message : 'unknown'}`);
+      }
+    }
+
+    // 12a-iv. EMA 9/21 pullback scanner — trend + momentum resumption
+    if (isModeEnabled(config, 'DAY_TRADE')) {
+      try {
+        await checkEmaPullbackSetups(async (result: EmaPullbackResult) => {
+          const idea: TradeIdea = {
+            ticker: result.ticker,
+            name: result.ticker,
+            price: result.entry,
+            change: 0,
+            changePercent: 0,
+            signal: result.signal,
+            confidence: result.confidence,
+            reason:
+              `9/21 EMA pullback: EMA9=$${result.ema9} EMA21=$${result.ema21} ADX=${result.adx} ` +
+              `→ ${result.signal} @ $${result.entry}`,
+            tags: ['ema_pullback'],
+            mode: 'DAY_TRADE',
+            entryPrice: result.entry,
+            stopLoss: result.stop,
+            targetPrice: result.target,
+            riskReward: result.riskReward,
+          };
+
+          if (await hasActiveTrade(result.ticker, { excludeOptions: true })) {
+            log(`[EMAPullback] ${result.ticker}: already has an active trade — skipping`);
+            return;
+          }
+          if (await isDayTradeLossGateActive(config)) {
+            log('[EMAPullback] Day-trade loss gate active — skipping');
+            return;
+          }
+
+          const refreshedPositions = await getEnrichedPositions();
+          const execResult = await executeScannerTrade(idea, config, refreshedPositions);
+          log(`[EMAPullback] ${result.ticker} ${result.signal} @ $${result.entry}: ${execResult}`);
+          persistEvent(result.ticker, execResult.startsWith('executed') ? 'success' : 'skipped',
+            `9/21 EMA pullback: ${execResult}`, {
+              source: 'ema_pullback_scanner',
+              ema9: result.ema9,
+              ema21: result.ema21,
+              adx: result.adx,
+            });
+        });
+      } catch (err) {
+        log(`[EMAPullback] Error: ${err instanceof Error ? err.message : 'unknown'}`);
       }
     }
 

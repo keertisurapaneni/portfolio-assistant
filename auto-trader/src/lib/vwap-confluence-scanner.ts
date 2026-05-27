@@ -39,6 +39,7 @@ const SCANNER_UNIVERSE = [
   'SPY', 'QQQ', 'IWM',
   'NFLX', 'COIN', 'MSTR', 'SMCI', 'ARM', 'AVGO', 'CRM', 'UBER',
   'MU', 'INTC', 'PYPL', 'SQ', 'SHOP', 'PLTR',
+  'SNDK',
 ];
 
 // ── Types ────────────────────────────────────────────────────────────────────
