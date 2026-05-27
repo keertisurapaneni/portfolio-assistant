@@ -436,6 +436,17 @@ export function startScheduler(): void {
   }, { timezone: 'America/New_York' });
   log('EOD reconciliation: 4:15 PM ET');
 
+  // EOD loss analysis — 4:20 PM ET: if the day had more losers than winners across
+  // multiple tickers, diagnose which strategy/signal type caused it and why.
+  cron.schedule('20 16 * * 1-5', async () => {
+    try {
+      await runEndOfDayAnalysis();
+    } catch (err) {
+      console.error('[EOD Analysis] Failed:', err instanceof Error ? err.message : err);
+    }
+  }, { timezone: 'America/New_York' });
+  log('EOD loss analysis: 4:20 PM ET');
+
   // Earnings IV-crush scanner — 2:30 PM ET, enter calendar spreads for tonight's AMC
   // and tomorrow morning's BMO earnings announcements.
   cron.schedule('30 14 * * 1-5', async () => {
@@ -2250,6 +2261,112 @@ async function shouldMarkStrategyX(signal: ExternalStrategySignal): Promise<{
   }
 
   return { blocked: false, scope: null, consecutiveLosses: sourceLosses };
+}
+
+// ── End-of-Day Loss Analysis ─────────────────────────────────────────────────
+// Runs at 4:20 PM ET, after the EOD reconciliation settles.
+// Piggybacks on the existing per-trade feedback loop (analyzeCompletedTrade /
+// analyzeUnreviewedTrades / updatePerformancePatterns) — those already fire on
+// every trade close and are stored in trade_learnings.
+//
+// This function adds the ONE missing piece: a daily *aggregate* check that
+// detects when multiple tickers from the same strategy all lost on the same day
+// and posts a single visible warning to auto_trade_events (shows in activity log).
+async function runEndOfDayAnalysis(): Promise<void> {
+  const sb = getSupabase();
+  const etNow = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }));
+  const todayISO = etNow.toISOString().slice(0, 10);
+
+  // Ensure any trades that closed today have AI post-mortems in trade_learnings.
+  // analyzeUnreviewedTrades + updatePerformancePatterns handle the per-trade layer.
+  try {
+    const analyzed = await analyzeUnreviewedTrades();
+    if (analyzed > 0) {
+      await updatePerformancePatterns();
+      log(`[EOD Analysis] Analyzed ${analyzed} unreviewed trade(s) via existing feedback loop`);
+    }
+  } catch (err) {
+    log(`[EOD Analysis] Per-trade analysis failed: ${err instanceof Error ? err.message : err}`);
+  }
+
+  // ── Aggregate daily check ────────────────────────────────────────────────
+  const { data: closedToday } = await sb
+    .from('paper_trades')
+    .select('ticker, mode, signal, pnl, close_reason')
+    .gte('closed_at', `${todayISO}T00:00:00`)
+    .not('pnl', 'is', null)
+    .not('status', 'in', '("CANCELLED","REJECTED","EXPIRED","SUBMITTED","PENDING")');
+
+  if (!closedToday?.length) return;
+
+  const totalPnl = closedToday.reduce((s, t) => s + (t.pnl ?? 0), 0);
+  const winners  = closedToday.filter(t => (t.pnl ?? 0) > 0);
+  const losers   = closedToday.filter(t => (t.pnl ?? 0) < 0);
+
+  // Only flag if it's a net losing day with multiple losers
+  if (totalPnl >= 0 || losers.length < 2) {
+    log(`[EOD Analysis] ${totalPnl >= 0 ? 'Net positive' : 'Single loser'} day — no systemic pattern to flag`);
+    return;
+  }
+
+  // Group losses by mode:signal to spot strategy-level failures
+  const byStrategy: Record<string, { wins: number; losses: number; pnl: number; tickers: string[]; stopOuts: number }> = {};
+  for (const t of closedToday) {
+    const key = `${t.mode}:${t.signal}`;
+    if (!byStrategy[key]) byStrategy[key] = { wins: 0, losses: 0, pnl: 0, tickers: [], stopOuts: 0 };
+    const pnl = t.pnl ?? 0;
+    byStrategy[key].pnl += pnl;
+    byStrategy[key].tickers.push(t.ticker);
+    if (pnl > 0) byStrategy[key].wins++;
+    else if (pnl < 0) {
+      byStrategy[key].losses++;
+      if (t.close_reason === 'stop_loss') byStrategy[key].stopOuts++;
+    }
+  }
+
+  // Pull last 14 days of this strategy's performance for historical context
+  const findings: string[] = [];
+  for (const [key, stats] of Object.entries(byStrategy)) {
+    if (stats.losses < 2 || stats.wins > 0) continue; // only flag all-loss groups
+
+    const [mode, signal] = key.split(':');
+    const { data: recent } = await sb
+      .from('paper_trades')
+      .select('pnl')
+      .eq('mode', mode)
+      .eq('signal', signal)
+      .gte('closed_at', new Date(Date.now() - 14 * 86_400_000).toISOString())
+      .not('pnl', 'is', null)
+      .not('status', 'in', '("CANCELLED","REJECTED","EXPIRED","SUBMITTED","PENDING")');
+
+    const recentAll  = recent ?? [];
+    const recentWins = recentAll.filter(t => (t.pnl ?? 0) > 0).length;
+    const recentRate = recentAll.length > 0 ? Math.round((recentWins / recentAll.length) * 100) : 0;
+
+    findings.push(
+      `${mode} ${signal}: ${stats.losses} losses, 0 wins today (${stats.tickers.join(', ')}) | $${stats.pnl.toFixed(0)} | ` +
+      `14-day win rate: ${recentRate}% (${recentWins}/${recentAll.length})` +
+      (stats.stopOuts >= 2 ? ` | ${stats.stopOuts} stop-outs — check entry timing & gap risk` : '')
+    );
+  }
+
+  if (findings.length === 0) {
+    log(`[EOD Analysis] Net loss day but no single strategy dominated — normal variance`);
+    return;
+  }
+
+  const message = `📊 EOD: $${totalPnl.toFixed(0)} net | ${winners.length}W ${losers.length}L — Strategy issue detected:\n${findings.join('\n')}`;
+  log(`[EOD Analysis] ${message}`);
+
+  await createAutoTradeEvent({
+    ticker: 'SYSTEM',
+    mode: 'DAY_TRADE',
+    event_type: 'warning',
+    action: 'closed',
+    source: 'scanner',
+    message,
+    metadata: { totalPnl, winners: winners.length, losers: losers.length, byStrategy, date: todayISO },
+  });
 }
 
 async function getQuotePrice(symbol: string): Promise<number | null> {
