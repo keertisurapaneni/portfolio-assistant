@@ -347,17 +347,33 @@ async function executeCreditSpread(ticket: CreditSpreadTicket): Promise<void> {
 
   const expiryIso = `${ticket.expiry.slice(0, 4)}-${ticket.expiry.slice(4, 6)}-${ticket.expiry.slice(6, 8)}`;
 
+  // If IB placement failed, record as CANCELLED (not FILLED) so the position
+  // monitor doesn't track it and generate phantom P&L from fallback stock prices.
+  // Credit spreads are multi-leg IB orders — they cannot be paper-simulated safely.
+  if (!ibOrderId) {
+    console.warn(`[Credit Spread] IB order failed for ${ticket.ticker} — skipping paper_trade insert to prevent phantom P&L`);
+    await createAutoTradeEvent({
+      ticker: ticket.ticker,
+      mode: 'CREDIT_SPREAD',
+      event_type: 'warning',
+      action: 'skipped',
+      message: `${ticket.direction} ${ticket.sellStrike}/${ticket.buyStrike} — IB order failed, position NOT opened`,
+      metadata: { direction: ticket.direction, sellStrike: ticket.sellStrike, buyStrike: ticket.buyStrike },
+    });
+    return;
+  }
+
   await sb.from('paper_trades').insert({
     ticker: ticket.ticker,
     mode: 'CREDIT_SPREAD',
     signal: 'SELL',
-    status: ibOrderId ? 'SUBMITTED' : 'FILLED',
+    status: 'SUBMITTED',
     opened_at: new Date().toISOString(),
-    filled_at: ibOrderId ? null : new Date().toISOString(),
+    filled_at: null,
     entry_price: ticket.netCredit,
     quantity: ticket.contracts,
     position_size: ticket.maxLoss,
-    ib_order_id: ibOrderId?.toString() ?? null,
+    ib_order_id: ibOrderId.toString(),
     option_strike: ticket.sellStrike,
     option_expiry: expiryIso,
     option_premium: ticket.netCredit,
