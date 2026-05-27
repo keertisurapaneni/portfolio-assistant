@@ -3296,28 +3296,49 @@ async function executeScannerTrade(
     return `skipped:${gateBlock}`;
   }
 
-  // ── SWING SELL: SPY regime gate ───────────────────────────────────────────
-  // Shorting only makes sense when the broader market is in a downtrend.
-  // If SPY is above its 50-day SMA, we are in a bull market — SWING SELL signals
-  // are fighting the trend and have historically lost (14% WR, 1W/6L as of May 2026).
-  // Allow when SPY < SMA50 (mixed/bearish regime). Fully non-blocking on data failure.
+  // ── SWING SELL: SPY regime + momentum gate (Option D) ───────────────────
+  // Two separate conditions, either one blocks:
+  //
+  //  1. SPY above SMA200 → long-term trend is bullish. Even if SPY pulled back
+  //     below SMA50 temporarily, shorts in an uptrend have low follow-through.
+  //
+  //  2. SPY 5-day return ≥ +2% → snap-back rally mode. SPY can be below SMA50
+  //     but ripping hard short-term, squeezing swing shorts into a bounce exit.
+  //
+  // Historical context: SWING SELL was 14% WR (1W/6L) — mostly stopped out at
+  // market open the next morning as SPY bounced. Both conditions address this.
+  // Fully non-blocking on data failure.
   if (mode === 'SWING_TRADE' && signal === 'SELL') {
     try {
       const spyBars = await fetchYahooDailyBars('SPY');
-      if (spyBars && spyBars.closes.length >= 50) {
+      if (spyBars && spyBars.closes.length >= 200) {
         const closes = spyBars.closes;
         const spyPrice = closes[closes.length - 1];
-        const sma50 = closes.slice(-50).reduce((a: number, b: number) => a + b, 0) / 50;
-        if (spyPrice > sma50) {
-          log(`${ticker}: SWING SELL skipped — SPY $${spyPrice.toFixed(2)} above SMA50 $${sma50.toFixed(2)} (bullish regime, don't short)`);
-          persistEvent(ticker, 'skipped', `SWING SELL skipped: SPY above SMA50 (bullish regime)`, {
+        const sma200 = closes.slice(-200).reduce((a: number, b: number) => a + b, 0) / 200;
+        const price5dAgo = closes[closes.length - 6]; // 5 sessions back
+        const momentum5d = (spyPrice - price5dAgo) / price5dAgo;
+
+        if (spyPrice > sma200) {
+          log(`${ticker}: SWING SELL skipped — SPY $${spyPrice.toFixed(2)} above SMA200 $${sma200.toFixed(2)} (long-term uptrend, don't short)`);
+          persistEvent(ticker, 'skipped', `SWING SELL skipped: SPY above SMA200 (long-term bull trend)`, {
             action: 'skipped', source: 'scanner', mode,
-            skip_reason: 'spy_bullish_no_shorts',
-            metadata: { spyPrice, sma50 },
+            skip_reason: 'spy_above_sma200',
+            metadata: { spyPrice, sma200, momentum5d },
           });
-          return 'skipped:spy_bullish_no_shorts';
+          return 'skipped:spy_above_sma200';
         }
-        log(`${ticker}: SWING SELL allowed — SPY $${spyPrice.toFixed(2)} below SMA50 $${sma50.toFixed(2)} (bearish/mixed regime)`);
+
+        if (momentum5d >= 0.02) {
+          log(`${ticker}: SWING SELL skipped — SPY 5-day return +${(momentum5d * 100).toFixed(1)}% (snap-back rally, don't short into a bounce)`);
+          persistEvent(ticker, 'skipped', `SWING SELL skipped: SPY 5-day momentum +${(momentum5d * 100).toFixed(1)}% (snap-back)`, {
+            action: 'skipped', source: 'scanner', mode,
+            skip_reason: 'spy_snapback_rally',
+            metadata: { spyPrice, sma200, momentum5d },
+          });
+          return 'skipped:spy_snapback_rally';
+        }
+
+        log(`${ticker}: SWING SELL allowed — SPY $${spyPrice.toFixed(2)} below SMA200 $${sma200.toFixed(2)}, 5d momentum ${(momentum5d * 100).toFixed(1)}% (bearish conditions met)`);
       }
     } catch { /* non-blocking — if SPY data unavailable, allow the trade */ }
   }
