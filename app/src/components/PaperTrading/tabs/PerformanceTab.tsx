@@ -295,6 +295,25 @@ export function PerformanceTab({
             </div>
           )}
 
+          {Object.keys(data.byScanner ?? {}).length > 0 && (
+            <div className="rounded-xl border border-[hsl(var(--border))] bg-white overflow-hidden">
+              <div className="px-4 py-2.5 border-b border-[hsl(var(--border))] bg-[hsl(var(--secondary))]">
+                <h3 className="text-sm font-semibold">Day-Trade Scanner Breakdown</h3>
+                <p className="text-[10px] text-[hsl(var(--muted-foreground))] mt-0.5">Performance by individual scanner strategy</p>
+              </div>
+              <MetricsTable
+                data={data.byScanner}
+                rowLabel={k => ({
+                  ema_pullback: '9/21 EMA Pullback',
+                  vwap_confluence: 'VWAP Confluence',
+                  fib_236: 'Fib 0.236 Retracement',
+                  spx_key_level: 'SPX Key Level',
+                }[k] ?? k.replace(/_/g, ' '))}
+                colHeader="Scanner"
+              />
+            </div>
+          )}
+
           {Object.keys(data.byTag).length > 0 && (
             <div className="rounded-xl border border-[hsl(var(--border))] bg-white overflow-hidden">
               <div className="px-4 py-2.5 border-b border-[hsl(var(--border))] bg-[hsl(var(--secondary))]">
