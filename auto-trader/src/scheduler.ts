@@ -5284,6 +5284,19 @@ async function _syncPositionsForAccount(
           log(`${trade.ticker}: Position still missing (${Math.round(missingFor / 60000)} min) — waiting for guard period`);
           continue;
         }
+
+        // Swing and long-term trades are multi-day holds. A 30-min IB disconnect
+        // (e.g. mobile app login kicking out the gateway session) is a normal transient
+        // event and must NOT trigger a fallback-quote close — that would close a good
+        // position at the wrong price. Confirmed: caused ABBV to close at $213.14
+        // instead of $217.12 (+$276 P&L difference) on 2026-05-26.
+        // Only day trades and penny trades use the fallback-quote close.
+        if (trade.mode === 'SWING_TRADE' || trade.mode === 'LONG_TERM') {
+          log(`[WARN] ${trade.ticker}: ${trade.mode} position missing for ${Math.round(missingFor / 60000)} min — NOT closing via fallback quote (IB disconnect suspected). Resetting guard to re-check next cycle.`);
+          await updatePaperTrade(trade.id, { missing_since: null }, syncAcct);
+          continue;
+        }
+
         log(`${trade.ticker}: Position missing for ${Math.round(missingFor / 60000)} min — proceeding with closure (fallback)`);
       }
 

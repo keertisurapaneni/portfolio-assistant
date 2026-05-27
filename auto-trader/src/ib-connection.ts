@@ -423,6 +423,18 @@ export class IBConnection {
 
       if (reqId != null && this._pendingOrderCallbacks.has(reqId)) {
         const pending = this._pendingOrderCallbacks.get(reqId)!;
+
+        // Code 399 = "order repriced to avoid crossing a resting order" — this is a WARNING,
+        // not a rejection. IB reprices and fills the order anyway. If we reject and delete the
+        // callback here, the subsequent orderStatus:Filled event has nowhere to resolve, the
+        // placeMarketOrder promise rejects, the caller thinks the order failed and retries —
+        // creating duplicate sells. Confirmed: caused 3× IWM sells and a 20-share accidental short.
+        // Solution: swallow the warning, keep the callback alive, let the fill event resolve it.
+        if (code === 399) {
+          console.warn(`${this.tag} Order ${reqId} (${pending.symbol}) warning code=399: ${err.message} — order repriced by IB, still waiting for fill`);
+          return;
+        }
+
         clearTimeout(pending.timer);
         this._pendingOrderCallbacks.delete(reqId);
         const msg = `IB order ${reqId} (${pending.symbol}) rejected: code=${code} ${err.message}`;
