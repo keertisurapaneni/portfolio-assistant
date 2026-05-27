@@ -388,4 +388,139 @@ export async function updatePerformancePatterns(): Promise<void> {
       updated_at: new Date().toISOString(),
     })
     .eq('id', 'global');
+
+  // After updating patterns, evaluate whether any strategy directions need gating.
+  await evaluateAndGateStrategies();
+}
+
+// ── Strategy Gate Evaluator ───────────────────────────────────────────────────
+// Reads paper_trades grouped by (mode, signal) over a rolling window.
+// If win rate drops below GATE_THRESHOLD with enough samples, sets blocked=true
+// in strategy_gates. If it recovers above RECOVERY_THRESHOLD, clears the block.
+//
+// This is the "actuator" that closes the observe → act feedback loop.
+// Runs automatically after updatePerformancePatterns().
+
+const GATE_WINDOW_DAYS = 30;       // look back 30 days of trades
+const GATE_MIN_SAMPLES = 10;       // need at least 10 trades before gating
+const GATE_THRESHOLD = 0.30;       // block if win rate < 30%
+const GATE_RECOVERY_THRESHOLD = 0.45; // unblock when win rate recovers to 45%
+const GATE_AUTO_UNBLOCK_DAYS = 14; // also auto-unblock after 14 days regardless
+
+export async function evaluateAndGateStrategies(): Promise<void> {
+  const sb = getSupabase();
+  const since = new Date(Date.now() - GATE_WINDOW_DAYS * 86_400_000).toISOString();
+
+  // Get all closed trades in the window with a realized P&L
+  const { data: trades } = await sb
+    .from('paper_trades')
+    .select('mode, signal, pnl')
+    .in('status', [...CLOSED_STATUSES])
+    .not('pnl', 'is', null)
+    .not('fill_price', 'is', null)
+    .gte('closed_at', since);
+
+  if (!trades?.length) return;
+
+  // Group by (mode, signal)
+  const groups: Record<string, { wins: number; total: number }> = {};
+  for (const t of trades) {
+    const key = `${t.mode}::${t.signal}`;
+    if (!groups[key]) groups[key] = { wins: 0, total: 0 };
+    groups[key].total++;
+    if ((t.pnl ?? 0) > 0) groups[key].wins++;
+  }
+
+  // Fetch current gate states
+  const { data: currentGates } = await sb.from('strategy_gates').select('*');
+  const gateMap = new Map<string, { blocked: boolean; blocked_at: string | null; auto_unblock_at: string | null }>(
+    (currentGates ?? []).map((g: { mode: string; direction: string; blocked: boolean; blocked_at: string | null; auto_unblock_at: string | null }) => [
+      `${g.mode}::${g.direction}`, g
+    ])
+  );
+
+  const now = new Date();
+
+  for (const [key, stats] of Object.entries(groups)) {
+    if (stats.total < GATE_MIN_SAMPLES) continue; // not enough data to gate
+
+    const [mode, direction] = key.split('::');
+    const winRate = stats.wins / stats.total;
+    const existing = gateMap.get(key);
+    const isCurrentlyBlocked = existing?.blocked ?? false;
+
+    // Check auto-unblock by time
+    const autoUnblockAt = existing?.auto_unblock_at ? new Date(existing.auto_unblock_at) : null;
+    if (isCurrentlyBlocked && autoUnblockAt && now > autoUnblockAt) {
+      await sb.from('strategy_gates').upsert({
+        mode, direction, blocked: false,
+        win_rate: winRate, sample_size: stats.total,
+        blocked_at: null, auto_unblock_at: null,
+        reason: `Auto-unblocked after ${GATE_AUTO_UNBLOCK_DAYS}d cooldown. Current win rate: ${(winRate * 100).toFixed(0)}%`,
+        updated_at: now.toISOString(),
+      });
+      console.log(`[GateEval] ✅ ${mode} ${direction} auto-unblocked (time expired) | win rate ${(winRate * 100).toFixed(0)}%`);
+      continue;
+    }
+
+    if (!isCurrentlyBlocked && winRate < GATE_THRESHOLD) {
+      // Block it
+      const autoUnblock = new Date(now.getTime() + GATE_AUTO_UNBLOCK_DAYS * 86_400_000);
+      await sb.from('strategy_gates').upsert({
+        mode, direction, blocked: true,
+        win_rate: winRate, sample_size: stats.total,
+        blocked_at: now.toISOString(),
+        auto_unblock_at: autoUnblock.toISOString(),
+        reason: `Win rate ${(winRate * 100).toFixed(0)}% (${stats.wins}W/${stats.total - stats.wins}L over ${GATE_WINDOW_DAYS}d) below ${(GATE_THRESHOLD * 100).toFixed(0)}% threshold`,
+        updated_at: now.toISOString(),
+      });
+      console.log(`[GateEval] 🚫 ${mode} ${direction} BLOCKED | win rate ${(winRate * 100).toFixed(0)}% < ${(GATE_THRESHOLD * 100).toFixed(0)}% (${stats.wins}W/${stats.total}T)`);
+
+    } else if (isCurrentlyBlocked && winRate >= GATE_RECOVERY_THRESHOLD) {
+      // Unblock — strategy recovered
+      await sb.from('strategy_gates').upsert({
+        mode, direction, blocked: false,
+        win_rate: winRate, sample_size: stats.total,
+        blocked_at: null, auto_unblock_at: null,
+        reason: `Recovered: win rate ${(winRate * 100).toFixed(0)}% >= ${(GATE_RECOVERY_THRESHOLD * 100).toFixed(0)}% threshold`,
+        updated_at: now.toISOString(),
+      });
+      console.log(`[GateEval] ✅ ${mode} ${direction} UNBLOCKED | win rate ${(winRate * 100).toFixed(0)}% recovered`);
+
+    } else {
+      // Update win rate in place without changing blocked status
+      await sb.from('strategy_gates').upsert({
+        mode, direction,
+        blocked: isCurrentlyBlocked,
+        win_rate: winRate, sample_size: stats.total,
+        updated_at: now.toISOString(),
+      });
+    }
+  }
+}
+
+// ── Strategy Gate Check ───────────────────────────────────────────────────────
+// Call this before placing any order. Returns null if allowed, or a skip reason string.
+
+export async function checkStrategyGate(mode: string, direction: string): Promise<string | null> {
+  try {
+    const sb = getSupabase();
+    const { data } = await sb
+      .from('strategy_gates')
+      .select('blocked, reason, win_rate, auto_unblock_at')
+      .or(`direction.eq.${direction},direction.eq.BOTH`)
+      .eq('mode', mode)
+      .eq('blocked', true)
+      .limit(1)
+      .maybeSingle();
+
+    if (!data) return null;
+
+    const unblockStr = data.auto_unblock_at
+      ? ` (auto-unblock: ${new Date(data.auto_unblock_at).toLocaleDateString()})`
+      : ' (manual unblock required)';
+    return `strategy_gate:${mode}_${direction}_${(data.win_rate * 100).toFixed(0)}pct_wr${unblockStr}`;
+  } catch {
+    return null; // non-blocking: if gate check fails, allow the trade
+  }
 }

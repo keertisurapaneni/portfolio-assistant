@@ -82,6 +82,7 @@ import {
   analyzeCompletedTrade,
   analyzeUnreviewedTrades,
   updatePerformancePatterns,
+  checkStrategyGate,
 } from './lib/feedback.js';
 import { logLongTermPerformance } from './lib/performanceLog.js';
 import { logClosedTradePerformance } from './lib/tradePerformanceLog.js';
@@ -3282,6 +3283,19 @@ async function executeScannerTrade(
   // they are different instruments and managed by a separate pipeline.
   if (await hasActiveTrade(ticker, { excludeOptions: true })) return 'skipped:duplicate';
 
+  // ── Strategy Gate ─────────────────────────────────────────────────────────
+  // Hard block on (mode, direction) pairs that have proven no edge.
+  // Populated automatically by evaluateAndGateStrategies() and seeded manually.
+  // Non-blocking on error (checkStrategyGate returns null if Supabase is down).
+  const gateBlock = await checkStrategyGate(mode, signal);
+  if (gateBlock) {
+    log(`${ticker}: BLOCKED by strategy gate — ${gateBlock}`);
+    persistEvent(ticker, 'skipped', `Strategy gate active: ${mode} ${signal} has insufficient edge`, {
+      action: 'skipped', source: 'scanner', mode, skip_reason: gateBlock,
+    });
+    return `skipped:${gateBlock}`;
+  }
+
   // ── Same-day re-entry cooldown (DAY_TRADE only — penny has its own session state) ──
   // hasActiveTrade only checks SUBMITTED/FILLED/PARTIAL — once a day trade hits
   // its target or stop (TARGET_HIT / STOPPED / CLOSED) the ticker is "free" again
@@ -3600,10 +3614,37 @@ async function executeScannerTrade(
   const streakMult = await getStreakMultiplier(mode);
   if (streakMult < 1.0) log(`${ticker}: cold streak active for ${mode} — sizing ×${streakMult}`);
 
+  // ── Win-rate position size multiplier (direction-aware) ───────────────────
+  // When a specific direction (BUY vs SELL) has a poor but not gate-level win rate,
+  // reduce position size proportionally. Separate from streakMult (mode-level, 0.5×
+  // flat) — this is continuous and direction-specific.
+  // Scale: wr >= 50% → 1.0×, wr 40-49% → 0.75×, wr 30-39% → 0.5×, < 30% → 0.0 (gated already)
+  let winRateMult = 1.0;
+  try {
+    const sb2 = (await import('./lib/supabase.js')).getSupabase();
+    const { data: gateRow } = await sb2
+      .from('strategy_gates')
+      .select('win_rate, blocked')
+      .eq('mode', mode)
+      .or(`direction.eq.${signal},direction.eq.BOTH`)
+      .maybeSingle();
+
+    if (gateRow && !gateRow.blocked && gateRow.win_rate != null) {
+      const wr = Number(gateRow.win_rate);
+      if (wr < 0.40 && wr >= 0.30) {
+        winRateMult = 0.50;
+        log(`${ticker}: ${mode} ${signal} win rate ${(wr * 100).toFixed(0)}% — sizing ×0.50 (reduced confidence)`);
+      } else if (wr < 0.50 && wr >= 0.40) {
+        winRateMult = 0.75;
+        log(`${ticker}: ${mode} ${signal} win rate ${(wr * 100).toFixed(0)}% — sizing ×0.75 (moderate confidence)`);
+      }
+    }
+  } catch { /* non-blocking — defaults to 1.0 */ }
+
   const sizingRaw = calculatePositionSize(config, {
     price: entryPrice, mode, entryPrice, stopLoss,
     drawdownMultiplier: dd.multiplier * kellyMult * vixMult * econMult,
-    streakMultiplier: streakMult,
+    streakMultiplier: streakMult * winRateMult,
   });
   // Scanner trades (AI-generated, not expert-vetted) must be capped per mode.
   // Swing trades use a separate, larger cap (swingPositionSize, default $5K) because
