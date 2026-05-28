@@ -1083,6 +1083,7 @@ function formatKeyLevelForAI(setup: KeyLevelSetup, quote: YahooQuote, idx: numbe
 async function runTrack1KeyLevelIdeas(
   keyLevelSetups: KeyLevelSetup[],
   geminiKeys: string[],
+  marketContext?: string,
 ): Promise<TradeIdea[]> {
   if (keyLevelSetups.length === 0) return [];
 
@@ -1108,7 +1109,8 @@ async function runTrack1KeyLevelIdeas(
     .join('\n');
 
   try {
-    const raw = await callGemini(geminiKeys, TRACK1_SYSTEM, TRACK1_USER_PREFIX + stockData, 0.15, 1500);
+    const track1System = marketContext ? `${TRACK1_SYSTEM}\n\n${marketContext}` : TRACK1_SYSTEM;
+    const raw = await callGemini(geminiKeys, track1System, TRACK1_USER_PREFIX + stockData, 0.15, 1500);
     const evals = parseAIJsonArray(raw);
 
     console.log(`[Track 1] AI raw (${relevant.length} setups): ${evals.map(e => `${e.ticker}:${e.signal}/${e.confidence}`).join(', ')}`);
@@ -1692,6 +1694,7 @@ async function runPass2(
   quoteMap: Map<string, YahooQuote>,
   mode: 'DAY_TRADE' | 'SWING_TRADE',
   geminiKeys: string[],
+  marketContext?: string,
 ): Promise<TradeIdea[]> {
   const tickers = pass1.map(e => e.ticker);
   console.log(`[Trade Scanner] Pass 2 (FA-prompt): ${tickers.length} ${mode === 'DAY_TRADE' ? 'day' : 'swing'} candidates...`);
@@ -1799,7 +1802,8 @@ async function runPass2(
   // Sequential processing stays within TPM even under fallback.
   // Day trades still run parallel (Gemini is primary; Groq fallback is rare for day scans).
   const useSequential = mode === 'SWING_TRADE'; // Swing always sequential — safer under any quota
-  const systemPrompt = mode === 'DAY_TRADE' ? DAY_TRADE_SYSTEM : SWING_TRADE_SYSTEM;
+  const baseSystem = mode === 'DAY_TRADE' ? DAY_TRADE_SYSTEM : SWING_TRADE_SYSTEM;
+  const systemPrompt = marketContext ? `${baseSystem}\n\n${marketContext}` : baseSystem;
   const faTemplate = mode === 'DAY_TRADE' ? FA_DAY_USER : FA_SWING_USER;
 
   async function evalTicker(ticker: string): Promise<AIEval | null> {
@@ -2042,6 +2046,44 @@ Deno.serve(async (req) => {
     }
 
     const sb = getSupabase();
+
+    // ── Fetch today's morning brief for macro/sector context ──────────────────
+    // Injected into every Gemini prompt so the AI knows about IPO themes,
+    // sector rotations, and macro tone — not just raw price technicals.
+    let marketContextBlock = '';
+    try {
+      const todayBriefDate = formatDateToEtIso(new Date());
+      const { data: briefRow } = await sb
+        .from('morning_briefs')
+        .select('macro_snapshot, research_themes, top_movers')
+        .eq('brief_date', todayBriefDate)
+        .single();
+
+      if (briefRow) {
+        type ResearchTheme = { theme: string; tickers: string[]; note: string };
+        type TopMover = { ticker: string; direction: string; catalyst: string };
+        const themes = ((briefRow.research_themes as ResearchTheme[]) ?? [])
+          .slice(0, 4)
+          .map(t => `- ${t.theme} (${(t.tickers ?? []).join(', ')}): ${t.note}`)
+          .join('\n');
+        const movers = ((briefRow.top_movers as TopMover[]) ?? [])
+          .slice(0, 5)
+          .map(m => `- ${m.ticker} (${m.direction}): ${m.catalyst}`)
+          .join('\n');
+
+        const parts: string[] = [];
+        if (briefRow.macro_snapshot) parts.push(`MACRO: ${briefRow.macro_snapshot.slice(0, 400)}`);
+        if (themes) parts.push(`KEY THEMES:\n${themes}`);
+        if (movers) parts.push(`TODAY'S MOVERS:\n${movers}`);
+
+        if (parts.length > 0) {
+          marketContextBlock = `--- TODAY'S MARKET CONTEXT ---\n${parts.join('\n\n')}\n---\nFactor this context into your directional bias: boost confidence for setups that align with hot themes/sectors, be skeptical of counter-trend shorts in a risk-on tape.`;
+          console.log('[Trade Scanner] Morning brief context loaded for Gemini');
+        }
+      }
+    } catch (e) {
+      console.warn('[Trade Scanner] Morning brief fetch failed (non-blocking):', String(e));
+    }
 
     // ── Read cached results from DB ──
     const [dayRow, swingRow] = await Promise.all([
@@ -2286,7 +2328,8 @@ Deno.serve(async (req) => {
 
         try {
           // ── Pass 1: Quick scan with lightweight indicators ──
-          const raw = await callGemini(GEMINI_KEYS, DAY_TRADE_SYSTEM, prompt, 0.15, 2000);
+          const daySystem = marketContextBlock ? `${DAY_TRADE_SYSTEM}\n\n${marketContextBlock}` : DAY_TRADE_SYSTEM;
+          const raw = await callGemini(GEMINI_KEYS, daySystem, prompt, 0.15, 2000);
           dayAISucceeded = true;
           const evals: AIEval[] = parseAIJsonArray(raw);
           const quoteMap = new Map(candidates.map(q => [q.symbol, q]));
@@ -2302,7 +2345,7 @@ Deno.serve(async (req) => {
 
           // ── Pass 2: Full shared indicator analysis ──
           if (pass1.length > 0) {
-            const newIdeas = await runPass2(pass1, quoteMap, 'DAY_TRADE', GEMINI_KEYS);
+            const newIdeas = await runPass2(pass1, quoteMap, 'DAY_TRADE', GEMINI_KEYS, marketContextBlock);
             // Merge new ideas with existing — don't overwrite the day's earlier picks
             const existingTickers = new Set(dayIdeas.map(d => d.ticker));
             for (const idea of newIdeas) {
@@ -2326,7 +2369,7 @@ Deno.serve(async (req) => {
       // Runs after the mover scan. Merges key-level ideas into dayIdeas,
       // skipping any tickers already covered by the mover scan above.
       try {
-        const track1Ideas = await runTrack1KeyLevelIdeas(keyLevelSetups, GEMINI_KEYS);
+        const track1Ideas = await runTrack1KeyLevelIdeas(keyLevelSetups, GEMINI_KEYS, marketContextBlock);
         if (track1Ideas.length > 0) {
           const existingTickers = new Set(dayIdeas.map(d => d.ticker));
           for (const idea of track1Ideas) {
@@ -2410,11 +2453,12 @@ Deno.serve(async (req) => {
           // Split into batches of 20 to keep AI JSON output manageable
           const SWING_BATCH = 20;
           const evals: AIEval[] = [];
+          const swingSystem = marketContextBlock ? `${SWING_TRADE_SYSTEM}\n\n${marketContextBlock}` : SWING_TRADE_SYSTEM;
           for (let bi = 0; bi < candidates.length; bi += SWING_BATCH) {
             const batch = candidates.slice(bi, bi + SWING_BATCH);
             const stockData = batch.map((q, i) => formatQuoteForAI(q, bi + i)).join('\n');
             const prompt = SWING_SCAN_USER.replace('{{STOCK_DATA}}', stockData);
-            const raw = await callGemini(GEMINI_KEYS, SWING_TRADE_SYSTEM, prompt, 0.15, 3000);
+            const raw = await callGemini(GEMINI_KEYS, swingSystem, prompt, 0.15, 3000);
             const batchEvals = parseAIJsonArray(raw);
             evals.push(...batchEvals);
           }
@@ -2455,7 +2499,7 @@ Deno.serve(async (req) => {
           // ── Pass 2: Full shared indicator analysis ──
           swingDebugInfo.push(`Pass1→Pass2: ${pass1.map(e => `${e.ticker}:${e.signal}/${e.confidence}`).join(', ') || 'none'}`);
           if (pass1.length > 0) {
-            const newIdeas = await runPass2(pass1, quoteMap, 'SWING_TRADE', GEMINI_KEYS);
+            const newIdeas = await runPass2(pass1, quoteMap, 'SWING_TRADE', GEMINI_KEYS, marketContextBlock);
             swingDebugInfo.push(`Pass2: ${newIdeas.length > 0 ? newIdeas.map(d => `${d.ticker}:${d.signal}/${d.confidence}`).join(', ') : 'all HOLD — no actionable setups in current market'}`);
             // Merge new ideas with existing — don't overwrite earlier picks
             const existingTickers = new Set(swingIdeas.map(d => d.ticker));

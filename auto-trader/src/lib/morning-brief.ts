@@ -115,8 +115,11 @@ export async function generateMorningBrief(): Promise<void> {
 
   log(`Data collected — ${news.length} news items, ${earnings.length} earnings, ${economicEvents.length} econ events`);
 
-  if (news.length === 0 && earnings.length === 0) {
-    log('No data to synthesize — skipping (market may be closed)');
+  // Edge function always fetches IPO calendar + sector ETF moves on its own.
+  // Only skip if there's truly nothing (no earnings, no econ, and no news).
+  // Zero news is fine — edge function re-fetches with a wider 24h window.
+  if (earnings.length === 0 && economicEvents.length === 0 && news.length === 0) {
+    log('No data at all — skipping (market may be closed)');
     return;
   }
 
