@@ -54,13 +54,14 @@ Return ONLY a single JSON object (no markdown, no code blocks) with these exact 
 }
 
 Rules:
-- top_movers: max 5 names, ranked by likely intraday volatility
-- secondary_names: additional tickers from news, brief note only
+- top_movers: max 5 names, ranked by likely intraday volatility. ALWAYS populate this — if news is sparse, use sector ETF moves or upcoming IPO proxy plays (e.g. if an aerospace IPO is coming, list ASTS, RKLB as movers). Never return empty array if there are ANY sector moves or IPO data.
+- research_themes: ALWAYS identify 1-3 themes from the data provided. Use sector ETF moves to infer themes (XLK leading = "Tech Momentum", XLE leading = "Energy Rally", etc.). If upcoming IPOs exist, create a theme for the sector they're in. Never return empty array.
+- secondary_names: additional tickers from news or IPO proxies, brief note only
 - economic_events: today's releases only, sorted by time
 - earnings: pre-market AND after-close reporters for today
 - direction: "bullish" | "bearish" | "neutral" | "volatile"
 - importance: "high" | "medium" | "low"
-- If no data for a section, use empty array [] or empty string ""
+- For upcoming IPOs in the UPCOMING IPOs section: identify which public stocks will benefit as proxies and mention them in top_movers or research_themes
 - Be specific, concise, and trader-focused — avoid generic statements`;
 
 // ── Finnhub helpers ──────────────────────────────────────────────────────────
@@ -77,6 +78,31 @@ async function fetchFinnhub<T>(path: string, finnhubKey: string): Promise<T | nu
 
 function todayEt(): string {
   return new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' }); // YYYY-MM-DD
+}
+
+function addDays(dateStr: string, days: number): string {
+  const d = new Date(`${dateStr}T12:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toLocaleDateString('en-CA', { timeZone: 'UTC' });
+}
+
+// Fetch sector ETF moves via Finnhub quote endpoint (authenticated, reliable)
+async function fetchSectorMoves(finnhubKey: string): Promise<Array<{ symbol: string; changePct: number }>> {
+  const SECTOR_ETFS = ['SPY', 'QQQ', 'XLK', 'XLE', 'XLY', 'XLF', 'XLV', 'XLI', 'ARKK'];
+  if (!finnhubKey) return [];
+  try {
+    const results = await Promise.all(
+      SECTOR_ETFS.map(async sym => {
+        const data = await fetchFinnhub<{ c: number; pc: number }>(`/quote?symbol=${sym}`, finnhubKey);
+        if (!data || !data.pc || data.pc === 0) return null;
+        const changePct = Math.round(((data.c - data.pc) / data.pc) * 1000) / 10;
+        return { symbol: sym, changePct };
+      })
+    );
+    return results.filter((r): r is { symbol: string; changePct: number } => r !== null);
+  } catch {
+    return [];
+  }
 }
 
 // ── Main handler ─────────────────────────────────────────────────────────────
@@ -100,30 +126,36 @@ Deno.serve(async (req: Request) => {
     let earnings = body.earnings;
     let economic_events = body.economic_events;
 
-    if (!news) {
-      const raw = await fetchFinnhub<{ id: number; headline: string; summary: string; related: string; datetime: number; source: string }[]>(
+    // Fetch all data in parallel — news, earnings, econ events, IPO calendar, sector ETFs
+    // Re-fetch news even if provided as empty array (auto-trader pre-fetch may have a narrower window)
+    const twoWeeksOut = addDays(brief_date, 14);
+    const [newsRaw, earningsRaw, econRaw, ipoRaw, sectorMoves] = await Promise.all([
+      (!news || news.length === 0) ? fetchFinnhub<Array<{ id: number; headline: string; summary: string; related: string; datetime: number; source: string }>>(
         `/news?category=general`, finnhubKey
-      );
-      // Filter to last 12 hours by datetime (Unix timestamp)
-      const twelveHoursAgo = Math.floor(Date.now() / 1000) - 12 * 3600;
-      news = (raw ?? []).filter(n => n.datetime >= twelveHoursAgo);
-      // Fall back to all available news if nothing recent
+      ) : Promise.resolve(null),
+      !earnings ? fetchFinnhub<{ earningsCalendar: Array<{ symbol: string; date: string; epsEstimate?: number; hour?: string }> }>(
+        `/calendar/earnings?from=${brief_date}&to=${brief_date}`, finnhubKey
+      ) : Promise.resolve(null),
+      !economic_events ? fetchFinnhub<{ economicCalendar: Array<{ event: string; time: string; prior?: string; estimate?: string; importance?: string }> }>(
+        `/calendar/economic?from=${brief_date}&to=${brief_date}`, finnhubKey
+      ) : Promise.resolve(null),
+      fetchFinnhub<{ ipoCalendar: Array<{ symbol: string; date: string; name: string; numberOfShares?: number; price?: string; status?: string }> }>(
+        `/calendar/ipo?from=${brief_date}&to=${twoWeeksOut}`, finnhubKey
+      ),
+      fetchSectorMoves(finnhubKey),
+    ]);
+
+    if (!news) {
+      const raw = newsRaw as Array<{ id: number; headline: string; summary: string; related: string; datetime: number; source: string }> | null;
+      // Widen window to 24 hours so premarket brief isn't empty when markets haven't opened yet
+      const twentyFourHoursAgo = Math.floor(Date.now() / 1000) - 24 * 3600;
+      news = (raw ?? []).filter(n => n.datetime >= twentyFourHoursAgo);
       if (news.length === 0) news = raw ?? [];
     }
+    if (!earnings) earnings = (earningsRaw as { earningsCalendar?: Array<{ symbol: string; date: string; epsEstimate?: number; hour?: string }> } | null)?.earningsCalendar ?? [];
+    if (!economic_events) economic_events = (econRaw as { economicCalendar?: Array<{ event: string; time: string; prior?: string; estimate?: string; importance?: string }> } | null)?.economicCalendar ?? [];
 
-    if (!earnings) {
-      const raw = await fetchFinnhub<{ earningsCalendar: Array<{ symbol: string; date: string; epsEstimate?: number; hour?: string }> }>(
-        `/calendar/earnings?from=${brief_date}&to=${brief_date}`, finnhubKey
-      );
-      earnings = raw?.earningsCalendar ?? [];
-    }
-
-    if (!economic_events) {
-      const raw = await fetchFinnhub<{ economicCalendar: Array<{ event: string; time: string; prior?: string; estimate?: string; importance?: string }> }>(
-        `/calendar/economic?from=${brief_date}&to=${brief_date}`, finnhubKey
-      );
-      economic_events = raw?.economicCalendar ?? [];
-    }
+    const upcomingIpos = (ipoRaw as { ipoCalendar?: Array<{ symbol: string; date: string; name: string; numberOfShares?: number; price?: string; status?: string }> } | null)?.ipoCalendar ?? [];
 
     // ── Build prompt ─────────────────────────────────────────────────────────
     // Headlines only — no summaries. Keeps prompt compact (~1500 tokens vs ~4000).
@@ -139,9 +171,20 @@ Deno.serve(async (req: Request) => {
       `${e.time} ET — ${e.event}${e.estimate ? ` (est: ${e.estimate}` : ''}${e.prior ? `, prior: ${e.prior})` : e.estimate ? ')' : ''}`
     ).join('\n');
 
+    const ipoSummary = upcomingIpos
+      .filter(ipo => ipo.status !== 'withdrawn')
+      .slice(0, 8)
+      .map(ipo => `${ipo.symbol || ipo.name} — ${ipo.date}${ipo.price ? ` @ $${ipo.price}` : ''}${ipo.numberOfShares ? ` (${(ipo.numberOfShares / 1e6).toFixed(1)}M shares)` : ''}`)
+      .join('\n');
+
+    const sectorSummary = sectorMoves
+      .sort((a, b) => Math.abs(b.changePct) - Math.abs(a.changePct))
+      .map(s => `${s.symbol}: ${s.changePct >= 0 ? '+' : ''}${s.changePct}%`)
+      .join('  |  ');
+
     const userPrompt = `Date: ${brief_date}
 
-=== MARKET NEWS (last 12 hours) ===
+=== MARKET NEWS (last 24 hours) ===
 ${newsSummary || 'No news items available.'}
 
 === EARNINGS TODAY ===
@@ -150,7 +193,14 @@ ${earningsSummary || 'No earnings reporters today.'}
 === ECONOMIC CALENDAR TODAY ===
 ${econSummary || 'No major economic releases scheduled.'}
 
-Generate the structured daily market briefing JSON for this trading day.`;
+=== UPCOMING IPOs (next 14 days) ===
+${ipoSummary || 'No major IPOs scheduled in next 14 days.'}
+
+=== SECTOR ETF MOVES TODAY ===
+${sectorSummary || 'Sector data unavailable.'}
+
+Generate the structured daily market briefing JSON for this trading day.
+Pay particular attention to any upcoming high-profile IPOs — they drive sector rotation and create proxy plays in related stocks.`;
 
     // ── Call LLM: Groq first, Gemini Flash fallback ──────────────────────────
     // Groq free tier: 100K tokens/day. Gemini Flash: 1M tokens/min, no daily cap.
