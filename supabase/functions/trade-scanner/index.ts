@@ -183,6 +183,8 @@ const SWING_CORE = [
   'CRWD', 'PLTR',
   // LatAm & emerging market growth
   'SE', 'NU', 'MELI',
+  // AI infrastructure & strategic materials (2030 growth thesis)
+  'IREN', 'NBIS', 'MP', 'PENG',
 ];
 
 // Sector ETFs for momentum rotation
