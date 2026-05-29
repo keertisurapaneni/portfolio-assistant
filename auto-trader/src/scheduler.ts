@@ -828,6 +828,45 @@ async function closeAllDayTrades(config: AutoTraderConfig): Promise<void> {
           }
         }
 
+        // Check if a bracket child order (TP or SL) already closed this position.
+        // When IB executes the bracket's stop or take-profit, the parent position is
+        // already gone — trying to re-sell results in IB rejecting the order.
+        // Detect this by looking for a fill on either child order BEFORE cancelling.
+        {
+          const { getSupabase } = await import('./lib/supabase.js');
+          const childOrderIds: number[] = [
+            trade.ib_tp_order_id ? parseInt(trade.ib_tp_order_id, 10) : NaN,
+            trade.ib_sl_order_id ? parseInt(trade.ib_sl_order_id, 10) : NaN,
+          ].filter(id => !Number.isNaN(id));
+
+          if (childOrderIds.length > 0) {
+            const { data: childFill } = await getSupabase()
+              .from('ib_fills')
+              .select('order_id, fill_price, quantity')
+              .in('order_id', childOrderIds)
+              .not('fill_price', 'is', null)
+              .limit(1)
+              .maybeSingle();
+
+            if (childFill) {
+              const cf = childFill as { order_id: number; fill_price: number; quantity: number };
+              const childType = cf.order_id === parseInt(trade.ib_tp_order_id ?? '', 10) ? 'TP' : 'SL';
+              log(`${trade.ticker}: EOD — bracket ${childType} order #${cf.order_id} already filled @ $${cf.fill_price} — trade closed by bracket, skipping market sell`);
+              const fillPriceBuy = trade.fill_price ?? (trade.entry_price ?? cf.fill_price);
+              const pnl = (cf.fill_price - fillPriceBuy) * qty * (trade.signal === 'BUY' ? 1 : -1);
+              await recordTradeClose({
+                tradeId: trade.id,
+                closePrice: cf.fill_price,
+                closeReason: childType === 'TP' ? 'target_hit' : 'stop_loss_hit',
+                status: childType === 'TP' ? 'TARGET_HIT' : 'CLOSED',
+                accountType: acctType,
+              });
+              log(`${trade.ticker}: EOD — recorded bracket close (${childType}) @ $${cf.fill_price}, P&L ≈ $${pnl.toFixed(2)}`);
+              continue;
+            }
+          }
+        }
+
         // Cancel bracket TP/SL orders to prevent duplicate sells during hard close
         if (trade.ib_tp_order_id) {
           try { conn.cancelOrder(parseInt(trade.ib_tp_order_id, 10)); log(`${trade.ticker}: EOD — cancelled bracket TP #${trade.ib_tp_order_id}`); }
