@@ -562,10 +562,12 @@ export function startScheduler(): void {
 
   // Credit spread position management — every 30 min during market hours.
   // Checks 50% profit-take, 100% stop-loss, and 21 DTE time exit rules.
+  // Also purges stale SUBMITTED orders that were never filled after 48h.
   cron.schedule('0,30 10-16 * * 1-5', async () => {
     try {
-      const { manageCreditSpreadPositions } = await import('./lib/credit-spread-scanner.js');
+      const { manageCreditSpreadPositions, purgeStaleCreditSpreadOrders } = await import('./lib/credit-spread-scanner.js');
       await manageCreditSpreadPositions();
+      await purgeStaleCreditSpreadOrders();
     } catch (err) {
       console.error('[Scheduler] Credit spread manager error:', err instanceof Error ? err.message : err);
     }

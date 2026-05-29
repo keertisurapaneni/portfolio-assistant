@@ -558,3 +558,64 @@ export async function manageCreditSpreadPositions(): Promise<void> {
     }
   }
 }
+
+/**
+ * Cancel stale SUBMITTED credit spread orders that IB never filled.
+ *
+ * A GTC combo order that stays SUBMITTED for >2 trading days was either
+ * rejected silently by IB (e.g., Limit 0.00 bug pre-fix) or the market
+ * never came to the price. Either way, cancel it in IB and mark it CANCELLED
+ * in the DB so the UI stops showing it as an open position.
+ *
+ * Runs as part of the existing 30-min management cron — no extra schedule needed.
+ */
+export async function purgeStaleCreditSpreadOrders(): Promise<void> {
+  const sb = getSupabase();
+
+  // 2 trading days ≈ 2 × 6.5 h = 13 h of market time.
+  // Using 2 calendar days (48 h) as a simple, conservative proxy.
+  const cutoff = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
+
+  const { data: stale } = await sb
+    .from('paper_trades')
+    .select('id, ticker, ib_order_id, opened_at, spread_short_strike, spread_long_strike')
+    .eq('mode', 'CREDIT_SPREAD')
+    .eq('status', 'SUBMITTED')
+    .lt('opened_at', cutoff);
+
+  if (!stale?.length) return;
+
+  console.log(`[Credit Spread] Purging ${stale.length} stale SUBMITTED order(s)...`);
+
+  const { isConnected: ibConnected, cancelOrder } = await import('../ib-connection.js');
+
+  for (const row of stale) {
+    const ibOrderId = row.ib_order_id ? Number(row.ib_order_id) : null;
+
+    // Ask IB to cancel the GTC order if we have a reference and are connected.
+    if (ibOrderId && ibConnected()) {
+      try {
+        cancelOrder(ibOrderId);
+        console.log(`[Credit Spread] Cancelled IB order #${ibOrderId} for ${row.ticker}`);
+      } catch (err) {
+        console.warn(`[Credit Spread] Could not cancel IB order #${ibOrderId}:`, err);
+      }
+    }
+
+    await sb
+      .from('paper_trades')
+      .update({ status: 'CANCELLED', close_reason: 'stale_unfilled_gtc' })
+      .eq('id', row.id);
+
+    await createAutoTradeEvent({
+      ticker: row.ticker,
+      mode: 'CREDIT_SPREAD',
+      event_type: 'warning',
+      action: 'skipped',
+      message: `Stale GTC order purged — ${row.spread_short_strike}/${row.spread_long_strike} never filled after 48h${ibOrderId ? ` (IB #${ibOrderId})` : ''}`,
+      metadata: { ibOrderId, openedAt: row.opened_at },
+    });
+
+    console.log(`[Credit Spread] Marked ${row.ticker} spread CANCELLED (stale GTC, opened ${row.opened_at})`);
+  }
+}
