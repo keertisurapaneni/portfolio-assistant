@@ -783,6 +783,103 @@ function SmartSellingGuide() {
   );
 }
 
+// ── LEAPs Guide ───────────────────────────────────────────
+
+const LEAP_CONCEPTS = [
+  {
+    n: '1', title: 'What is a LEAP?',
+    desc: 'A call option with at least 1 year until expiration. You\'re buying the right to own 100 shares at a set price. Time is the edge — you control 100 shares for 20–25% of the capital cost.',
+  },
+  {
+    n: '2', title: 'Intrinsic vs Extrinsic Value',
+    desc: 'Intrinsic = how far in the money you are. Extrinsic = the time premium you\'re paying. Know what you\'re buying before you enter. Deep ITM LEAPs are mostly intrinsic — they track the stock closely.',
+  },
+  {
+    n: '3', title: 'Delta — go deep ITM',
+    desc: 'Deep ITM (δ 0.70–0.80) = moves almost dollar-for-dollar with the stock. Less leverage but highest probability. OTM = cheap premium but needs a massive move. Don\'t confuse cheap with a good deal.',
+  },
+  {
+    n: '4', title: 'Theta Decay — why 1+ year matters',
+    desc: 'Time decay accelerates near expiration. 1+ year out means daily theta bleed is tiny. The further out you go, the slower the decay. Never buy a LEAP under 1 year.',
+  },
+  {
+    n: '5', title: 'IV & IV Crush — buy when cheap',
+    desc: 'High implied volatility = expensive premiums. Buy LEAPs when IV rank is low (<40). Never buy before earnings or a major event — IV spikes going in and crushes after, eating your premium.',
+  },
+  {
+    n: '6', title: 'Strike Selection',
+    desc: 'Deep ITM (δ 0.70–0.80) for safety and stock-like returns. ATM (δ 0.50) for balance. One strike OTM for asymmetric upside on high conviction. Match the strike to your conviction level.',
+  },
+  {
+    n: '7', title: 'Break-Even Price',
+    desc: 'Strike + premium paid = break-even at expiration. But most LEAP profits are taken well before expiry. You don\'t need to hold to the end — take profits when the thesis plays out.',
+  },
+  {
+    n: '8', title: 'Position Sizing — max 10%',
+    desc: 'LEAPs are leveraged. Size like you could lose the entire premium. Never put more than 10% of your total portfolio in LEAPs combined. One bad position shouldn\'t set you back months.',
+  },
+  {
+    n: '9', title: 'When to Enter',
+    desc: 'Key support levels or oversold RSI conditions. Not at all-time highs. Not the day before earnings. Patience on entry is half the trade — the scanner waits for RSI < 55 and below 52w high.',
+  },
+  {
+    n: '10', title: 'When to Exit',
+    desc: 'If the thesis breaks, get out (−20% stock move triggers auto-close). If thesis is intact and you\'re winning, let it work. If DTE < 90 days, make a plan early. Don\'t let a winner turn into a loss.',
+  },
+];
+
+function LeapsGuide() {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="rounded-xl border border-teal-200 bg-teal-50/40 overflow-hidden">
+      <button
+        onClick={() => setOpen(v => !v)}
+        className="w-full flex items-center justify-between px-4 py-2.5 text-left hover:bg-teal-50 transition-colors"
+      >
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-semibold text-teal-700">📅 LEAPs — 10 Concepts Before You Buy</span>
+          <span className="text-[9px] font-bold bg-teal-100 text-teal-700 px-1.5 py-0.5 rounded-full">ACTIVE</span>
+        </div>
+        <span className="text-[10px] text-teal-500">{open ? '▲ hide' : '▼ show'}</span>
+      </button>
+      {open && (
+        <div className="border-t border-teal-100 px-4 py-3 space-y-3">
+          <p className="text-[11px] text-[hsl(var(--muted-foreground))] leading-relaxed">
+            LEAPs are the best way for an average investor to grow wealth exponentially — but only when you understand what you're buying.
+            Without conviction, patience, and discipline, they're just expensive lottery tickets.
+            The scanner enters when <strong className="text-teal-700">IV rank &lt; 40</strong>, <strong className="text-teal-700">RSI &lt; 55</strong>,
+            no earnings within 14 days, and stock is not near its 52-week high.
+          </p>
+
+          <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2">
+            {LEAP_CONCEPTS.map((c) => (
+              <div key={c.n} className="flex gap-2.5 bg-white/60 rounded-lg px-3 py-2 border border-teal-100">
+                <span className="text-[10px] font-bold w-4 h-4 rounded-full bg-teal-100 text-teal-800 flex items-center justify-center shrink-0 mt-0.5">{c.n}</span>
+                <div className="space-y-0.5">
+                  <div className="text-[11px] font-bold text-teal-800">{c.title}</div>
+                  <p className="text-[10px] text-[hsl(var(--muted-foreground))] leading-relaxed">{c.desc}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <div className="rounded-xl border border-teal-200 bg-teal-50/60 px-3 py-2.5 space-y-1">
+            <p className="text-[10px] font-bold text-teal-700">How this system trades LEAPs:</p>
+            <div className="space-y-0.5 text-[10px] text-[hsl(var(--muted-foreground))]">
+              <div>📅 <strong>Scan:</strong> Every Monday 10:30 AM — HIGH_VOL + GROWTH watchlist tickers</div>
+              <div>🎯 <strong>Strike:</strong> Deep ITM call at δ 0.70–0.80 · expiry ~12–18 months out</div>
+              <div>✅ <strong>Take profit:</strong> Premium doubles (+100%) → auto-close</div>
+              <div>🛑 <strong>Thesis break:</strong> Stock drops &gt;20% from entry → auto-close</div>
+              <div>⚠️ <strong>DTE alert:</strong> Under 90 days → warning fires to roll or close</div>
+              <div>💼 <strong>Portfolio cap:</strong> Total LEAP exposure capped at 10% of account ($10k on $100k)</div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Stats Header ─────────────────────────────────────────
 
 const MONTHLY_INCOME_TARGET = 5_000;
@@ -1369,6 +1466,9 @@ export function OptionsTab() {
 
       {/* Smart Selling — Delta & Vega */}
       <SmartSellingGuide />
+
+      {/* LEAPs */}
+      <LeapsGuide />
 
       {/* Stats Header — income progress + budget meter */}
       {stats && (

@@ -38,5 +38,5 @@ export const EQUITY_MODES: readonly TradeMode[] = [
 
 /** Options trade modes */
 export const OPTIONS_MODES: readonly TradeMode[] = [
-  'OPTIONS_PUT', 'OPTIONS_CALL', 'OPTIONS_SCALP',
+  'OPTIONS_PUT', 'OPTIONS_CALL', 'OPTIONS_SCALP', 'OPTIONS_LEAP',
 ] as const;

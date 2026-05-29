@@ -520,7 +520,16 @@ export function startScheduler(): void {
     } catch (err) {
       console.error('[Scheduler] Watchlist screener error:', err);
     }
+    // LEAP scan runs alongside the weekly screener — same timing makes sense:
+    // market has stabilized, IV has settled, weekly options have printed.
+    try {
+      const { runLeapScan } = await import('./lib/options-leap.js');
+      await runLeapScan();
+    } catch (err) {
+      console.error('[Scheduler] LEAP scan error:', err instanceof Error ? err.message : err);
+    }
   }, { timezone: 'America/New_York' });
+  log('Weekly LEAP scan: Monday 10:30 AM ET (alongside watchlist screener)');
 
   // Weekly calendar spread scan — Monday 11:00 AM ET (after options market stabilizes).
   // Phase 1: paper only, logs opportunities to activity feed for human review.
@@ -587,7 +596,19 @@ export function startScheduler(): void {
   }, { timezone: 'America/New_York' });
   log('Options scalp management: every 15 min, 10 AM–3:45 PM ET');
 
-  // Weekly Compounder health check — runs Friday 3:30 PM ET (after most price action is done).
+  // LEAP position management — every Monday 11:30 AM ET.
+  // Checks profit target (2×), thesis-break exit (−20% stock), and DTE alert (<90 days).
+  cron.schedule('30 11 * * 1', async () => {
+    try {
+      const { manageLeapPositions } = await import('./lib/options-leap.js');
+      await manageLeapPositions();
+    } catch (err) {
+      console.error('[Scheduler] LEAP management error:', err instanceof Error ? err.message : err);
+    }
+  }, { timezone: 'America/New_York' });
+  log('LEAP position management: Monday 11:30 AM ET');
+
+
   // Reviews every active Steady Compounder: positive-close ratio, zombie flag, profit-trim hints.
   // Results are logged and persisted as auto_trade_events so the dashboard can surface them.
   cron.schedule('30 15 * * 5', async () => {

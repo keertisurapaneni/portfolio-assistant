@@ -18,6 +18,7 @@ export type TradeMode =
   | 'OPTIONS_PUT'
   | 'OPTIONS_CALL'
   | 'OPTIONS_SCALP'
+  | 'OPTIONS_LEAP'
   | 'CALENDAR_SPREAD'
   | 'CREDIT_SPREAD'
   | 'EARNINGS_CALENDAR';
