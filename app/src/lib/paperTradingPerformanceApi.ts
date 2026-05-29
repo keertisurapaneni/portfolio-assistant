@@ -34,6 +34,7 @@ export interface PerformanceResponse {
   byTag: Record<string, GroupMetrics>;
   byScanner: Record<string, GroupMetrics>;
   byRegime: Record<string, GroupMetrics>;
+  byOptionsMode: Record<string, GroupMetrics>;
   recentClosedTrades: RecentClosedTrade[];
   warnings: string[];
 }

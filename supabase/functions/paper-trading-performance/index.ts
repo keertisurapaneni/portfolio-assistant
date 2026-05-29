@@ -3,7 +3,7 @@
 // GET ?window=7d|30d|90d — returns aggregated metrics for deployed website (no localhost).
 
 import { createClient } from 'jsr:@supabase/supabase-js@2';
-import { EQUITY_MODES } from '../../../shared/trade-status-sets.ts';
+import { EQUITY_MODES, OPTIONS_MODES } from '../../../shared/trade-status-sets.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -211,9 +211,19 @@ Deno.serve(async (req) => {
     // Exclude dip-buy add-ons (same as trade_performance_log)
     const filteredTrades = trades.filter(t => !(t.notes ?? '').startsWith('Dip buy'));
 
-    const validTrades = filteredTrades.filter(t =>
+    // Equity trades: standard P&L = (exit - entry) × qty
+    const equityTrades = filteredTrades.filter(t =>
       (EQUITY_MODES as readonly string[]).includes(t.mode)
     );
+
+    // Options trades: P&L is stored directly in the pnl column (premium-based, not price-diff)
+    // Include only trades with a real IB fill (ib_order_id non-null would be ideal, but we use
+    // fill_price non-null as the proxy since that's already in the query filter).
+    const optionsTrades = filteredTrades.filter(t =>
+      (OPTIONS_MODES as readonly string[]).includes(t.mode) && t.pnl != null
+    );
+
+    const validTrades = [...equityTrades, ...optionsTrades];
 
     if (validTrades.length === 0) {
       warnings.push(`No closed trades in the last ${days} days.`);
@@ -289,6 +299,17 @@ Deno.serve(async (req) => {
     );
     const byRegime = aggregateByGroup(rows, regimeBucket);
 
+    // Options breakdown — group options modes explicitly so the UI can show
+    // Wheel (PUT+CALL combined), Scalp, and LEAP separately.
+    const optionRows = rows.filter(r => (OPTIONS_MODES as readonly string[]).includes(r.strategy));
+    const wheelRows  = optionRows.filter(r => r.strategy === 'OPTIONS_PUT' || r.strategy === 'OPTIONS_CALL');
+    const byOptionsMode: Record<string, GroupMetrics> = {};
+    if (wheelRows.length > 0)  byOptionsMode['Wheel (Puts & Calls)'] = computeGroupMetrics(wheelRows);
+    const scalpRows = optionRows.filter(r => r.strategy === 'OPTIONS_SCALP');
+    if (scalpRows.length > 0)  byOptionsMode['Scalp (ATM)']          = computeGroupMetrics(scalpRows);
+    const leapRows  = optionRows.filter(r => r.strategy === 'OPTIONS_LEAP');
+    if (leapRows.length > 0)   byOptionsMode['LEAPs']                 = computeGroupMetrics(leapRows);
+
     const MIN_TRADES = 10;
     for (const [k, m] of Object.entries(byStrategy)) {
       if (m.count_trades_closed < MIN_TRADES) warnings.push(`Insufficient sample size: ${k} has ${m.count_trades_closed} trades (<${MIN_TRADES})`);
@@ -307,6 +328,7 @@ Deno.serve(async (req) => {
       byTag,
       byScanner,
       byRegime,
+      byOptionsMode,
       recentClosedTrades: rows.slice(0, 50),
       warnings,
     };

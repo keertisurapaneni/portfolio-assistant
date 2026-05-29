@@ -291,7 +291,21 @@ export function PerformanceTab({
               <div className="px-4 py-2.5 border-b border-[hsl(var(--border))] bg-[hsl(var(--secondary))]">
                 <h3 className="text-sm font-semibold">Strategy Breakdown</h3>
               </div>
-              <MetricsTable data={data.byStrategy} rowLabel={k => k.replace('_', ' ')} />
+              <MetricsTable data={data.byStrategy} rowLabel={k => k.replace(/_/g, ' ')} />
+            </div>
+          )}
+
+          {Object.keys(data.byOptionsMode ?? {}).length > 0 && (
+            <div className="rounded-xl border border-violet-200 bg-violet-50/40 overflow-hidden">
+              <div className="px-4 py-2.5 border-b border-violet-200 bg-violet-50">
+                <h3 className="text-sm font-semibold text-violet-800">Options Breakdown</h3>
+                <p className="text-[10px] text-violet-600 mt-0.5">Wheel · Scalp · LEAPs — P&amp;L from premium collected/paid</p>
+              </div>
+              <MetricsTable
+                data={data.byOptionsMode}
+                rowLabel={k => k}
+                colHeader="Strategy"
+              />
             </div>
           )}
 
