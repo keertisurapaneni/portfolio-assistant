@@ -62,8 +62,7 @@ function daysToExpiry(expiryYYYYMMDD: string): number {
 }
 
 async function getIvRank(ticker: string): Promise<number | null> {
-  const { getSupabase: sb2 } = await import('./supabase.js');
-  const { data } = await sb2().from('options_scan_results')
+  const { data } = await getSupabase().from('options_scan_results')
     .select('iv_rank')
     .eq('ticker', ticker)
     .order('scan_date', { ascending: false })
@@ -157,9 +156,12 @@ export async function runLeapScan(): Promise<void> {
 
   console.log(`[LEAP] Scanning ${watchlist.length} tickers | target expiry ${expiry} (${expDte} DTE) | budget $${(cap - exposure).toFixed(0)} remaining`);
 
+  // Track exposure locally — re-querying the DB on every ticker iteration is wasteful
+  // and can miss positions placed mid-scan. Start from the pre-scan snapshot and add as we go.
+  let trackedExposure = exposure;
+
   for (const { ticker } of (watchlist as Array<{ ticker: string; tier: string }>)) {
-    const remainingBudget = cap - (await currentLeapExposure());
-    if (remainingBudget < LEAP_MAX_PREMIUM) break;
+    if (cap - trackedExposure < LEAP_MAX_PREMIUM) break;
 
     // Skip if already have a LEAP on this ticker
     const { data: existing } = await sb
@@ -214,7 +216,9 @@ export async function runLeapScan(): Promise<void> {
     }
 
     // Get deep ITM call (δ ~0.70–0.80) with 365 DTE
-    const chain = await getOptionsChain(ticker, price, ivRank, LEAP_DELTA_TARGET, LEAP_TARGET_DTE);
+    // Pass LEAP_DELTA_TARGET as callDeltaTarget (7th arg) so findBestCallStrike
+    // looks at ITM strikes instead of the default OTM covered-call strikes.
+    const chain = await getOptionsChain(ticker, price, ivRank, undefined, LEAP_TARGET_DTE, undefined, LEAP_DELTA_TARGET);
     if (!chain?.bestCall) {
       console.log(`[LEAP] ${ticker}: no options chain / no ITM call found`);
       continue;
@@ -251,6 +255,7 @@ export async function runLeapScan(): Promise<void> {
       premium, premiumCost,
       ivRank, rsi: rsiDaily,
     });
+    trackedExposure += premiumCost; // update local tracker so cap check is accurate next iteration
   }
 
   console.log('[LEAP] Scan complete');

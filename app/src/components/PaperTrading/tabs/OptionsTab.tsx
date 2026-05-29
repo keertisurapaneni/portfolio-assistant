@@ -352,6 +352,68 @@ function HowItWorks() {
   );
 }
 
+// ── Options Playbook (tabbed — replaces 8 stacked cards) ─
+
+type PlaybookTab = 'strategies' | 'mechanics' | 'rules';
+
+function OptionsPlaybook() {
+  const [tab, setTab] = useState<PlaybookTab>('strategies');
+
+  const tabs: { id: PlaybookTab; label: string; desc: string }[] = [
+    { id: 'strategies', label: '⚡ Strategies', desc: 'Wheel · Scalp · LEAPs' },
+    { id: 'mechanics', label: '📐 Mechanics', desc: 'Greeks · Strikes · IV' },
+    { id: 'rules',     label: '🚨 Rules',      desc: 'Survival & playbook' },
+  ];
+
+  return (
+    <div className="space-y-3">
+      {/* Tab pills */}
+      <div className="flex gap-1.5 bg-[hsl(var(--muted))]/50 p-1 rounded-xl">
+        {tabs.map(t => (
+          <button
+            key={t.id}
+            onClick={() => setTab(t.id)}
+            className={cn(
+              'flex-1 flex flex-col items-center gap-0.5 px-2 py-2 rounded-lg text-center transition-colors',
+              tab === t.id
+                ? 'bg-[hsl(var(--card))] shadow-sm'
+                : 'hover:bg-[hsl(var(--muted))]',
+            )}
+          >
+            <span className={cn('text-[11px] font-bold', tab === t.id ? 'text-[hsl(var(--foreground))]' : 'text-[hsl(var(--muted-foreground))]')}>{t.label}</span>
+            <span className="text-[9px] text-[hsl(var(--muted-foreground))]">{t.desc}</span>
+          </button>
+        ))}
+      </div>
+
+      {/* Strategies tab */}
+      {tab === 'strategies' && (
+        <div className="space-y-3">
+          <OptionsScalpGuide />
+          <WheelPlaybook />
+          <LeapsGuide />
+        </div>
+      )}
+
+      {/* Mechanics tab */}
+      {tab === 'mechanics' && (
+        <div className="space-y-3">
+          <StrikeSelectionGuide />
+          <GreeksReference />
+          <SmartSellingGuide />
+        </div>
+      )}
+
+      {/* Rules tab */}
+      {tab === 'rules' && (
+        <div className="space-y-3">
+          <OptionsSurvivalRules />
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Options Survival Rules ────────────────────────────────
 
 const SURVIVAL_RULES = [
@@ -1175,7 +1237,7 @@ export function OptionsTab() {
   const [maxAllocation, setMaxAllocation] = useState<number>(500_000);
   const [openSpreads, setOpenSpreads] = useState<CreditSpreadPosition[]>([]);
   const [closedSpreads, setClosedSpreads] = useState<CreditSpreadPosition[]>([]);
-  const [activeSection, setActiveSection] = useState<'positions' | 'history' | 'watchlist' | 'log' | 'sniper' | 'spreads'>('positions');
+  const [activeSection, setActiveSection] = useState<'positions' | 'history' | 'watchlist' | 'log' | 'sniper' | 'spreads' | 'playbook'>('positions');
   const [tierFilter, setTierFilter]     = useState<'ALL' | 'STABLE' | 'GROWTH' | 'HIGH_VOL'>('ALL');
   const [sectorFilter, setSectorFilter] = useState<string>('ALL');
   const [newOnly, setNewOnly] = useState(false);
@@ -1427,6 +1489,7 @@ export function OptionsTab() {
     { id: 'watchlist' as const, label: 'Watchlist', count: watchlist.filter(w => w.active).length },
     { id: 'sniper' as const, label: 'Sniper', count: 0 },
     { id: 'log' as const, label: 'Log', count: activityLog.length },
+    { id: 'playbook' as const, label: '📖 Playbook', count: 0 },
   ];
 
   return (
@@ -1446,29 +1509,8 @@ export function OptionsTab() {
         </button>
       </div>
 
-      {/* How it works */}
+      {/* How it works — compact strip, always visible */}
       <HowItWorks />
-
-      {/* Options Survival Rules — top-level context setter */}
-      <OptionsSurvivalRules />
-
-      {/* Options Scalp guide */}
-      <OptionsScalpGuide />
-
-      {/* Wheel Playbook */}
-      <WheelPlaybook />
-
-      {/* Strike Selection */}
-      <StrikeSelectionGuide />
-
-      {/* Greeks Reference */}
-      <GreeksReference />
-
-      {/* Smart Selling — Delta & Vega */}
-      <SmartSellingGuide />
-
-      {/* LEAPs */}
-      <LeapsGuide />
 
       {/* Stats Header — income progress + budget meter */}
       {stats && (
@@ -2077,6 +2119,10 @@ export function OptionsTab() {
           )}
         </div>
       )}
+
+      {/* Playbook — all strategy guides in one tabbed panel */}
+      {activeSection === 'playbook' && <OptionsPlaybook />}
+
     </div>
   );
 }

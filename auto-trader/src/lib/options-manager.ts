@@ -548,8 +548,9 @@ export async function runOptionsManageCycle(): Promise<ManageCycleResult> {
     // profitClosePct is auto-tuned by Rule G (default 50%).
     // On a green day (stock up ≥1.5%), lower the threshold to 35%: IV compresses as fear drops,
     // so we capture gains faster rather than watching premium bleed back up if the stock reverses.
-    // close_reason stays '50pct_profit' so Rule G's close-reason analysis works correctly.
+    // Use distinct close_reason for green-day closes so Rule G calibration isn't distorted.
     const effectiveProfitClosePct = isGreenDay ? Math.min(profitClosePct, 35) : profitClosePct;
+    const closeReason = (isGreenDay && effectiveProfitClosePct < profitClosePct) ? 'green_day_profit' : '50pct_profit';
     if (profitCapturePct >= effectiveProfitClosePct) {
       const ibClose = await ibBuyToCloseOption(pos.ticker, 'P', pos.option_strike, pos.option_expiry, currentPremium);
       if (!ibClose) {
@@ -565,7 +566,7 @@ export async function runOptionsManageCycle(): Promise<ManageCycleResult> {
       await recordTradeClose({
         tradeId: pos.id,
         closePrice: closePremium,
-        closeReason: '50pct_profit',
+        closeReason,
         status: 'CLOSED',
         orderId: ibClose.orderId,
         accountType: 'paper',

@@ -549,18 +549,23 @@ async function findBestCallStrike(
   strikes: number[],
   expiry: string,
   underlyingPrice: number,
-  deltaTarget = 0.20,
+  deltaTarget: number | undefined = 0.20,
 ): Promise<OptionGreeks | null> {
-  const deltaLow = Math.max(0.10, deltaTarget - 0.07);
-  const deltaHigh = deltaTarget + 0.07;
+  const resolvedDelta = deltaTarget ?? 0.20;
+  const deltaLow  = Math.max(0.10, resolvedDelta - 0.07);
+  const deltaHigh = resolvedDelta + 0.07;
 
-  const targetPct = deltaTarget < 0.18 ? 0.08 : 0.06;
+  // For deep ITM calls (delta > 0.50), candidates are strikes BELOW current price.
+  // For OTM calls (delta < 0.50), candidates are strikes ABOVE current price.
+  const itmCall = resolvedDelta >= 0.50;
+  const targetPct = itmCall ? -0.05 : (resolvedDelta < 0.18 ? 0.08 : 0.06);
   const targetStrike = underlyingPrice * (1 + targetPct);
 
-  const candidates = preferRoundStrikes(
-    strikes.filter(s => s > underlyingPrice * 1.02),
-    targetStrike,
-  ).slice(0, 6);
+  const candidateStrikes = itmCall
+    ? strikes.filter(s => s < underlyingPrice * 1.02)   // ITM calls: below spot
+    : strikes.filter(s => s > underlyingPrice * 1.02);  // OTM calls: above spot
+
+  const candidates = preferRoundStrikes(candidateStrikes, targetStrike).slice(0, 6);
 
   for (const strike of candidates) {
     const greeks = await getOptionGreeksForContract(symbol, strike, expiry, 'C', underlyingPrice);
@@ -646,6 +651,7 @@ export async function getOptionsChain(
   deltaTarget?: number,
   dteDays?: number,
   constraints?: ExpiryConstraints,
+  callDeltaTarget?: number,   // optional override for call-side delta (e.g. 0.72 for LEAPs vs 0.20 for covered calls)
 ): Promise<OptionsChainSummary | null> {
   const syntheticFallback = async () => {
     // When IB is connected, never fall back to synthetic Black-Scholes chains.
@@ -675,7 +681,7 @@ export async function getOptionsChain(
 
   if (!bestPut) return syntheticFallback();
 
-  const bestCall = await findBestCallStrike(symbol, params.strikes, expiry, underlyingPrice);
+  const bestCall = await findBestCallStrike(symbol, params.strikes, expiry, underlyingPrice, callDeltaTarget);
 
   const currentIV = bestPut?.impliedVol ?? bestCall?.impliedVol ?? 0;
 

@@ -35,9 +35,8 @@ const MAX_SPREAD_MARKET_ORDER_PCT = 3;   // use market order only if spread < 3%
 /** Return nearest weekly Friday expiry that is at least 1 day away, as YYYYMMDD. */
 function getNearestWeeklyExpiry(): string {
   const now = new Date();
-  const dayOfWeek = now.getDay(); // 0=Sun … 5=Fri … 6=Sat
-  let daysUntilFriday = (5 - dayOfWeek + 7) % 7;
-  if (daysUntilFriday === 0) daysUntilFriday = 0; // it IS Friday
+  const dayOfWeek = now.getDay(); // 0=Sun, 5=Fri
+  const daysUntilFriday = (5 - dayOfWeek + 7) % 7 || 7; // if already Fri, go to next Fri
   const candidate = new Date(now);
   candidate.setDate(now.getDate() + daysUntilFriday);
 
@@ -305,6 +304,14 @@ export async function manageScalpPositions(): Promise<void> {
     if (!greeks) continue;
 
     const currentPremium = greeks.mid;
+
+    // Guard: if IB returned a quote with no real bid/ask (timeout path can give mid ≈ 0.01),
+    // skip this cycle rather than triggering a false stop-loss.
+    if (currentPremium <= 0.05) {
+      console.log(`[Options Scalp] ${pos.ticker} — mid $${currentPremium.toFixed(2)} suspiciously low, skipping cycle`);
+      continue;
+    }
+
     const pnl = (currentPremium - premiumPaid) * 100;
 
     // Write live P&L
