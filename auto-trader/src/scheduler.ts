@@ -4045,6 +4045,15 @@ async function executeScannerTrade(
         fa_recommendation: faRec, fa_confidence: faConf != null ? Math.round(faConf) : null,
         ...(candlePatternLog.length > 0 && { metadata: { candle_patterns: candlePatternLog } }),
       }, accountType);
+
+      // Push executed trade into trade_scans so it shows in Trade Signals UI
+      // regardless of whether it came from a watchlist, screener, or external signal.
+      pushExecutedTradeToScan({
+        ticker, signal, mode, entryPrice,
+        stopLoss, targetPrice, confidence: Math.round(effectiveScannerConf),
+        reason: idea.reason ?? `${mode}: ${signal} @ $${entryPrice}`,
+      }).catch(() => {});
+
       if (!primaryResult) primaryResult = 'executed';
     } catch (err) {
       log(`${ticker}: [${accountType}] Order FAILED — ${err instanceof Error ? err.message : 'unknown'}`);
@@ -4310,6 +4319,54 @@ async function _executeSuggestedFindTradeInner(
     }
   }
   return primaryResult ?? 'failed:no_connections';
+}
+
+/**
+ * After any trade executes (watchlist, screener, external signal), push it into
+ * the trade_scans table so it shows up in the Trade Signals UI immediately.
+ * Merges into the existing scan row — never overwrites other tickers.
+ */
+async function pushExecutedTradeToScan(trade: {
+  ticker: string; signal: string; mode: string;
+  entryPrice: number; stopLoss: number; targetPrice: number;
+  confidence: number; reason: string;
+}): Promise<void> {
+  const sb = getSupabase();
+  const scanId = trade.mode === 'SWING_TRADE' ? 'swing_trades' : 'day_trades';
+
+  const { data: existing } = await sb
+    .from('trade_scans')
+    .select('data')
+    .eq('id', scanId)
+    .single();
+
+  const currentData: unknown[] = Array.isArray((existing as { data?: unknown[] } | null)?.data)
+    ? ((existing as { data: unknown[] }).data)
+    : [];
+
+  // Deduplicate — replace existing entry for same ticker if present
+  const filtered = currentData.filter(
+    (r: unknown) => (r as { ticker?: string }).ticker?.toUpperCase() !== trade.ticker.toUpperCase()
+  );
+
+  const newEntry = {
+    ticker: trade.ticker.toUpperCase(),
+    signal: trade.signal,
+    confidence: trade.confidence,
+    price: trade.entryPrice,
+    reason: `[Executed] ${trade.reason}`,
+    tags: ['executed', trade.mode.toLowerCase()],
+    mode: trade.mode,
+    stopLoss: trade.stopLoss,
+    targetPrice: trade.targetPrice,
+  };
+
+  await sb.from('trade_scans').upsert({
+    id: scanId,
+    data: [...filtered, newEntry],
+    scanned_at: new Date().toISOString(),
+    expires_at: new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString(), // 8h TTL
+  });
 }
 
 /**
