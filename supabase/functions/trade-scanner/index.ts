@@ -161,6 +161,8 @@ const DAY_CORE = [
   'VXX', 'GDX',
   // High-beta momentum names always active in volatile markets
   'PLTR', 'SNOW', 'RKLB',
+  // Fintech / crypto-adjacent — high intraday vol, frequent scanner hits
+  'HOOD', 'COIN', 'SOFI',
 ];
 
 // ── Swing universe: Core (always scanned) + Dynamic (refreshed daily) ──
