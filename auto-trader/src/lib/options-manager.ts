@@ -477,19 +477,26 @@ export async function runOptionsManageCycle(): Promise<ManageCycleResult> {
     if (!isConnected()) continue;
 
     let stockPrice: number | null = null;
-    const q = await finnhubFetch<{ c?: number }>(
+    const q = await finnhubFetch<{ c?: number; dp?: number }>(
       `https://finnhub.io/api/v1/quote?symbol=${pos.ticker}&token=${FINNHUB_KEY}`,
     );
     stockPrice = q?.c ?? null;
+    // Green day: stock up ≥1.5% on the day. IV compresses on green days → premium shrinks faster.
+    // Rule: on a green day, take profit earlier (35% capture instead of the usual 50%).
+    // "Close sold puts for profit on green days" — kaycapitals wheel playbook.
+    const todayChangePct = q?.dp ?? 0;
+    const isGreenDay = todayChangePct >= 1.5;
 
     if (!stockPrice) continue;
+
+    // Skip P&L computation if no premium was collected (order filled at $0 = data error).
+    // Computing (0 - currentPremium)*100 would write a phantom loss to the DB.
+    if (premiumCollected <= 0) continue;
 
     const currentPremium = await getCurrentPremium(pos.ticker, pos.option_strike, pos.option_expiry, stockPrice);
     if (currentPremium === null) continue;
 
-    const profitCapturePct = premiumCollected > 0
-      ? Math.max(0, (1 - currentPremium / premiumCollected) * 100)
-      : 0;
+    const profitCapturePct = Math.max(0, (1 - currentPremium / premiumCollected) * 100);
     const pnl = (premiumCollected - currentPremium) * 100;
 
     // Update live P&L on the trade
@@ -539,8 +546,11 @@ export async function runOptionsManageCycle(): Promise<ManageCycleResult> {
 
     // ── Check 3b: Profit capture threshold — auto close when target % reached ──
     // profitClosePct is auto-tuned by Rule G (default 50%).
+    // On a green day (stock up ≥1.5%), lower the threshold to 35%: IV compresses as fear drops,
+    // so we capture gains faster rather than watching premium bleed back up if the stock reverses.
     // close_reason stays '50pct_profit' so Rule G's close-reason analysis works correctly.
-    if (profitCapturePct >= profitClosePct) {
+    const effectiveProfitClosePct = isGreenDay ? Math.min(profitClosePct, 35) : profitClosePct;
+    if (profitCapturePct >= effectiveProfitClosePct) {
       const ibClose = await ibBuyToCloseOption(pos.ticker, 'P', pos.option_strike, pos.option_expiry, currentPremium);
       if (!ibClose) {
         persistEvent(pos.ticker, 'warning',
