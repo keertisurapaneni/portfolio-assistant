@@ -40,6 +40,8 @@ const CANDIDATE_UNIVERSE = [
   // High-IV Momentum
   'MSTR', 'COIN', 'HOOD', 'SOFI', 'UPST', 'AFRM', 'RIVN', 'LCID', 'NIO', 'XPEV',
   'ARM', 'SMCI', 'DELL', 'HPQ', 'STX', 'WDC', 'MU', 'GFS', 'UMC',
+  // AI infrastructure & strategic materials (2030 growth thesis)
+  'IREN', 'NBIS', 'MP', 'PENG',
   // ETFs with good options liquidity
   'SPY', 'QQQ', 'IWM', 'XLF', 'XLE', 'XLK', 'XLV', 'XLU', 'GLD', 'SLV',
   'EEM', 'FXI', 'KWEB', 'ARKK', 'ARKW', 'TLT', 'HYG', 'LQD',
