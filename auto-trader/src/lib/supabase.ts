@@ -241,10 +241,12 @@ import { formatDateToEtIso } from '../../../shared/date-helpers.js';
 
 export async function getActiveTrades(accountType: AccountType = 'paper'): Promise<PaperTrade[]> {
   const sb = getSupabase();
+  // Include legacy 'ACTIVE' status from old reconciler that used a non-standard status string.
+  // New reconciler now sets FILLED instead, but existing DB rows may still carry ACTIVE.
   const { data, error } = await sb
     .from(tradesTable(accountType))
     .select('*')
-    .in('status', [...ACTIVE_STATUSES])
+    .in('status', [...ACTIVE_STATUSES, 'ACTIVE'])
     .order('opened_at', { ascending: false });
   if (error) throw new Error(`getActiveTrades: ${error.message}`);
   return (data ?? []) as PaperTrade[];

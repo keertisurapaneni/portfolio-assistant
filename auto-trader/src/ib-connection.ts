@@ -327,10 +327,10 @@ export class IBConnection {
         const toCancel   = missingFromIb.filter(t => !filledOrderIds.has(Number(t.ib_order_id)));
 
         if (toActivate.length) {
-          console.log(`${this.tag} Reconcile: ${toActivate.length} order(s) already filled in IB — marking ACTIVE: ${toActivate.map(t => `${t.ticker}#${t.ib_order_id}`).join(', ')}`);
+          console.log(`${this.tag} Reconcile: ${toActivate.length} order(s) already filled in IB — marking FILLED: ${toActivate.map(t => `${t.ticker}#${t.ib_order_id}`).join(', ')}`);
           await sb
             .from('paper_trades')
-            .update({ status: 'ACTIVE' })
+            .update({ status: 'FILLED' })
             .in('ib_order_id', toActivate.map(t => t.ib_order_id!))
             .eq('status', 'SUBMITTED');
         }
