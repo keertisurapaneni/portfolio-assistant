@@ -3527,7 +3527,14 @@ async function executeScannerTrade(
   let adjustedConf = scannerConf;
   if (mode === 'DAY_TRADE' && !skipVwapModifier) {
     const etHour = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/New_York' })).getHours();
-    const { delta: vwapDelta, log: vwapLog } = await evaluateVwapAlignment(ticker, signal as 'BUY' | 'SELL', etHour);
+    const { delta: vwapDelta, log: vwapLog, block: vwapBlock } = await evaluateVwapAlignment(ticker, signal as 'BUY' | 'SELL', etHour);
+    if (vwapBlock) {
+      log(`${ticker}: skipped — ${vwapLog}`);
+      persistEvent(ticker, 'skipped', vwapLog, {
+        action: 'skipped', source: 'scanner', mode, skip_reason: 'vwap_extended',
+      });
+      return 'skipped:vwap_extended';
+    }
     if (vwapDelta !== 0) {
       adjustedConf = Math.min(10, adjustedConf + vwapDelta);
       log(`${ticker}: VWAP +${vwapDelta} confidence → ${adjustedConf} (${vwapLog})`);
@@ -3598,15 +3605,38 @@ async function executeScannerTrade(
       // Tiny stops (< 0.5%) almost always get hit on normal open volatility —
       // they produce huge share counts via risk-sizing and then gap through on fast markets.
       const minStopDist = livePrice * 0.008;
+      // Day trades: hard cap stop at 1.5% of entry — daily ATR-based stops are for swings,
+      // not intraday. Confirmed: ARM ($19 stop = 5.6%) and AMD ($31 stop = 6.2%) both
+      // drifted against us all session without triggering, then closed at soft EOD.
+      const maxStopDist = mode === 'DAY_TRADE' ? livePrice * 0.015 : Infinity;
       const actualStopDist = Math.abs(entryPrice - stopLoss);
       if (actualStopDist < minStopDist) {
         stopLoss = signal === 'BUY' ? r2(entryPrice - minStopDist) : r2(entryPrice + minStopDist);
         targetPrice = signal === 'BUY' ? r2(entryPrice + minStopDist * 2) : r2(entryPrice - minStopDist * 2);
         log(`${ticker}: stop too tight (${actualStopDist.toFixed(2)}) — widened to min 0.8% (${minStopDist.toFixed(2)})`);
+      } else if (actualStopDist > maxStopDist) {
+        const clampedStop = signal === 'BUY' ? r2(entryPrice - maxStopDist) : r2(entryPrice + maxStopDist);
+        const clampedTarget = signal === 'BUY' ? r2(entryPrice + maxStopDist * 2) : r2(entryPrice - maxStopDist * 2);
+        log(`${ticker}: [DAY_TRADE] stop too wide (${actualStopDist.toFixed(2)} = ${(actualStopDist / livePrice * 100).toFixed(1)}%) — clamped to 1.5% (${maxStopDist.toFixed(2)}): sl=${clampedStop} tp=${clampedTarget}`);
+        stopLoss = clampedStop;
+        targetPrice = clampedTarget;
       }
       log(`${ticker}: [${mode}] live price ${livePrice} (shifted ${delta > 0 ? '+' : ''}${delta.toFixed(2)} from scan entry ${scannerEntry})`);
     } else if (livePrice && idea.atr && idea.atr > 0) {
-      // Price moved beyond tolerance — levels are stale. Recompute from ATR around live price.
+      // Price moved beyond tolerance — levels are stale.
+      // Day trades: skip entirely. A 3%+ move from scan means the intraday thesis is
+      // stale — re-entering with daily ATR stops creates swing-trade-sized risk on an
+      // intraday position (confirmed: ARM had a $19 stop, AMD had a $31 stop).
+      // Swing trades: reanchor with ATR — GTC orders can sit at a level for days, so
+      // a shift in price still warrants entering near the new level.
+      if (mode === 'DAY_TRADE') {
+        const movePct = livePrice && scannerEntry ? ((livePrice - scannerEntry) / scannerEntry * 100).toFixed(1) : '?';
+        log(`${ticker}: [DAY_TRADE] price moved ${movePct}% from scan entry ${scannerEntry} — skipping (stale intraday thesis, would require ATR-width stop)`);
+        persistEvent(ticker, 'skipped', `Price ${movePct}% from scan entry — stale day trade thesis`, {
+          action: 'skipped', source: 'scanner', mode, skip_reason: 'stale_scan_entry',
+        });
+        return 'skipped:stale_scan_entry';
+      }
       const stopDist = idea.atr * 1.0;
       const targetDist = idea.atr * 2.0;
       entryPrice = r2(livePrice);

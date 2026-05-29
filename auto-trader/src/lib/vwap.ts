@@ -335,7 +335,7 @@ export async function evaluateVwapAlignment(
   symbol: string,
   direction: 'BUY' | 'SELL',
   etHour: number,
-): Promise<{ delta: number; log: string }> {
+): Promise<{ delta: number; log: string; block?: boolean }> {
   // Hard rule: VWAP not reliable before 10 AM ET
   if (etHour < VWAP_RELIABLE_HOUR_ET) {
     return { delta: 0, log: 'VWAP: pre-10AM, skipped' };
@@ -362,7 +362,17 @@ export async function evaluateVwapAlignment(
     (direction === 'SELL' && side !== 'below');     // not already discounted
 
   if (!aligned) {
-    // Price is far away AND on the wrong side — log as a mild caution but don't block
+    // Price is on the wrong side of VWAP relative to trade direction.
+    // If extended >3%: hard block — no intraday edge left (confirmed: ARM was +4.5% above
+    // VWAP on a BUY, trade drifted lower all session). Log as mild caution otherwise.
+    const absDistancePct = Math.abs(distancePct);
+    if (absDistancePct > 3.0) {
+      return {
+        delta: 0,
+        block: true,
+        log: `VWAP: ${direction} but price ${distancePct > 0 ? '+' : ''}${distancePct}% ${side} VWAP $${vwapPrice} — too extended, blocking`,
+      };
+    }
     return {
       delta: 0,
       log: `VWAP: ${direction} but price ${distancePct > 0 ? '+' : ''}${distancePct}% ${side} VWAP $${vwapPrice} — reduced edge, proceeding`,
