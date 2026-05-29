@@ -32,8 +32,11 @@ const LEAP_PORTFOLIO_CAP_PCT  = 0.10;   // total LEAP exposure ≤ 10% of accoun
 const LEAP_ACCOUNT_SIZE       = 100_000;// approximate account size for cap calc
 const LEAP_PROFIT_MULT        = 2.0;    // take profit when premium doubles
 const LEAP_THESIS_BREAK_PCT   = -20;    // close if stock drops >20% from entry
-const MAX_IV_RANK_TO_ENTER    = 40;     // buy when IV is cheap
+const MAX_IV_RANK_TO_ENTER    = 30;     // IV rank < 30 = genuinely cheap premiums (was 40, tightened)
+const DAILY_RSI_OVERSOLD      = 45;     // daily RSI must be ≤ 45 (oversold or approaching)
+const WEEKLY_RSI_OVERSOLD     = 50;     // weekly RSI must be ≤ 50 (confirming on higher timeframe)
 const EARNINGS_BLACKOUT_DAYS  = 14;     // skip if earnings within 14 days
+const MAX_OPTION_SPREAD_PCT   = 0.05;   // bid-ask spread ≤ 5% of mid (liquid chain required)
 
 // ── Helpers ──────────────────────────────────────────────
 
@@ -81,12 +84,27 @@ async function getEarningsDays(ticker: string): Promise<number | null> {
   return future[0] ?? null;
 }
 
-async function getRsiValue(ticker: string): Promise<number | null> {
-  const data = await finnhubFetch<{ rsi?: number[] }>(
-    `https://finnhub.io/api/v1/indicator?symbol=${ticker}&resolution=D&from=${Math.floor(Date.now() / 1000) - 86400 * 60}&to=${Math.floor(Date.now() / 1000)}&indicator=rsi&timeperiod=14&token=${FINNHUB_KEY}`,
-  );
-  const arr = (data?.rsi ?? []).filter(v => v != null && v > 0);
-  return arr.length ? arr[arr.length - 1] : null;
+/** Fetch RSI on daily AND weekly timeframe — both must confirm oversold for LEAP entry. */
+async function getRsiMultiTimeframe(ticker: string): Promise<{ daily: number | null; weekly: number | null }> {
+  const from = Math.floor(Date.now() / 1000) - 86400 * 365;
+  const to   = Math.floor(Date.now() / 1000);
+
+  const [dailyData, weeklyData] = await Promise.all([
+    finnhubFetch<{ rsi?: number[] }>(
+      `https://finnhub.io/api/v1/indicator?symbol=${ticker}&resolution=D&from=${from}&to=${to}&indicator=rsi&timeperiod=14&token=${FINNHUB_KEY}`,
+    ),
+    finnhubFetch<{ rsi?: number[] }>(
+      `https://finnhub.io/api/v1/indicator?symbol=${ticker}&resolution=W&from=${from}&to=${to}&indicator=rsi&timeperiod=14&token=${FINNHUB_KEY}`,
+    ),
+  ]);
+
+  const dailyArr  = (dailyData?.rsi  ?? []).filter(v => v != null && v > 0);
+  const weeklyArr = (weeklyData?.rsi ?? []).filter(v => v != null && v > 0);
+
+  return {
+    daily:  dailyArr.length  ? dailyArr[dailyArr.length - 1]   : null,
+    weekly: weeklyArr.length ? weeklyArr[weeklyArr.length - 1] : null,
+  };
 }
 
 // ── Total LEAP exposure across open positions ─────────────
@@ -152,25 +170,33 @@ export async function runLeapScan(): Promise<void> {
       .in('status', ['SUBMITTED', 'FILLED', 'PARTIAL']);
     if (existing?.length) continue;
 
-    // Gate 1: IV rank < 40 — don't buy expensive options
+    // Gate 1: IV rank < 30 — only buy genuinely cheap premiums
+    // (tighter than the wheel's sell gate of 50 — buying requires IV on sale)
     const ivRank = await getIvRank(ticker);
     if (ivRank !== null && ivRank > MAX_IV_RANK_TO_ENTER) {
-      console.log(`[LEAP] ${ticker}: IV rank ${ivRank} > ${MAX_IV_RANK_TO_ENTER} — too expensive, skipping`);
+      console.log(`[LEAP] ${ticker}: IV rank ${ivRank} > ${MAX_IV_RANK_TO_ENTER} — too expensive, skip`);
       continue;
     }
 
     // Gate 2: No earnings within 14 days
     const earningsDays = await getEarningsDays(ticker);
     if (earningsDays !== null && earningsDays <= EARNINGS_BLACKOUT_DAYS) {
-      console.log(`[LEAP] ${ticker}: earnings in ${earningsDays} days — skipping`);
+      console.log(`[LEAP] ${ticker}: earnings in ${earningsDays} days — skip`);
       continue;
     }
 
-    // Gate 3: RSI — prefer oversold (<50 acceptable, <40 preferred)
-    const rsi = await getRsiValue(ticker);
-    const rsiOk = rsi !== null ? rsi < 55 : true; // allow if no data
-    if (rsi !== null && rsi > 65) {
-      console.log(`[LEAP] ${ticker}: RSI ${rsi.toFixed(1)} too high — not buying at overbought level`);
+    // Gate 3: RSI oversold on BOTH daily AND weekly — both timeframes must confirm.
+    // This is the key discipline: don't buy just because the daily dipped, wait for
+    // the weekly to also confirm. Prevents catching a falling knife mid-trend.
+    const rsiData = await getRsiMultiTimeframe(ticker);
+    const { daily: rsiDaily, weekly: rsiWeekly } = rsiData;
+
+    if (rsiDaily !== null && rsiDaily > DAILY_RSI_OVERSOLD) {
+      console.log(`[LEAP] ${ticker}: daily RSI ${rsiDaily.toFixed(1)} > ${DAILY_RSI_OVERSOLD} — not oversold yet, skip`);
+      continue;
+    }
+    if (rsiWeekly !== null && rsiWeekly > WEEKLY_RSI_OVERSOLD) {
+      console.log(`[LEAP] ${ticker}: weekly RSI ${rsiWeekly.toFixed(1)} > ${WEEKLY_RSI_OVERSOLD} — weekly not confirming, skip`);
       continue;
     }
 
@@ -181,9 +207,9 @@ export async function runLeapScan(): Promise<void> {
     if (!q?.c) continue;
     const price = q.c;
 
-    // Gate 4: Not within 5% of 52-week high — wait for better entry
+    // Gate 4: Not within 5% of 52-week high — need meaningful support, not ATH
     if (q.h52 && price >= q.h52 * 0.95) {
-      console.log(`[LEAP] ${ticker}: within 5% of 52w high ($${q.h52.toFixed(0)}) — skip`);
+      console.log(`[LEAP] ${ticker}: within 5% of 52w high ($${q.h52.toFixed(0)}) — wait for pullback`);
       continue;
     }
 
@@ -199,20 +225,31 @@ export async function runLeapScan(): Promise<void> {
     const premiumCost = premium * 100;
 
     if (premiumCost > LEAP_MAX_PREMIUM) {
-      console.log(`[LEAP] ${ticker}: premium $${premiumCost.toFixed(0)} > cap $${LEAP_MAX_PREMIUM} — skipping`);
+      console.log(`[LEAP] ${ticker}: premium $${premiumCost.toFixed(0)} > cap $${LEAP_MAX_PREMIUM} — skip`);
       continue;
     }
 
     if (premium <= 0 || call.bid <= 0) {
-      console.log(`[LEAP] ${ticker}: no real bid on ITM call — skipping`);
+      console.log(`[LEAP] ${ticker}: no real bid on ITM call — skip`);
       continue;
     }
+
+    // Gate 5: Liquid options chain — spread must be tight (≤5% of mid)
+    // Illiquid options = wide spreads = bad fills and inflated cost basis.
+    const mid = (call.bid + call.ask) / 2;
+    const spreadPct = mid > 0 ? (call.ask - call.bid) / mid : 1;
+    if (spreadPct > MAX_OPTION_SPREAD_PCT) {
+      console.log(`[LEAP] ${ticker}: spread ${(spreadPct * 100).toFixed(1)}% > ${MAX_OPTION_SPREAD_PCT * 100}% — illiquid, skip`);
+      continue;
+    }
+
+    console.log(`[LEAP] ${ticker}: all gates passed | daily RSI ${rsiDaily?.toFixed(1) ?? 'n/a'} / weekly RSI ${rsiWeekly?.toFixed(1) ?? 'n/a'} | IV rank ${ivRank ?? 'n/a'} | spread ${(spreadPct * 100).toFixed(1)}% | $${call.strike}C @ $${premium.toFixed(2)}`);
 
     await executeLeap({
       ticker, price, call,
       expiry: call.expiry ?? expiry,
       premium, premiumCost,
-      ivRank, rsi,
+      ivRank, rsi: rsiDaily,
     });
   }
 
