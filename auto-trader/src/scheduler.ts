@@ -278,6 +278,10 @@ export function startScheduler(): void {
     return;
   }
 
+  // On startup: sync any trades already executed today into trade_scans so they
+  // appear in the Trade Signals UI even after a restart.
+  syncTodayExecutedTradesToScan().catch(() => {});
+
   // Run every 15 minutes between 9:00-16:30 ET on weekdays (faster position management).
   // node-cron uses server-local time, so we use the TZ option.
   _cronJob = cron.schedule('*/15 9-16 * * 1-5', () => {
@@ -4367,6 +4371,44 @@ async function pushExecutedTradeToScan(trade: {
     scanned_at: new Date().toISOString(),
     expires_at: new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString(), // 8h TTL
   });
+}
+
+/**
+ * On startup, push all trades already executed today into trade_scans so
+ * the Trade Signals UI reflects reality even after a service restart.
+ */
+async function syncTodayExecutedTradesToScan(): Promise<void> {
+  const sb = getSupabase();
+  const todayEt = getETDateString(); // 'YYYY-MM-DD' in ET
+
+  // Midnight ET expressed as UTC for the DB query
+  const etOffset = new Date().getTimezoneOffset(); // minutes behind UTC (positive = behind)
+  const midnightEtUtc = new Date(`${todayEt}T00:00:00`);
+  midnightEtUtc.setMinutes(midnightEtUtc.getMinutes() + etOffset);
+
+  const { data: trades } = await sb
+    .from('paper_trades')
+    .select('ticker, mode, signal, entry_price, stop_loss, target_price, scanner_confidence, scanner_reason')
+    .in('mode', ['DAY_TRADE', 'DAY_PENNY', 'SWING_TRADE'])
+    .not('ib_order_id', 'is', null)
+    .gte('opened_at', midnightEtUtc.toISOString())
+    .order('opened_at', { ascending: true });
+
+  if (!trades?.length) return;
+
+  for (const t of trades) {
+    await pushExecutedTradeToScan({
+      ticker: t.ticker,
+      signal: t.signal ?? 'BUY',
+      mode: t.mode,
+      entryPrice: t.entry_price ?? 0,
+      stopLoss: t.stop_loss ?? 0,
+      targetPrice: t.target_price ?? 0,
+      confidence: t.scanner_confidence ?? 7,
+      reason: t.scanner_reason ?? t.mode,
+    }).catch(() => {});
+  }
+  log(`[Scheduler] Synced ${trades.length} today's trade(s) into Trade Signals`);
 }
 
 /**
