@@ -352,6 +352,89 @@ function HowItWorks() {
   );
 }
 
+// ── Options Survival Rules ────────────────────────────────
+
+const SURVIVAL_RULES = [
+  {
+    n: '1',
+    title: 'Sell, don\'t just buy',
+    color: 'border-emerald-200 bg-emerald-50/60 text-emerald-800',
+    num: 'bg-emerald-200 text-emerald-800',
+    desc: 'Most options expire worthless. If you\'re only buying, the math works against you. Sell options and let theta pay you every single day.',
+    tag: 'Theta works FOR you',
+    tagColor: 'bg-emerald-100 text-emerald-700',
+  },
+  {
+    n: '2',
+    title: 'Stop buying short-dated options',
+    color: 'border-red-200 bg-red-50/60 text-red-800',
+    num: 'bg-red-200 text-red-800',
+    desc: 'The closer to expiration, the faster theta decays. If you\'re going to buy, buy LEAPs — 1 year or more. Time becomes your ally instead of your enemy.',
+    tag: 'Buy time, not lottery tickets',
+    tagColor: 'bg-red-100 text-red-700',
+  },
+  {
+    n: '3',
+    title: 'Sell puts on stocks you\'d own',
+    color: 'border-blue-200 bg-blue-50/60 text-blue-800',
+    num: 'bg-blue-200 text-blue-800',
+    desc: 'Get paid premium while you wait for your price. If assigned, you bought at a discount and kept the premium. If not — keep the cash and repeat.',
+    tag: 'The Wheel',
+    tagColor: 'bg-blue-100 text-blue-700',
+  },
+  {
+    n: '4',
+    title: 'Use charts before every trade',
+    color: 'border-violet-200 bg-violet-50/60 text-violet-800',
+    num: 'bg-violet-200 text-violet-800',
+    desc: 'RSI, support levels, moving averages. A good strategy with a bad entry is still a losing trade. The scanner checks RSI, SMA20, Bollinger Bands, and MACD before every options trade.',
+    tag: 'Entry matters',
+    tagColor: 'bg-violet-100 text-violet-700',
+  },
+  {
+    n: '5',
+    title: 'Collect singles, don\'t swing for homers',
+    color: 'border-amber-200 bg-amber-50/60 text-amber-800',
+    num: 'bg-amber-200 text-amber-800',
+    desc: 'Long-term survivors aren\'t hitting home runs — they\'re managing risk and letting the framework do the work. 50% profit-take, defined stop-loss, repeat.',
+    tag: 'Let the system work',
+    tagColor: 'bg-amber-100 text-amber-700',
+  },
+];
+
+function OptionsSurvivalRules() {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="rounded-xl border border-rose-200 bg-rose-50/40 overflow-hidden">
+      <button
+        onClick={() => setOpen(v => !v)}
+        className="w-full flex items-center justify-between px-4 py-2.5 text-left hover:bg-rose-50 transition-colors"
+      >
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-semibold text-rose-700">🚨 5 Rules to Stop Losing Money on Options</span>
+        </div>
+        <span className="text-[10px] text-rose-400">{open ? '▲ hide' : '▼ show'}</span>
+      </button>
+      {open && (
+        <div className="border-t border-rose-100 px-4 py-3 space-y-2">
+          {SURVIVAL_RULES.map((rule) => (
+            <div key={rule.n} className={`rounded-xl border px-3 py-2.5 flex gap-3 ${rule.color}`}>
+              <span className={`text-[11px] font-bold w-5 h-5 rounded-full flex items-center justify-center shrink-0 mt-0.5 ${rule.num}`}>{rule.n}</span>
+              <div className="space-y-0.5 min-w-0">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-[11px] font-bold">{rule.title}</span>
+                  <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full ${rule.tagColor}`}>{rule.tag}</span>
+                </div>
+                <p className="text-[10px] text-[hsl(var(--muted-foreground))] leading-relaxed">{rule.desc}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Options Scalp Guide ───────────────────────────────────
 
 function OptionsScalpGuide() {
@@ -1268,6 +1351,9 @@ export function OptionsTab() {
 
       {/* How it works */}
       <HowItWorks />
+
+      {/* Options Survival Rules — top-level context setter */}
+      <OptionsSurvivalRules />
 
       {/* Options Scalp guide */}
       <OptionsScalpGuide />
