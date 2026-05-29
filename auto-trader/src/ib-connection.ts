@@ -1238,19 +1238,28 @@ export class IBConnection {
     const spreadActionLabel = params.action === 'BUY' ? 'BUY' : 'SELL';
     const creditDebitLabel = params.action === 'BUY' ? 'net debit' : 'net credit';
 
+    // IB BAG combo convention: lmtPrice is the NET PRICE from the buyer's perspective.
+    // BUY combo (debit) → positive lmtPrice (buyer pays)
+    // SELL combo (credit) → NEGATIVE lmtPrice (buyer receives, i.e. seller collects credit)
+    // Sending a positive lmtPrice on a SELL order causes IB to silently zero it → Limit 0.00 → immediate cancel.
+    const ibLmtPrice = spreadAction === OrderAction.SELL ? -limitPrice : limitPrice;
+
     const order: Order = {
       action: spreadAction,
       orderType: OrderType.LMT,
       totalQuantity: contracts,
-      lmtPrice: limitPrice,
+      lmtPrice: ibLmtPrice,
       tif: TimeInForce.GTC,
       transmit: true,
+      // NonGuaranteed allows IB SMART routing to fill each leg independently,
+      // greatly improving fill probability for multi-leg options orders.
+      smartComboRoutingParams: [{ tag: 'NonGuaranteed', value: '1' }],
       ...(account ? { account } : {}),
     };
 
     try {
       this.ib.placeOrder(orderId, contract, order);
-      console.log(`${this.tag} Credit spread placed: ${spreadActionLabel} ${contracts}x ${symbol} ${sellStrike}/${buyStrike}${right} ${expiry} @ $${limitPrice} ${creditDebitLabel} (orderId=${orderId})`);
+      console.log(`${this.tag} Credit spread placed: ${spreadActionLabel} ${contracts}x ${symbol} ${sellStrike}/${buyStrike}${right} ${expiry} @ $${limitPrice} ${creditDebitLabel} (IB lmtPrice=${ibLmtPrice}, orderId=${orderId})`);
       return { orderId };
     } catch (err) {
       throw err;
