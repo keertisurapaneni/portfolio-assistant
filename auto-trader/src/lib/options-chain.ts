@@ -439,6 +439,33 @@ export async function getOptionGreeksForContract(
   }
 }
 
+// ── Round-Strike Preference ───────────────────────────────
+
+/**
+ * Kaycapitals rule: avoid "beta contracts" — half-dollar strikes with thin volume.
+ * For stocks >= $25, prefer whole-dollar strikes (e.g. $175, $180) over half-strikes
+ * (e.g. $177.50). When two candidates are within similar delta distance of the target,
+ * the round strike is sorted first so it gets evaluated first.
+ *
+ * Round = strike is a whole number (no decimal).
+ * Applied as a secondary sort key after proximity to targetStrike, so delta targeting
+ * still takes precedence — we just break ties in favour of liquidity.
+ */
+function preferRoundStrikes(candidates: number[], targetStrike: number): number[] {
+  const isRound = (s: number) => Number.isInteger(s);
+  return [...candidates].sort((a, b) => {
+    const distA = Math.abs(a - targetStrike);
+    const distB = Math.abs(b - targetStrike);
+    // If one is within 2.5 of the other (adjacent $2.5 interval), prefer the round strike.
+    if (Math.abs(distA - distB) <= 2.5) {
+      const roundA = isRound(a) ? 0 : 1;
+      const roundB = isRound(b) ? 0 : 1;
+      if (roundA !== roundB) return roundA - roundB;
+    }
+    return distA - distB;
+  });
+}
+
 // ── Find Best Put Strike ──────────────────────────────────
 
 /**
@@ -459,10 +486,10 @@ async function findBestPutStrike(
   const targetPct = deltaTarget < 0.18 ? 0.12 : 0.10;
   const targetStrike = underlyingPrice * (1 - targetPct);
 
-  const candidates = strikes
-    .filter(s => s < underlyingPrice * 0.98)
-    .sort((a, b) => Math.abs(a - targetStrike) - Math.abs(b - targetStrike))
-    .slice(0, 6);
+  const candidates = preferRoundStrikes(
+    strikes.filter(s => s < underlyingPrice * 0.98),
+    targetStrike,
+  ).slice(0, 6);
 
   for (const strike of candidates) {
     const greeks = await getOptionGreeksForContract(symbol, strike, expiry, 'P', underlyingPrice);
@@ -530,10 +557,10 @@ async function findBestCallStrike(
   const targetPct = deltaTarget < 0.18 ? 0.08 : 0.06;
   const targetStrike = underlyingPrice * (1 + targetPct);
 
-  const candidates = strikes
-    .filter(s => s > underlyingPrice * 1.02)
-    .sort((a, b) => Math.abs(a - targetStrike) - Math.abs(b - targetStrike))
-    .slice(0, 6);
+  const candidates = preferRoundStrikes(
+    strikes.filter(s => s > underlyingPrice * 1.02),
+    targetStrike,
+  ).slice(0, 6);
 
   for (const strike of candidates) {
     const greeks = await getOptionGreeksForContract(symbol, strike, expiry, 'C', underlyingPrice);
@@ -981,4 +1008,70 @@ export async function findBestContractForStrike(
   }
 
   return results.sort((a, b) => b.annualizedROI - a.annualizedROI);
+}
+
+// ── ATM Strike Finder (for day trading) ─────────────────
+
+export interface AtmStrikeResult {
+  strike: number;
+  expiry: string;
+  bid: number;
+  ask: number;
+  mid: number;
+  delta: number;
+  spreadPct: number;   // (ask-bid)/mid * 100
+}
+
+/**
+ * Find the ATM strike for a same-day/weekly options day trade.
+ * Kaycapitals rules: ATM (~0.50 delta), round strikes only, needs real bid.
+ *
+ * @param right     'C' = call (for bullish), 'P' = put (for bearish)
+ * @param expiry    YYYYMMDD — use nearest weekly Friday
+ */
+export async function findAtmStrike(
+  symbol: string,
+  right: 'C' | 'P',
+  underlyingPrice: number,
+  expiry: string,
+): Promise<AtmStrikeResult | null> {
+  if (!isConnected()) return null;
+
+  const contractInfo = await getContractInfoCached(symbol);
+  if (!contractInfo) return null;
+
+  const params = await getOptionChainParams(contractInfo.conId, symbol);
+  if (!params?.strikes?.length) return null;
+
+  // ATM = closest round-dollar strike to current price (kaycapitals rule #4)
+  const roundStrikes = params.strikes.filter((s: number) => Number.isInteger(s));
+  if (!roundStrikes.length) return null;
+
+  // Sort round strikes by proximity to current price, prefer whole numbers
+  const atmTarget = underlyingPrice;
+  const candidates = preferRoundStrikes(roundStrikes, atmTarget).slice(0, 5);
+
+  for (const strike of candidates) {
+    const greeks = await getOptionGreeksForContract(symbol, strike, expiry, right, underlyingPrice);
+    if (!greeks) continue;
+
+    const absDelta = Math.abs(greeks.delta);
+    // ATM band: 0.35–0.65 delta
+    if (absDelta < 0.35 || absDelta > 0.65) continue;
+    if (greeks.bid < 0.05) continue;   // no real bid = no liquidity
+
+    const spreadPct = greeks.mid > 0 ? ((greeks.ask - greeks.bid) / greeks.mid) * 100 : 999;
+
+    return {
+      strike,
+      expiry,
+      bid: greeks.bid,
+      ask: greeks.ask,
+      mid: greeks.mid,
+      delta: greeks.delta,
+      spreadPct,
+    };
+  }
+
+  return null;
 }

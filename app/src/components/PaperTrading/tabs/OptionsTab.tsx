@@ -352,6 +352,354 @@ function HowItWorks() {
   );
 }
 
+// ── Options Scalp Guide ───────────────────────────────────
+
+function OptionsScalpGuide() {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="rounded-xl border border-sky-100 bg-sky-50/50 overflow-hidden">
+      <button
+        onClick={() => setOpen(v => !v)}
+        className="w-full flex items-center justify-between px-4 py-2.5 text-left hover:bg-sky-50 transition-colors"
+      >
+        <span className="text-xs font-semibold text-sky-700">⚡ Options Scalp — ATM Buying Strategy</span>
+        <span className="text-[10px] text-sky-500">{open ? '▲ hide' : '▼ show'}</span>
+      </button>
+      {open && (
+        <div className="border-t border-sky-100 px-4 py-3 space-y-3">
+          <p className="text-[11px] text-[hsl(var(--muted-foreground))] leading-relaxed">
+            <strong className="text-sky-700">OPTIONS_SCALP</strong> is an intraday directional strategy — we <em>buy</em> ATM calls or puts for same-day moves. Completely separate from the wheel (which sells options). Think of the wheel as the income engine; scalps are high-conviction momentum punches.
+          </p>
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+            {[
+              { icon: '🎯', title: 'ATM Only', desc: 'Buy the strike closest to current stock price (~0.40–0.60 delta). No need to worry about Greeks when you\'re ATM — the option moves nearly dollar-for-dollar with the stock.' },
+              { icon: '📊', title: '1.5% Move Required', desc: 'Stock must be up or down >1.5% from the open before we enter. This confirms momentum is real, not just noise.' },
+              { icon: '💧', title: 'Liquidity Filter', desc: 'Round-dollar strikes only (no $82.50 "beta contracts"). Minimum real bid required. Market order only when bid-ask spread is tight (<3%).' },
+              { icon: '📅', title: 'Weekly Expiry', desc: 'Nearest Friday expiry (at least 1 day out). Weekly options have high gamma — small stock moves = big % option gains intraday.' },
+              { icon: '✅', title: 'Take Profit: +100%', desc: 'When the premium doubles (option price 2× what you paid), auto-close. Don\'t get greedy.' },
+              { icon: '🛑', title: 'Stop Loss: −50%', desc: 'When premium halves (you\'re down 50%), auto-close. Max loss is defined and capped upfront.' },
+              { icon: '⏰', title: 'EOD Hard Close', desc: 'All scalp positions close at 3:45 PM ET regardless. Options decay fastest in the last 30 min — never hold overnight.' },
+              { icon: '🔢', title: 'Position Sizing', desc: 'Max 1 contract per trade, max 2 scalp trades per day, $500 max premium per trade. Small and disciplined.' },
+            ].map((item, i) => (
+              <div key={i} className="flex gap-2 bg-white/60 rounded-lg px-3 py-2 border border-sky-100">
+                <span className="text-base shrink-0 mt-0.5">{item.icon}</span>
+                <div className="space-y-0.5">
+                  <div className="text-[11px] font-bold text-sky-800">{item.title}</div>
+                  <p className="text-[10px] text-[hsl(var(--muted-foreground))] leading-relaxed">{item.desc}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Wheel Playbook ────────────────────────────────────────
+
+function WheelPlaybook() {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="rounded-xl border border-emerald-100 bg-emerald-50/40 overflow-hidden">
+      <button
+        onClick={() => setOpen(v => !v)}
+        className="w-full flex items-center justify-between px-4 py-2.5 text-left hover:bg-emerald-50 transition-colors"
+      >
+        <span className="text-xs font-semibold text-emerald-700">🎡 Wheel Playbook — Full Framework</span>
+        <span className="text-[10px] text-emerald-500">{open ? '▲ hide' : '▼ show'}</span>
+      </button>
+      {open && (
+        <div className="border-t border-emerald-100 px-4 py-3 space-y-3">
+          <p className="text-[11px] text-[hsl(var(--muted-foreground))] leading-relaxed">
+            The wheel is simple but the edge is in the <em>timing</em>. Pair it with technical indicators and you collect premium on stocks you actually want to own.
+          </p>
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+            {[
+              { icon: '🔴', title: 'Sell Puts on Red Days', desc: 'Fear = expensive puts = more premium. Sell cash-secured puts on pullbacks in stocks you\'d happily own. If assigned, you bought at a discount plus kept the premium.' },
+              { icon: '🟢', title: 'Close Puts on Green Days', desc: 'When your sold put is up 50%+ and the stock rips, buy it back. Don\'t wait for full expiry — lock gains, free capital, redeploy.' },
+              { icon: '📈', title: 'Sell Calls on Your Shares', desc: 'Once assigned, sell covered calls above your cost basis. Collect more premium while waiting for the stock to recover.' },
+              { icon: '📐', title: 'Mix in Technicals', desc: 'Bollinger Bands (squeeze = low IV, expansion = high IV), RSI (<30 = oversold put opportunity), MACD (confirm trend direction), S/R levels (sell puts above support).' },
+              { icon: '⏳', title: 'DTE Targeting', desc: 'Sell 7–42 DTE for fast theta decay. The sweet spot is 21–30 DTE — theta accelerates sharply in the last 30 days. Take profit at 50% and roll.' },
+              { icon: '🎯', title: 'Delta 0.15–0.25', desc: '~80–85% probability of keeping the full premium. Not zero-risk, but favorable odds. The stock needs to drop hard to assign you — and if it does, you wanted to own it anyway.' },
+              { icon: '🧺', title: 'Base Portfolio', desc: 'Only wheel stocks you\'d hold long-term: NVDA, AMD, AAPL, GOOG, AMZN, TSLA, META, MU. Never wheel a stock you\'d panic-sell if assigned.' },
+              { icon: '🧘', title: 'Patience is the Edge', desc: 'Most premium sellers lose because they panic-close losers or chase high-IV trash. Stick to quality names, respect your strikes, and let theta do the work.' },
+            ].map((item, i) => (
+              <div key={i} className="flex gap-2 bg-white/60 rounded-lg px-3 py-2 border border-emerald-100">
+                <span className="text-base shrink-0 mt-0.5">{item.icon}</span>
+                <div className="space-y-0.5">
+                  <div className="text-[11px] font-bold text-emerald-800">{item.title}</div>
+                  <p className="text-[10px] text-[hsl(var(--muted-foreground))] leading-relaxed">{item.desc}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Greeks Reference ──────────────────────────────────────
+
+const GREEKS = [
+  {
+    symbol: 'Δ',
+    name: 'Delta',
+    color: 'text-blue-700',
+    bg: 'bg-blue-50 border-blue-100',
+    desc: 'How much the option moves per $1 stock move. 0.50 delta = option gains $0.50 when stock moves $1.',
+    tip: 'Also a rough probability estimate. Sell at 0.15–0.25 delta (~80% chance of keeping premium). Buy ATM scalps at 0.40–0.60.',
+  },
+  {
+    symbol: 'Θ',
+    name: 'Theta',
+    color: 'text-emerald-700',
+    bg: 'bg-emerald-50 border-emerald-100',
+    desc: 'Daily time decay — how much value your option loses each day just from time passing.',
+    tip: 'When you SELL options, theta pays you every day. When you BUY, it bleeds you. Accelerates hard inside 30 DTE.',
+  },
+  {
+    symbol: 'Γ',
+    name: 'Gamma',
+    color: 'text-orange-700',
+    bg: 'bg-orange-50 border-orange-100',
+    desc: 'How fast delta changes as the stock moves. High gamma = delta shifts quickly = more volatile position.',
+    tip: 'Matters most for short-dated ATM options. High gamma is why weekly scalps can double quickly on a big move.',
+  },
+  {
+    symbol: 'V',
+    name: 'Vega',
+    color: 'text-violet-700',
+    bg: 'bg-violet-50 border-violet-100',
+    desc: 'How much the option price changes when implied volatility (IV) moves 1 point.',
+    tip: 'High IV = expensive options → good for selling (wheel). Low IV = cheap options → good for buying LEAPs. Check IV rank before every trade.',
+  },
+  {
+    symbol: 'ρ',
+    name: 'Rho',
+    color: 'text-slate-600',
+    bg: 'bg-slate-50 border-slate-100',
+    desc: 'How much the option price changes when interest rates move.',
+    tip: 'Least impactful for most retail trades. Matters more for deep ITM LEAPs with long expirations.',
+  },
+];
+
+function GreeksReference() {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="rounded-xl border border-slate-200 bg-slate-50/40 overflow-hidden">
+      <button
+        onClick={() => setOpen(v => !v)}
+        className="w-full flex items-center justify-between px-4 py-2.5 text-left hover:bg-slate-50 transition-colors"
+      >
+        <span className="text-xs font-semibold text-slate-700">📐 The Greeks — Quick Reference</span>
+        <span className="text-[10px] text-slate-400">{open ? '▲ hide' : '▼ show'}</span>
+      </button>
+      {open && (
+        <div className="border-t border-slate-100 px-4 py-3 space-y-2">
+          <p className="text-[11px] text-[hsl(var(--muted-foreground))] leading-relaxed">
+            You don't need a PhD in the Greeks — but understanding these five will immediately make you a better options trader.
+            The two that matter most: <strong className="text-emerald-700">Theta</strong> (why we sell) and <strong className="text-violet-700">Vega</strong> (check IV before every trade).
+          </p>
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
+            {GREEKS.map((g) => (
+              <div key={g.name} className={`rounded-xl border px-3 py-2.5 space-y-1.5 ${g.bg}`}>
+                <div className="flex items-center gap-2">
+                  <span className={`text-lg font-bold font-mono leading-none ${g.color}`}>{g.symbol}</span>
+                  <span className={`text-[11px] font-bold ${g.color}`}>{g.name}</span>
+                </div>
+                <p className="text-[10px] text-[hsl(var(--foreground))] leading-relaxed">{g.desc}</p>
+                <p className="text-[10px] text-[hsl(var(--muted-foreground))] leading-relaxed border-t border-current/10 pt-1.5">{g.tip}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Strike Selection Guide ────────────────────────────────
+
+function StrikeSelectionGuide() {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="rounded-xl border border-indigo-100 bg-indigo-50/40 overflow-hidden">
+      <button
+        onClick={() => setOpen(v => !v)}
+        className="w-full flex items-center justify-between px-4 py-2.5 text-left hover:bg-indigo-50 transition-colors"
+      >
+        <span className="text-xs font-semibold text-indigo-700">📍 How to Pick Your Strike — ITM / ATM / OTM</span>
+        <span className="text-[10px] text-indigo-500">{open ? '▲ hide' : '▼ show'}</span>
+      </button>
+      {open && (
+        <div className="border-t border-indigo-100 px-4 py-3 space-y-3">
+          <p className="text-[11px] text-[hsl(var(--muted-foreground))] leading-relaxed">
+            Strike selection is the single biggest lever on your risk/reward. Each zone has a different tradeoff between cost, probability, and leverage.
+          </p>
+
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+            {[
+              {
+                label: 'ITM',
+                full: 'In the Money',
+                color: 'border-emerald-200 bg-emerald-50/60',
+                hdr: 'text-emerald-700',
+                tag: 'Most Conservative',
+                tagColor: 'bg-emerald-100 text-emerald-700',
+                delta: 'δ 0.60–0.80',
+                points: [
+                  'Moves closely with the stock (high delta)',
+                  'Highest probability of profit',
+                  'Less leverage — costs more upfront',
+                  'Best for: LEAPs (12+ month calls on conviction names)',
+                ],
+              },
+              {
+                label: 'ATM',
+                full: 'At the Money',
+                color: 'border-sky-200 bg-sky-50/60',
+                hdr: 'text-sky-700',
+                tag: 'Middle Ground',
+                tagColor: 'bg-sky-100 text-sky-700',
+                delta: 'δ 0.40–0.60',
+                points: [
+                  'Balanced cost, leverage, and probability',
+                  'Gamma is highest — biggest % moves intraday',
+                  'Best for: Options Scalp (same-day directional plays)',
+                  'No need to fight the Greeks — the option tracks the stock',
+                ],
+              },
+              {
+                label: 'OTM',
+                full: 'Out of the Money',
+                color: 'border-red-200 bg-red-50/60',
+                hdr: 'text-red-700',
+                tag: '~10% OTM',
+                tagColor: 'bg-red-100 text-red-700',
+                delta: 'δ 0.15–0.30',
+                points: [
+                  'Cheapest premium — but needs a big move to profit',
+                  'Lowest probability of profit when BUYING',
+                  'Best for: Wheel — SELLING puts far below the stock',
+                  '⚠️ Don\'t confuse cheap with a good deal',
+                ],
+              },
+            ].map((zone) => (
+              <div key={zone.label} className={`rounded-xl border px-3 py-3 space-y-2 ${zone.color}`}>
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className={`text-base font-bold ${zone.hdr}`}>{zone.label}</span>
+                    <span className={`text-[10px] font-medium ${zone.hdr}`}>{zone.full}</span>
+                  </div>
+                  <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full ${zone.tagColor}`}>{zone.tag}</span>
+                </div>
+                <div className={`text-[10px] font-mono font-semibold ${zone.hdr}`}>{zone.delta}</div>
+                <ul className="space-y-1">
+                  {zone.points.map((pt, i) => (
+                    <li key={i} className="text-[10px] text-[hsl(var(--muted-foreground))] leading-relaxed flex gap-1.5">
+                      <span className="shrink-0 mt-0.5">·</span>
+                      <span>{pt}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ))}
+          </div>
+
+          <div className="rounded-xl border border-amber-200 bg-amber-50/60 px-3 py-2.5">
+            <p className="text-[11px] text-amber-800 font-semibold">How this system uses each zone:</p>
+            <div className="mt-1.5 space-y-1 text-[10px] text-[hsl(var(--muted-foreground))]">
+              <div>🎯 <strong>Options Scalp</strong> → always ATM (δ 0.40–0.60). Maximum gamma for intraday moves.</div>
+              <div>🎡 <strong>Wheel (selling puts)</strong> → OTM at δ 0.15–0.30 in normal IV; bumped to δ 0.30–0.35 in high IV.</div>
+              <div>📈 <strong>LEAPs (future)</strong> → ITM or ATM (δ 0.60–0.80). 12+ months, buy time, minimize theta bleed.</div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Smart Selling Guide ───────────────────────────────────
+
+function SmartSellingGuide() {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="rounded-xl border border-amber-100 bg-amber-50/40 overflow-hidden">
+      <button
+        onClick={() => setOpen(v => !v)}
+        className="w-full flex items-center justify-between px-4 py-2.5 text-left hover:bg-amber-50 transition-colors"
+      >
+        <span className="text-xs font-semibold text-amber-700">🧠 Smart Selling — Delta & Vega in Practice</span>
+        <span className="text-[10px] text-amber-500">{open ? '▲ hide' : '▼ show'}</span>
+      </button>
+      {open && (
+        <div className="border-t border-amber-100 px-4 py-3 space-y-3">
+          <p className="text-[11px] text-[hsl(var(--muted-foreground))] leading-relaxed">
+            Delta and Vega work together. The IV environment determines <em>which</em> delta to target — mastering this relationship is what separates consistent premium collectors from gamblers.
+          </p>
+
+          {/* IV rule cards */}
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+            <div className="rounded-xl border border-red-200 bg-red-50/60 px-3 py-3 space-y-2">
+              <div className="flex items-center gap-2">
+                <span className="text-base">🔥</span>
+                <span className="text-[11px] font-bold text-red-700">High IV Environment</span>
+              </div>
+              <p className="text-[10px] text-[hsl(var(--muted-foreground))] leading-relaxed">
+                Options are expensive. Sell <strong>higher delta (0.30–0.40, ATM/ITM)</strong> to collect fat premium. IV crush after the event will shrink option value fast — even if the stock barely moves, you win from IV compression.
+              </p>
+              <div className="rounded-lg bg-red-100/60 px-2 py-1.5">
+                <p className="text-[10px] text-red-700 font-medium">⚠️ Exception: Never sell high-delta during earnings. IV spikes going in but the move can blow through any strike.</p>
+              </div>
+            </div>
+            <div className="rounded-xl border border-blue-200 bg-blue-50/60 px-3 py-3 space-y-2">
+              <div className="flex items-center gap-2">
+                <span className="text-base">🧊</span>
+                <span className="text-[11px] font-bold text-blue-700">Low IV Environment</span>
+              </div>
+              <p className="text-[10px] text-[hsl(var(--muted-foreground))] leading-relaxed">
+                Options are cheap. Sell <strong>lower delta (0.15–0.25, OTM)</strong> — less premium but also much less risk. Higher probability of keeping full premium. This is the default wheel mode: patience over aggression.
+              </p>
+              <div className="rounded-lg bg-blue-100/60 px-2 py-1.5">
+                <p className="text-[10px] text-blue-700 font-medium">💡 Low IV is also the signal to <em>buy</em> LEAPs — options are on sale, so go long with a 12+ month expiry on your highest-conviction names.</p>
+              </div>
+            </div>
+          </div>
+
+          {/* Delta-Vega tradeoff table */}
+          <div className="rounded-xl border border-amber-100 overflow-hidden">
+            <div className="bg-amber-50 px-3 py-2 border-b border-amber-100">
+              <span className="text-[10px] font-bold text-amber-700">Delta ↔ Vega Tradeoff</span>
+            </div>
+            <div className="divide-y divide-amber-50">
+              {[
+                { delta: 'High (0.30–0.50)', vega: 'Low', ivRisk: 'Less', premium: 'More', prob: 'Lower', when: 'High IV only' },
+                { delta: 'Low (0.10–0.25)', vega: 'High', ivRisk: 'More', premium: 'Less', prob: 'Higher', when: 'Normal / Low IV' },
+              ].map((row, i) => (
+                <div key={i} className="grid grid-cols-6 text-[10px] px-3 py-2 gap-1">
+                  <span className="font-semibold text-[hsl(var(--foreground))]">{row.delta}</span>
+                  <span className="text-[hsl(var(--muted-foreground))]">Vega: {row.vega}</span>
+                  <span className="text-[hsl(var(--muted-foreground))]">IV Risk: {row.ivRisk}</span>
+                  <span className="text-emerald-700 font-medium">+Premium: {row.premium}</span>
+                  <span className="text-[hsl(var(--muted-foreground))]">Prob: {row.prob}</span>
+                  <span className="text-amber-700 font-semibold">{row.when}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <p className="text-[10px] text-[hsl(var(--muted-foreground))] leading-relaxed">
+            The wheel scanner already checks <strong>IV rank</strong> before selecting a strike. In high-IV conditions it targets 0.30 delta; in normal conditions it targets 0.20 delta. This is the same framework — automated.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Stats Header ─────────────────────────────────────────
 
 const MONTHLY_INCOME_TARGET = 5_000;
@@ -920,6 +1268,21 @@ export function OptionsTab() {
 
       {/* How it works */}
       <HowItWorks />
+
+      {/* Options Scalp guide */}
+      <OptionsScalpGuide />
+
+      {/* Wheel Playbook */}
+      <WheelPlaybook />
+
+      {/* Strike Selection */}
+      <StrikeSelectionGuide />
+
+      {/* Greeks Reference */}
+      <GreeksReference />
+
+      {/* Smart Selling — Delta & Vega */}
+      <SmartSellingGuide />
 
       {/* Stats Header — income progress + budget meter */}
       {stats && (

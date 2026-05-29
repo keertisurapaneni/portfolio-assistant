@@ -242,6 +242,25 @@ async function getRSI(ticker: string): Promise<{ rsi: number; prevRsi: number } 
   return { rsi: arr[arr.length - 1], prevRsi: arr[arr.length - 2] };
 }
 
+/**
+ * MACD trend signal for a ticker.
+ * Bullish: MACD histogram turning positive (MACD line crossing above signal line).
+ * Bearish: histogram turning negative.
+ * Returns null if data unavailable (non-blocking — MACD is a soft signal).
+ */
+async function getMACD(ticker: string): Promise<{ bullish: boolean; histogram: number; histPrev: number } | null> {
+  const data = await finnhubFetch<{ macd?: number[]; macdSignal?: number[]; macdHist?: number[] }>(
+    `https://finnhub.io/api/v1/indicator?symbol=${ticker}&resolution=D&from=${Math.floor(Date.now() / 1000) - 86400 * 90}&to=${Math.floor(Date.now() / 1000)}&indicator=macd&fastperiod=12&slowperiod=26&signalperiod=9&token=${FINNHUB_KEY}`
+  );
+  const hist = data?.macdHist?.filter(v => v != null);
+  if (!hist || hist.length < 2) return null;
+  const histogram = hist[hist.length - 1];
+  const histPrev  = hist[hist.length - 2];
+  // Bullish: histogram is positive AND rising (momentum improving)
+  const bullish = histogram > 0 && histogram > histPrev;
+  return { bullish, histogram, histPrev };
+}
+
 async function getEarningsDate(ticker: string): Promise<Date | null> {
   const data = await finnhubFetch<{ earningsCalendar?: Array<{ date?: string }> }>(
     `https://finnhub.io/api/v1/calendar/earnings?symbol=${ticker}&token=${FINNHUB_KEY}`
@@ -746,7 +765,16 @@ async function checkStock(
   // RSI check is a soft signal — don't hard-block, just reduce score
   const rsiBonus = rsiOk;
 
-  // Check 6: Options chain — uses IB when connected, Black-Scholes synthetic fallback otherwise
+  // Check 5.5: MACD trend confirmation (soft signal — aligns entry with momentum).
+  // Bullish MACD (histogram positive + rising) = trend is recovering, selling puts is aligned.
+  // Bearish MACD alone doesn't block a trade but does prevent the delta from being nudged higher.
+  const macdData = await getMACD(ticker);
+  const macdBullish = macdData?.bullish ?? false;
+  checks.macd = macdData
+    ? `hist:${macdData.histogram.toFixed(3)}_prev:${macdData.histPrev.toFixed(3)}_${macdBullish ? 'bullish' : 'neutral_or_bearish'}`
+    : 'no_data';
+
+
   //
   // ── VIX-Tiered Delta (confirmed by three independent video strategies) ──────────────────
   //
@@ -810,6 +838,37 @@ async function checkStock(
     checks.deltaLogic = `rsi_high_conviction:${deltaTarget}`;
   } else {
     checks.deltaLogic = `auto_tuned:${deltaTarget}`;
+  }
+
+  // IV-rank delta bump: high IV = expensive options = sell higher delta for more premium.
+  // Rule: IV rank ≥ 60 → nudge delta +0.05 (cap at 0.35 for non-STABLE, 0.30 for HIGH_VOL).
+  // This implements the "high IV → sell ATM/ITM" framework from the Delta+Vega guide.
+  // Only applies in normal/bull market (bear mode already handled above).
+  if (!ctx.bearMode && !vixElevated && !vixSpike) {
+    const ivRankForDelta = await getStoredIvRank(ticker).catch(() => null);
+    if (ivRankForDelta !== null && ivRankForDelta >= 60) {
+      const maxDelta = tier === 'HIGH_VOL' ? 0.25 : tier === 'STABLE' ? 0.30 : 0.35;
+      const bumped = Math.min(deltaTarget + 0.05, maxDelta);
+      if (bumped > deltaTarget) {
+        const prev = deltaTarget;
+        deltaTarget = bumped;
+        checks.deltaLogic = `${checks.deltaLogic}_iv_rank_bump_${ivRankForDelta}_${prev.toFixed(2)}→${deltaTarget.toFixed(2)}`;
+      }
+    }
+  }
+
+  // MACD modifier: if MACD is bullish (histogram positive + rising), we get one more confirming
+  // signal. If MACD is bearish, cap the delta slightly lower to be conservative.
+  // This is a soft modifier — it never blocks a trade, only adjusts delta by ±0.03.
+  if (!ctx.bearMode && !vixElevated) {
+    if (macdBullish) {
+      const maxDelta = tier === 'HIGH_VOL' ? 0.25 : 0.40;
+      deltaTarget = Math.min(deltaTarget + 0.03, maxDelta);
+      checks.deltaLogic = `${checks.deltaLogic}_macd_bullish_nudge:${deltaTarget.toFixed(2)}`;
+    } else if (macdData && !macdBullish) {
+      deltaTarget = Math.max(deltaTarget - 0.03, 0.12);
+      checks.deltaLogic = `${checks.deltaLogic}_macd_bearish_nudge:${deltaTarget.toFixed(2)}`;
+    }
   }
 
   // Extended DTE when IV rank is very elevated — collect more premium during fear spikes.

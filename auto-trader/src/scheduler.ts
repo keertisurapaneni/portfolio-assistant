@@ -333,8 +333,15 @@ export function startScheduler(): void {
     } catch (err) {
       console.error('[SoftClose] Failed:', err instanceof Error ? err.message : err);
     }
+    // EOD close for all open scalp positions — must not hold options overnight.
+    try {
+      const { closeAllScalpPositionsEod } = await import('./lib/options-scalp.js');
+      await closeAllScalpPositionsEod();
+    } catch (err) {
+      console.error('[Scheduler] Options scalp EOD close error:', err instanceof Error ? err.message : err);
+    }
   }, { timezone: 'America/New_York' });
-  log('Day-trade soft close: 3:45 PM ET (losing + near-target positions)');
+  log('Day-trade soft close + options scalp EOD close: 3:45 PM ET');
 
   // EOD day-trade auto-close: 3:55 PM ET on weekdays — hard backstop after soft close.
   // Mirrors browser scheduleDayTradeAutoClose — ensures positions close even when browser is shut.
@@ -555,6 +562,30 @@ export function startScheduler(): void {
     }
   }, { timezone: 'America/New_York' });
   log('Credit spread management: every 30 min, Mon-Fri 10-4 PM ET');
+
+  // Options Scalp scan — 10:00 AM and 11:00 AM ET (after early volatility settles).
+  // Buys ATM call/put when a HIGH_VOL ticker has moved >1.5% from open.
+  cron.schedule('0 10,11 * * 1-5', async () => {
+    try {
+      const { runOptionScalpScan } = await import('./lib/options-scalp.js');
+      await runOptionScalpScan();
+    } catch (err) {
+      console.error('[Scheduler] Options scalp scan error:', err instanceof Error ? err.message : err);
+    }
+  }, { timezone: 'America/New_York' });
+  log('Options scalp scan: 10:00 AM and 11:00 AM ET, Mon-Fri');
+
+  // Options Scalp position management — every 15 min during market hours.
+  // Checks profit target (100%) and stop loss (50%).
+  cron.schedule('*/15 10-15 * * 1-5', async () => {
+    try {
+      const { manageScalpPositions } = await import('./lib/options-scalp.js');
+      await manageScalpPositions();
+    } catch (err) {
+      console.error('[Scheduler] Options scalp manager error:', err instanceof Error ? err.message : err);
+    }
+  }, { timezone: 'America/New_York' });
+  log('Options scalp management: every 15 min, 10 AM–3:45 PM ET');
 
   // Weekly Compounder health check — runs Friday 3:30 PM ET (after most price action is done).
   // Reviews every active Steady Compounder: positive-close ratio, zombie flag, profit-trim hints.
@@ -7658,6 +7689,7 @@ Check the Options Wheel → Open tab to review the covered call position.`,
             .select('pnl')
             .in('mode', ['OPTIONS_PUT', 'OPTIONS_CALL'])
             .not('pnl', 'is', null)
+            .not('ib_order_id', 'is', null)   // only real IB fills — exclude paper-only/phantom
             .gte('closed_at', monthStart);
           const monthlyPnl = (monthlyPnlRows ?? []).reduce((s: number, r: { pnl: number | null }) => s + (r.pnl ?? 0), 0);
           const monthlyLossCap = -(optionsCapitalBudget * MONTHLY_LOSS_CAP_PCT);
