@@ -65,6 +65,8 @@ import {
   getDayTradeValidationReport,
   getSwingTradeValidationReport,
   clearSharedTradesCache,
+  getOrderTradeContext,
+  type OrderTradeContext,
 } from '../../lib/paperTradesApi';
 import { getTotalDeployed, getMarketRegime, calculateKellyMultiplier, type MarketRegime } from '../../lib/autoTrader';
 import { useAccountView, type AccountView } from '../../contexts/AccountContext';
@@ -147,6 +149,7 @@ export function PaperTrading() {
   const [performance, setPerformance] = useState<TradePerformance | null>(cached?.performance ?? null);
   const [ibPositions, setIbPositions] = useState<IBPosition[]>(cached?.ibPositions ?? []);
   const [ibOrders, setIbOrders] = useState<IBLiveOrder[]>(cached?.ibOrders ?? []);
+  const [orderTradeContext, setOrderTradeContext] = useState<Map<number, OrderTradeContext>>(new Map());
   const [persistedEvents, setPersistedEvents] = useState<AutoTradeEventRecord[]>(cached?.persistedEvents ?? []);
   const [todaysExecuted, setTodaysExecuted] = useState<AutoTradeEventRecord[]>(cached?.todaysExecuted ?? []);
   const [todayTrades, setTodayTrades] = useState<PaperTrade[]>(cached?.todayTrades ?? []);
@@ -218,14 +221,16 @@ export function PaperTrading() {
   const loadIBData = useCallback(async () => {
     if (!connected) return;
     try {
-      const [positions, orders, pnl] = await Promise.all([
+      const [positions, orders, pnl, tradeCtx] = await Promise.all([
         getPositions(config.accountId ?? ''),
         getLiveOrders(),
         getAccountPnL(),
+        getOrderTradeContext(),
       ]);
       setIbPositions(positions);
       setIbOrders(orders);
       setIbAccountPnl(pnl);
+      setOrderTradeContext(tradeCtx);
     } catch (err) {
       console.error('Failed to load IB data:', err);
     }
@@ -679,6 +684,7 @@ export function PaperTrading() {
             <PortfolioTab
               positions={ibPositions}
               orders={ibOrders}
+              orderTradeContext={orderTradeContext}
               pendingSignals={pendingSignals}
               connected={connected}
               onRefresh={loadIBData}

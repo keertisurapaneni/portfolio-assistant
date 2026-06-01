@@ -1877,6 +1877,41 @@ export async function getStrategyTuneLogs(limit = 10): Promise<TuneLogEntry[]> {
   return (data ?? []) as TuneLogEntry[];
 }
 
+// ── Order trade context ────────────────────────────────────────────────────
+// Lightweight record used to enrich IB Open Orders with mode + source info.
+export interface OrderTradeContext {
+  mode: string;
+  scanner_reason: string | null;
+  entry_trigger_type: string | null;
+  notes: string | null;
+}
+
+/**
+ * Returns a map of IB order ID → trade context for all active/submitted trades.
+ * Used by the Open Orders panel to show mode and source without a full trade fetch.
+ */
+export async function getOrderTradeContext(): Promise<Map<number, OrderTradeContext>> {
+  const { data } = await supabase
+    .from('paper_trades')
+    .select('ib_order_id, mode, scanner_reason, entry_trigger_type, notes')
+    .in('status', ['ACTIVE', 'SUBMITTED', 'FILLED'])
+    .not('ib_order_id', 'is', null);
+
+  const map = new Map<number, OrderTradeContext>();
+  for (const row of data ?? []) {
+    const id = Number(row.ib_order_id);
+    if (!isNaN(id)) {
+      map.set(id, {
+        mode: row.mode ?? '',
+        scanner_reason: row.scanner_reason ?? null,
+        entry_trigger_type: row.entry_trigger_type ?? null,
+        notes: row.notes ?? null,
+      });
+    }
+  }
+  return map;
+}
+
 export async function triggerAutoTune(): Promise<{ ok: boolean; decisionsCount: number; decisions: TuneDecision[]; error?: string }> {
   const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
   const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
