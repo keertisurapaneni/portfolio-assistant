@@ -111,6 +111,7 @@ export function sma(closes: number[], period: number): number | null {
 
 export interface YahooQuote {
   price:        number;
+  volume:       number | null;  // current day's volume (intraday or EOD)
   beta:         number | null;
   high52w:      number | null;
   earningsTs:   number | null;  // Unix ms, next earnings
@@ -123,7 +124,7 @@ export interface YahooQuote {
  */
 export async function fetchQuote(symbol: string): Promise<YahooQuote | null> {
   try {
-    const fields = 'regularMarketPrice,beta,fiftyTwoWeekHigh,earningsTimestamp';
+    const fields = 'regularMarketPrice,regularMarketVolume,beta,fiftyTwoWeekHigh,earningsTimestamp';
     const url = `https://query2.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(symbol)}&fields=${fields}`;
     const res = await fetch(url, {
       headers: YAHOO_HEADERS,
@@ -138,6 +139,7 @@ export async function fetchQuote(symbol: string): Promise<YahooQuote | null> {
     if (!price) return null;
     return {
       price,
+      volume:     (q.regularMarketVolume as number | undefined) ?? null,
       beta:       (q.beta       as number | undefined) ?? null,
       high52w:    (q.fiftyTwoWeekHigh as number | undefined) ?? null,
       earningsTs: (q.earningsTimestamp as number | undefined)

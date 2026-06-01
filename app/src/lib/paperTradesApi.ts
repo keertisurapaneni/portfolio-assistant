@@ -1941,3 +1941,61 @@ export async function triggerAutoTune(): Promise<{ ok: boolean; decisionsCount: 
   if (!res.ok) return { ok: false, decisionsCount: 0, decisions: [], error: data?.error ?? `HTTP ${res.status}` };
   return data as { ok: boolean; decisionsCount: number; decisions: TuneDecision[] };
 }
+
+// ── Pre-session ORB setups ──────────────────────────────────────────────────
+
+export interface PresessionSetup {
+  id: string;
+  ticker: string;
+  trade_date: string;
+  signal: 'BUY' | 'SELL';
+  trigger_price: number;
+  stop_loss: number;
+  take_profit1: number;
+  take_profit2: number | null;
+  prior_day_high: number;
+  prior_day_low: number;
+  prior_day_close: number;
+  avg_volume_10d: number | null;
+  rvol: number | null;
+  trend_4h: string | null;
+  atr: number;
+  reason: string;
+  status: 'PENDING' | 'TRIGGERED' | 'EXPIRED' | 'SKIPPED';
+  triggered_at: string | null;
+  created_at: string;
+}
+
+/** Fetch tonight's (next trading day's) ORB pre-session setups */
+export async function getTonightsPresessionSetups(): Promise<PresessionSetup[]> {
+  // Compute next trading date from ET perspective
+  const nowET = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }));
+  const d = new Date(nowET);
+  // If before 4 PM, "tonight" = today's setups; after 4 PM = tomorrow
+  if (nowET.getHours() >= 16) d.setDate(d.getDate() + 1);
+  while (d.getDay() === 0 || d.getDay() === 6) d.setDate(d.getDate() + 1);
+  const targetDate = d.toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+
+  const { data, error } = await supabase
+    .from('pre_session_setups')
+    .select('*')
+    .eq('trade_date', targetDate)
+    .order('ticker');
+
+  if (error) throw new Error(error.message);
+  return (data ?? []) as PresessionSetup[];
+}
+
+/** Fetch today's ORB setups (for morning tracking) */
+export async function getTodaysPresessionSetups(): Promise<PresessionSetup[]> {
+  const todayET = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+  const { data, error } = await supabase
+    .from('pre_session_setups')
+    .select('*')
+    .eq('trade_date', todayET)
+    .order('status', { ascending: true })  // PENDING first
+    .order('ticker');
+
+  if (error) throw new Error(error.message);
+  return (data ?? []) as PresessionSetup[];
+}

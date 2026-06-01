@@ -110,6 +110,12 @@ import { warmPositionPriceCache } from './routes/positions.js';
 import { generateMorningBrief } from './lib/morning-brief.js';
 import { validateOrder } from './lib/validateOrder.js';
 import {
+  runNightlyPresessionScan,
+  checkPresessionTriggers,
+  expirePresessionSetups,
+  markPresessionSetupStatus,
+} from './lib/presession-scan.js';
+import {
   runPennyDiscovery,
   checkPennyEntry,
   checkPennyExit,
@@ -458,6 +464,18 @@ export function startScheduler(): void {
     }
   }, { timezone: 'America/New_York' });
   log('EOD loss analysis: 4:20 PM ET');
+
+  // Nightly pre-session ORB scan — 4:25 PM ET: after market close + reconciliation.
+  // Computes key S/R levels from prior day price action for each ticker in the
+  // ORB universe and upserts conditional bracket setups for tomorrow's open.
+  cron.schedule('25 16 * * 1-5', async () => {
+    try {
+      await runNightlyPresessionScan();
+    } catch (err) {
+      console.error('[PresessionScan] Nightly scan failed:', err instanceof Error ? err.message : err);
+    }
+  }, { timezone: 'America/New_York' });
+  log('Nightly ORB pre-session scan: 4:25 PM ET');
 
   // Earnings IV-crush scanner — 2:30 PM ET, enter calendar spreads for tonight's AMC
   // and tomorrow morning's BMO earnings announcements.
@@ -7457,6 +7475,70 @@ async function runSchedulerCycle(): Promise<void> {
       // Write evaluation results to DB so the UI can show Armed/Watching/Blocked badges
       if (Object.keys(dayEvals).length > 0)   writeScanEvaluations('day_trades', dayEvals).catch(() => {});
       if (Object.keys(swingEvals).length > 0)  writeScanEvaluations('swing_trades', swingEvals).catch(() => {});
+    }
+
+    // 10b. Pre-session ORB trigger check (nightly bracket setups).
+    // Compares live price against nightly-computed prior-day high/low brackets.
+    // Only fires during the first 60 min after open (9:35–10:30 ET) when RVOL >= 1.2x.
+    // After 10:30 ET, all remaining PENDING setups are expired.
+    if (isModeEnabled(config, 'DAY_TRADE')) {
+      const etNowForOrb = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }));
+      const etMinutesForOrb = etNowForOrb.getHours() * 60 + etNowForOrb.getMinutes();
+      const ORB_OPEN_MIN  = 9 * 60 + 35;  // 9:35 AM
+      const ORB_CLOSE_MIN = 10 * 60 + 30; // 10:30 AM
+
+      if (etMinutesForOrb >= ORB_OPEN_MIN && etMinutesForOrb < ORB_CLOSE_MIN) {
+        try {
+          const orbTriggers = await checkPresessionTriggers();
+          for (const orb of orbTriggers) {
+            // Per-ticker try/catch: one bad execution must not abort the rest
+            try {
+              if (await hasActiveTrade(orb.ticker, { excludeOptions: true })) {
+                log(`[ORB] ${orb.ticker} already has an active trade — skipping`);
+                await markPresessionSetupStatus(orb.setupId, 'SKIPPED');
+                continue;
+              }
+              const orbIdea: TradeIdea = {
+                ticker:        orb.ticker,
+                name:          orb.ticker,
+                price:         orb.price,
+                change:        0,
+                changePercent: 0,
+                signal:        orb.signal,
+                confidence:    7,
+                reason:        `[ORB] ${orb.reason}`,
+                tags:          ['orb', 'presession', 'prior_day_level'],
+                mode:          'DAY_TRADE',
+                entryPrice:    orb.price,
+                stopLoss:      orb.stopLoss,
+                targetPrice:   orb.takeProfit1,
+                targetPrice2:  orb.takeProfit2 ?? undefined,
+              };
+              const refreshedForOrb = await getEnrichedPositions();
+              const orbResult = await executeScannerTrade(orbIdea, config, refreshedForOrb);
+              log(`[ORB] ${orb.ticker} ${orb.signal}: ${orbResult}`);
+              const wasExecuted = orbResult.startsWith('executed');
+              await markPresessionSetupStatus(orb.setupId, wasExecuted ? 'TRIGGERED' : 'SKIPPED');
+              persistEvent(orb.ticker, wasExecuted ? 'success' : 'skipped',
+                `ORB ${orb.signal} trigger: ${orbResult}`, {
+                  source: 'presession_orb',
+                  trigger_price: orb.price,
+                  live_rvol: orb.liveRvol,
+                });
+            } catch (tickerErr) {
+              log(`[ORB] ${orb.ticker}: execution error — ${tickerErr instanceof Error ? tickerErr.message : tickerErr}`);
+            }
+          }
+        } catch (err) {
+          log(`[ORB] Error checking triggers: ${err instanceof Error ? err.message : err}`);
+        }
+      } else if (etMinutesForOrb >= ORB_CLOSE_MIN) {
+        // Expire any PENDING setups once the ORB window closes.
+        // expirePresessionSetups() only touches PENDING rows, so repeated calls are safe.
+        await expirePresessionSetups().catch(err =>
+          log(`[ORB] Expire error: ${err instanceof Error ? err.message : err}`)
+        );
+      }
     }
 
     // 11. SPX key-level breakout-retest scanner (Somesh's strategy)

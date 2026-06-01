@@ -16,6 +16,7 @@ import {
   ArrowDownRight,
   Ban,
   Coins,
+  SunMedium,
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import {
@@ -29,7 +30,7 @@ import {
   type ScanEvaluations,
 } from '../lib/tradeScannerApi';
 import { getAutoTraderConfig } from '../lib/autoTrader';
-import { getActiveTrades, getAllTrades } from '../lib/paperTradesApi';
+import { getActiveTrades, getAllTrades, getTonightsPresessionSetups, getTodaysPresessionSetups, type PresessionSetup } from '../lib/paperTradesApi';
 import { Spinner } from './Spinner';
 
 // ── Market hours ─────────────────────────────────────────
@@ -113,7 +114,7 @@ interface TradeIdeasProps {
   onSelectTicker: (ticker: string, mode: 'DAY_TRADE' | 'SWING_TRADE' | 'DAY_PENNY') => void;
 }
 
-type Tab = 'day' | 'swing' | 'penny' | 'gameplan';
+type Tab = 'day' | 'swing' | 'penny' | 'gameplan' | 'orb';
 
 function formatScanAge(ts: number): string {
   const diffMs = Date.now() - ts;
@@ -136,6 +137,7 @@ export function TradeIdeas({ onSelectTicker }: TradeIdeasProps) {
   const [tradedTickers, setTradedTickers] = useState<Set<string>>(new Set());
   const [evaluations, setEvaluations] = useState<ScanEvaluations>({});
   const [pennyTrades, setPennyTrades] = useState<TradeIdea[]>([]);
+  const [orbSetups, setOrbSetups] = useState<PresessionSetup[]>([]);
   const [marketOpen, setMarketOpen] = useState(() => isMarketHoursWindow());
 
   // Re-check market hours every minute so the badge updates as windows open/close.
@@ -178,6 +180,28 @@ export function TradeIdeas({ onSelectTicker }: TradeIdeasProps) {
     const interval = setInterval(() => {
       fetchScanEvaluations().then(setEvaluations).catch(() => {});
     }, 2 * 60 * 1000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // Load ORB pre-session setups. During market hours (before 10:30 AM), show today's
+  // setups with live status (PENDING/TRIGGERED/EXPIRED). After 10:30 AM or pre-market,
+  // show tomorrow's nightly setups so the user can review what the scanner planned.
+  useEffect(() => {
+    const loadOrb = async () => {
+      try {
+        const nowET = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }));
+        const etMinutes = nowET.getHours() * 60 + nowET.getMinutes();
+        // Show today's setups during ORB window (9:30–10:30 AM)
+        if (etMinutes >= 9 * 60 + 30 && etMinutes < 10 * 60 + 30) {
+          const today = await getTodaysPresessionSetups();
+          if (today.length > 0) { setOrbSetups(today); return; }
+        }
+        // Otherwise show tonight's (next trading day's) setups
+        setOrbSetups(await getTonightsPresessionSetups());
+      } catch { /* silent */ }
+    };
+    loadOrb();
+    const interval = setInterval(loadOrb, 2 * 60 * 1000);
     return () => clearInterval(interval);
   }, []);
 
@@ -465,10 +489,31 @@ export function TradeIdeas({ onSelectTicker }: TradeIdeasProps) {
                 </span>
               )}
             </button>
+            <button
+              type="button"
+              onClick={() => setTab('orb')}
+              className={cn(
+                'flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg transition-all',
+                tab === 'orb'
+                  ? 'bg-orange-50 text-orange-700 border border-orange-200 shadow-sm'
+                  : 'text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--secondary))]'
+              )}
+            >
+              <SunMedium className="w-3.5 h-3.5" />
+              ORB
+              {orbSetups.length > 0 && (
+                <span className={cn(
+                  'ml-0.5 text-[10px] px-1.5 rounded-full font-semibold',
+                  tab === 'orb' ? 'bg-orange-200/70 text-orange-700' : 'bg-[hsl(var(--secondary))] text-[hsl(var(--muted-foreground))]'
+                )}>
+                  {orbSetups.length}
+                </span>
+              )}
+            </button>
           </div>
 
           {/* Banner */}
-          {tab !== 'gameplan' && (
+          {tab !== 'gameplan' && tab !== 'orb' && (
             <div className="mx-4 mt-2.5 flex items-start gap-2 rounded-lg bg-amber-50 border border-amber-200/70 px-3 py-2">
               <AlertTriangle className="w-3.5 h-3.5 text-amber-500 mt-0.5 flex-shrink-0" />
               <p className="text-[11px] leading-snug text-amber-700">
@@ -483,6 +528,15 @@ export function TradeIdeas({ onSelectTicker }: TradeIdeasProps) {
               <p className="text-[11px] leading-snug text-violet-700">
                 Pure price structure — no AI bias. Both sides pre-planned from prev-day high/low, SMAs, and round numbers.
                 <span className="font-semibold"> Let price pick a side.</span>
+              </p>
+            </div>
+          )}
+          {tab === 'orb' && (
+            <div className="mx-4 mt-2.5 flex items-start gap-2 rounded-lg bg-orange-50 border border-orange-200/70 px-3 py-2">
+              <SunMedium className="w-3.5 h-3.5 text-orange-500 mt-0.5 flex-shrink-0" />
+              <p className="text-[11px] leading-snug text-orange-700">
+                Nightly ORB brackets from prior-day high/low. Executes 9:35–10:30 AM when price breaks the level
+                <span className="font-semibold"> with RVOL ≥ 1.2×.</span>
               </p>
             </div>
           )}
@@ -501,7 +555,7 @@ export function TradeIdeas({ onSelectTicker }: TradeIdeasProps) {
             )}
 
             {/* Day / Swing tab content */}
-            {tab !== 'gameplan' && (
+            {tab !== 'gameplan' && tab !== 'orb' && (
               <>
                 {ideas.length === 0 && !loading && !error && (data || tab === 'penny') && (
                   <div className="flex flex-col items-center py-6 gap-2 text-center">
@@ -558,6 +612,90 @@ export function TradeIdeas({ onSelectTicker }: TradeIdeasProps) {
                         onSelect={() => onSelectTicker(setup.ticker, 'DAY_TRADE')}
                       />
                     ))}
+                  </div>
+                )}
+              </>
+            )}
+
+            {/* ORB Pre-session setups tab */}
+            {tab === 'orb' && (
+              <>
+                {orbSetups.length === 0 && (
+                  <div className="flex flex-col items-center py-6 gap-2 text-center">
+                    <SunMedium className="w-8 h-8 text-[hsl(var(--muted-foreground))] opacity-40" />
+                    <p className="text-sm text-[hsl(var(--muted-foreground))]">
+                      No ORB setups yet.
+                    </p>
+                    <p className="text-xs text-[hsl(var(--muted-foreground))] opacity-70">
+                      The nightly scan runs at 4:25 PM ET — check back after market close.
+                    </p>
+                  </div>
+                )}
+                {orbSetups.length > 0 && (
+                  <div className="overflow-x-auto -mx-1">
+                    <table className="w-full text-[11px]">
+                      <thead>
+                        <tr className="text-[hsl(var(--muted-foreground))] border-b border-[hsl(var(--border))]">
+                          <th className="text-left py-1.5 px-2 font-medium">Ticker</th>
+                          <th className="text-left py-1.5 px-2 font-medium">Signal</th>
+                          <th className="text-right py-1.5 px-2 font-medium">Trigger</th>
+                          <th className="text-right py-1.5 px-2 font-medium">Stop</th>
+                          <th className="text-right py-1.5 px-2 font-medium">T1</th>
+                          <th className="text-right py-1.5 px-2 font-medium">T2</th>
+                          <th className="text-right py-1.5 px-2 font-medium">RVOL</th>
+                          <th className="text-left py-1.5 px-2 font-medium">Trend</th>
+                          <th className="text-left py-1.5 px-2 font-medium">Status</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-[hsl(var(--border))]/50">
+                        {orbSetups.map((s) => {
+                          const statusColor =
+                            s.status === 'TRIGGERED' ? 'text-emerald-600 bg-emerald-50' :
+                            s.status === 'EXPIRED'   ? 'text-[hsl(var(--muted-foreground))] bg-[hsl(var(--secondary))]' :
+                            s.status === 'SKIPPED'   ? 'text-amber-600 bg-amber-50' :
+                            'text-blue-600 bg-blue-50'; // PENDING
+                          const trendColor =
+                            s.trend_4h === 'up'   ? 'text-emerald-600' :
+                            s.trend_4h === 'down' ? 'text-red-500' : 'text-[hsl(var(--muted-foreground))]';
+                          return (
+                            <tr
+                              key={`${s.ticker}-${s.signal}`}
+                              className="hover:bg-[hsl(var(--secondary))]/40 cursor-pointer"
+                              onClick={() => onSelectTicker(s.ticker, 'DAY_TRADE')}
+                            >
+                              <td className="py-2 px-2 font-bold text-[hsl(var(--foreground))]">{s.ticker}</td>
+                              <td className="py-2 px-2">
+                                <span className={cn(
+                                  'inline-flex px-1.5 py-0.5 rounded text-[10px] font-bold',
+                                  s.signal === 'BUY'
+                                    ? 'bg-emerald-100 text-emerald-700'
+                                    : 'bg-red-100 text-red-700'
+                                )}>
+                                  {s.signal}
+                                </span>
+                              </td>
+                              <td className="py-2 px-2 text-right tabular-nums font-medium">${s.trigger_price.toFixed(2)}</td>
+                              <td className="py-2 px-2 text-right tabular-nums text-red-500">${s.stop_loss.toFixed(2)}</td>
+                              <td className="py-2 px-2 text-right tabular-nums text-emerald-600">${s.take_profit1.toFixed(2)}</td>
+                              <td className="py-2 px-2 text-right tabular-nums text-emerald-600 opacity-70">
+                                {s.take_profit2 ? `$${s.take_profit2.toFixed(2)}` : '—'}
+                              </td>
+                              <td className="py-2 px-2 text-right tabular-nums">
+                                {s.rvol != null ? `${s.rvol.toFixed(1)}×` : '—'}
+                              </td>
+                              <td className={cn('py-2 px-2 font-medium', trendColor)}>
+                                {s.trend_4h ?? '—'}
+                              </td>
+                              <td className="py-2 px-2">
+                                <span className={cn('inline-flex px-1.5 py-0.5 rounded text-[10px] font-semibold', statusColor)}>
+                                  {s.status}
+                                </span>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
                   </div>
                 )}
               </>
