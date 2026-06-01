@@ -3456,7 +3456,10 @@ async function executeScannerTrade(
 
   // Options positions on the same ticker don't block stock day/swing trades —
   // they are different instruments and managed by a separate pipeline.
-  if (await hasActiveTrade(ticker, { excludeOptions: true })) return 'skipped:duplicate';
+  // systemTradesOnly: true — our scanner only blocks on another SYSTEM trade for this
+  // ticker. An influencer position (Somesh's TSLA) doesn't block our own TSLA signal.
+  // Each has its own paper_trade record with its own quantity, so close logic is independent.
+  if (await hasActiveTrade(ticker, { excludeOptions: true, systemTradesOnly: true })) return 'skipped:duplicate';
 
   // ── Manual strategy gate ─────────────────────────────────────────────────
   // Checks strategy_gates.blocked — set ONLY by you manually, never auto-set.

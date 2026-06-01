@@ -300,7 +300,16 @@ export async function getLongTermExposureByTag(): Promise<{
 
 export async function hasActiveTrade(
   ticker: string,
-  opts?: { excludeMode?: 'LONG_TERM'; signal?: 'BUY' | 'SELL'; excludeOptions?: boolean; accountType?: AccountType }
+  opts?: {
+    excludeMode?: 'LONG_TERM';
+    signal?: 'BUY' | 'SELL';
+    excludeOptions?: boolean;
+    accountType?: AccountType;
+    /** When true, only counts trades from our own system (strategy_source IS NULL
+     *  and strategy_video_id IS NULL). Allows our scanner to trade a ticker
+     *  independently even when an influencer signal already has a position open. */
+    systemTradesOnly?: boolean;
+  }
 ): Promise<boolean> {
   const sb = getSupabase();
   let query = sb
@@ -316,6 +325,9 @@ export async function hasActiveTrade(
   }
   if (opts?.signal) {
     query = query.eq('signal', opts.signal);
+  }
+  if (opts?.systemTradesOnly) {
+    query = query.is('strategy_source', null).is('strategy_video_id', null);
   }
   const { count } = await query;
   return (count ?? 0) > 0;
