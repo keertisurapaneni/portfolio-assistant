@@ -135,33 +135,24 @@ export async function runOptionScalpScan(): Promise<void> {
       continue;
     }
 
-    // atm.mid === 0 means the chain came from the market-order fallback (no live
-    // options data subscription available). Skip bid/premium checks — no price data.
-    // On a live account with an options subscription, mid > 0 and LMT runs instead.
-    const useMarket = atm.mid === 0;
-
-    if (!useMarket) {
-      if (atm.bid < 0.10) {
-        console.log(`[Options Scalp] ${ticker}: bid too thin ($${atm.bid}) — skipping`);
-        continue;
-      }
-      const premiumCost = atm.ask * 100 * MAX_CONTRACTS;
-      if (premiumCost > MAX_PREMIUM_PER_TRADE) {
-        console.log(`[Options Scalp] ${ticker}: premium $${premiumCost.toFixed(0)} > cap $${MAX_PREMIUM_PER_TRADE} — skipping`);
-        continue;
-      }
+    if (atm.bid < 0.10) {
+      console.log(`[Options Scalp] ${ticker}: bid too thin ($${atm.bid}) — skipping`);
+      continue;
     }
 
-    const limitPrice = useMarket ? 0 : atm.ask;
+    const premiumCost = atm.ask * 100 * MAX_CONTRACTS;
+    if (premiumCost > MAX_PREMIUM_PER_TRADE) {
+      console.log(`[Options Scalp] ${ticker}: premium $${premiumCost.toFixed(0)} > cap $${MAX_PREMIUM_PER_TRADE} — skipping`);
+      continue;
+    }
 
     // Execute
     const ok = await executeScalp({
       ticker, right, signal: signal as 'BUY' | 'SELL',
       strike: atm.strike, expiry,
-      limitPrice, contracts: MAX_CONTRACTS,
+      limitPrice: atm.ask, contracts: MAX_CONTRACTS,
       price, intradayMovePct, delta: atm.delta,
       spreadPct: atm.spreadPct,
-      useMarket,
     });
     if (ok) placed++;
   }
@@ -337,8 +328,6 @@ interface ScalpParams {
   entryType?: 'momentum' | 'vwap_retest';
   /** VWAP level at entry time (only set for vwap_retest entries) */
   vwap?: number;
-  /** Use MKT order — set when no live options chain was available (paper account). */
-  useMarket?: boolean;
 }
 
 async function executeScalp(p: ScalpParams): Promise<boolean> {
@@ -386,7 +375,6 @@ async function executeScalp(p: ScalpParams): Promise<boolean> {
       contracts:  p.contracts,
       limitPrice: p.limitPrice,
       action:     'BUY',
-      useMarket:  p.useMarket,
       ...(account ? { account } : {}),
     });
   } catch (err) {

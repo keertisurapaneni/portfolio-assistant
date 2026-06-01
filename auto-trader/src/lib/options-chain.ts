@@ -1035,32 +1035,6 @@ export interface AtmStrikeResult {
  * @param right     'C' = call (for bullish), 'P' = put (for bearish)
  * @param expiry    YYYYMMDD — use nearest weekly Friday
  */
-/** Standard strike intervals by price tier (mirrors listed equity options). */
-function atmStrikeForPrice(price: number): number {
-  const interval = price < 25 ? 1 : price < 200 ? 2.5 : 5;
-  return Math.round(price / interval) * interval;
-}
-
-/**
- * ATM strike fallback for paper accounts without live options data.
- *
- * When no live options chain data is available (account lacks data subscription),
- * return bid=ask=mid=0 as a sentinel so callers use MKT instead of LMT.
- * The strike is still computed from standard price-interval rules so IB can
- * resolve the exact contract. On a live account with a data subscription,
- * findAtmStrike returns real bid/ask and this fallback is never reached.
- */
-function atmStrikeMarketFallback(
-  symbol: string,
-  right: 'C' | 'P',
-  underlyingPrice: number,
-  expiry: string,
-): AtmStrikeResult {
-  const strike = atmStrikeForPrice(underlyingPrice);
-  console.log(`[Options Chain] ${symbol} ATM ${right} market-order fallback: strike $${strike}, exp ${expiry} (no live chain — MKT fill)`);
-  // delta ≈ 0.50 for ATM; bid/ask/mid = 0 signals "use market order" to callers
-  return { strike, expiry, bid: 0, ask: 0, mid: 0, delta: right === 'C' ? 0.50 : -0.50, spreadPct: 0 };
-}
 
 export async function findAtmStrike(
   symbol: string,
@@ -1070,34 +1044,68 @@ export async function findAtmStrike(
 ): Promise<AtmStrikeResult | null> {
   if (!isConnected()) return null;
 
-  // ── Try IB live chain first ───────────────────────────────────────────────
   const contractInfo = await getContractInfoCached(symbol);
-  if (contractInfo) {
-    const params = await getOptionChainParams(contractInfo.conId, symbol);
-    if (params?.strikes?.length) {
-      // ATM = closest round-dollar strike to current price (kaycapitals rule #4)
-      const roundStrikes = params.strikes.filter((s: number) => Number.isInteger(s));
-      const candidates = roundStrikes.length
-        ? preferRoundStrikes(roundStrikes, underlyingPrice).slice(0, 5)
-        : preferRoundStrikes(params.strikes, underlyingPrice).slice(0, 5);
+  if (!contractInfo) return null;
 
-      for (const strike of candidates) {
-        const greeks = await getOptionGreeksForContract(symbol, strike, expiry, right, underlyingPrice);
-        if (!greeks) continue;
+  // reqSecDefOptParams works without a market data subscription — it returns
+  // the set of listed strikes/expiries. Only reqMktData (greeks) needs OPRA.
+  const params = await getOptionChainParams(contractInfo.conId, symbol);
+  if (!params?.strikes?.length) return null;
 
-        const absDelta = Math.abs(greeks.delta);
-        if (absDelta < 0.35 || absDelta > 0.65) continue;
-        if (greeks.bid < 0.05) continue;
+  // ATM = closest round-dollar strike to current price (kaycapitals rule #4)
+  const roundStrikes = params.strikes.filter((s: number) => Number.isInteger(s));
+  const candidates = preferRoundStrikes(
+    roundStrikes.length ? roundStrikes : params.strikes,
+    underlyingPrice,
+  ).slice(0, 5);
 
-        const spreadPct = greeks.mid > 0 ? ((greeks.ask - greeks.bid) / greeks.mid) * 100 : 999;
-        return { strike, expiry, bid: greeks.bid, ask: greeks.ask, mid: greeks.mid, delta: greeks.delta, spreadPct };
-      }
-    }
+  // ── Live greeks (requires OPRA data subscription) ─────────────────────────
+  for (const strike of candidates) {
+    const greeks = await getOptionGreeksForContract(symbol, strike, expiry, right, underlyingPrice);
+    if (!greeks) continue;
+    const absDelta = Math.abs(greeks.delta);
+    if (absDelta < 0.35 || absDelta > 0.65) continue;
+    if (greeks.bid < 0.05) continue;
+    const spreadPct = greeks.mid > 0 ? ((greeks.ask - greeks.bid) / greeks.mid) * 100 : 999;
+    return { strike, expiry, bid: greeks.bid, ask: greeks.ask, mid: greeks.mid, delta: greeks.delta, spreadPct };
   }
 
-  // ── Market-order fallback — IB chain unavailable (paper account) ──────────
-  // Paper accounts lack live options market data (error 354 from reqMktData).
-  // Return strike=ATM, bid/ask/mid=0 — callers must use MKT order so the
-  // paper simulator determines the fill price. No pricing model needed.
-  return atmStrikeMarketFallback(symbol, right, underlyingPrice, expiry);
+  // ── BS fallback — same approach as findBestPutStrike ─────────────────────
+  // reqMktData fails with error 354 when no options data subscription is active.
+  // reqSecDefOptParams still gave us real IB strikes above, so we compute
+  // prices locally. This path is identical to findBestPutStrike's BS fallback.
+  const iv = await estimateIV(symbol);
+  const dte = daysToExpiry(expiry);
+  if (dte <= 0 || iv <= 0) return null;
+  const T = dte / 365;
+  const r = 0.05;
+
+  // Pick the candidate closest to ATM (lowest |strike - price|)
+  const atmStrike = candidates.reduce((best, s) =>
+    Math.abs(s - underlyingPrice) < Math.abs(best - underlyingPrice) ? s : best,
+    candidates[0],
+  );
+
+  let price: number;
+  let delta: number;
+  if (right === 'P') {
+    const bs = bsPut(underlyingPrice, atmStrike, T, r, iv);
+    price = bs.price; delta = bs.delta;
+  } else {
+    const sqrtT = Math.sqrt(T);
+    const d1 = (Math.log(underlyingPrice / atmStrike) + (r + 0.5 * iv * iv) * T) / (iv * sqrtT);
+    const d2 = d1 - iv * sqrtT;
+    price = underlyingPrice * normCdf(d1) - atmStrike * Math.exp(-r * T) * normCdf(d2);
+    delta = normCdf(d1);
+  }
+
+  if (price < 0.05) return null;
+  const spread = Math.max(price * 0.05, 0.02);
+  const bid = Math.max(price - spread / 2, 0.01);
+  const ask = price + spread / 2;
+  const mid = price;
+  const spreadPct = (spread / mid) * 100;
+
+  console.log(`[Options Chain] ${symbol} ATM ${right} via BS fallback: strike $${atmStrike}, mid $${mid.toFixed(2)}, dte ${dte}`);
+  return { strike: atmStrike, expiry, bid, ask, mid, delta, spreadPct };
 }
