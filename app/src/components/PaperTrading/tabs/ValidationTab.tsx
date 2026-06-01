@@ -274,7 +274,7 @@ export function ValidationTab({ dayReport, swingReport, onRefresh }: ValidationT
           <div>
             <h2 className="text-base font-semibold">System Learning</h2>
             <p className="text-xs text-[hsl(var(--muted-foreground))]">
-              Analyzes your last 30 days of closed trades and adjusts scanner confidence, position sizing, and allocation thresholds automatically.
+              Analyzes our system's closed trades (influencer signals excluded) and adjusts scanner confidence, position sizing, and allocation thresholds automatically.
             </p>
           </div>
         </div>
@@ -342,7 +342,7 @@ export function ValidationTab({ dayReport, swingReport, onRefresh }: ValidationT
             {
               icon: <TrendingUp className="w-4 h-4 text-emerald-500" />,
               title: 'Winning strategy → scale up',
-              desc: 'If influencer day trades hit profit factor ≥1.5 + 52% WR, position size grows by 20%. If scanner wins consistently, confidence bar lowers to let more trades through.',
+              desc: 'If system day trades hit profit factor ≥1.5 + 52% WR, position size grows by 20%. If scanner wins consistently, confidence bar lowers to let more trades through.',
             },
             {
               icon: <TrendingDown className="w-4 h-4 text-red-500" />,
