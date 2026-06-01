@@ -590,17 +590,19 @@ export function startScheduler(): void {
   }, { timezone: 'America/New_York' });
   log('Options scalp scan: 10:00 AM and 11:00 AM ET, Mon-Fri');
 
-  // Options Scalp position management — every 15 min during market hours.
-  // Checks profit target (100%) and stop loss (50%).
+  // Options Scalp position management + VWAP retest scan — every 15 min during market hours.
+  // Management: checks profit target (100%) and stop loss (50%).
+  // VWAP retest: scans 24 liquid tickers for VWAP reclaim/breakdown + retest → ATM call/put.
   cron.schedule('*/15 10-15 * * 1-5', async () => {
     try {
-      const { manageScalpPositions } = await import('./lib/options-scalp.js');
+      const { manageScalpPositions, runVwapRetestScalpScan } = await import('./lib/options-scalp.js');
       await manageScalpPositions();
+      await runVwapRetestScalpScan();
     } catch (err) {
-      console.error('[Scheduler] Options scalp manager error:', err instanceof Error ? err.message : err);
+      console.error('[Scheduler] Options scalp error:', err instanceof Error ? err.message : err);
     }
   }, { timezone: 'America/New_York' });
-  log('Options scalp management: every 15 min, 10 AM–3:45 PM ET');
+  log('Options scalp management + VWAP retest scan: every 15 min, 10 AM–3 PM ET');
 
   // LEAP position management — every Monday 11:30 AM ET.
   // Checks profit target (2×), thesis-break exit (−20% stock), and DTE alert (<90 days).

@@ -22,6 +22,7 @@ import { getSupabase, createAutoTradeEvent } from './supabase.js';
 import { isConnected, placeOptionsOrder, getDefaultAccount } from '../ib-connection.js';
 import { findAtmStrike, getOptionGreeksForContract } from './options-chain.js';
 import { finnhubFetch, FINNHUB_KEY } from './finnhub.js';
+import { detectVwapReclaim, VWAP_RELIABLE_HOUR_ET } from './vwap.js';
 
 // ── Constants ────────────────────────────────────────────
 const MAX_SCALP_TRADES_PER_DAY = 2;
@@ -163,6 +164,156 @@ export async function runOptionScalpScan(): Promise<void> {
   console.log(`[Options Scalp] Scan done — placed ${placed} trade(s)`);
 }
 
+// ── VWAP Retest Scalp ─────────────────────────────────────
+//
+// Kay Capitals "Advanced VWAP Strategy":
+//   1. Price was below VWAP → 5-min candle closes ABOVE VWAP (reclaim)
+//   2. Next candle pulls back toward VWAP (retest)
+//   3. Enter ATM CALL at the bounce — stop below VWAP, target intraday high
+//
+//   Mirror for puts:
+//   1. Price was above VWAP → candle closes BELOW VWAP (breakdown)
+//   2. Retest from below → enter ATM PUT
+//
+// Runs every 15 min between 10 AM–3 PM ET (wired into the management cron).
+// Scans a broad universe of liquid tickers (not just the 15-ticker watchlist).
+
+const VWAP_RETEST_UNIVERSE = [
+  // Index ETFs — most liquid options, tight spreads
+  'QQQ', 'SPY', 'IWM', 'SMH',
+  // Mega cap — huge options flow, reliable VWAP levels
+  'AAPL', 'NVDA', 'TSLA', 'META', 'AMZN', 'GOOGL', 'MSFT', 'AVGO',
+  // High-vol growth — frequent VWAP retests
+  'AMD', 'PLTR', 'CRDO', 'HOOD', 'COIN', 'RKLB', 'APP', 'ALAB',
+  // Momentum names often in play
+  'MSTR', 'SOFI', 'SOXL', 'TQQQ',
+];
+
+/**
+ * VWAP retest scalp scanner — runs every 15 min 10 AM–3 PM ET.
+ * Detects VWAP reclaim/breakdown + retest pattern and buys ATM call/put.
+ */
+export async function runVwapRetestScalpScan(): Promise<void> {
+  // Only reliable after 10 AM ET
+  const nowET = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }));
+  const etHour = nowET.getHours();
+  if (etHour < VWAP_RELIABLE_HOUR_ET || etHour >= 15) return;
+
+  if (!isConnected()) {
+    console.log('[VWAP Scalp] IB not connected — skipping');
+    return;
+  }
+
+  const sb = getSupabase();
+  const todayStart = new Date();
+  todayStart.setHours(0, 0, 0, 0);
+
+  // Combined daily cap — VWAP retests count toward the same 2-trade limit
+  const { data: todayTrades } = await sb
+    .from('paper_trades')
+    .select('id')
+    .eq('mode', 'OPTIONS_SCALP')
+    .gte('opened_at', todayStart.toISOString());
+  const usedToday = (todayTrades ?? []).length;
+  if (usedToday >= MAX_SCALP_TRADES_PER_DAY) {
+    console.log(`[VWAP Scalp] Daily cap reached (${usedToday}/${MAX_SCALP_TRADES_PER_DAY})`);
+    return;
+  }
+
+  const expiry = getNearestWeeklyExpiry();
+  const slotsLeft = MAX_SCALP_TRADES_PER_DAY - usedToday;
+  let placed = 0;
+
+  console.log(`[VWAP Scalp] Scanning ${VWAP_RETEST_UNIVERSE.length} tickers | slots ${slotsLeft}`);
+
+  for (const ticker of VWAP_RETEST_UNIVERSE) {
+    if (placed >= slotsLeft) break;
+
+    // Skip if already in an open scalp for this ticker today
+    const { data: existing } = await sb
+      .from('paper_trades')
+      .select('id')
+      .eq('mode', 'OPTIONS_SCALP')
+      .eq('ticker', ticker)
+      .in('status', ['SUBMITTED', 'FILLED', 'PARTIAL'])
+      .gte('opened_at', todayStart.toISOString());
+    if (existing?.length) continue;
+
+    // Check both directions — whichever reclaim/breakdown is active
+    let direction: 'BUY' | 'SELL' | null = null;
+    let reclaimLog = '';
+
+    const bullish = await detectVwapReclaim(ticker, 'BUY');
+    if (bullish.reclaimed) {
+      direction = 'BUY';
+      reclaimLog = bullish.log;
+    } else {
+      const bearish = await detectVwapReclaim(ticker, 'SELL');
+      if (bearish.reclaimed) {
+        direction = 'SELL';
+        reclaimLog = bearish.log;
+      }
+    }
+
+    if (!direction) {
+      console.log(`[VWAP Scalp] ${ticker}: no retest signal`);
+      continue;
+    }
+
+    // Get current quote for strike selection
+    const q = await finnhubFetch<{ c?: number; o?: number }>(
+      `https://finnhub.io/api/v1/quote?symbol=${ticker}&token=${FINNHUB_KEY}`,
+    );
+    if (!q?.c || q.c <= 0) continue;
+
+    const price = q.c;
+    const vwapLevel = direction === 'BUY'
+      ? (await detectVwapReclaim(ticker, 'BUY')).vwap
+      : (await detectVwapReclaim(ticker, 'SELL')).vwap;
+
+    const right: 'C' | 'P' = direction === 'BUY' ? 'C' : 'P';
+    console.log(`[VWAP Scalp] ${ticker}: ${reclaimLog} → ${right === 'C' ? 'CALL' : 'PUT'}`);
+
+    // Find ATM strike
+    const atm = await findAtmStrike(ticker, right, price, expiry);
+    if (!atm) {
+      console.log(`[VWAP Scalp] ${ticker}: no ATM strike found`);
+      continue;
+    }
+
+    if (atm.bid < 0.10) {
+      console.log(`[VWAP Scalp] ${ticker}: bid too thin ($${atm.bid}) — skipping`);
+      continue;
+    }
+
+    const limitPrice = atm.ask;
+    const premiumCost = limitPrice * 100 * MAX_CONTRACTS;
+    if (premiumCost > MAX_PREMIUM_PER_TRADE) {
+      console.log(`[VWAP Scalp] ${ticker}: premium $${premiumCost.toFixed(0)} > cap $${MAX_PREMIUM_PER_TRADE} — skipping`);
+      continue;
+    }
+
+    const ok = await executeScalp({
+      ticker, right, signal: direction,
+      strike: atm.strike, expiry,
+      limitPrice, contracts: MAX_CONTRACTS,
+      price, intradayMovePct: 0,
+      delta: atm.delta, spreadPct: atm.spreadPct,
+      entryType: 'vwap_retest',
+      vwap: vwapLevel,
+    });
+
+    if (ok) {
+      placed++;
+      console.log(`[VWAP Scalp] ✅ ${ticker} ${right === 'C' ? 'CALL' : 'PUT'} placed — ${reclaimLog}`);
+    }
+  }
+
+  if (placed > 0) {
+    console.log(`[VWAP Scalp] Done — placed ${placed} trade(s)`);
+  }
+}
+
 // ── Execute ──────────────────────────────────────────────
 
 interface ScalpParams {
@@ -177,6 +328,10 @@ interface ScalpParams {
   intradayMovePct: number;
   delta: number;
   spreadPct: number;
+  /** 'momentum' = classic >1.5% intraday move; 'vwap_retest' = VWAP bounce entry */
+  entryType?: 'momentum' | 'vwap_retest';
+  /** VWAP level at entry time (only set for vwap_retest entries) */
+  vwap?: number;
 }
 
 async function executeScalp(p: ScalpParams): Promise<boolean> {
@@ -198,8 +353,12 @@ async function executeScalp(p: ScalpParams): Promise<boolean> {
       option_premium: 0,
       option_contracts: p.contracts,
       option_delta:   p.delta,
-      notes:          `[SCALP] Buy ${p.right === 'C' ? 'call' : 'put'}: $${p.strike} exp ${p.expiry} — intraday ${p.intradayMovePct > 0 ? '+' : ''}${p.intradayMovePct.toFixed(1)}%`,
-      scanner_reason: `Options scalp — δ ${Math.abs(p.delta).toFixed(2)}, ${p.intradayMovePct > 0 ? '+' : ''}${p.intradayMovePct.toFixed(1)}% intraday, spread ${p.spreadPct.toFixed(1)}%`,
+      notes: p.entryType === 'vwap_retest'
+        ? `[SCALP] Buy ${p.right === 'C' ? 'call' : 'put'}: $${p.strike} exp ${p.expiry} — VWAP retest @ $${(p.vwap ?? 0).toFixed(2)}`
+        : `[SCALP] Buy ${p.right === 'C' ? 'call' : 'put'}: $${p.strike} exp ${p.expiry} — intraday ${p.intradayMovePct > 0 ? '+' : ''}${p.intradayMovePct.toFixed(1)}%`,
+      scanner_reason: p.entryType === 'vwap_retest'
+        ? `VWAP retest scalp — δ ${Math.abs(p.delta).toFixed(2)}, bounce off VWAP $${(p.vwap ?? 0).toFixed(2)}, spread ${p.spreadPct.toFixed(1)}%`
+        : `Options scalp — δ ${Math.abs(p.delta).toFixed(2)}, ${p.intradayMovePct > 0 ? '+' : ''}${p.intradayMovePct.toFixed(1)}% intraday, spread ${p.spreadPct.toFixed(1)}%`,
     })
     .select('id')
     .single();
@@ -254,7 +413,9 @@ async function executeScalp(p: ScalpParams): Promise<boolean> {
     action:     'executed',
     source:     'scanner',
     mode:       'OPTIONS_SCALP',
-    message:    `📈 Scalp ${p.right === 'C' ? 'CALL' : 'PUT'} $${p.strike} exp ${p.expiry} @ $${result.avgFillPrice.toFixed(2)} — intraday ${p.intradayMovePct > 0 ? '+' : ''}${p.intradayMovePct.toFixed(1)}%`,
+    message: p.entryType === 'vwap_retest'
+      ? `📈 Scalp ${p.right === 'C' ? 'CALL' : 'PUT'} $${p.strike} exp ${p.expiry} @ $${result.avgFillPrice.toFixed(2)} — VWAP retest (${p.right === 'C' ? 'bounce' : 'breakdown'}) @ $${(p.vwap ?? 0).toFixed(2)}`
+      : `📈 Scalp ${p.right === 'C' ? 'CALL' : 'PUT'} $${p.strike} exp ${p.expiry} @ $${result.avgFillPrice.toFixed(2)} — intraday ${p.intradayMovePct > 0 ? '+' : ''}${p.intradayMovePct.toFixed(1)}%`,
     metadata:   { strike: p.strike, expiry: p.expiry, premium: result.avgFillPrice, delta: p.delta, right: p.right },
   }).catch(() => {});
 
