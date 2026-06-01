@@ -959,12 +959,12 @@ function StatsHeader({
   openPositions: OpenOptionsPosition[];
   openPrices: Map<string, TickerQuote>;
 }) {
-  // Unrealized P&L across all open positions (negative = losing on premium value)
+  // Unrealized P&L across all open positions (negative = premium moved against us)
   const totalUnrealizedPnl = openPositions.reduce((s, p) => s + (p.pnl ?? 0), 0);
-  // Net income = premiums locked in from closed trades minus open position losses
-  // This is the honest number: if you had to close everything today, this is what you keep.
-  const netIncome = stats.premiumCollected + totalUnrealizedPnl;
-  const netProgress = Math.min(Math.max(netIncome, 0) / MONTHLY_INCOME_TARGET, 1);
+  // Progress = realized + premium in play vs monthly target
+  // (premium in play = cash already collected from open positions, kept if they expire OTM)
+  const potentialIncome = stats.premiumCollected + stats.openPremiumAtRisk;
+  const netProgress = Math.min(Math.max(potentialIncome, 0) / MONTHLY_INCOME_TARGET, 1);
   const netProgressPct = Math.round(netProgress * 100);
   const barColor = netProgress > 0.5 ? 'bg-emerald-500' : netProgress > 0.25 ? 'bg-amber-400' : 'bg-red-400';
 
@@ -999,51 +999,69 @@ function StatsHeader({
             <span className="text-xs font-semibold text-emerald-800">Monthly Income Target</span>
           </div>
           <span className="text-[10px] text-emerald-700">
-            Projected: <span className="font-semibold">{fmtUsd(stats.projectedMonthlyIncome, 0)}</span> if all held
+            Target: <span className="font-semibold">{fmtUsd(MONTHLY_INCOME_TARGET, 0)}</span>/mo
           </span>
         </div>
-        <div className="space-y-1">
-          <div className="flex items-center justify-between text-xs">
-            <span className="font-bold text-emerald-800">
-              Net this month: {fmtUsd(netIncome, 0)} / {fmtUsd(MONTHLY_INCOME_TARGET, 0)}
+
+        {/* Premium in play — the primary number for a premium seller */}
+        <div className="grid grid-cols-3 gap-2">
+          <div className="rounded-lg bg-emerald-100/80 px-3 py-2">
+            <p className="text-[9px] text-emerald-600 font-medium uppercase tracking-wide">Premium in Play</p>
+            <p className="text-sm font-bold text-emerald-800">{fmtUsd(stats.openPremiumAtRisk, 0)}</p>
+            <p className="text-[9px] text-emerald-600">{stats.openPositions} open position{stats.openPositions !== 1 ? 's' : ''}</p>
+          </div>
+          <div className="rounded-lg bg-white/70 px-3 py-2">
+            <p className="text-[9px] text-[hsl(var(--muted-foreground))] font-medium uppercase tracking-wide">Realized</p>
+            <p className={cn('text-sm font-bold', stats.premiumCollected >= 0 ? 'text-emerald-800' : 'text-red-700')}>
+              {fmtUsd(stats.premiumCollected, 0, true)}
+            </p>
+            <p className="text-[9px] text-[hsl(var(--muted-foreground))]">
+              {stats.wins}W / {stats.losses}L
+              {stats.expiredWorthless > 0 && <span className="ml-1 text-emerald-600">· {stats.expiredWorthless} expired ✓</span>}
+            </p>
+          </div>
+          <div className="rounded-lg bg-white/70 px-3 py-2">
+            <p className="text-[9px] text-[hsl(var(--muted-foreground))] font-medium uppercase tracking-wide">Cost to Close Now</p>
+            <p className={cn('text-sm font-bold', totalUnrealizedPnl >= 0 ? 'text-emerald-800' : 'text-amber-700')}>
+              {fmtUsd(totalUnrealizedPnl, 0, true)}
+            </p>
+            <p className="text-[9px] text-[hsl(var(--muted-foreground))]">MTM vs collected</p>
+          </div>
+        </div>
+
+        {/* Scalp P&L row — only shown if there are scalp trades */}
+        {stats.scalpTrades > 0 && (
+          <div className="flex items-center gap-2 rounded-lg bg-sky-50 border border-sky-100 px-3 py-1.5">
+            <span className="text-[10px] font-semibold text-sky-700">⚡ Scalp P&L</span>
+            <span className={cn('text-[10px] font-bold', stats.scalpPnl >= 0 ? 'text-emerald-700' : 'text-red-600')}>
+              {fmtUsd(stats.scalpPnl, 0, true)}
             </span>
-            <span className={cn(
-              'font-bold text-[10px]',
-              netProgress > 0.5 ? 'text-emerald-700' : netProgress > 0.25 ? 'text-amber-600' : 'text-red-600'
-            )}>
+            <span className="text-[9px] text-sky-500">({stats.scalpTrades} trade{stats.scalpTrades !== 1 ? 's' : ''})</span>
+          </div>
+        )}
+
+        {/* Progress toward target */}
+        <div className="space-y-1">
+          <div className="flex items-center justify-between text-[10px]">
+            <span className="text-emerald-700">
+              Potential this month: <span className="font-semibold">{fmtUsd(stats.premiumCollected + stats.openPremiumAtRisk, 0)}</span>
+              <span className="text-[hsl(var(--muted-foreground))] ml-1">(realized + in play)</span>
+            </span>
+            <span className={cn('font-bold', netProgress > 0.5 ? 'text-emerald-700' : netProgress > 0.25 ? 'text-amber-600' : 'text-red-600')}>
               {netProgressPct}%
             </span>
           </div>
-          <div className="h-2 rounded-full bg-emerald-100 overflow-hidden">
+          <div className="h-1.5 rounded-full bg-emerald-100 overflow-hidden">
             <div
               className={cn('h-full rounded-full transition-all duration-500', barColor)}
               style={{ width: `${netProgressPct}%` }}
             />
           </div>
-          {/* Honest three-line breakdown */}
-          <div className="flex flex-col gap-0.5 text-[10px] pt-0.5">
-            <div className="flex items-center gap-2">
-              <span className="text-emerald-700">
-                ✅ Realized (closed): <span className="font-semibold">{fmtUsd(stats.premiumCollected, 0)}</span>
-              </span>
-              <span className="text-[hsl(var(--muted-foreground))]">·</span>
-              <span className={cn(totalUnrealizedPnl >= 0 ? 'text-emerald-700' : 'text-red-600')}>
-                Mark-to-market: <span className="font-semibold">{fmtUsd(totalUnrealizedPnl, 0, true)}</span>
-              </span>
-            </div>
-            {stats.openPremiumAtRisk > 0 && (
-              <span className="text-amber-700">
-                💰 Cash collected (open, unearned): <span className="font-semibold">{fmtUsd(stats.openPremiumAtRisk, 0)}</span>
-                <span className="text-[hsl(var(--muted-foreground))] ml-1">— kept when positions close profitably</span>
-              </span>
-            )}
-          </div>
         </div>
-        <div className="flex items-center gap-3 text-[10px] text-emerald-700">
-          <span>{stats.wins}W / {stats.losses}L · {stats.winRate.toFixed(0)}% win rate</span>
-          <span>·</span>
-          <span>{stats.annualizedReturn.toFixed(0)}% annualized</span>
-        </div>
+
+        {stats.annualizedReturn > 0 && (
+          <p className="text-[10px] text-emerald-600">{stats.annualizedReturn.toFixed(0)}% annualized on deployed capital</p>
+        )}
       </div>
 
       {/* Crash scenario card — honest tail risk visibility */}
