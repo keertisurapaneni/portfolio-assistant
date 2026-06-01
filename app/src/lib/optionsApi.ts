@@ -148,6 +148,9 @@ export interface OptionsMonthlyStats {
   annualizedReturn: number;
   projectedMonthlyIncome: number; // total premium locked in from all currently open puts
   openPremiumAtRisk: number;      // cash already received from open positions, not yet earned
+  expiredWorthless: number;       // count of trades that expired OTM this month
+  scalpPnl: number;               // realized P&L from OPTIONS_SCALP trades this month
+  scalpTrades: number;            // count of closed scalp trades this month
 }
 
 // ── Watchlist ────────────────────────────────────────────
@@ -297,10 +300,10 @@ export async function getOptionsMonthlyStats(): Promise<OptionsMonthlyStats> {
   monthStart.setDate(1);
   monthStart.setHours(0, 0, 0, 0);
 
-  const [{ data: closed }, { data: open }] = await Promise.all([
+  const [{ data: closed }, { data: open }, { data: scalps }] = await Promise.all([
     supabase
       .from('paper_trades')
-      .select('pnl, option_capital_req')
+      .select('pnl, option_capital_req, close_reason')
       .in('mode', ['OPTIONS_PUT', 'OPTIONS_CALL'])
       .in('status', [...CLOSED_STATUSES])
       .gte('closed_at', monthStart.toISOString()),
@@ -309,29 +312,31 @@ export async function getOptionsMonthlyStats(): Promise<OptionsMonthlyStats> {
       .select('id, option_premium, option_contracts')
       .in('mode', ['OPTIONS_PUT', 'OPTIONS_CALL'])
       .in('status', [...ACTIVE_STATUSES]),
+    supabase
+      .from('paper_trades')
+      .select('pnl')
+      .eq('mode', 'OPTIONS_SCALP')
+      .in('status', [...CLOSED_STATUSES])
+      .gte('closed_at', monthStart.toISOString()),
   ]);
 
   // Only count trades with meaningful P&L (> $1) — excludes spurious $0 closes
-  const trades = (closed ?? []).filter(t => Math.abs(t.pnl ?? 0) > 1);
-  const wins = trades.filter(t => (t.pnl ?? 0) > 0);
-  const losses = trades.filter(t => (t.pnl ?? 0) < 0);
-  // Net realized P&L across ALL closed trades (wins + losses) — the true closed income figure.
-  // Previously only summed wins, causing losses like JPM -$105 to be silently excluded.
+  const trades = (closed ?? []).filter((t: { pnl: number | null }) => Math.abs(t.pnl ?? 0) > 1);
+  const wins = trades.filter((t: { pnl: number | null }) => (t.pnl ?? 0) > 0);
+  const losses = trades.filter((t: { pnl: number | null }) => (t.pnl ?? 0) < 0);
+  const expiredWorthless = (closed ?? []).filter((t: { close_reason: string | null }) => t.close_reason === 'expired_worthless').length;
+
   const premiumCollected = trades.reduce((s: number, t: { pnl: number | null }) => s + (t.pnl ?? 0), 0);
   const totalCapital = trades.reduce((s: number, t: { option_capital_req: number | null }) => s + (t.option_capital_req ?? 0), 0);
   const daysInMonth = new Date().getDate();
   const annualizedReturn = totalCapital > 0 ? (premiumCollected / totalCapital) * (365 / daysInMonth) * 100 : 0;
 
-  // Projected income = total premium locked in across all currently open puts
-  // (premium/share × contracts × 100 shares/contract)
   const projectedMonthlyIncome = (open ?? []).reduce((sum: number, t: { option_premium: number | null; option_contracts: number | null }) => {
     return sum + (t.option_premium ?? 0) * (t.option_contracts ?? 1) * 100;
   }, 0);
 
-  // Premium at risk = cash already received from open positions, but not yet earned.
-  // This is the same as projectedMonthlyIncome — shown separately so the UI can
-  // display it as "collected but unearned" rather than hiding it in a footnote.
-  const openPremiumAtRisk = projectedMonthlyIncome;
+  const scalpTrades = (scalps ?? []).filter((t: { pnl: number | null }) => Math.abs(t.pnl ?? 0) > 1);
+  const scalpPnl = scalpTrades.reduce((s: number, t: { pnl: number | null }) => s + (t.pnl ?? 0), 0);
 
   return {
     premiumCollected,
@@ -341,7 +346,10 @@ export async function getOptionsMonthlyStats(): Promise<OptionsMonthlyStats> {
     openPositions: (open ?? []).length,
     annualizedReturn,
     projectedMonthlyIncome,
-    openPremiumAtRisk,
+    openPremiumAtRisk: projectedMonthlyIncome,
+    expiredWorthless,
+    scalpPnl,
+    scalpTrades: scalpTrades.length,
   };
 }
 
