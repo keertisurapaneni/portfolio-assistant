@@ -145,8 +145,8 @@ export function TradeIdeas({ onSelectTicker }: TradeIdeasProps) {
   }, []);
 
   // Load tickers that have a DAY_TRADE or SWING_TRADE placed today.
-  // Intentionally excludes long-term holds, options, and external signals so the
-  // "TRADED" badge only lights up when the scanner actually acted on this idea today.
+  // "TRADED" badge only lights up when the scanner acted on this EXACT idea (ticker + direction).
+  // Keyed as "TICKER_SIGNAL" (e.g. "PLTR_BUY") so a Somesh BUY does NOT mark an AI SELL as traded.
   useEffect(() => {
     const todayET = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
     Promise.all([getActiveTrades(), getAllTrades(50)])
@@ -162,7 +162,10 @@ export function TradeIdeas({ onSelectTicker }: TradeIdeasProps) {
             (t.opened_at ?? '').startsWith(todayET) &&
             nonTerminal.has(t.status ?? '')
           )
-          .forEach(t => tickers.add(t.ticker.toUpperCase()));
+          .forEach(t => {
+            // Key by ticker+signal so PLTR BUY ≠ PLTR SELL
+            tickers.add(`${t.ticker.toUpperCase()}_${(t.signal ?? '').toUpperCase()}`);
+          });
         setTradedTickers(tickers);
       })
       .catch(console.error);
@@ -320,7 +323,7 @@ export function TradeIdeas({ onSelectTicker }: TradeIdeasProps) {
       {!expanded && ideas.length > 0 && (
         <div className="px-4 pb-3 flex flex-wrap gap-1.5">
           {ideas.slice(0, 5).map((idea) => {
-            const isTraded = tradedTickers.has(idea.ticker.toUpperCase());
+            const isTraded = tradedTickers.has(`${idea.ticker.toUpperCase()}_${(idea.signal ?? '').toUpperCase()}`);
             return (
               <button
                 key={idea.ticker}
@@ -521,8 +524,8 @@ export function TradeIdeas({ onSelectTicker }: TradeIdeasProps) {
                       <IdeaCard
                         key={idea.ticker}
                         idea={idea}
-                        traded={tradedTickers.has(idea.ticker.toUpperCase())}
-                        hasOpenPosition={idea.signal === 'BUY' || tradedTickers.has(idea.ticker.toUpperCase())}
+                        traded={tradedTickers.has(`${idea.ticker.toUpperCase()}_${(idea.signal ?? '').toUpperCase()}`)}
+                        hasOpenPosition={idea.signal === 'BUY' || tradedTickers.has(`${idea.ticker.toUpperCase()}_BUY`)}
                         evaluation={evaluations[idea.ticker.toUpperCase()]}
                         onSelect={onSelectTicker}
                       />
