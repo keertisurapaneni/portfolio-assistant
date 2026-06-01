@@ -1036,6 +1036,33 @@ export interface AtmStrikeResult {
  * @param expiry    YYYYMMDD — use nearest weekly Friday
  */
 
+/** Compute ATM price via BS given a known strike. Returns null if price too low. */
+async function atmBsPrice(
+  symbol: string, right: 'C' | 'P', strike: number, underlyingPrice: number, expiry: string,
+): Promise<{ price: number; delta: number } | null> {
+  const iv = await estimateIV(symbol);
+  const dte = daysToExpiry(expiry);
+  if (dte <= 0 || iv <= 0) return null;
+  const T = dte / 365;
+  const r = 0.05;
+  if (right === 'P') {
+    const bs = bsPut(underlyingPrice, strike, T, r, iv);
+    return { price: bs.price, delta: bs.delta };
+  }
+  const sqrtT = Math.sqrt(T);
+  const d1 = (Math.log(underlyingPrice / strike) + (r + 0.5 * iv * iv) * T) / (iv * sqrtT);
+  const d2 = d1 - iv * sqrtT;
+  const price = underlyingPrice * normCdf(d1) - strike * Math.exp(-r * T) * normCdf(d2);
+  const delta = normCdf(d1);
+  return { price, delta };
+}
+
+/** Standard strike intervals by price tier — mirrors listed equity options. */
+function atmStrikeForPrice(price: number): number {
+  const interval = price < 25 ? 1 : price < 200 ? 2.5 : 5;
+  return Math.round(price / interval) * interval;
+}
+
 export async function findAtmStrike(
   symbol: string,
   right: 'C' | 'P',
@@ -1044,68 +1071,62 @@ export async function findAtmStrike(
 ): Promise<AtmStrikeResult | null> {
   if (!isConnected()) return null;
 
+  // ── Attempt 1: IB chain strikes + live greeks ─────────────────────────────
   const contractInfo = await getContractInfoCached(symbol);
-  if (!contractInfo) return null;
+  if (contractInfo) {
+    // reqSecDefOptParams returns listed strikes without a data subscription.
+    // reqMktData (greeks) requires OPRA — falls through to BS below if absent.
+    const params = await getOptionChainParams(contractInfo.conId, symbol);
+    if (params?.strikes?.length) {
+      const roundStrikes = params.strikes.filter((s: number) => Number.isInteger(s));
+      const candidates = preferRoundStrikes(
+        roundStrikes.length ? roundStrikes : params.strikes,
+        underlyingPrice,
+      ).slice(0, 5);
 
-  // reqSecDefOptParams works without a market data subscription — it returns
-  // the set of listed strikes/expiries. Only reqMktData (greeks) needs OPRA.
-  const params = await getOptionChainParams(contractInfo.conId, symbol);
-  if (!params?.strikes?.length) return null;
+      // Live greeks path
+      for (const strike of candidates) {
+        const greeks = await getOptionGreeksForContract(symbol, strike, expiry, right, underlyingPrice);
+        if (!greeks) continue;
+        const absDelta = Math.abs(greeks.delta);
+        if (absDelta < 0.35 || absDelta > 0.65) continue;
+        if (greeks.bid < 0.05) continue;
+        const spreadPct = greeks.mid > 0 ? ((greeks.ask - greeks.bid) / greeks.mid) * 100 : 999;
+        return { strike, expiry, bid: greeks.bid, ask: greeks.ask, mid: greeks.mid, delta: greeks.delta, spreadPct };
+      }
 
-  // ATM = closest round-dollar strike to current price (kaycapitals rule #4)
-  const roundStrikes = params.strikes.filter((s: number) => Number.isInteger(s));
-  const candidates = preferRoundStrikes(
-    roundStrikes.length ? roundStrikes : params.strikes,
-    underlyingPrice,
-  ).slice(0, 5);
-
-  // ── Live greeks (requires OPRA data subscription) ─────────────────────────
-  for (const strike of candidates) {
-    const greeks = await getOptionGreeksForContract(symbol, strike, expiry, right, underlyingPrice);
-    if (!greeks) continue;
-    const absDelta = Math.abs(greeks.delta);
-    if (absDelta < 0.35 || absDelta > 0.65) continue;
-    if (greeks.bid < 0.05) continue;
-    const spreadPct = greeks.mid > 0 ? ((greeks.ask - greeks.bid) / greeks.mid) * 100 : 999;
-    return { strike, expiry, bid: greeks.bid, ask: greeks.ask, mid: greeks.mid, delta: greeks.delta, spreadPct };
+      // BS fallback using real IB strikes
+      const atmStrike = candidates.reduce((best, s) =>
+        Math.abs(s - underlyingPrice) < Math.abs(best - underlyingPrice) ? s : best,
+        candidates[0],
+      );
+      const bs = await atmBsPrice(symbol, right, atmStrike, underlyingPrice, expiry);
+      if (bs && bs.price >= 0.05) {
+        const spread = Math.max(bs.price * 0.05, 0.02);
+        const bid = Math.max(bs.price - spread / 2, 0.01);
+        const ask = bs.price + spread / 2;
+        console.log(`[Options Chain] ${symbol} ATM ${right} via BS fallback (IB strikes): strike $${atmStrike}, mid $${bs.price.toFixed(2)}, dte ${daysToExpiry(expiry)}`);
+        return { strike: atmStrike, expiry, bid, ask, mid: bs.price, delta: bs.delta, spreadPct: (spread / bs.price) * 100 };
+      }
+    }
   }
 
-  // ── BS fallback — same approach as findBestPutStrike ─────────────────────
-  // reqMktData fails with error 354 when no options data subscription is active.
-  // reqSecDefOptParams still gave us real IB strikes above, so we compute
-  // prices locally. This path is identical to findBestPutStrike's BS fallback.
-  const iv = await estimateIV(symbol);
-  const dte = daysToExpiry(expiry);
-  if (dte <= 0 || iv <= 0) return null;
-  const T = dte / 365;
-  const r = 0.05;
+  // ── Attempt 2: price-interval strike + BS ────────────────────────────────
+  // getOptionChainParams failed (IB busy/timeout) — compute strike from standard
+  // price intervals and price via BS. Same approach as the original atmStrikeViaBs.
+  const intervalStrike = atmStrikeForPrice(underlyingPrice);
+  const bs2 = await atmBsPrice(symbol, right, intervalStrike, underlyingPrice, expiry);
+  if (!bs2 || bs2.price < 0.05) return null;
 
-  // Pick the candidate closest to ATM (lowest |strike - price|)
-  const atmStrike = candidates.reduce((best, s) =>
-    Math.abs(s - underlyingPrice) < Math.abs(best - underlyingPrice) ? s : best,
-    candidates[0],
-  );
-
-  let price: number;
-  let delta: number;
-  if (right === 'P') {
-    const bs = bsPut(underlyingPrice, atmStrike, T, r, iv);
-    price = bs.price; delta = bs.delta;
-  } else {
-    const sqrtT = Math.sqrt(T);
-    const d1 = (Math.log(underlyingPrice / atmStrike) + (r + 0.5 * iv * iv) * T) / (iv * sqrtT);
-    const d2 = d1 - iv * sqrtT;
-    price = underlyingPrice * normCdf(d1) - atmStrike * Math.exp(-r * T) * normCdf(d2);
-    delta = normCdf(d1);
-  }
+  const price = bs2.price;
+  const delta = bs2.delta;
 
   if (price < 0.05) return null;
   const spread = Math.max(price * 0.05, 0.02);
   const bid = Math.max(price - spread / 2, 0.01);
   const ask = price + spread / 2;
-  const mid = price;
-  const spreadPct = (spread / mid) * 100;
+  const spreadPct = (spread / price) * 100;
 
-  console.log(`[Options Chain] ${symbol} ATM ${right} via BS fallback: strike $${atmStrike}, mid $${mid.toFixed(2)}, dte ${dte}`);
-  return { strike: atmStrike, expiry, bid, ask, mid, delta, spreadPct };
+  console.log(`[Options Chain] ${symbol} ATM ${right} via BS fallback (interval strike): strike $${intervalStrike}, mid $${price.toFixed(2)}, dte ${daysToExpiry(expiry)}`);
+  return { strike: intervalStrike, expiry, bid, ask, mid: price, delta, spreadPct };
 }

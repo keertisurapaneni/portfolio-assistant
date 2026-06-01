@@ -26,7 +26,7 @@ import { detectVwapReclaim, VWAP_RELIABLE_HOUR_ET } from './vwap.js';
 
 // ── Constants ────────────────────────────────────────────
 const MAX_SCALP_TRADES_PER_DAY = 2;
-const MAX_PREMIUM_PER_TRADE = 500;       // max $500 in premium (= limitPrice × 100)
+const MAX_PREMIUM_PER_TRADE = 1_500;     // max $1,500 in premium per contract (ATM on $100+ stocks easily hits $500)
 const MAX_CONTRACTS = 1;
 const INTRADAY_MOVE_MIN_PCT = 1.5;       // stock must have moved >1.5% from open
 const PROFIT_TARGET_MULT = 2.0;          // close when premium doubles
