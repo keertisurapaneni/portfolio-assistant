@@ -28,6 +28,7 @@ import {
   getConnectionForAccount,
   placeOptionsOrder,
   getDefaultAccount,
+  LocationCode,
   type PositionData,
   type IBConnection,
 } from './ib-connection.js';
@@ -7783,7 +7784,9 @@ async function runSchedulerCycle(): Promise<void> {
           if (isPennySessionDone()) {
             log(`[PennyScanner] Session done: ${getPennySessionSummary()}`);
           } else {
-            // Step 1: IB scanner for top % gainers in penny price range
+            // Step 1: IB scanner for top % gainers in penny price range.
+            // Use STK_US (all US including OTC) — Ross Cameron's penny gappers
+            // predominantly trade on OTC/pink sheets, not just NASDAQ/NYSE.
             const paperConn = getPaperConnection();
             let ibGainers: IBGainerResult[] = [];
             try {
@@ -7792,8 +7795,9 @@ async function runSchedulerCycle(): Promise<void> {
                 belowPrice: 20,
                 aboveVolume: 300_000,
                 numberOfRows: 25,
+                locationCode: LocationCode.STK_US,
               });
-              log(`[PennyScanner] IB scan returned ${ibGainers.length} ticker(s): ${ibGainers.map(g => g.ticker).join(', ') || 'none'}`);
+              log(`[PennyScanner] IB scan returned ${ibGainers.length} ticker(s): ${ibGainers.map(g => `${g.ticker}(${g.distancePct?.toFixed(0) ?? '?'}%)`).join(', ') || 'none'}`);
             } catch (scanErr) {
               log(`[PennyScanner] IB scan error: ${scanErr instanceof Error ? scanErr.message : 'unknown'}`);
             }
