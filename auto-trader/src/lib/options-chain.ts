@@ -1057,10 +1057,10 @@ async function atmStrikeViaBs(
 ): Promise<AtmStrikeResult | null> {
   const iv  = await estimateIV(symbol);
   const dte = daysToExpiry(expiry);
-  if (dte <= 0 || iv <= 0) return null;
+  if (dte < 0 || iv <= 0) return null;              // < not <=: allow same-day (0-DTE) expiries
 
   const strike = atmStrikeForPrice(underlyingPrice);
-  const T = dte / 365;
+  const T = Math.max(dte, 0.5) / 365;              // floor at half-day to avoid T=0 div/0 in call BS
   const r = 0.05;
 
   let price: number;
