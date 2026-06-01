@@ -10,7 +10,7 @@ import {
   AlertTriangle,
 } from 'lucide-react';
 import type { IBPosition, IBLiveOrder } from '../../../lib/ibClient';
-import type { PendingStrategySignal } from '../../../lib/paperTradesApi';
+import type { PendingStrategySignal, OrderTradeContext } from '../../../lib/paperTradesApi';
 import type { AccountView } from '../../../contexts/AccountContext';
 import { fmtUsd } from '../utils';
 import { StatusBadge } from '../shared';
@@ -35,16 +35,41 @@ function getPortfolioSortValue(pos: IBPosition, key: PortfolioSortKey): number |
   }
 }
 
+const MODE_LABELS: Record<string, string> = {
+  DAY_TRADE: 'Day',
+  SWING_TRADE: 'Swing',
+  OPTIONS_SCALP: 'Scalp',
+  OPTIONS_PUT: 'Put',
+  OPTIONS_CALL: 'Call',
+  CREDIT_SPREAD: 'Spread',
+  LONG_TERM: 'Long Term',
+  DAY_PENNY: 'Penny',
+};
+
+function getSourceLabel(ctx: OrderTradeContext): string {
+  const reason = ctx.scanner_reason ?? '';
+  if (reason.includes('External strategy signal')) {
+    const match = reason.match(/from ([^|]+)/);
+    return match ? match[1].trim() : 'External';
+  }
+  const trigger = ctx.entry_trigger_type ?? '';
+  if (trigger === 'dip_buy') return 'Dip Buy';
+  if (trigger === 'loss_cut') return 'Loss Cut';
+  if (trigger === 'profit_take') return 'Profit Take';
+  return 'Auto';
+}
+
 export interface PortfolioTabProps {
   positions: IBPosition[];
   orders: IBLiveOrder[];
+  orderTradeContext?: Map<number, OrderTradeContext>;
   pendingSignals: PendingStrategySignal[];
   connected: boolean;
   onRefresh: () => void;
   accountView?: AccountView;
 }
 
-export function PortfolioTab({ positions, orders, pendingSignals, connected, onRefresh, accountView: _accountView }: PortfolioTabProps) {
+export function PortfolioTab({ positions, orders, orderTradeContext, pendingSignals, connected, onRefresh, accountView: _accountView }: PortfolioTabProps) {
   const [sortKey, setSortKey] = useState<PortfolioSortKey>('costBasis');
   const [sortDir, setSortDir] = useState<SortDir>('desc');
 
@@ -202,6 +227,7 @@ export function PortfolioTab({ positions, orders, pendingSignals, connected, onR
                 <th className="text-left px-4 py-2.5 font-medium">Side</th>
                 <th className="text-right px-4 py-2.5 font-medium">Qty</th>
                 <th className="px-4 py-2.5 font-medium">Protection</th>
+                <th className="text-left px-4 py-2.5 font-medium">Source</th>
                 <th className="text-left px-4 py-2.5 font-medium">Status</th>
               </tr>
             </thead>
@@ -225,6 +251,25 @@ export function PortfolioTab({ positions, orders, pendingSignals, connected, onR
                 }
 
                 const rows: React.ReactNode[] = [];
+
+                const ctx = orderTradeContext ?? new Map<number, OrderTradeContext>();
+
+                const SourceCell = ({ orderId, parentId }: { orderId: number; parentId?: number }) => {
+                  const trade = ctx.get(parentId ?? orderId) ?? ctx.get(orderId);
+                  if (!trade) return <td className="px-4 py-3" />;
+                  const modeLabel = MODE_LABELS[trade.mode] ?? trade.mode;
+                  const sourceLabel = getSourceLabel(trade);
+                  return (
+                    <td className="px-4 py-3">
+                      <div className="flex flex-col gap-0.5">
+                        <span className="inline-flex w-fit px-1.5 py-0.5 rounded text-[10px] font-semibold bg-violet-50 text-violet-700">
+                          {modeLabel}
+                        </span>
+                        <span className="text-[10px] text-[hsl(var(--muted-foreground))]">{sourceLabel}</span>
+                      </div>
+                    </td>
+                  );
+                };
 
                 // Bracket pairs — one row per bracket
                 bracketMap.forEach((group, parentId) => {
@@ -256,6 +301,7 @@ export function PortfolioTab({ positions, orders, pendingSignals, connected, onR
                             </span>
                           </div>
                         </td>
+                        <SourceCell orderId={representative.orderId} parentId={parentId} />
                         <td className="px-4 py-3">
                           <span className={`inline-flex px-2 py-0.5 rounded text-[10px] font-bold ${
                             statusOrder === 'Filled' ? 'bg-emerald-100 text-emerald-700'
@@ -300,6 +346,7 @@ export function PortfolioTab({ positions, orders, pendingSignals, connected, onR
                           </span>
                         )}
                       </td>
+                      <SourceCell orderId={order.orderId} parentId={order.parentId} />
                       <td className="px-4 py-3">
                         <span className={`inline-flex px-2 py-0.5 rounded text-[10px] font-bold ${
                           order.status === 'Filled' ? 'bg-emerald-100 text-emerald-700'
