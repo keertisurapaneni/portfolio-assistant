@@ -105,6 +105,9 @@ export interface OptionsOrderParams {
   /** When provided, IB routes by conId rather than symbol/strike/expiry — avoids
    *  code=200 rejections when the working expiry offset differs from the stored date. */
   conId?: number;
+  /** Use MKT order instead of LMT. Safe for paper account scalps where live bid/ask
+   *  is unavailable — paper simulator fills at the prevailing market price. */
+  useMarket?: boolean;
 }
 
 export interface OptionsOrderResult {
@@ -1006,9 +1009,9 @@ export class IBConnection {
 
       const order: Order = {
         action: orderAction,
-        orderType: OrderType.LMT,
+        orderType: params.useMarket ? OrderType.MKT : OrderType.LMT,
         totalQuantity: contracts,
-        lmtPrice: limitPrice,
+        ...(params.useMarket ? {} : { lmtPrice: limitPrice }),
         tif: TimeInForce.GTC,
         transmit: true,
         ...(account ? { account } : {}),

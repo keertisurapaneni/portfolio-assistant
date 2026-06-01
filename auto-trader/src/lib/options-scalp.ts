@@ -135,20 +135,24 @@ export async function runOptionScalpScan(): Promise<void> {
       continue;
     }
 
-    // Check volume proxy: bid must be meaningful
-    if (atm.bid < 0.10) {
-      console.log(`[Options Scalp] ${ticker}: bid too thin ($${atm.bid}) — skipping`);
-      continue;
+    // atm.mid === 0 means the chain came from the market-order fallback (paper
+    // account has no live options data subscription). Skip bid/premium checks
+    // that rely on real prices — the paper simulator fills at market anyway.
+    const useMarket = atm.mid === 0;
+
+    if (!useMarket) {
+      if (atm.bid < 0.10) {
+        console.log(`[Options Scalp] ${ticker}: bid too thin ($${atm.bid}) — skipping`);
+        continue;
+      }
+      const premiumCost = atm.ask * 100 * MAX_CONTRACTS;
+      if (premiumCost > MAX_PREMIUM_PER_TRADE) {
+        console.log(`[Options Scalp] ${ticker}: premium $${premiumCost.toFixed(0)} > cap $${MAX_PREMIUM_PER_TRADE} — skipping`);
+        continue;
+      }
     }
 
-    // Limit price = ask (we're buying); use market order only for very tight spreads
-    const limitPrice = atm.ask;
-    const premiumCost = limitPrice * 100 * MAX_CONTRACTS;
-
-    if (premiumCost > MAX_PREMIUM_PER_TRADE) {
-      console.log(`[Options Scalp] ${ticker}: premium $${premiumCost.toFixed(0)} > cap $${MAX_PREMIUM_PER_TRADE} — skipping`);
-      continue;
-    }
+    const limitPrice = useMarket ? 0 : atm.ask;
 
     // Execute
     const ok = await executeScalp({
@@ -157,6 +161,7 @@ export async function runOptionScalpScan(): Promise<void> {
       limitPrice, contracts: MAX_CONTRACTS,
       price, intradayMovePct, delta: atm.delta,
       spreadPct: atm.spreadPct,
+      useMarket,
     });
     if (ok) placed++;
   }
@@ -332,6 +337,8 @@ interface ScalpParams {
   entryType?: 'momentum' | 'vwap_retest';
   /** VWAP level at entry time (only set for vwap_retest entries) */
   vwap?: number;
+  /** Use MKT order — set when no live options chain was available (paper account). */
+  useMarket?: boolean;
 }
 
 async function executeScalp(p: ScalpParams): Promise<boolean> {
@@ -379,6 +386,7 @@ async function executeScalp(p: ScalpParams): Promise<boolean> {
       contracts:  p.contracts,
       limitPrice: p.limitPrice,
       action:     'BUY',
+      useMarket:  p.useMarket,
       ...(account ? { account } : {}),
     });
   } catch (err) {
