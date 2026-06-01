@@ -630,12 +630,21 @@ export class IBConnection {
 
   // ── Contract Helper ──────────────────────────────────
 
+  // Tickers that IB's SMART router fails to disambiguate without an explicit primary exchange.
+  // Add a ticker here if you see error code 200 "No security definition found" for a US stock.
+  private static readonly PRIMARY_EXCH_OVERRIDES: Record<string, string> = {
+    ASTS: 'NASDAQ',
+  };
+
   createStockContract(symbol: string): Contract {
+    const upper = symbol.toUpperCase();
+    const primaryExch = IBConnection.PRIMARY_EXCH_OVERRIDES[upper];
     return {
-      symbol: symbol.toUpperCase(),
+      symbol: upper,
       secType: SecType.STK,
       exchange: 'SMART',
       currency: 'USD',
+      ...(primaryExch ? { primaryExch } : {}),
     };
   }
 
@@ -707,33 +716,55 @@ export class IBConnection {
     }
   }
 
+  // ── Contract Resolution ──────────────────────────────
+  // For tickers in PRIMARY_EXCH_OVERRIDES, pre-resolve the conId via searchContract.
+  // A conId-based contract bypasses all symbol/exchange ambiguity in IB SMART routing.
+  // Falls back to the symbol-based contract if searchContract returns null.
+
+  private async resolveContractForOrder(symbol: string): Promise<Contract> {
+    const upper = symbol.toUpperCase();
+    if (IBConnection.PRIMARY_EXCH_OVERRIDES[upper]) {
+      try {
+        const resolved = await this.searchContract(upper);
+        if (resolved?.conId) {
+          console.log(`${this.tag} Resolved ${upper} conId=${resolved.conId} (${resolved.primaryExch}) — using conId contract`);
+          return { conId: resolved.conId, exchange: 'SMART', currency: 'USD' };
+        }
+        console.warn(`${this.tag} searchContract returned null for ${upper} — falling back to symbol contract`);
+      } catch (err) {
+        console.warn(`${this.tag} searchContract failed for ${upper}: ${err instanceof Error ? err.message : err} — falling back to symbol contract`);
+      }
+    }
+    return this.createStockContract(upper);
+  }
+
   // ── Place Bracket Order ──────────────────────────────
 
-  placeBracketOrder(params: BracketOrderParams): Promise<BracketOrderResult> {
+  async placeBracketOrder(params: BracketOrderParams): Promise<BracketOrderResult> {
+    if (!this.ib || !this._connected) {
+      throw new Error(`${this.tag} Not connected to IB Gateway`);
+    }
+    if (!this.isReadyForOrders()) {
+      const waitSec = Math.ceil((this._readyForOrdersAt - Date.now()) / 1000);
+      throw new Error(`${this.tag} IB connection warming up — orders blocked for ${waitSec}s more after reconnect`);
+    }
+
+    const { symbol, side, quantity, entryPrice, stopLoss, takeProfit, tif = 'GTC' } = params;
+
+    if (tif === 'DAY') {
+      const etNow = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }));
+      const etDay = etNow.getDay();
+      const etMins = etNow.getHours() * 60 + etNow.getMinutes();
+      const marketOpen = 9 * 60 + 30;
+      if (etDay !== 0 && etDay !== 6 && etMins < marketOpen) {
+        const etStr = `${String(etNow.getHours()).padStart(2, '0')}:${String(etNow.getMinutes()).padStart(2, '0')} ET`;
+        console.error(`${this.tag} DAY bracket order for ${symbol} rejected — market not open yet (${etStr})`);
+        throw new Error(`DAY order rejected: market not open (${etStr}) — order would be invalid before 9:30 AM ET`);
+      }
+    }
+
+    const contract = await this.resolveContractForOrder(symbol);
     return new Promise((resolve, reject) => {
-      if (!this.ib || !this._connected) {
-        return reject(new Error(`${this.tag} Not connected to IB Gateway`));
-      }
-      if (!this.isReadyForOrders()) {
-        const waitSec = Math.ceil((this._readyForOrdersAt - Date.now()) / 1000);
-        return reject(new Error(`${this.tag} IB connection warming up — orders blocked for ${waitSec}s more after reconnect`));
-      }
-
-      const { symbol, side, quantity, entryPrice, stopLoss, takeProfit, tif = 'GTC' } = params;
-
-      if (tif === 'DAY') {
-        const etNow = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }));
-        const etDay = etNow.getDay();
-        const etMins = etNow.getHours() * 60 + etNow.getMinutes();
-        const marketOpen = 9 * 60 + 30;
-        if (etDay !== 0 && etDay !== 6 && etMins < marketOpen) {
-          const etStr = `${String(etNow.getHours()).padStart(2, '0')}:${String(etNow.getMinutes()).padStart(2, '0')} ET`;
-          console.error(`${this.tag} DAY bracket order for ${symbol} rejected — market not open yet (${etStr})`);
-          return reject(new Error(`DAY order rejected: market not open (${etStr}) — order would be invalid before 9:30 AM ET`));
-        }
-      }
-
-      const contract = this.createStockContract(symbol);
       const parentId = this.getNextOrderId();
       const tpId = this.getNextOrderId();
       const slId = this.getNextOrderId();
@@ -809,9 +840,9 @@ export class IBConnection {
       (this.ib as any).on(EventName.orderStatus, onOrderStatus);
 
       try {
-        this.ib.placeOrder(parentId, contract, parentOrder);
-        this.ib.placeOrder(tpId, contract, takeProfitOrder);
-        this.ib.placeOrder(slId, contract, stopLossOrder);
+        this.ib!.placeOrder(parentId, contract, parentOrder);
+        this.ib!.placeOrder(tpId, contract, takeProfitOrder);
+        this.ib!.placeOrder(slId, contract, stopLossOrder);
         console.log(`${this.tag} Bracket order dispatched: ${side} ${quantity}x ${symbol} entry=$${entryPrice} tp=$${takeProfit} sl=$${stopLoss} (parentId=${parentId}) — awaiting IB ack...`);
         // Force IB to emit orderStatus for all submitted orders — paper account
         // sometimes doesn't proactively push status back in degraded sessions.
@@ -828,14 +859,15 @@ export class IBConnection {
 
   // ── Place Market Order ───────────────────────────────
 
-  placeMarketOrder(params: MarketOrderParams): Promise<MarketOrderResult> {
-    return new Promise((resolve, reject) => {
-      if (!this.ib || !this._connected) {
-        return reject(new Error(`${this.tag} Not connected to IB Gateway`));
-      }
+  async placeMarketOrder(params: MarketOrderParams): Promise<MarketOrderResult> {
+    if (!this.ib || !this._connected) {
+      throw new Error(`${this.tag} Not connected to IB Gateway`);
+    }
 
-      const { symbol, side, quantity } = params;
-      const contract = this.createStockContract(symbol);
+    const { symbol, side, quantity } = params;
+    const contract = await this.resolveContractForOrder(symbol);
+
+    return new Promise((resolve, reject) => {
       const orderId = this.getNextOrderId();
 
       const order: Order = {
@@ -856,7 +888,7 @@ export class IBConnection {
       this._pendingOrderCallbacks.set(orderId, { resolve, reject, timer, symbol });
 
       try {
-        this.ib.placeOrder(orderId, contract, order);
+        this.ib!.placeOrder(orderId, contract, order);
         console.log(`${this.tag} Market order dispatched: ${side} ${quantity}x ${symbol} (orderId=${orderId}) — awaiting fill...`);
       } catch (err) {
         clearTimeout(timer);
