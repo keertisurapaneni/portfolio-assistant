@@ -173,43 +173,83 @@ export async function runPennyDiscovery(ibGainers: IBGainerResult[] = []): Promi
     return [];
   }
 
-  console.log(`[PennyScanner] Enriching ${ibGainers.length} IB gainer(s) via Finnhub`);
+  // Cap enrichment at 12 tickers to stay within Finnhub's 55/min rate limit.
+  // Each ticker uses ~2 Finnhub calls (quote + metric); 12 × 2 = 24 calls leaving
+  // headroom for the rest of the scheduler's Finnhub usage.
+  const enrichBatch = ibGainers.slice(0, 12);
+  console.log(`[PennyScanner] Enriching ${enrichBatch.length} IB gainer(s) via Finnhub`);
 
-  // Enrich each IB-scanned ticker with Finnhub quote, float, and news
+  // Enrich each IB-scanned ticker with Finnhub quote + single metric call (covers
+  // both RVOL avg-volume and float, avoiding a duplicate network call).
   const candidates: PennyCandidate[] = [];
-  for (const g of ibGainers.slice(0, 15)) {
+  for (const g of enrichBatch) {
     const ticker = g.ticker;
 
-    // Fetch live quote from Finnhub for price/volume confirmation
+    // ── 1. Finnhub quote (price, volume, prev close) ──────────────────────────
     const quote = await fetchFinnhub<{ c?: number; v?: number; pc?: number }>(
       `https://finnhub.io/api/v1/quote?symbol=${ticker}&token=${FINNHUB_KEY}`
     );
-    if (!quote) continue;
+    if (!quote) {
+      console.log(`[PennyScanner]   SKIP ${ticker} — no Finnhub quote`);
+      continue;
+    }
 
     const price = quote.c ?? 0;
     const volume = quote.v ?? 0;
     const prevClose = quote.pc ?? price;
-    const changePct = prevClose > 0 ? ((price - prevClose) / prevClose) * 100 : (g.distancePct ?? 0);
 
-    // Re-apply Cameron's price and change filters (IB scanner may include prices outside range)
-    if (price < PRICE_MIN || price > PRICE_MAX) continue;
-    if (changePct < MIN_CHANGE_PCT) continue;
-    if (volume < MIN_VOLUME) continue;
+    // Prefer Finnhub real-time change; fall back to IB distancePct (for TOP_PERC_GAIN
+    // the distance field = today's % gain, valid for OTC tickers Finnhub may not know).
+    const finnhubChangePct = prevClose > 0 ? ((price - prevClose) / prevClose) * 100 : null;
+    const changePct = finnhubChangePct ?? (g.distancePct ?? 0);
 
-    // Relative volume via Finnhub metric
-    const metric = await fetchFinnhub<{ metric?: { '10DayAverageTradingVolume'?: number } }>(
+    // ── 2. Price / change / volume gate ──────────────────────────────────────
+    if (price < PRICE_MIN || price > PRICE_MAX) {
+      console.log(`[PennyScanner]   SKIP ${ticker} — price $${price.toFixed(2)} outside [$${PRICE_MIN}–$${PRICE_MAX}]`);
+      continue;
+    }
+    if (changePct < MIN_CHANGE_PCT) {
+      console.log(`[PennyScanner]   SKIP ${ticker} — changePct ${changePct.toFixed(1)}% < ${MIN_CHANGE_PCT}% (IB dist: ${g.distancePct?.toFixed(0) ?? 'n/a'}%)`);
+      continue;
+    }
+    if (volume < MIN_VOLUME) {
+      console.log(`[PennyScanner]   SKIP ${ticker} — volume ${volume.toLocaleString()} < ${MIN_VOLUME.toLocaleString()}`);
+      continue;
+    }
+
+    // ── 3. Single Finnhub metric call (avg vol + float) ──────────────────────
+    // Reuse one response for both RVOL and float; avoids a duplicate API call.
+    const metric = await fetchFinnhub<{ metric?: { '10DayAverageTradingVolume'?: number; shareFloat?: number } }>(
       `https://finnhub.io/api/v1/stock/metric?symbol=${ticker}&metric=all&token=${FINNHUB_KEY}`
     );
-    const avgVolume = (metric?.metric?.['10DayAverageTradingVolume'] ?? 0) * 1_000_000;
-    const relativeVolume = avgVolume > 0 ? volume / avgVolume : 0;
-    if (relativeVolume < MIN_RELATIVE_VOLUME) continue;
+    const rawAvgVol = metric?.metric?.['10DayAverageTradingVolume'];
+    const avgVolume  = rawAvgVol != null ? rawAvgVol * 1_000_000 : 0;
 
-    // Float check
-    const floatShares = await getFloat(ticker);
-    if (floatShares != null && floatShares > MAX_FLOAT_MILLIONS) continue;
+    // RVOL: for OTC/nano-caps Finnhub often has no metric data → avgVolume = 0.
+    // Fallback: raw volume ≥ 1.5M on a sub-$20 stock = elevated enough to qualify.
+    let relativeVolume: number;
+    if (avgVolume > 0) {
+      relativeVolume = volume / avgVolume;
+    } else {
+      relativeVolume = volume >= 1_500_000 ? MIN_RELATIVE_VOLUME + 1 : volume / 300_000;
+      console.log(`[PennyScanner]   ${ticker} — no Finnhub avg vol; synthetic RVOL ${relativeVolume.toFixed(1)}x (vol ${volume.toLocaleString()})`);
+    }
+    if (relativeVolume < MIN_RELATIVE_VOLUME) {
+      console.log(`[PennyScanner]   SKIP ${ticker} — RVOL ${relativeVolume.toFixed(1)}x < ${MIN_RELATIVE_VOLUME}x`);
+      continue;
+    }
 
-    // News catalyst check
+    // Float from same metric response (no extra call needed)
+    const floatShares = metric?.metric?.shareFloat ?? null;
+    if (floatShares != null && floatShares > MAX_FLOAT_MILLIONS) {
+      console.log(`[PennyScanner]   SKIP ${ticker} — float ${floatShares.toFixed(1)}M > ${MAX_FLOAT_MILLIONS}M`);
+      continue;
+    }
+
+    // ── 4. News catalyst ──────────────────────────────────────────────────────
     const { hasCatalyst, headline } = await checkNewsCatalyst(ticker);
+
+    console.log(`[PennyScanner]   PASS ${ticker} — $${price.toFixed(2)} +${changePct.toFixed(0)}% vol ${volume.toLocaleString()} RVOL ${relativeVolume.toFixed(1)}x float ${floatShares?.toFixed(1) ?? 'unknown'}M catalyst:${hasCatalyst}`);
 
     candidates.push({
       ticker,
@@ -233,18 +273,6 @@ export async function runPennyDiscovery(ibGainers: IBGainerResult[] = []): Promi
   return candidates.slice(0, 3);
 }
 
-async function getFloat(ticker: string): Promise<number | null> {
-  if (!FINNHUB_KEY) return null;
-  const metric = await fetchFinnhub<{ metric?: { shareFloat?: number } }>(
-    `https://finnhub.io/api/v1/stock/metric?symbol=${ticker}&metric=all&token=${FINNHUB_KEY}`
-  );
-  if (metric?.metric?.shareFloat) return metric.metric.shareFloat;
-
-  const profile = await fetchFinnhub<{ shareOutstanding?: number }>(
-    `https://finnhub.io/api/v1/stock/profile2?symbol=${ticker}&token=${FINNHUB_KEY}`
-  );
-  return profile?.shareOutstanding ?? null;
-}
 
 async function checkNewsCatalyst(ticker: string): Promise<{ hasCatalyst: boolean; headline: string | null }> {
   if (!FINNHUB_KEY) return { hasCatalyst: false, headline: null };

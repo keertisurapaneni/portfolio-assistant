@@ -12,6 +12,7 @@
 
 import { IBApi, EventName, Contract, Order, OrderAction, OrderType, SecType, TimeInForce, OptionType, ScanCode, LocationCode, Instrument } from '@stoqey/ib';
 import type { ScannerSubscription } from '@stoqey/ib';
+export { LocationCode } from '@stoqey/ib';
 import { insertIbFill, updateIbFillCommission, getTodayFillPrices, getFillPriceByOrderId, saveConfigPartial, createAutoTradeEvent } from './lib/supabase.js';
 import type { AccountType } from '../../shared/trade-types.js';
 
@@ -1279,13 +1280,14 @@ export class IBConnection {
     aboveVolume?: number;
     numberOfRows?: number;
     openGap?: boolean;
+    locationCode?: LocationCode;
   } = {}): Promise<Array<{ ticker: string; distancePct: number | null }>> {
     if (!this.ib || !this._connected) return [];
 
     const reqId = this.getNextOrderId();
     const params: ScannerSubscription = {
       instrument: Instrument.STK,
-      locationCode: LocationCode.STK_US_MAJOR,
+      locationCode: opts.locationCode ?? LocationCode.STK_US_MAJOR,
       scanCode: opts.openGap ? ScanCode.TOP_OPEN_PERC_GAIN : ScanCode.TOP_PERC_GAIN,
       numberOfRows: opts.numberOfRows ?? 30,
       ...(opts.abovePrice != null ? { abovePrice: opts.abovePrice } : {}),
