@@ -66,7 +66,7 @@ import {
   getSwingTradeValidationReport,
   clearSharedTradesCache,
   getOrderTradeContext,
-  type OrderTradeContext,
+  type OrderTradeContextMaps,
 } from '../../lib/paperTradesApi';
 import { getTotalDeployed, getMarketRegime, calculateKellyMultiplier, type MarketRegime } from '../../lib/autoTrader';
 import { useAccountView, type AccountView } from '../../contexts/AccountContext';
@@ -149,7 +149,7 @@ export function PaperTrading() {
   const [performance, setPerformance] = useState<TradePerformance | null>(cached?.performance ?? null);
   const [ibPositions, setIbPositions] = useState<IBPosition[]>(cached?.ibPositions ?? []);
   const [ibOrders, setIbOrders] = useState<IBLiveOrder[]>(cached?.ibOrders ?? []);
-  const [orderTradeContext, setOrderTradeContext] = useState<Map<number, OrderTradeContext>>(new Map());
+  const [orderTradeContext, setOrderTradeContext] = useState<OrderTradeContextMaps>({ byOrderId: new Map(), byTicker: new Map() });
   const [persistedEvents, setPersistedEvents] = useState<AutoTradeEventRecord[]>(cached?.persistedEvents ?? []);
   const [todaysExecuted, setTodaysExecuted] = useState<AutoTradeEventRecord[]>(cached?.todaysExecuted ?? []);
   const [todayTrades, setTodayTrades] = useState<PaperTrade[]>(cached?.todayTrades ?? []);

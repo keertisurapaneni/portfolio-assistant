@@ -1880,36 +1880,48 @@ export async function getStrategyTuneLogs(limit = 10): Promise<TuneLogEntry[]> {
 // ── Order trade context ────────────────────────────────────────────────────
 // Lightweight record used to enrich IB Open Orders with mode + source info.
 export interface OrderTradeContext {
+  ticker: string;
   mode: string;
   scanner_reason: string | null;
   entry_trigger_type: string | null;
   notes: string | null;
 }
 
+export interface OrderTradeContextMaps {
+  byOrderId: Map<number, OrderTradeContext>;
+  /** Fallback — keyed by uppercase ticker; first active trade wins per ticker. */
+  byTicker: Map<string, OrderTradeContext>;
+}
+
 /**
- * Returns a map of IB order ID → trade context for all active/submitted trades.
+ * Returns maps of IB order ID and ticker → trade context for all active/submitted trades.
  * Used by the Open Orders panel to show mode and source without a full trade fetch.
+ * Bracket child orders (parentId != 0) don't have their own paper_trades row, so
+ * the byTicker fallback is used for them.
  */
-export async function getOrderTradeContext(): Promise<Map<number, OrderTradeContext>> {
+export async function getOrderTradeContext(): Promise<OrderTradeContextMaps> {
   const { data } = await supabase
     .from('paper_trades')
-    .select('ib_order_id, mode, scanner_reason, entry_trigger_type, notes')
+    .select('ticker, ib_order_id, mode, scanner_reason, entry_trigger_type, notes')
     .in('status', ['ACTIVE', 'SUBMITTED', 'FILLED'])
     .not('ib_order_id', 'is', null);
 
-  const map = new Map<number, OrderTradeContext>();
+  const byOrderId = new Map<number, OrderTradeContext>();
+  const byTicker = new Map<string, OrderTradeContext>();
   for (const row of data ?? []) {
+    const ctx: OrderTradeContext = {
+      ticker: row.ticker ?? '',
+      mode: row.mode ?? '',
+      scanner_reason: row.scanner_reason ?? null,
+      entry_trigger_type: row.entry_trigger_type ?? null,
+      notes: row.notes ?? null,
+    };
     const id = Number(row.ib_order_id);
-    if (!isNaN(id)) {
-      map.set(id, {
-        mode: row.mode ?? '',
-        scanner_reason: row.scanner_reason ?? null,
-        entry_trigger_type: row.entry_trigger_type ?? null,
-        notes: row.notes ?? null,
-      });
-    }
+    if (!isNaN(id)) byOrderId.set(id, ctx);
+    const t = (row.ticker ?? '').toUpperCase();
+    if (t && !byTicker.has(t)) byTicker.set(t, ctx);
   }
-  return map;
+  return { byOrderId, byTicker };
 }
 
 export async function triggerAutoTune(): Promise<{ ok: boolean; decisionsCount: number; decisions: TuneDecision[]; error?: string }> {

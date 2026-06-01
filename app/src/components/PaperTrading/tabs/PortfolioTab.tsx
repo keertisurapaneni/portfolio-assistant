@@ -10,7 +10,7 @@ import {
   AlertTriangle,
 } from 'lucide-react';
 import type { IBPosition, IBLiveOrder } from '../../../lib/ibClient';
-import type { PendingStrategySignal, OrderTradeContext } from '../../../lib/paperTradesApi';
+import type { PendingStrategySignal, OrderTradeContext, OrderTradeContextMaps } from '../../../lib/paperTradesApi';
 import type { AccountView } from '../../../contexts/AccountContext';
 import { fmtUsd } from '../utils';
 import { StatusBadge } from '../shared';
@@ -62,7 +62,7 @@ function getSourceLabel(ctx: OrderTradeContext): string {
 export interface PortfolioTabProps {
   positions: IBPosition[];
   orders: IBLiveOrder[];
-  orderTradeContext?: Map<number, OrderTradeContext>;
+  orderTradeContext?: OrderTradeContextMaps;
   pendingSignals: PendingStrategySignal[];
   connected: boolean;
   onRefresh: () => void;
@@ -252,10 +252,14 @@ export function PortfolioTab({ positions, orders, orderTradeContext, pendingSign
 
                 const rows: React.ReactNode[] = [];
 
-                const ctx = orderTradeContext ?? new Map<number, OrderTradeContext>();
+                const byId = orderTradeContext?.byOrderId ?? new Map<number, OrderTradeContext>();
+                const byTicker = orderTradeContext?.byTicker ?? new Map<string, OrderTradeContext>();
 
-                const SourceCell = ({ orderId, parentId }: { orderId: number; parentId?: number }) => {
-                  const trade = ctx.get(parentId ?? orderId) ?? ctx.get(orderId);
+                const resolveCtx = (orderId: number, parentId?: number, ticker?: string): OrderTradeContext | undefined =>
+                  byId.get(parentId ?? 0) ?? byId.get(orderId) ?? (ticker ? byTicker.get(ticker.toUpperCase()) : undefined);
+
+                const SourceCell = ({ orderId, parentId, ticker }: { orderId: number; parentId?: number; ticker?: string }) => {
+                  const trade = resolveCtx(orderId, parentId, ticker);
                   if (!trade) return <td className="px-4 py-3" />;
                   const modeLabel = MODE_LABELS[trade.mode] ?? trade.mode;
                   const sourceLabel = getSourceLabel(trade);
@@ -301,7 +305,7 @@ export function PortfolioTab({ positions, orders, orderTradeContext, pendingSign
                             </span>
                           </div>
                         </td>
-                        <SourceCell orderId={representative.orderId} parentId={parentId} />
+                        <SourceCell orderId={representative.orderId} parentId={parentId} ticker={representative.ticker} />
                         <td className="px-4 py-3">
                           <span className={`inline-flex px-2 py-0.5 rounded text-[10px] font-bold ${
                             statusOrder === 'Filled' ? 'bg-emerald-100 text-emerald-700'
@@ -320,44 +324,69 @@ export function PortfolioTab({ positions, orders, orderTradeContext, pendingSign
                   }
                 });
 
-                // Standalone orders (entries, unmatched legs, MKT orders)
+                // Standalone orders — group consecutive rows by ticker so a swing position
+                // with multiple TP/SL legs (e.g. 2 tranches = 4 rows) renders as a visual group.
+                // The ticker is shown only on the first row; subsequent rows in the same group
+                // are indented with a subtle left border.
+                const tickerGroups = new Map<string, typeof standalone>();
+                const tickerOrder: string[] = [];
                 for (const order of standalone) {
-                  const isStop = order.orderType === 'STP';
-                  const isLimit = order.orderType === 'LMT';
-                  const isChild = order.parentId && order.parentId !== 0;
-                  let role = 'Entry';
-                  if (isChild && isStop) role = 'Stop Loss';
-                  else if (isChild && isLimit) role = 'Take Profit';
-                  rows.push(
-                    <tr key={`${order.orderId}`} className="hover:bg-[hsl(var(--secondary))]/50">
-                      <td className="px-4 py-3 font-bold">{order.ticker}</td>
-                      <td className="px-4 py-3">
-                        <span className={`inline-flex px-2 py-0.5 rounded text-[10px] font-bold ${order.side === 'BUY' ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'}`}>
-                          {order.side}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3 text-right tabular-nums">{order.quantity}</td>
-                      <td className="px-4 py-3 text-xs text-[hsl(var(--muted-foreground))]">
-                        <span className="tabular-nums">{order.price ? `$${Number(order.price).toFixed(2)}` : '—'}</span>
-                        <span className="ml-1.5 text-[10px] opacity-60">{order.orderType}</span>
-                        {isChild && (
-                          <span className={`ml-2 inline-flex px-1.5 py-0.5 rounded text-[10px] font-medium ${isStop ? 'bg-red-50 text-red-600' : 'bg-emerald-50 text-emerald-600'}`}>
+                  const key = order.ticker;
+                  if (!tickerGroups.has(key)) { tickerGroups.set(key, []); tickerOrder.push(key); }
+                  tickerGroups.get(key)!.push(order);
+                }
+
+                for (const ticker of tickerOrder) {
+                  const group = tickerGroups.get(ticker)!;
+                  group.forEach((order, idx) => {
+                    const isStop = order.orderType === 'STP';
+                    const isLimit = order.orderType === 'LMT';
+                    const isChild = order.parentId && order.parentId !== 0;
+                    const isGrouped = group.length > 1;
+                    const isFirst = idx === 0;
+                    const isLast = idx === group.length - 1;
+                    let role = 'Entry';
+                    if (isStop) role = 'SL';
+                    else if (isChild && isLimit) role = 'TP';
+                    rows.push(
+                      <tr
+                        key={`${order.orderId}`}
+                        className={`hover:bg-[hsl(var(--secondary))]/50 ${isGrouped && !isFirst ? 'bg-[hsl(var(--secondary))]/20' : ''}`}
+                      >
+                        <td className={`px-4 py-2.5 font-bold ${isGrouped && !isFirst ? 'pl-7 border-l-2 border-violet-200' : ''} ${isGrouped && isFirst ? 'pb-1' : ''} ${isGrouped && isLast ? 'pt-1' : ''}`}>
+                          {isFirst ? order.ticker : (
+                            <span className="text-[hsl(var(--muted-foreground))] text-xs font-normal">└</span>
+                          )}
+                        </td>
+                        <td className="px-4 py-2.5">
+                          <span className={`inline-flex px-2 py-0.5 rounded text-[10px] font-bold ${order.side === 'BUY' ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'}`}>
+                            {order.side}
+                          </span>
+                        </td>
+                        <td className="px-4 py-2.5 text-right tabular-nums">{order.quantity}</td>
+                        <td className="px-4 py-2.5 text-xs text-[hsl(var(--muted-foreground))]">
+                          <span className="tabular-nums">{order.price ? `$${Number(order.price).toFixed(2)}` : '—'}</span>
+                          <span className="ml-1.5 text-[10px] opacity-60">{order.orderType}</span>
+                          <span className={`ml-2 inline-flex px-1.5 py-0.5 rounded text-[10px] font-medium ${isStop ? 'bg-red-50 text-red-600' : isChild ? 'bg-emerald-50 text-emerald-600' : 'bg-sky-50 text-sky-600'}`}>
                             {role}
                           </span>
-                        )}
-                      </td>
-                      <SourceCell orderId={order.orderId} parentId={order.parentId} />
-                      <td className="px-4 py-3">
-                        <span className={`inline-flex px-2 py-0.5 rounded text-[10px] font-bold ${
-                          order.status === 'Filled' ? 'bg-emerald-100 text-emerald-700'
-                            : order.status === 'Cancelled' ? 'bg-slate-100 text-slate-500'
-                            : 'bg-blue-100 text-blue-700'
-                        }`}>
-                          {order.status}
-                        </span>
-                      </td>
-                    </tr>
-                  );
+                        </td>
+                        {isFirst
+                          ? <SourceCell orderId={order.orderId} parentId={order.parentId} ticker={order.ticker} />
+                          : <td className="px-4 py-2.5" />
+                        }
+                        <td className="px-4 py-2.5">
+                          <span className={`inline-flex px-2 py-0.5 rounded text-[10px] font-bold ${
+                            order.status === 'Filled' ? 'bg-emerald-100 text-emerald-700'
+                              : order.status === 'Cancelled' ? 'bg-slate-100 text-slate-500'
+                              : 'bg-blue-100 text-blue-700'
+                          }`}>
+                            {order.status}
+                          </span>
+                        </td>
+                      </tr>
+                    );
+                  });
                 }
 
                 return rows;
