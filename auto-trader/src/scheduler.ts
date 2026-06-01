@@ -4493,13 +4493,10 @@ async function pushExecutedTradeToScan(trade: {
     ? ((existing as { data: unknown[] }).data)
     : [];
 
-  // External signal executions: skip if our scanner already has an entry for this ticker.
-  // Influencer trades have their own tracking in external_strategy_signals; we must not
-  // let them overwrite our scanner's "Armed / Watching / Blocked" status in the UI.
-  const existingForTicker = currentData.find(
-    (r: unknown) => (r as { ticker?: string }).ticker?.toUpperCase() === trade.ticker.toUpperCase()
-  );
-  if (trade.isExternalSignal && existingForTicker) return;
+  // External/influencer signal executions never belong in trade_scans.
+  // They are tracked in external_strategy_signals + paper_trades. Trade Signals UI
+  // shows our scanner's own evaluations only — influencer entries pollute that view.
+  if (trade.isExternalSignal) return;
 
   // Deduplicate — replace existing entry for same ticker if present (scanner-to-scanner)
   const filtered = currentData.filter(
