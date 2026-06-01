@@ -135,9 +135,9 @@ export async function runOptionScalpScan(): Promise<void> {
       continue;
     }
 
-    // atm.mid === 0 means the chain came from the market-order fallback (paper
-    // account has no live options data subscription). Skip bid/premium checks
-    // that rely on real prices — the paper simulator fills at market anyway.
+    // atm.mid === 0 means the chain came from the market-order fallback (no live
+    // options data subscription available). Skip bid/premium checks — no price data.
+    // On a live account with an options subscription, mid > 0 and LMT runs instead.
     const useMarket = atm.mid === 0;
 
     if (!useMarket) {

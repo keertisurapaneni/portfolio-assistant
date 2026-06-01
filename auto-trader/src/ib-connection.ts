@@ -105,8 +105,9 @@ export interface OptionsOrderParams {
   /** When provided, IB routes by conId rather than symbol/strike/expiry — avoids
    *  code=200 rejections when the working expiry offset differs from the stored date. */
   conId?: number;
-  /** Use MKT order instead of LMT. Safe for paper account scalps where live bid/ask
-   *  is unavailable — paper simulator fills at the prevailing market price. */
+  /** Use MKT order instead of LMT. Set when no live options chain data is available
+   *  (e.g. account lacks options data subscription). On live, the LMT path runs
+   *  automatically once a real bid/ask is available from IB. */
   useMarket?: boolean;
 }
 

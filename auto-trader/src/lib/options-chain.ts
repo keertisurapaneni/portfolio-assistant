@@ -1044,14 +1044,11 @@ function atmStrikeForPrice(price: number): number {
 /**
  * ATM strike fallback for paper accounts without live options data.
  *
- * We can't get a real bid/ask without a data subscription, so we return
- * bid=ask=mid=0 as a sentinel — callers that see mid=0 must use a MKT order
- * instead of a LMT order. Paper account simulator fills MKT at the prevailing
- * market price, so no pricing model is needed.
- *
- * Returning a real strike (from standard interval rules) is still useful:
- * it lets IB resolve the exact option contract, and the MKT order will fill
- * at whatever IB's paper engine determines is the fair price.
+ * When no live options chain data is available (account lacks data subscription),
+ * return bid=ask=mid=0 as a sentinel so callers use MKT instead of LMT.
+ * The strike is still computed from standard price-interval rules so IB can
+ * resolve the exact contract. On a live account with a data subscription,
+ * findAtmStrike returns real bid/ask and this fallback is never reached.
  */
 function atmStrikeMarketFallback(
   symbol: string,
@@ -1060,7 +1057,7 @@ function atmStrikeMarketFallback(
   expiry: string,
 ): AtmStrikeResult {
   const strike = atmStrikeForPrice(underlyingPrice);
-  console.log(`[Options Chain] ${symbol} ATM ${right} market-order fallback: strike $${strike}, exp ${expiry} (no live chain — paper MKT fill)`);
+  console.log(`[Options Chain] ${symbol} ATM ${right} market-order fallback: strike $${strike}, exp ${expiry} (no live chain — MKT fill)`);
   // delta ≈ 0.50 for ATM; bid/ask/mid = 0 signals "use market order" to callers
   return { strike, expiry, bid: 0, ask: 0, mid: 0, delta: right === 'C' ? 0.50 : -0.50, spreadPct: 0 };
 }
