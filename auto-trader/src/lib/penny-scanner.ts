@@ -198,10 +198,19 @@ export async function runPennyDiscovery(ibGainers: IBGainerResult[] = []): Promi
     const volume = quote.v ?? 0;
     const prevClose = quote.pc ?? price;
 
-    // Prefer Finnhub real-time change; fall back to IB distancePct (for TOP_PERC_GAIN
-    // the distance field = today's % gain, valid for OTC tickers Finnhub may not know).
+    // IB's TOP_PERC_GAIN distancePct = today's % gain from prior close — purpose-built
+    // for this calculation. Finnhub's pc field is often stale for OTC/nano-caps: the
+    // stock might be up 40% per IB but Finnhub's pc equals today's open, giving ~0%
+    // change. The ?? fallback only triggers when finnhubChangePct is null (prevClose=0),
+    // so it never fires in practice — Finnhub always returns a non-zero pc.
+    //
+    // Fix: trust IB distancePct as primary; only override with Finnhub when Finnhub
+    // shows a meaningfully different (and plausible) result (>1%) — e.g. for
+    // exchange-listed stocks where Finnhub's pc is reliable.
     const finnhubChangePct = prevClose > 0 ? ((price - prevClose) / prevClose) * 100 : null;
-    const changePct = finnhubChangePct ?? (g.distancePct ?? 0);
+    const changePct = (finnhubChangePct != null && finnhubChangePct > 1)
+      ? finnhubChangePct
+      : (g.distancePct ?? finnhubChangePct ?? 0);
 
     // ── 2. Price / change / volume gate ──────────────────────────────────────
     if (price < PRICE_MIN || price > PRICE_MAX) {
@@ -239,8 +248,18 @@ export async function runPennyDiscovery(ibGainers: IBGainerResult[] = []): Promi
       continue;
     }
 
-    // Float from same metric response (no extra call needed)
+    // Float from same metric response (no extra call needed).
+    // When shareFloat is null (common for OTC), proxy via avg daily volume:
+    // a stock with 10M+ avg daily volume cannot have a <10M share float — that
+    // would imply 100%+ of float trading every single day, which is impossible.
+    // This catches large-float stocks (AMC, SPCE) that slip through when Finnhub
+    // has no float data.
     const floatShares = metric?.metric?.shareFloat ?? null;
+    const inferredLargeFloat = floatShares == null && avgVolume > 10_000_000;
+    if (inferredLargeFloat) {
+      console.log(`[PennyScanner]   SKIP ${ticker} — float unknown but avg vol ${(avgVolume / 1_000_000).toFixed(1)}M/day implies large float`);
+      continue;
+    }
     if (floatShares != null && floatShares > MAX_FLOAT_MILLIONS) {
       console.log(`[PennyScanner]   SKIP ${ticker} — float ${floatShares.toFixed(1)}M > ${MAX_FLOAT_MILLIONS}M`);
       continue;
