@@ -1042,53 +1042,27 @@ function atmStrikeForPrice(price: number): number {
 }
 
 /**
- * Black-Scholes fallback for ATM option pricing.
- * Used when IB's reqSecDefOptParams / reqMktData is unavailable (e.g. paper
- * account without options data subscription).
+ * ATM strike fallback for paper accounts without live options data.
  *
- * The delta of an ATM option converges to ~0.50 as expiry approaches.
- * BS gives us a reasonable mid price and delta for an aggressive limit order.
+ * We can't get a real bid/ask without a data subscription, so we return
+ * bid=ask=mid=0 as a sentinel — callers that see mid=0 must use a MKT order
+ * instead of a LMT order. Paper account simulator fills MKT at the prevailing
+ * market price, so no pricing model is needed.
+ *
+ * Returning a real strike (from standard interval rules) is still useful:
+ * it lets IB resolve the exact option contract, and the MKT order will fill
+ * at whatever IB's paper engine determines is the fair price.
  */
-async function atmStrikeViaBs(
+function atmStrikeMarketFallback(
   symbol: string,
   right: 'C' | 'P',
   underlyingPrice: number,
   expiry: string,
-): Promise<AtmStrikeResult | null> {
-  const iv  = await estimateIV(symbol);
-  const dte = daysToExpiry(expiry);
-  if (dte < 0 || iv <= 0) return null;              // < not <=: allow same-day (0-DTE) expiries
-
+): AtmStrikeResult {
   const strike = atmStrikeForPrice(underlyingPrice);
-  const T = Math.max(dte, 0.5) / 365;              // floor at half-day to avoid T=0 div/0 in call BS
-  const r = 0.05;
-
-  let price: number;
-  let delta: number;
-  if (right === 'P') {
-    const bs = bsPut(underlyingPrice, strike, T, r, iv);
-    price = bs.price;
-    delta = bs.delta;
-  } else {
-    // BS call
-    const sqrtT = Math.sqrt(T);
-    const d1 = (Math.log(underlyingPrice / strike) + (r + 0.5 * iv * iv) * T) / (iv * sqrtT);
-    const d2 = d1 - iv * sqrtT;
-    price = underlyingPrice * normCdf(d1) - strike * Math.exp(-r * T) * normCdf(d2);
-    delta = normCdf(d1);
-  }
-
-  if (price < 0.05) return null; // option too cheap — too far OTM or too close to expiry
-
-  const spread = Math.max(price * 0.10, 0.05); // synthetic 10% spread
-  const bid    = Math.max(price - spread / 2, 0.01);
-  const ask    = price + spread / 2;
-  const mid    = price;
-  const spreadPct = mid > 0 ? (spread / mid) * 100 : 999;
-
-  console.log(`[Options Chain] ${symbol} ATM ${right} via BS fallback: strike $${strike}, mid $${mid.toFixed(2)}, delta ${delta.toFixed(2)}, dte ${dte}`);
-
-  return { strike, expiry, bid, ask, mid, delta, spreadPct };
+  console.log(`[Options Chain] ${symbol} ATM ${right} market-order fallback: strike $${strike}, exp ${expiry} (no live chain — paper MKT fill)`);
+  // delta ≈ 0.50 for ATM; bid/ask/mid = 0 signals "use market order" to callers
+  return { strike, expiry, bid: 0, ask: 0, mid: 0, delta: right === 'C' ? 0.50 : -0.50, spreadPct: 0 };
 }
 
 export async function findAtmStrike(
@@ -1124,9 +1098,9 @@ export async function findAtmStrike(
     }
   }
 
-  // ── BS fallback — IB chain unavailable (paper account data subscription) ──
-  // Paper accounts often lack live options market data (error 354) but can still
-  // place orders with known strikes. Use Black-Scholes with historical vol to
-  // compute a reasonable ATM price and delta for the limit order.
-  return atmStrikeViaBs(symbol, right, underlyingPrice, expiry);
+  // ── Market-order fallback — IB chain unavailable (paper account) ──────────
+  // Paper accounts lack live options market data (error 354 from reqMktData).
+  // Return strike=ATM, bid/ask/mid=0 — callers must use MKT order so the
+  // paper simulator determines the fill price. No pricing model needed.
+  return atmStrikeMarketFallback(symbol, right, underlyingPrice, expiry);
 }
