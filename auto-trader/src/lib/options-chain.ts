@@ -1035,6 +1035,62 @@ export interface AtmStrikeResult {
  * @param right     'C' = call (for bullish), 'P' = put (for bearish)
  * @param expiry    YYYYMMDD — use nearest weekly Friday
  */
+/** Standard strike intervals by price tier (mirrors listed equity options). */
+function atmStrikeForPrice(price: number): number {
+  const interval = price < 25 ? 1 : price < 200 ? 2.5 : 5;
+  return Math.round(price / interval) * interval;
+}
+
+/**
+ * Black-Scholes fallback for ATM option pricing.
+ * Used when IB's reqSecDefOptParams / reqMktData is unavailable (e.g. paper
+ * account without options data subscription).
+ *
+ * The delta of an ATM option converges to ~0.50 as expiry approaches.
+ * BS gives us a reasonable mid price and delta for an aggressive limit order.
+ */
+async function atmStrikeViaBs(
+  symbol: string,
+  right: 'C' | 'P',
+  underlyingPrice: number,
+  expiry: string,
+): Promise<AtmStrikeResult | null> {
+  const iv  = await estimateIV(symbol);
+  const dte = daysToExpiry(expiry);
+  if (dte <= 0 || iv <= 0) return null;
+
+  const strike = atmStrikeForPrice(underlyingPrice);
+  const T = dte / 365;
+  const r = 0.05;
+
+  let price: number;
+  let delta: number;
+  if (right === 'P') {
+    const bs = bsPut(underlyingPrice, strike, T, r, iv);
+    price = bs.price;
+    delta = bs.delta;
+  } else {
+    // BS call
+    const sqrtT = Math.sqrt(T);
+    const d1 = (Math.log(underlyingPrice / strike) + (r + 0.5 * iv * iv) * T) / (iv * sqrtT);
+    const d2 = d1 - iv * sqrtT;
+    price = underlyingPrice * normCdf(d1) - strike * Math.exp(-r * T) * normCdf(d2);
+    delta = normCdf(d1);
+  }
+
+  if (price < 0.05) return null; // option too cheap — too far OTM or too close to expiry
+
+  const spread = Math.max(price * 0.10, 0.05); // synthetic 10% spread
+  const bid    = Math.max(price - spread / 2, 0.01);
+  const ask    = price + spread / 2;
+  const mid    = price;
+  const spreadPct = mid > 0 ? (spread / mid) * 100 : 999;
+
+  console.log(`[Options Chain] ${symbol} ATM ${right} via BS fallback: strike $${strike}, mid $${mid.toFixed(2)}, delta ${delta.toFixed(2)}, dte ${dte}`);
+
+  return { strike, expiry, bid, ask, mid, delta, spreadPct };
+}
+
 export async function findAtmStrike(
   symbol: string,
   right: 'C' | 'P',
@@ -1043,41 +1099,34 @@ export async function findAtmStrike(
 ): Promise<AtmStrikeResult | null> {
   if (!isConnected()) return null;
 
+  // ── Try IB live chain first ───────────────────────────────────────────────
   const contractInfo = await getContractInfoCached(symbol);
-  if (!contractInfo) return null;
+  if (contractInfo) {
+    const params = await getOptionChainParams(contractInfo.conId, symbol);
+    if (params?.strikes?.length) {
+      // ATM = closest round-dollar strike to current price (kaycapitals rule #4)
+      const roundStrikes = params.strikes.filter((s: number) => Number.isInteger(s));
+      const candidates = roundStrikes.length
+        ? preferRoundStrikes(roundStrikes, underlyingPrice).slice(0, 5)
+        : preferRoundStrikes(params.strikes, underlyingPrice).slice(0, 5);
 
-  const params = await getOptionChainParams(contractInfo.conId, symbol);
-  if (!params?.strikes?.length) return null;
+      for (const strike of candidates) {
+        const greeks = await getOptionGreeksForContract(symbol, strike, expiry, right, underlyingPrice);
+        if (!greeks) continue;
 
-  // ATM = closest round-dollar strike to current price (kaycapitals rule #4)
-  const roundStrikes = params.strikes.filter((s: number) => Number.isInteger(s));
-  if (!roundStrikes.length) return null;
+        const absDelta = Math.abs(greeks.delta);
+        if (absDelta < 0.35 || absDelta > 0.65) continue;
+        if (greeks.bid < 0.05) continue;
 
-  // Sort round strikes by proximity to current price, prefer whole numbers
-  const atmTarget = underlyingPrice;
-  const candidates = preferRoundStrikes(roundStrikes, atmTarget).slice(0, 5);
-
-  for (const strike of candidates) {
-    const greeks = await getOptionGreeksForContract(symbol, strike, expiry, right, underlyingPrice);
-    if (!greeks) continue;
-
-    const absDelta = Math.abs(greeks.delta);
-    // ATM band: 0.35–0.65 delta
-    if (absDelta < 0.35 || absDelta > 0.65) continue;
-    if (greeks.bid < 0.05) continue;   // no real bid = no liquidity
-
-    const spreadPct = greeks.mid > 0 ? ((greeks.ask - greeks.bid) / greeks.mid) * 100 : 999;
-
-    return {
-      strike,
-      expiry,
-      bid: greeks.bid,
-      ask: greeks.ask,
-      mid: greeks.mid,
-      delta: greeks.delta,
-      spreadPct,
-    };
+        const spreadPct = greeks.mid > 0 ? ((greeks.ask - greeks.bid) / greeks.mid) * 100 : 999;
+        return { strike, expiry, bid: greeks.bid, ask: greeks.ask, mid: greeks.mid, delta: greeks.delta, spreadPct };
+      }
+    }
   }
 
-  return null;
+  // ── BS fallback — IB chain unavailable (paper account data subscription) ──
+  // Paper accounts often lack live options market data (error 354) but can still
+  // place orders with known strikes. Use Black-Scholes with historical vol to
+  // compute a reasonable ATM price and delta for the limit order.
+  return atmStrikeViaBs(symbol, right, underlyingPrice, expiry);
 }
