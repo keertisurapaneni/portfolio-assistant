@@ -296,7 +296,15 @@ export async function getDayTradeValidationReport(): Promise<DayTradeValidationR
   if (error) throw new Error(`Failed to fetch day trades: ${error.message}`);
   const trades = (data ?? []) as PaperTrade[];
 
-  const scannerTrades = trades.filter(t => t.entry_trigger_type === 'bracket_limit' && t.fill_price != null && t.pnl != null);
+  // Exclude zero-P&L ghost trades: positions that technically have a fill_price recorded
+  // but closed with essentially $0 P&L (cancelled before real execution, ACTIVE-status ghosts,
+  // or EOD-closed no-fill orders). These are not real executed trades and skew win rate.
+  const scannerTrades = trades.filter(t =>
+    t.entry_trigger_type === 'bracket_limit' &&
+    t.fill_price != null &&
+    t.pnl != null &&
+    Math.abs(t.pnl) > 0.10
+  );
   const withMarket = scannerTrades.filter(t => t.market_condition);
 
   const trendVsChop = ['trend', 'chop'].map(mc => {

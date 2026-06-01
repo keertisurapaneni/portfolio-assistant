@@ -208,8 +208,15 @@ Deno.serve(async (req) => {
 
     const trades = (tradesData ?? []) as PaperTradeRow[];
 
-    // Exclude dip-buy add-ons (same as trade_performance_log)
-    const filteredTrades = trades.filter(t => !(t.notes ?? '').startsWith('Dip buy'));
+    // Exclude dip-buy add-ons (same as trade_performance_log).
+    // Also exclude zero-P&L ghost trades — positions that have a fill_price recorded but closed
+    // with essentially $0 P&L (cancelled before real execution, ACTIVE-status ghosts,
+    // or EOD-closed no-fill orders from May 13-15 bug). These inflate trade count and
+    // drag down win rate without representing actual executed trades.
+    const filteredTrades = trades.filter(t =>
+      !(t.notes ?? '').startsWith('Dip buy') &&
+      Math.abs(t.pnl ?? 0) > 0.10
+    );
 
     // Equity trades: standard P&L = (exit - entry) × qty
     const equityTrades = filteredTrades.filter(t =>
