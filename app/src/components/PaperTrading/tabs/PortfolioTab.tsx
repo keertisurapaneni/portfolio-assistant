@@ -324,10 +324,9 @@ export function PortfolioTab({ positions, orders, orderTradeContext, pendingSign
                   }
                 });
 
-                // Standalone orders — group consecutive rows by ticker so a swing position
-                // with multiple TP/SL legs (e.g. 2 tranches = 4 rows) renders as a visual group.
-                // The ticker is shown only on the first row; subsequent rows in the same group
-                // are indented with a subtle left border.
+                // Standalone orders — group by ticker, then within each ticker group try to
+                // pair LMT (TP) + STP (SL) orders into collapsed bracket rows (same as parentId
+                // brackets). A 2-tranche swing position (4 standalone orders) collapses to 2 rows.
                 const tickerGroups = new Map<string, typeof standalone>();
                 const tickerOrder: string[] = [];
                 for (const order of standalone) {
@@ -336,54 +335,84 @@ export function PortfolioTab({ positions, orders, orderTradeContext, pendingSign
                   tickerGroups.get(key)!.push(order);
                 }
 
+                const statusBadge = (status: string) => (
+                  <span className={`inline-flex px-2 py-0.5 rounded text-[10px] font-bold ${
+                    status === 'Filled' ? 'bg-emerald-100 text-emerald-700'
+                      : status === 'Cancelled' ? 'bg-slate-100 text-slate-500'
+                      : 'bg-blue-100 text-blue-700'
+                  }`}>{status}</span>
+                );
+
                 for (const ticker of tickerOrder) {
                   const group = tickerGroups.get(ticker)!;
-                  group.forEach((order, idx) => {
-                    const isStop = order.orderType === 'STP';
-                    const isLimit = order.orderType === 'LMT';
-                    const isChild = order.parentId && order.parentId !== 0;
-                    const isGrouped = group.length > 1;
-                    const isFirst = idx === 0;
-                    const isLast = idx === group.length - 1;
-                    let role = 'Entry';
-                    if (isStop) role = 'SL';
-                    else if (isChild && isLimit) role = 'TP';
+                  const ltms = group.filter(o => o.orderType === 'LMT').sort((a, b) => Number(a.price) - Number(b.price));
+                  const stps = group.filter(o => o.orderType === 'STP').sort((a, b) => Number(a.price) - Number(b.price));
+                  const others = group.filter(o => o.orderType !== 'LMT' && o.orderType !== 'STP');
+
+                  // Pair each LMT with one STP — renders as a collapsed bracket row
+                  const pairedCount = Math.min(ltms.length, stps.length);
+                  for (let i = 0; i < pairedCount; i++) {
+                    const lmt = ltms[i];
+                    const stp = stps[i];
+                    const slPrice = Number(stp.price).toFixed(2);
+                    const tpPrice = Number(lmt.price).toFixed(2);
+                    const pairedStatus = stp.status === 'Filled' || lmt.status === 'Filled' ? 'Filled'
+                      : stp.status === 'Cancelled' || lmt.status === 'Cancelled' ? 'Cancelled'
+                      : stp.status;
                     rows.push(
-                      <tr
-                        key={`${order.orderId}`}
-                        className={`hover:bg-[hsl(var(--secondary))]/50 ${isGrouped && !isFirst ? 'bg-[hsl(var(--secondary))]/20' : ''}`}
-                      >
-                        <td className={`px-4 py-2.5 font-bold ${isGrouped && !isFirst ? 'pl-7 border-l-2 border-violet-200' : ''} ${isGrouped && isFirst ? 'pb-1' : ''} ${isGrouped && isLast ? 'pt-1' : ''}`}>
-                          {isFirst ? order.ticker : (
-                            <span className="text-[hsl(var(--muted-foreground))] text-xs font-normal">└</span>
-                          )}
+                      <tr key={`pair-${lmt.orderId}-${stp.orderId}`} className="hover:bg-[hsl(var(--secondary))]/50">
+                        <td className="px-4 py-3 font-bold">{i === 0 ? ticker : ''}</td>
+                        <td className="px-4 py-3">
+                          <span className={`inline-flex px-2 py-0.5 rounded text-[10px] font-bold ${stp.side === 'BUY' ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'}`}>
+                            {stp.side}
+                          </span>
                         </td>
-                        <td className="px-4 py-2.5">
+                        <td className="px-4 py-3 text-right tabular-nums">{stp.quantity}</td>
+                        <td className="px-4 py-3">
+                          <div className="flex items-center gap-1.5 text-xs">
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-red-50 text-red-600 font-medium tabular-nums">SL ${slPrice}</span>
+                            <span className="text-[hsl(var(--muted-foreground))] select-none">←——→</span>
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-50 text-emerald-600 font-medium tabular-nums">TP ${tpPrice}</span>
+                          </div>
+                        </td>
+                        {i === 0
+                          ? <SourceCell orderId={lmt.orderId} parentId={lmt.parentId} ticker={ticker} />
+                          : <td className="px-4 py-3" />
+                        }
+                        <td className="px-4 py-3">{statusBadge(pairedStatus)}</td>
+                      </tr>
+                    );
+                  }
+
+                  // Unpaired leftovers (uneven LMT/STP counts) render individually
+                  const unpaired = [
+                    ...ltms.slice(pairedCount),
+                    ...stps.slice(pairedCount),
+                    ...others,
+                  ];
+                  unpaired.forEach((order, idx) => {
+                    const isStop = order.orderType === 'STP';
+                    rows.push(
+                      <tr key={`${order.orderId}`} className="hover:bg-[hsl(var(--secondary))]/50">
+                        <td className="px-4 py-3 font-bold">{pairedCount === 0 && idx === 0 ? order.ticker : ''}</td>
+                        <td className="px-4 py-3">
                           <span className={`inline-flex px-2 py-0.5 rounded text-[10px] font-bold ${order.side === 'BUY' ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'}`}>
                             {order.side}
                           </span>
                         </td>
-                        <td className="px-4 py-2.5 text-right tabular-nums">{order.quantity}</td>
-                        <td className="px-4 py-2.5 text-xs text-[hsl(var(--muted-foreground))]">
+                        <td className="px-4 py-3 text-right tabular-nums">{order.quantity}</td>
+                        <td className="px-4 py-3 text-xs text-[hsl(var(--muted-foreground))]">
                           <span className="tabular-nums">{order.price ? `$${Number(order.price).toFixed(2)}` : '—'}</span>
                           <span className="ml-1.5 text-[10px] opacity-60">{order.orderType}</span>
-                          <span className={`ml-2 inline-flex px-1.5 py-0.5 rounded text-[10px] font-medium ${isStop ? 'bg-red-50 text-red-600' : isChild ? 'bg-emerald-50 text-emerald-600' : 'bg-sky-50 text-sky-600'}`}>
-                            {role}
+                          <span className={`ml-2 inline-flex px-1.5 py-0.5 rounded text-[10px] font-medium ${isStop ? 'bg-red-50 text-red-600' : 'bg-emerald-50 text-emerald-600'}`}>
+                            {isStop ? 'SL' : 'TP'}
                           </span>
                         </td>
-                        {isFirst
+                        {pairedCount === 0 && idx === 0
                           ? <SourceCell orderId={order.orderId} parentId={order.parentId} ticker={order.ticker} />
-                          : <td className="px-4 py-2.5" />
+                          : <td className="px-4 py-3" />
                         }
-                        <td className="px-4 py-2.5">
-                          <span className={`inline-flex px-2 py-0.5 rounded text-[10px] font-bold ${
-                            order.status === 'Filled' ? 'bg-emerald-100 text-emerald-700'
-                              : order.status === 'Cancelled' ? 'bg-slate-100 text-slate-500'
-                              : 'bg-blue-100 text-blue-700'
-                          }`}>
-                            {order.status}
-                          </span>
-                        </td>
+                        <td className="px-4 py-3">{statusBadge(order.status)}</td>
                       </tr>
                     );
                   });
