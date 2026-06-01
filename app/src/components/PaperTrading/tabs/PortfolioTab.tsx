@@ -258,11 +258,24 @@ export function PortfolioTab({ positions, orders, orderTradeContext, pendingSign
                 const resolveCtx = (orderId: number, parentId?: number, ticker?: string): OrderTradeContext | undefined =>
                   byId.get(parentId ?? 0) ?? byId.get(orderId) ?? (ticker ? byTicker.get(ticker.toUpperCase()) : undefined);
 
+                const fmtOrderDate = (iso: string | null): string => {
+                  if (!iso) return '';
+                  const d = new Date(iso);
+                  const now = new Date();
+                  const todayET = now.toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+                  const orderDateET = d.toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+                  if (orderDateET === todayET) {
+                    return d.toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit', hour12: true });
+                  }
+                  return d.toLocaleDateString('en-US', { timeZone: 'America/New_York', month: 'short', day: 'numeric' });
+                };
+
                 const SourceCell = ({ orderId, parentId, ticker }: { orderId: number; parentId?: number; ticker?: string }) => {
                   const trade = resolveCtx(orderId, parentId, ticker);
                   if (!trade) return <td className="px-4 py-3" />;
                   const modeLabel = MODE_LABELS[trade.mode] ?? trade.mode;
                   const sourceLabel = getSourceLabel(trade);
+                  const dateLabel = fmtOrderDate(trade.opened_at);
                   return (
                     <td className="px-4 py-3">
                       <div className="flex flex-col gap-0.5">
@@ -270,6 +283,9 @@ export function PortfolioTab({ positions, orders, orderTradeContext, pendingSign
                           {modeLabel}
                         </span>
                         <span className="text-[10px] text-[hsl(var(--muted-foreground))]">{sourceLabel}</span>
+                        {dateLabel && (
+                          <span className="text-[10px] text-[hsl(var(--muted-foreground))] opacity-70">{dateLabel}</span>
+                        )}
                       </div>
                     </td>
                   );

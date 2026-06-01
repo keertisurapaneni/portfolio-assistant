@@ -1885,6 +1885,7 @@ export interface OrderTradeContext {
   scanner_reason: string | null;
   entry_trigger_type: string | null;
   notes: string | null;
+  opened_at: string | null;
 }
 
 export interface OrderTradeContextMaps {
@@ -1902,7 +1903,7 @@ export interface OrderTradeContextMaps {
 export async function getOrderTradeContext(): Promise<OrderTradeContextMaps> {
   const { data } = await supabase
     .from('paper_trades')
-    .select('ticker, ib_order_id, mode, scanner_reason, entry_trigger_type, notes')
+    .select('ticker, ib_order_id, mode, scanner_reason, entry_trigger_type, notes, opened_at')
     .in('status', ['ACTIVE', 'SUBMITTED', 'FILLED'])
     .not('ib_order_id', 'is', null);
 
@@ -1915,6 +1916,7 @@ export async function getOrderTradeContext(): Promise<OrderTradeContextMaps> {
       scanner_reason: row.scanner_reason ?? null,
       entry_trigger_type: row.entry_trigger_type ?? null,
       notes: row.notes ?? null,
+      opened_at: row.opened_at ?? null,
     };
     const id = Number(row.ib_order_id);
     if (!isNaN(id)) byOrderId.set(id, ctx);
