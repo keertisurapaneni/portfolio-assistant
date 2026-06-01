@@ -6546,10 +6546,15 @@ async function checkProfitTakeOpportunities(
   const trimmedTickers = new Set<string>();
   if (!config.profitTakeEnabled || !config.accountId) return trimmedTickers;
 
+  // Profit-taking must run even when LONG_TERM mode is 'off' (off = no new entries,
+  // NOT "ignore existing positions"). Fall back to paper connection when mode is off.
   let ptConnections: RoutedConnection[];
   try {
     ptConnections = getConnectionForMode('LONG_TERM', config).connections;
-  } catch { return trimmedTickers; }
+  } catch {
+    // Mode is off — still manage existing filled LT positions via paper connection
+    ptConnections = [{ connection: getConnectionForAccount('paper'), accountType: 'paper' }];
+  }
   const ptAcct = ptConnections[0].accountType;
 
   const activeTrades = await getActiveTrades(ptAcct);
