@@ -5724,11 +5724,18 @@ async function _syncPositionsForAccount(
         pnl: pnlVal,
         pnl_percent: pnlPct,
       };
-      analyzeCompletedTrade(closedTrade)
-        .then(ok => {
-          if (ok) updatePerformancePatterns().catch(() => {});
-        })
-        .catch(err => log(`Trade analysis failed for ${trade.ticker}: ${err instanceof Error ? err.message : 'unknown'}`));
+      // Only learn from our own system's trades — influencer signals have no
+      // feedback loop value since we can't tune their external strategy.
+      const isInfluencerTrade = !!(closedTrade.strategy_source || closedTrade.strategy_video_id);
+      if (!isInfluencerTrade) {
+        analyzeCompletedTrade(closedTrade)
+          .then(ok => {
+            if (ok) updatePerformancePatterns().catch(() => {});
+          })
+          .catch(err => log(`Trade analysis failed for ${trade.ticker}: ${err instanceof Error ? err.message : 'unknown'}`));
+      } else {
+        log(`${trade.ticker}: skipping system learning — influencer trade (source: ${closedTrade.strategy_source ?? closedTrade.strategy_video_id})`);
+      }
       if (trade.mode === 'LONG_TERM' && !(trade.notes ?? '').startsWith('Dip buy')) {
         const tradeForLog = {
           ...closedTrade,

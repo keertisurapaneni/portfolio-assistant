@@ -954,12 +954,15 @@ export async function recalculatePerformanceByCategory(accountView: AccountView 
       filter: (t) => t.mode === 'DAY_TRADE',
     },
     {
+      // Our system's own AI signals: no influencer source, no strategy video
       key: 'scanner_day_trade',
-      filter: (t) => t.mode === 'DAY_TRADE' && !t.strategy_video_id,
+      filter: (t) => t.mode === 'DAY_TRADE' && !t.strategy_video_id && !t.strategy_source,
     },
     {
+      // External influencer signals: either from a strategy video (YouTube) or
+      // a named influencer source (e.g. Somesh's Instagram bracket signals)
       key: 'influencer_day_trade',
-      filter: (t) => t.mode === 'DAY_TRADE' && !!t.strategy_video_id,
+      filter: (t) => t.mode === 'DAY_TRADE' && (!!t.strategy_video_id || !!t.strategy_source),
     },
     {
       key: 'day_penny',
