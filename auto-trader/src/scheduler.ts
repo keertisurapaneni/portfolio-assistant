@@ -3415,6 +3415,7 @@ async function executeScannerTrade(
   idea: TradeIdea,
   config: AutoTraderConfig,
   positions: EnrichedPosition[],
+  opts?: { isExternalSignal?: boolean },
 ): Promise<string> {
   const { ticker, signal, confidence: scannerConf, mode } = idea;
 
@@ -4185,12 +4186,14 @@ async function executeScannerTrade(
         ...(candlePatternLog.length > 0 && { metadata: { candle_patterns: candlePatternLog } }),
       }, accountType);
 
-      // Push executed trade into trade_scans so it shows in Trade Signals UI
-      // regardless of whether it came from a watchlist, screener, or external signal.
+      // Push executed trade into trade_scans so it shows in Trade Signals UI.
+      // External/influencer signals pass isExternalSignal=true so they don't
+      // overwrite our scanner's own status for that ticker.
       pushExecutedTradeToScan({
         ticker, signal, mode, entryPrice,
         stopLoss, targetPrice, confidence: Math.round(effectiveScannerConf),
         reason: idea.reason ?? `${mode}: ${signal} @ $${entryPrice}`,
+        isExternalSignal: opts?.isExternalSignal,
       }).catch(() => {});
 
       if (!primaryResult) primaryResult = 'executed';
@@ -4469,6 +4472,10 @@ async function pushExecutedTradeToScan(trade: {
   ticker: string; signal: string; mode: string;
   entryPrice: number; stopLoss: number; targetPrice: number;
   confidence: number; reason: string;
+  /** When true, the entry will NOT overwrite an existing scanner entry for that ticker.
+   *  External/influencer executions tracked in external_strategy_signals already —
+   *  they should not clobber our scanner's own status in trade_scans. */
+  isExternalSignal?: boolean;
 }): Promise<void> {
   const sb = getSupabase();
   const scanId = trade.mode === 'SWING_TRADE' ? 'swing_trades' : 'day_trades';
@@ -4483,7 +4490,15 @@ async function pushExecutedTradeToScan(trade: {
     ? ((existing as { data: unknown[] }).data)
     : [];
 
-  // Deduplicate — replace existing entry for same ticker if present
+  // External signal executions: skip if our scanner already has an entry for this ticker.
+  // Influencer trades have their own tracking in external_strategy_signals; we must not
+  // let them overwrite our scanner's "Armed / Watching / Blocked" status in the UI.
+  const existingForTicker = currentData.find(
+    (r: unknown) => (r as { ticker?: string }).ticker?.toUpperCase() === trade.ticker.toUpperCase()
+  );
+  if (trade.isExternalSignal && existingForTicker) return;
+
+  // Deduplicate — replace existing entry for same ticker if present (scanner-to-scanner)
   const filtered = currentData.filter(
     (r: unknown) => (r as { ticker?: string }).ticker?.toUpperCase() !== trade.ticker.toUpperCase()
   );
@@ -4494,7 +4509,7 @@ async function pushExecutedTradeToScan(trade: {
     confidence: trade.confidence,
     price: trade.entryPrice,
     reason: `[Executed] ${trade.reason}`,
-    tags: ['executed', trade.mode.toLowerCase()],
+    tags: ['executed', trade.mode.toLowerCase(), ...(trade.isExternalSignal ? ['influencer'] : [])],
     mode: trade.mode,
     stopLoss: trade.stopLoss,
     targetPrice: trade.targetPrice,
@@ -4523,7 +4538,7 @@ async function syncTodayExecutedTradesToScan(): Promise<void> {
 
   const { data: trades } = await sb
     .from('paper_trades')
-    .select('ticker, mode, signal, entry_price, stop_loss, target_price, scanner_confidence, scanner_reason')
+    .select('ticker, mode, signal, entry_price, stop_loss, target_price, scanner_confidence, scanner_reason, strategy_source, strategy_video_id')
     .in('mode', ['DAY_TRADE', 'DAY_PENNY', 'SWING_TRADE'])
     .not('ib_order_id', 'is', null)
     .gte('opened_at', midnightEtUtc.toISOString())
@@ -4532,6 +4547,7 @@ async function syncTodayExecutedTradesToScan(): Promise<void> {
   if (!trades?.length) return;
 
   for (const t of trades) {
+    const isExternal = !!(t.strategy_source || t.strategy_video_id);
     await pushExecutedTradeToScan({
       ticker: t.ticker,
       signal: t.signal ?? 'BUY',
@@ -4541,6 +4557,7 @@ async function syncTodayExecutedTradesToScan(): Promise<void> {
       targetPrice: t.target_price ?? 0,
       confidence: t.scanner_confidence ?? 7,
       reason: t.scanner_reason ?? t.mode,
+      isExternalSignal: isExternal,
     }).catch(() => {});
   }
   log(`[Scheduler] Synced ${trades.length} today's trade(s) into Trade Signals`);
