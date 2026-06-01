@@ -3869,9 +3869,59 @@ async function executeScannerTrade(
     log(`${ticker}: confidence sizing — conf ${scannerConf} ${signal} → ${confMultiplier}x cap ($${scannerPositionCap.toFixed(0)})`);
   }
 
+  // ── Swing SELL (short) hard gates ─────────────────────────────────────────
+  // Shorting individual stocks is high-risk in a bull market. Three gates must
+  // ALL pass before a swing SELL executes:
+  //   Gate A: SPY must be BELOW its 50-day SMA (i.e. not a bull market).
+  //           In a bull market the macro bid lifts even weak stocks above stops.
+  //   Gate B: Stock RSI must be ABOVE 35. Shorting an already-oversold stock
+  //           (RSI < 35) is the classic squeeze setup — "a bounce is likely."
+  //   Gate C: Stock must NOT be extended downward (< 12% drop in 10 days).
+  //           Chasing an extended move gives poor risk/reward.
+  // Failure = skip the trade entirely (not just reduce size).
+  if (mode === 'SWING_TRADE' && signal === 'SELL') {
+    try {
+      const spyBars = await fetchYahooDailyBars('SPY');
+      if (spyBars && spyBars.closes.length >= 50) {
+        const closes = spyBars.closes;
+        const price = closes[closes.length - 1];
+        const sma50 = closes.slice(-50).reduce((a: number, b: number) => a + b, 0) / 50;
+        if (price >= sma50) {
+          log(`${ticker}: swing SELL blocked — SPY ($${price.toFixed(2)}) above SMA50 ($${sma50.toFixed(2)}) — bull market, no shorting`);
+          return 'skipped:swing_short_bull_market';
+        }
+      }
+    } catch { /* non-blocking — if we can't check SPY, allow the trade */ }
+
+    try {
+      const rsiData = await finnhubFetch<{ rsi?: number[] }>(
+        `${FINNHUB_BASE}/indicator?symbol=${ticker}&resolution=D&indicator=rsi&timeperiod=14&token=${FINNHUB_KEY}`
+      );
+      const rsiValues = rsiData?.rsi ?? [];
+      const latestRsi = rsiValues[rsiValues.length - 1];
+      if (typeof latestRsi === 'number' && latestRsi < 35) {
+        log(`${ticker}: swing SELL blocked — RSI ${latestRsi.toFixed(1)} < 35 (oversold — bounce risk, not a short candidate)`);
+        return 'skipped:swing_short_oversold';
+      }
+    } catch { /* non-blocking */ }
+
+    try {
+      const stockBars = await fetchYahooDailyBars(ticker);
+      if (stockBars && stockBars.closes.length >= 11) {
+        const closes = stockBars.closes;
+        const today = closes[closes.length - 1];
+        const tenDaysAgo = closes[closes.length - 11];
+        const pctDrop = (tenDaysAgo - today) / tenDaysAgo * 100;
+        if (pctDrop > 12) {
+          log(`${ticker}: swing SELL blocked — stock already down ${pctDrop.toFixed(1)}% in 10 days (extended move, poor risk/reward)`);
+          return 'skipped:swing_short_extended';
+        }
+      }
+    } catch { /* non-blocking */ }
+  }
+
   // SPY regime multiplier for swing BUY: reduce size in bearish macro conditions.
-  // SELL signals (closing longs or shorts) benefit from bearish markets — no reduction.
-  // Non-blocking: defaults to 1.0 on any data failure.
+  // SELL signals handled above with hard gates. Non-blocking: defaults to 1.0 on failure.
   let spyRegimeMult = 1.0;
   if (mode === 'SWING_TRADE' && signal === 'BUY') {
     try {
@@ -3879,8 +3929,8 @@ async function executeScannerTrade(
       if (spyBars && spyBars.closes.length >= 200) {
         const closes = spyBars.closes;
         const price = closes[closes.length - 1];
-        const sma50 = closes.slice(-50).reduce((a, b) => a + b, 0) / 50;
-        const sma200 = closes.slice(-200).reduce((a, b) => a + b, 0) / 200;
+        const sma50 = closes.slice(-50).reduce((a: number, b: number) => a + b, 0) / 50;
+        const sma200 = closes.slice(-200).reduce((a: number, b: number) => a + b, 0) / 200;
         if (price < sma200) {
           spyRegimeMult = 0.4;
           log(`${ticker}: SPY below SMA200 — swing BUY size ×0.4 (bearish regime)`);
