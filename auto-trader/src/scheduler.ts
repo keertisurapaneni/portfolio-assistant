@@ -604,6 +604,32 @@ export function startScheduler(): void {
   }, { timezone: 'America/New_York' });
   log('Options scalp management + VWAP retest scan: every 15 min, 10 AM–3 PM ET');
 
+  // SPY Basketball scan — every 5 min, 10 AM–3 PM ET.
+  // Watches $5 SPY levels (= 50 SPX points) for fresh zone entry → 0DTE ATM call/put.
+  // Only fires when SPY is within 5% of its 52-week high (strategy requires ATH context).
+  cron.schedule('*/5 10-14 * * 1-5', async () => {
+    try {
+      const { runBasketballScan } = await import('./lib/spy-basketball.js');
+      await runBasketballScan();
+    } catch (err) {
+      console.error('[Scheduler] Basketball scan error:', err instanceof Error ? err.message : err);
+    }
+  }, { timezone: 'America/New_York' });
+  log('SPY Basketball scan: every 5 min, 10 AM–3 PM ET');
+
+  // SPY Basketball 0DTE early close — 3:30 PM ET.
+  // 0DTE options must be closed earlier than the 3:45 PM scalp close to avoid
+  // exercise/assignment risk and illiquid fills in the last 15 min of the session.
+  cron.schedule('30 15 * * 1-5', async () => {
+    try {
+      const { closeBasketballPositionsEod } = await import('./lib/spy-basketball.js');
+      await closeBasketballPositionsEod();
+    } catch (err) {
+      console.error('[Scheduler] Basketball EOD close error:', err instanceof Error ? err.message : err);
+    }
+  }, { timezone: 'America/New_York' });
+  log('SPY Basketball 0DTE close: 3:30 PM ET');
+
   // LEAP position management — every Monday 11:30 AM ET.
   // Checks profit target (2×), thesis-break exit (−20% stock), and DTE alert (<90 days).
   cron.schedule('30 11 * * 1', async () => {
