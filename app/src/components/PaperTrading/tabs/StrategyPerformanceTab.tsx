@@ -349,7 +349,13 @@ export function StrategyPerformanceTab({ sources, videos, statuses, onRefresh }:
     setFixing(true);
     fixUnknownSources()
       .then(({ fixed }) => {
-        if (fixed > 0) onRefresh();
+        if (fixed > 0) {
+          // Reset guard so that if the refresh surfaces new Unknown entries
+          // (e.g. signals created between the last fix and now), the effect
+          // fires again on the next render cycle.
+          autoFixAttempted.current = false;
+          onRefresh();
+        }
       })
       .finally(() => setFixing(false));
   }, [hasUnknown, onRefresh]);

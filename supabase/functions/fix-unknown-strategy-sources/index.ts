@@ -194,8 +194,48 @@ Deno.serve(async (req) => {
     }
   }
 
+  // Phase 2: fix orphaned signals — strategy_videos was already corrected but
+  // signals created after the fix still carry source_name = 'Unknown'.
+  // Cross-reference by strategy_video_id to pull the authoritative source name.
+  let signalStrayFixed = 0;
+  try {
+    const { data: unknownSignals } = await supabase
+      .from('external_strategy_signals')
+      .select('strategy_video_id, source_name')
+      .eq('source_name', 'Unknown')
+      .not('strategy_video_id', 'is', null)
+      .limit(200);
+
+    if (unknownSignals && unknownSignals.length > 0) {
+      const videoIds = [...new Set((unknownSignals as Array<{ strategy_video_id: string }>).map(r => r.strategy_video_id))];
+      const { data: resolvedVideos } = await supabase
+        .from('strategy_videos')
+        .select('video_id, source_name, source_handle, reel_url')
+        .in('video_id', videoIds)
+        .not('source_name', 'eq', 'Unknown')
+        .not('source_name', 'is', null);
+
+      if (resolvedVideos && resolvedVideos.length > 0) {
+        for (const vid of resolvedVideos as Array<{ video_id: string; source_name: string; source_handle: string | null; reel_url: string | null }>) {
+          const handle = vid.source_handle ?? vid.source_name.toLowerCase().replace(/\s+/g, '');
+          const sourceUrl = `https://www.instagram.com/${handle}/`;
+          const { count } = await supabase
+            .from('external_strategy_signals')
+            .update({ source_name: vid.source_name, source_url: sourceUrl, updated_at: new Date().toISOString() })
+            .eq('strategy_video_id', vid.video_id)
+            .eq('source_name', 'Unknown')
+            .select('id', { count: 'exact', head: true });
+          signalStrayFixed += (count ?? 0);
+        }
+      }
+    }
+  } catch {
+    // non-blocking
+  }
+
+  const totalFixed = results.filter(r => r.status === 'fixed').length + signalStrayFixed;
   return new Response(
-    JSON.stringify({ ok: true, fixed: results.filter(r => r.status === 'fixed').length, results }),
+    JSON.stringify({ ok: true, fixed: totalFixed, results, signalStrayFixed }),
     { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
   );
 });
