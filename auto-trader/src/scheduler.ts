@@ -6728,6 +6728,9 @@ async function checkProfitTakeOpportunities(
         });
 
         const realizedPnl = actualTrimQty * (avgFillPrice - ibPos.avgCost);
+        const realizedPct = ibPos.avgCost > 0
+          ? parseFloat(((avgFillPrice - ibPos.avgCost) / ibPos.avgCost * 100).toFixed(2))
+          : null;
 
         await createPaperTrade({
           ticker: trade.ticker, mode: 'LONG_TERM', signal: 'SELL',
@@ -6738,6 +6741,7 @@ async function checkProfitTakeOpportunities(
           status: 'CLOSED',
           ib_order_id: String(orderId),
           pnl: realizedPnl,
+          pnl_percent: realizedPct,
           pnl_source: 'ib_fill_calculated',
           close_reason: 'profit_take',
           closed_at: new Date().toISOString(),
