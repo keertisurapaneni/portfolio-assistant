@@ -909,6 +909,12 @@ async function closeAllDayTrades(config: AutoTraderConfig): Promise<void> {
                 accountType: acctType,
               });
               log(`${trade.ticker}: EOD — recorded bracket close (${childType}) @ $${cf.fill_price}, P&L ≈ $${pnl.toFixed(2)}`);
+              persistEvent(trade.ticker, 'success',
+                `${childType === 'TP' ? 'Target hit' : 'Stop loss hit'}: sold ${qty} @ $${cf.fill_price.toFixed(2)} | P&L $${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)} (bracket ${childType})`,
+                { action: 'sell', source: 'system', mode: trade.mode as string,
+                  metadata: { close_reason: childType === 'TP' ? 'target_hit' : 'stop_loss_hit', pnl, bracket_order_id: cf.order_id } },
+                acctType,
+              ).catch(() => {});
               continue;
             }
           }
@@ -5633,7 +5639,29 @@ async function _syncPositionsForAccount(
       const slId = trade.ib_sl_order_id ? parseInt(trade.ib_sl_order_id, 10) : NaN;
       const tpFill = !Number.isNaN(tpId) ? await getOrderFillPriceWithFallback(tpId) : undefined;
       const slFill = !Number.isNaN(slId) ? await getOrderFillPriceWithFallback(slId) : undefined;
-      const ibExitFill = tpFill ?? slFill;
+      let ibExitFill = tpFill ?? slFill;
+
+      // Fallback for direct market sells (no bracket IDs): when the auto-trader placed
+      // a sell order that timed out or disconnected before the fill arrived, the paper_trade
+      // stays FILLED but the ib_fills table has the actual close price keyed by ticker+side.
+      // Check for a SLD fill for this ticker today so we can recover without a fallback quote.
+      if (ibExitFill === undefined && !trade.ib_tp_order_id && !trade.ib_sl_order_id) {
+        const todayStart = new Date();
+        todayStart.setHours(0, 0, 0, 0);
+        const { data: tickerFill } = await getSupabase()
+          .from(syncAcct === 'live' ? 'live_fills' : 'ib_fills')
+          .select('fill_price, filled_at')
+          .eq('ticker', trade.ticker.toUpperCase())
+          .in('side', ['SLD', 'SELL'])
+          .gte('filled_at', todayStart.toISOString())
+          .order('filled_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        if (tickerFill) {
+          ibExitFill = (tickerFill as { fill_price: number }).fill_price;
+          log(`${trade.ticker}: Recovered exit fill $${ibExitFill} from ib_fills by ticker (direct sell, no bracket IDs)`);
+        }
+      }
 
       // If we have a confirmed IB exit fill, close immediately (no guard needed)
       const hasConfirmedFill = ibExitFill !== undefined;
@@ -5733,6 +5761,16 @@ async function _syncPositionsForAccount(
         extraUpdates: { r_multiple: rMultiple, missing_since: null },
       } as Parameters<typeof recordTradeClose>[0]);
       log(`${trade.ticker}: Closed [${syncAcct}] (${closeReason}) — P&L $${pnl.toFixed(2)}${hasConfirmedFill ? '' : ' [fallback price]'}`);
+      const closeLabel = status === 'TARGET_HIT' ? 'Target hit'
+        : status === 'STOPPED' ? 'Stop loss hit'
+        : closeReason === 'stop_loss' ? 'Stop loss hit'
+        : 'Closed';
+      persistEvent(trade.ticker, 'success',
+        `${closeLabel}: sold ${qty} @ $${actual.toFixed(2)} | P&L $${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}${hasConfirmedFill ? '' : ' [estimated]'}`,
+        { action: 'sell', source: 'system', mode: trade.mode as string,
+          metadata: { close_reason: closeReason, pnl: pnlVal, confirmed_fill: hasConfirmedFill } },
+        syncAcct,
+      ).catch(() => {});
       const closedTrade = {
         ...trade,
         status,
