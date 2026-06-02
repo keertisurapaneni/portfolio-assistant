@@ -5631,6 +5631,55 @@ async function _syncPositionsForAccount(
       // Unrealized P&L for open trades is computed on-the-fly by the frontend.
       // Do NOT write it to the pnl field — that field is reserved for realized P&L
       // set by recordTradeClose() with a confirmed pnl_source.
+
+      // When multiple trades exist for the same ticker, IB shows one combined
+      // position. A bracket TP/SL for one trade can fill while another trade
+      // keeps the position count > 0. Detect this: if THIS trade's TP or SL
+      // order is already filled, close it here rather than waiting for the
+      // position-gone path (which will never trigger in the multi-trade case).
+      if (trade.status === 'FILLED' && (trade.ib_tp_order_id || trade.ib_sl_order_id)) {
+        const bracketTpId = trade.ib_tp_order_id ? parseInt(trade.ib_tp_order_id, 10) : NaN;
+        const bracketSlId = trade.ib_sl_order_id ? parseInt(trade.ib_sl_order_id, 10) : NaN;
+        const bracketTpFill = !Number.isNaN(bracketTpId) ? await getOrderFillPriceWithFallback(bracketTpId) : undefined;
+        const bracketSlFill = !Number.isNaN(bracketSlId) ? await getOrderFillPriceWithFallback(bracketSlId) : undefined;
+        const bracketFillPrice = bracketTpFill ?? bracketSlFill;
+        if (bracketFillPrice !== undefined) {
+          log(`${trade.ticker}: Bracket TP/SL filled @ $${bracketFillPrice} (position still exists for another trade) — closing`);
+          const fillPrice = trade.fill_price ?? trade.entry_price ?? 0;
+          const qty = trade.quantity ?? 1;
+          const isLong = trade.signal === 'BUY';
+          const pnl = isLong ? (bracketFillPrice - fillPrice) * qty : (fillPrice - bracketFillPrice) * qty;
+          const closeReason: import('../../shared/trade-types.js').CloseReason = bracketTpFill !== undefined ? 'target_hit' : 'stop_loss';
+          const status: import('../../shared/trade-types.js').TradeStatus = bracketTpFill !== undefined ? 'TARGET_HIT' : 'STOPPED';
+          let rMultiple: number | null = null;
+          if (trade.stop_loss != null && trade.entry_price != null && trade.entry_price !== trade.stop_loss) {
+            const riskPerShare = Math.abs(trade.entry_price - trade.stop_loss);
+            rMultiple = isLong
+              ? (bracketFillPrice - fillPrice) / riskPerShare
+              : (fillPrice - bracketFillPrice) / riskPerShare;
+            rMultiple = parseFloat(rMultiple.toFixed(2));
+          }
+          await recordTradeClose({
+            tradeId: trade.id,
+            closePrice: bracketFillPrice,
+            closeReason,
+            status,
+            orderId: (bracketTpFill !== undefined ? bracketTpId : bracketSlId) || undefined,
+            accountType: syncAcct,
+            overridePnlSource: 'ib_fill_calculated',
+            extraUpdates: { r_multiple: rMultiple, missing_since: null },
+          } as Parameters<typeof recordTradeClose>[0]);
+          const pnlVal = parseFloat(pnl.toFixed(2));
+          log(`${trade.ticker}: Closed [${syncAcct}] (${closeReason}) via bracket @ $${bracketFillPrice} — P&L $${pnl.toFixed(2)}`);
+          const closeLabel = status === 'TARGET_HIT' ? 'Target hit' : 'Stop loss hit';
+          persistEvent(trade.ticker, 'success',
+            `${closeLabel}: sold ${qty} @ $${bracketFillPrice.toFixed(2)} | P&L $${pnl >= 0 ? '+' : ''}${pnlVal.toFixed(2)}`,
+            { action: 'sell', source: 'system', mode: trade.mode as string,
+              metadata: { close_reason: closeReason, pnl: pnlVal, confirmed_fill: true } },
+            syncAcct,
+          ).catch(() => {});
+        }
+      }
     } else if (trade.status === 'FILLED') {
       // Position gone — closed by bracket TP/SL or manual action.
       // 2-cycle guard: don't auto-close on first detection. Set missing_since,
