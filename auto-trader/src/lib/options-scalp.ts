@@ -19,7 +19,7 @@
  */
 
 import { getSupabase, createAutoTradeEvent } from './supabase.js';
-import { isConnected, placeOptionsOrder, getDefaultAccount } from '../ib-connection.js';
+import { isConnected, placeOptionsOrder, cancelOrder, getDefaultAccount } from '../ib-connection.js';
 import { findAtmStrike, getOptionGreeksForContract } from './options-chain.js';
 import { finnhubFetch, FINNHUB_KEY } from './finnhub.js';
 import { detectVwapReclaim, VWAP_RELIABLE_HOUR_ET } from './vwap.js';
@@ -386,6 +386,16 @@ async function executeScalp(p: ScalpParams): Promise<boolean> {
   }
 
   if (result.timedOut || !result.avgFillPrice || result.avgFillPrice <= 0) {
+    // Cancel the live GTC order in IB — without this the order stays open and can
+    // ghost-fill the next morning even though the DB already shows CANCELLED.
+    if (result.orderId && isConnected()) {
+      try {
+        cancelOrder(result.orderId);
+        console.log(`[Options Scalp] ${p.ticker} — cancelled IB order #${result.orderId} (no fill)`);
+      } catch (cancelErr) {
+        console.warn(`[Options Scalp] ${p.ticker} — cancel IB #${result.orderId} failed:`, cancelErr instanceof Error ? cancelErr.message : cancelErr);
+      }
+    }
     await sb.from('paper_trades').update({
       status: 'CANCELLED', close_reason: 'no_fill', closed_at: new Date().toISOString(),
     }).eq('id', trade.id);
