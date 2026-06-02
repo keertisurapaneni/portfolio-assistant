@@ -1989,7 +1989,10 @@ async function autoQueueDailySignalsFromTrackedVideos(): Promise<void> {
     if (!sourceName) continue;
     const sourceUrl = inferSourceUrl(video);
     const heading = (video.videoHeading ?? video.videoId).trim();
-    const mode = video.timeframe ?? 'DAY_TRADE';
+    // daily_penny videos are explicitly penny-stock plays; always use DAY_PENNY
+    // so they bypass the $20 influencer day-trade floor (which targets illiquid
+    // mid-caps, not intentional penny signals).
+    const mode = video.strategyType === 'daily_penny' ? 'DAY_PENNY' : (video.timeframe ?? 'DAY_TRADE');
 
     for (const setup of (video.extractedSignals ?? [])) {
       const ticker = String(setup.ticker ?? '').trim().toUpperCase();

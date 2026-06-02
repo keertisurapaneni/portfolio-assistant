@@ -515,6 +515,9 @@ export async function findExternalStrategySignal(params: {
   strategyVideoId?: string;
 }): Promise<ExternalStrategySignal | null> {
   const sb = getSupabase();
+  // Only treat a signal as "already exists" if it is actionable (PENDING /
+  // EXECUTED / EXECUTING). FAILED, SKIPPED, and EXPIRED signals must not block
+  // re-creation — the auto-trader should get a fresh PENDING attempt.
   let query = sb
     .from('external_strategy_signals')
     .select('*')
@@ -523,6 +526,7 @@ export async function findExternalStrategySignal(params: {
     .eq('signal', params.signal)
     .eq('mode', params.mode)
     .eq('execute_on_date', params.executeOnDate)
+    .in('status', ['PENDING', 'EXECUTED', 'EXECUTING'])
     .order('created_at', { ascending: false });
 
   if (params.strategyVideoId) {
