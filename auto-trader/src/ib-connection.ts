@@ -13,7 +13,7 @@
 import { IBApi, EventName, Contract, Order, OrderAction, OrderType, SecType, TimeInForce, OptionType, ScanCode, LocationCode, Instrument } from '@stoqey/ib';
 import type { ScannerSubscription } from '@stoqey/ib';
 export { LocationCode } from '@stoqey/ib';
-import { insertIbFill, updateIbFillCommission, getTodayFillPrices, getFillPriceByOrderId, saveConfigPartial, createAutoTradeEvent } from './lib/supabase.js';
+import { insertIbFill, updateIbFillCommission, getTodayFillPrices, getFillPriceByOrderId, getOpenOrderIdToSymbol, saveConfigPartial, createAutoTradeEvent } from './lib/supabase.js';
 import type { AccountType } from '../../shared/trade-types.js';
 
 // ── Constants ────────────────────────────────────────────
@@ -589,6 +589,7 @@ export class IBConnection {
     });
 
     this.hydrateOrderFillPrices().catch(() => {});
+    this.hydrateOrderIdToSymbol().catch(() => {});
 
     console.log(`${this.tag} Connecting to ${IB_HOST}:${this.port} (clientId=${this.clientId})...`);
     ib.connect();
@@ -630,6 +631,24 @@ export class IBConnection {
       }
     } catch (err) {
       console.warn(`${this.tag} Failed to hydrate fill prices from DB:`, err instanceof Error ? err.message : err);
+    }
+  }
+
+  private async hydrateOrderIdToSymbol(): Promise<void> {
+    try {
+      const map = await getOpenOrderIdToSymbol(this.label);
+      let count = 0;
+      for (const [orderId, ticker] of map) {
+        if (!this._orderIdToSymbol.has(orderId)) {
+          this._orderIdToSymbol.set(orderId, ticker);
+          count++;
+        }
+      }
+      if (count > 0) {
+        console.log(`${this.tag} Hydrated ${count} orderId→symbol mappings from DB`);
+      }
+    } catch (err) {
+      console.warn(`${this.tag} Failed to hydrate orderId→symbol:`, err instanceof Error ? err.message : err);
     }
   }
 
