@@ -77,7 +77,7 @@ Deno.serve(async (req) => {
 
   const { data: unknowns, error: fetchErr } = await supabase
     .from('strategy_videos')
-    .select('id, video_id, platform, reel_url, canonical_url')
+    .select('id, video_id, platform, reel_url, canonical_url, source_handle')
     .eq('status', 'tracked')
     .eq('source_name', 'Unknown')
     .limit(50);
@@ -92,13 +92,31 @@ Deno.serve(async (req) => {
   const results: { video_id: string; source_name: string; status: 'fixed' | 'failed' }[] = [];
 
   for (const row of unknowns) {
-    const url = (row.reel_url ?? row.canonical_url ?? '').trim();
-    if (!url || row.platform !== 'instagram') {
+    if (row.platform !== 'instagram') {
       results.push({ video_id: row.video_id, source_name: 'Unknown', status: 'failed' });
       continue;
     }
 
-    const handle = await extractInstagramHandle(url);
+    // Prefer the already-stored source_handle before doing any URL/page work.
+    // Instagram page fetches frequently return 403 from Supabase edge servers, so
+    // relying solely on URL parsing left videos stuck as Unknown forever.
+    const storedHandle = (row.source_handle ?? '').trim().toLowerCase();
+
+    // When reel_url/canonical_url are null (e.g. video was ingested via a path that
+    // didn't persist the original URL), reconstruct it from the video_id so the page
+    // fetch at least has a chance.
+    let url = (row.reel_url ?? row.canonical_url ?? '').trim();
+    if (!url && row.video_id) {
+      url = `https://www.instagram.com/reel/${row.video_id}/`;
+      // Backfill the URL in the DB so future calls don't need to reconstruct it.
+      await supabase
+        .from('strategy_videos')
+        .update({ reel_url: url })
+        .eq('id', row.id);
+    }
+
+    const handle = storedHandle || (url ? await extractInstagramHandle(url) : null);
+
     if (!handle) {
       results.push({ video_id: row.video_id, source_name: 'Unknown', status: 'failed' });
       continue;
