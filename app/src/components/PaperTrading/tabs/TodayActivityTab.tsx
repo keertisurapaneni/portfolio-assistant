@@ -478,7 +478,11 @@ export function TodayActivityTab({ events, trades, todayTrades, todaySignalsForE
                 : trade.mode === 'DAY_PENNY' ? 'Penny'
                 : trade.mode === 'SWING_TRADE' ? 'Swing'
                 : trade.mode === 'LONG_TERM' ? 'Long Term'
-                : OPTIONS_MODES.has(trade.mode ?? '') ? 'Options'
+                : trade.mode === 'OPTIONS_SCALP' ? 'Scalp'
+                : trade.mode === 'OPTIONS_LEAP' ? 'Leap'
+                : trade.mode === 'OPTIONS_PUT' ? 'Put'
+                : trade.mode === 'OPTIONS_CALL' ? 'Call'
+                : (trade.mode === 'CREDIT_SPREAD' || trade.mode === 'CALENDAR_SPREAD' || trade.mode === 'EARNINGS_CALENDAR') ? 'Spread'
                 : '—';
 
               const entrySignal = trade.signal ?? 'BUY';
