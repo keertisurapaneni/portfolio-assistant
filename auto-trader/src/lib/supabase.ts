@@ -843,6 +843,30 @@ export async function getTodayFillPrices(accountType: AccountType = 'paper'): Pr
   return map;
 }
 
+/**
+ * Returns a Map<orderId, ticker> for all open (FILLED) positions that have IB
+ * order IDs recorded.  Used on startup to seed _orderIdToSymbol so that TP/SL
+ * execDetails arriving after a restart can still resolve the ticker even when
+ * IB sends contract.symbol = ''.
+ */
+export async function getOpenOrderIdToSymbol(accountType: AccountType = 'paper'): Promise<Map<number, string>> {
+  const sb = getSupabase();
+  const table = accountType === 'live' ? 'live_trades' : 'paper_trades';
+  const { data, error } = await sb
+    .from(table)
+    .select('ticker, ib_order_id, ib_tp_order_id, ib_sl_order_id')
+    .eq('status', 'FILLED')
+    .not('ib_order_id', 'is', null);
+  if (error || !data) return new Map();
+  const map = new Map<number, string>();
+  for (const row of data) {
+    if (row.ib_order_id)    map.set(Number(row.ib_order_id),    row.ticker);
+    if (row.ib_tp_order_id) map.set(Number(row.ib_tp_order_id), row.ticker);
+    if (row.ib_sl_order_id) map.set(Number(row.ib_sl_order_id), row.ticker);
+  }
+  return map;
+}
+
 export async function getFillPriceByOrderId(orderId: number, accountType: AccountType = 'paper'): Promise<number | undefined> {
   const sb = getSupabase();
   const { data } = await sb
