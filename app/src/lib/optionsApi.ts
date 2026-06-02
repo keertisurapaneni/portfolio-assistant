@@ -4,7 +4,7 @@
  */
 
 import { createClient } from '@supabase/supabase-js';
-import { ACTIVE_STATUSES, CLOSED_STATUSES } from '../../../shared/trade-status-sets.ts';
+import { CLOSED_STATUSES } from '../../../shared/trade-status-sets.ts';
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL as string;
 const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY as string;
@@ -263,7 +263,7 @@ export async function getOpenOptionsPositions(): Promise<OpenOptionsPosition[]> 
     .from('paper_trades')
     .select('id, ticker, mode, option_strike, option_expiry, option_premium, option_contracts, option_capital_req, option_prob_profit, option_iv_rank, option_annual_yield, option_net_price, option_delta, option_assigned, status, close_reason, pnl, opened_at, closed_at, notes, scanner_reason, ib_order_id')
     .in('mode', ['OPTIONS_PUT', 'OPTIONS_CALL'])
-    .in('status', [...ACTIVE_STATUSES])
+    .in('status', ['FILLED', 'PARTIAL'])
     .order('option_expiry', { ascending: true });
   if (error) throw error;
   return (data ?? []) as OpenOptionsPosition[];
@@ -311,7 +311,7 @@ export async function getOptionsMonthlyStats(): Promise<OptionsMonthlyStats> {
       .from('paper_trades')
       .select('id, option_premium, option_contracts')
       .in('mode', ['OPTIONS_PUT', 'OPTIONS_CALL'])
-      .in('status', [...ACTIVE_STATUSES]),
+      .in('status', ['FILLED', 'PARTIAL']),
     supabase
       .from('paper_trades')
       .select('pnl')
@@ -457,7 +457,7 @@ export async function getOpenCreditSpreads(): Promise<CreditSpreadPosition[]> {
     .from('paper_trades')
     .select('id, ticker, mode, status, spread_type, spread_short_strike, spread_long_strike, spread_width, spread_net_credit, spread_credit_pct, spread_max_loss, spread_max_gain, option_expiry, option_contracts, option_delta, pnl, opened_at, closed_at, close_reason, notes, scanner_reason')
     .eq('mode', 'CREDIT_SPREAD')
-    .in('status', [...ACTIVE_STATUSES])
+    .in('status', ['FILLED', 'PARTIAL'])
     .order('option_expiry', { ascending: true });
   if (error) throw error;
   return (data ?? []) as CreditSpreadPosition[];
