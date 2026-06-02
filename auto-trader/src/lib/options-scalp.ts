@@ -544,6 +544,21 @@ async function closeScalpPosition(
 
   const pnl = (closePremium - premiumPaid) * 100;
 
+  // If the premium is $0, check whether the option has actually expired.
+  // If expiry is still in the future, IB still holds the position — don't
+  // mark the DB closed without a matching IB execution (IB / DB must agree).
+  if (closePremium <= 0) {
+    const expiryDate = new Date(expiry);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    expiryDate.setHours(0, 0, 0, 0);
+    if (expiryDate > today) {
+      console.log(`[Options Scalp] ${ticker} premium=$0 but expires ${expiry} — leaving FILLED, will expire naturally in IB`);
+      return;
+    }
+    // Expiry is today or past: option expired worthless, safe to close in DB.
+  }
+
   // Place sell-to-close order in IB
   if (isConnected() && closePremium > 0) {
     try {
