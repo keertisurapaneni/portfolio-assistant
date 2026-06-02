@@ -58,12 +58,14 @@ const KNOWN_SIGNAL_HANDLES = new Set([
 const KNOWN_PENNY_GENERATORS = new Set([
   'Ross Cameron',
   'Warrior Trading',
+  'Kianstrades',
 ]);
 
 const KNOWN_PENNY_HANDLES = new Set([
   'warrior_trading',
   'warriortrading',
   'rosscameron',
+  'kianstrades',
 ]);
 
 function isKnownSignalGenerator(sourceName: string, sourceHandle: string | null): boolean {
@@ -87,17 +89,34 @@ function isIgSystemPath(handle: string): boolean {
   return false;
 }
 
-/** For instagram.com/reel/ID (no handle in path), fetch page and extract handle */
+/**
+ * For instagram.com/reel/ID (no handle in URL path), resolve via oEmbed API first,
+ * then fall back to full page HTML fetch.
+ * oEmbed is the preferred approach: public API, returns structured JSON, no auth needed.
+ */
 async function fetchInstagramHandle(url: string): Promise<string | null> {
+  // 1. oEmbed API — most reliable, works server-side without auth
+  try {
+    const oembedUrl = `https://www.instagram.com/api/v1/oembed/?url=${encodeURIComponent(url)}`;
+    const res = await fetch(oembedUrl, { headers: { 'User-Agent': UA }, signal: AbortSignal.timeout(8_000) });
+    if (res.ok) {
+      const data = await res.json() as { author_url?: string; author_name?: string };
+      const authorUrl = data.author_url ?? '';
+      const m = /instagram\.com\/([a-zA-Z0-9_.]+)\/?$/.exec(authorUrl);
+      const h = m?.[1]?.toLowerCase() ?? data.author_name?.toLowerCase() ?? null;
+      if (h && !isIgSystemPath(h)) return h;
+    }
+  } catch {
+    // fall through to page fetch
+  }
+
+  // 2. Full page HTML fetch — often 403'd but kept as last resort
   try {
     const res = await fetch(url, { headers: { 'User-Agent': UA }, signal: AbortSignal.timeout(10_000) });
     const html = await res.text();
-    // Prefer og:url — most reliable
     const ogUrl = html.match(/<meta[^>]+property="og:url"[^>]+content="([^"]*)"/i)?.[1] ?? '';
     const m = /instagram\.com\/([^/]+)\/(?:reels?|p)\//i.exec(ogUrl);
     if (m?.[1] && !isIgSystemPath(m[1])) return m[1].trim().toLowerCase();
-
-    // Fallback: first instagram.com/<handle>/ match in HTML
     const profileMatch = html.match(/instagram\.com\/([a-zA-Z0-9_.]+)(?:\/|["'\s>])/);
     if (profileMatch?.[1]) {
       const h = profileMatch[1].toLowerCase();
