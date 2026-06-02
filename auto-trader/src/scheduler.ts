@@ -2023,7 +2023,7 @@ async function autoQueueDailySignalsFromTrackedVideos(): Promise<void> {
           const stopNote = rawStop != null && rawStop >= setup.longTriggerAbove
             ? ` | stop adjusted: ${rawStop} >= entry ${setup.longTriggerAbove} → fallback ${longStop}`
             : '';
-          await createExternalStrategySignal({
+          const newLong = await createExternalStrategySignal({
             source_name: sourceName,
             source_url: sourceUrl,
             strategy_video_id: video.videoId,
@@ -2038,7 +2038,7 @@ async function autoQueueDailySignalsFromTrackedVideos(): Promise<void> {
             execute_on_date: todayET,
             notes: `Auto from video ${video.videoId} | ${heading} | long breakout${stopNote}`,
           });
-          created += 1;
+          if (newLong) { created += 1; } else { deduped += 1; }
         } else {
           deduped += 1;
         }
@@ -2063,7 +2063,7 @@ async function autoQueueDailySignalsFromTrackedVideos(): Promise<void> {
           const stopNote = rawStop != null && rawStop <= setup.shortTriggerBelow
             ? ` | stop adjusted: ${rawStop} <= entry ${setup.shortTriggerBelow} → fallback ${shortStop}`
             : '';
-          await createExternalStrategySignal({
+          const newShort = await createExternalStrategySignal({
             source_name: sourceName,
             source_url: sourceUrl,
             strategy_video_id: video.videoId,
@@ -2078,7 +2078,7 @@ async function autoQueueDailySignalsFromTrackedVideos(): Promise<void> {
             execute_on_date: todayET,
             notes: `Auto from video ${video.videoId} | ${heading} | short breakdown${stopNote}`,
           });
-          created += 1;
+          if (newShort) { created += 1; } else { deduped += 1; }
         } else {
           deduped += 1;
         }
@@ -2294,7 +2294,7 @@ async function autoQueueGenericSignalsFromTrackedVideos(
           ? `ev=${bucket.ev.toFixed(2)} wr=${(bucket.evWinRate * 100).toFixed(0)}% n=${bucket.evTrades}`
           : `ev=unproven n=${bucket.evTrades}`;
 
-        await createExternalStrategySignal({
+        const newGeneric = await createExternalStrategySignal({
           source_name: bucket.sourceName,
           source_url: bucket.sourceUrl,
           strategy_video_id: bucket.videoId,
@@ -2310,8 +2310,13 @@ async function autoQueueGenericSignalsFromTrackedVideos(
           notes: `Generic strategy auto from video ${bucket.videoId} | ${bucket.heading} | scanner candidate: ${candidate.reason} | allocation group: ${topBuckets.length} | ${evNote}`,
         });
 
-        created += 1;
-        createdForTicker = true;
+        if (newGeneric) {
+          created += 1;
+          createdForTicker = true;
+        } else {
+          deduped += 1;
+          existingForTicker = true;
+        }
       }
 
       if (createdForTicker || existingForTicker) {
