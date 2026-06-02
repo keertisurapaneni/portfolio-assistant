@@ -479,14 +479,21 @@ export async function upsertSwingMetrics(params: {
 
 export async function createExternalStrategySignal(
   signal: Record<string, unknown>
-): Promise<ExternalStrategySignal> {
+): Promise<ExternalStrategySignal | null> {
   const sb = getSupabase();
   const { data, error } = await sb
     .from('external_strategy_signals')
     .insert(signal)
     .select()
     .single();
-  if (error) throw new Error(`createExternalStrategySignal: ${error.message}`);
+  if (error) {
+    // 23505 = unique_violation — a PENDING signal for this (ticker, signal,
+    // entry_price, execute_on_date) already exists (race between cycle and
+    // realtime execution, or two videos with the same ticker+entry today).
+    // Treat it as a dedup hit rather than crashing the entire cycle.
+    if (error.code === '23505') return null;
+    throw new Error(`createExternalStrategySignal: ${error.message}`);
+  }
   return data as ExternalStrategySignal;
 }
 
