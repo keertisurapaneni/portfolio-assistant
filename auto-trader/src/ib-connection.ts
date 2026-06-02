@@ -180,6 +180,9 @@ export class IBConnection {
   private _orderFillPrices = new Map<number, number>();
   private _pendingReqCallbacks = new Map<number, (code: number, msg: string) => void>();
   private _pendingOrderCallbacks = new Map<number, PendingOrder>();
+  /** Persists orderId → ticker even after the order callback resolves — used as
+   *  fallback in execDetails when IB sends contract.symbol = '' */
+  private _orderIdToSymbol = new Map<number, string>();
 
   private _activeRequests = 0;
   private _requestQueue: Array<() => void> = [];
@@ -552,11 +555,13 @@ export class IBConnection {
       const qty = execution?.shares ?? execution?.cumQty ?? 0;
       const execId = execution?.execId ?? null;
       const side = execution?.side ?? '';
-      const ticker = contract?.symbol ?? '';
+      // IB sometimes sends contract.symbol = '' for bracket TP/SL fills.
+      // Fall back to our persistent orderIdToSymbol map registered at order placement.
+      const ticker = (contract?.symbol || this._orderIdToSymbol.get(orderId) || '');
 
       if (orderId && price > 0) {
         this._orderFillPrices.set(orderId, price);
-        console.log(`${this.tag} ExecDetails: order ${orderId} ${side} ${qty}x ${ticker} @ $${price.toFixed(4)} (execId=${execId})`);
+        console.log(`${this.tag} ExecDetails: order ${orderId} ${side} ${qty}x ${ticker || '?'} @ $${price.toFixed(4)} (execId=${execId})`);
         insertIbFill({
           order_id: orderId,
           exec_id: execId,
@@ -806,6 +811,12 @@ export class IBConnection {
       // verify/close it later. We never reject on timeout alone because IB paper
       // frequently accepts bracket orders but sends the ack >30s later, creating
       // orphaned IB positions with no corresponding DB record.
+      // Track all three order IDs so execDetails can look up ticker by orderId
+      // when IB sends contract.symbol = '' (happens ~5% of fills).
+      this._orderIdToSymbol.set(parentId, symbol);
+      this._orderIdToSymbol.set(tpId, symbol);
+      this._orderIdToSymbol.set(slId, symbol);
+
       let ackResolved = false;
       const ACK_TIMEOUT_MS = 30_000;
 
@@ -886,6 +897,7 @@ export class IBConnection {
       }, MKT_ORDER_TIMEOUT_MS);
 
       this._pendingOrderCallbacks.set(orderId, { resolve, reject, timer, symbol });
+      this._orderIdToSymbol.set(orderId, symbol);
 
       try {
         this.ib!.placeOrder(orderId, contract, order);
@@ -1078,6 +1090,7 @@ export class IBConnection {
       }, OPT_ORDER_TIMEOUT_MS);
 
       this._pendingOrderCallbacks.set(orderId, { resolve, reject, timer, symbol });
+      this._orderIdToSymbol.set(orderId, symbol);
 
       const actionLabel = params.action === 'BUY' ? 'BUY' : 'SELL';
       try {
