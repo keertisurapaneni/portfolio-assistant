@@ -862,6 +862,55 @@ async function closeAllDayTrades(config: AutoTraderConfig): Promise<void> {
           }
 
           if (!alreadyFilled) {
+            // Before cancelling, check if the SL or TP child order filled in ib_fills.
+            // This happens when a bracket order fills AND closes (SL hit) within a short
+            // window during a service restart — both fills are missed in real-time but
+            // the close may still be in the fills table. If found, record as STOPPED/TARGET_HIT
+            // rather than CANCELLED so the loss shows up correctly in today's activity.
+            const tpOrderId = trade.ib_tp_order_id ? parseInt(trade.ib_tp_order_id, 10) : NaN;
+            const slOrderId = trade.ib_sl_order_id ? parseInt(trade.ib_sl_order_id, 10) : NaN;
+            let bracketChildFill: { order_id: number; fill_price: number; side: string } | null = null;
+            try {
+              const { getSupabase } = await import('./lib/supabase.js');
+              const childIds = [tpOrderId, slOrderId].filter(id => !Number.isNaN(id));
+              if (childIds.length > 0) {
+                const { data: childFills } = await getSupabase()
+                  .from('ib_fills')
+                  .select('order_id, fill_price, side')
+                  .in('order_id', childIds)
+                  .not('fill_price', 'is', null)
+                  .limit(1);
+                if (childFills && childFills.length > 0) {
+                  bracketChildFill = childFills[0] as { order_id: number; fill_price: number; side: string };
+                }
+              }
+            } catch { /* non-fatal */ }
+
+            if (bracketChildFill) {
+              const isTP = bracketChildFill.order_id === tpOrderId;
+              const closeReason = isTP ? 'target_hit' : 'stop_loss';
+              const closeStatus = isTP ? 'TARGET_HIT' : 'STOPPED';
+              const entryPrice = trade.fill_price ?? trade.entry_price ?? 0;
+              const qty = trade.quantity ?? 0;
+              const isLong = trade.signal === 'BUY';
+              const pnl = isLong
+                ? (bracketChildFill.fill_price - entryPrice) * qty
+                : (entryPrice - bracketChildFill.fill_price) * qty;
+              log(`${trade.ticker}: EOD — found bracket child fill in ib_fills (order #${bracketChildFill.order_id} @ $${bracketChildFill.fill_price}) — recording as ${closeStatus} instead of CANCELLED`);
+              await recordTradeClose({
+                tradeId: trade.id,
+                closePrice: bracketChildFill.fill_price,
+                closeReason,
+                status: closeStatus,
+                orderId: bracketChildFill.order_id,
+                accountType: acctType,
+                overridePnl: parseFloat(pnl.toFixed(2)),
+                overridePnlSource: 'ib_fill_calculated',
+                extraUpdates: { notes: 'Reconciled at EOD: entry+close both occurred during service restart window' },
+              });
+              continue;
+            }
+
             if (!Number.isNaN(orderId)) {
               try {
                 conn.cancelOrder(orderId);

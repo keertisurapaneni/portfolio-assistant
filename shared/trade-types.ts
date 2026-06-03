@@ -42,9 +42,15 @@ export type CloseReason =
   | 'eod_close'
   | 'manual'
   | 'cancelled'
+  | 'never_filled'
   | 'profit_take_50pct'
   | 'stop_loss_100pct'
-  | 'time_exit_21dte';
+  | 'time_exit_21dte'
+  | 'stale_eod_close'
+  | 'stale_eod_reconcile'
+  | 'stop_loss_hit'
+  | 'rolled'
+  | 'stopped';
 
 /**
  * Full paper_trades row — superset of all columns used by any consumer.

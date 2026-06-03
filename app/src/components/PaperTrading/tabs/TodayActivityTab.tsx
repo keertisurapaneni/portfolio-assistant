@@ -141,7 +141,14 @@ export function TodayActivityTab({ events, trades, todayTrades, todaySignalsForE
     const openedToday = t.opened_at && t.opened_at >= todayISO;
     const closedToday = t.closed_at && t.closed_at >= todayISO;
     return openedToday || closedToday;
-  })).filter(t => t.status !== 'CANCELLED');
+  })).filter(t => {
+    if (t.status !== 'CANCELLED') return true;
+    // Show CANCELLED trades that were placed today but never filled (submitted → EOD swept).
+    // These are real activity the user needs to see (e.g. DEVS bracket order placed but
+    // never triggered). Bracket TP/SL cancellations have no opened_at from today and are
+    // still excluded.
+    return t.close_reason === 'never_filled' && t.opened_at != null && t.opened_at >= todayISO;
+  });
 
   // Legacy lookup: events for system-only messages (reconcile warnings, orphan alerts)
   const tradesByTicker = new Map<string, PaperTrade[]>();
@@ -535,7 +542,9 @@ export function TodayActivityTab({ events, trades, todayTrades, todaySignalsForE
                     {pnl != null ? fmtUsd(pnl, 2, true) : '—'}
                   </td>
                   <td className="px-4 py-3">
-                    {isClosed ? (
+                    {trade.status === 'CANCELLED' && trade.close_reason === 'never_filled' ? (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-500 font-medium">Never filled</span>
+                    ) : isClosed ? (
                       <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-50 text-blue-700 font-medium">Closed</span>
                     ) : isActive ? (
                       <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 font-medium">Active</span>
