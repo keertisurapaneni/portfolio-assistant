@@ -5045,7 +5045,9 @@ async function executeExternalStrategySignal(
           entryPrice: effectiveEntryPrice!,
           stopLoss: effectiveStopLoss!,
           takeProfit: effectiveTargetPrice!,
-          tif: signal.mode === 'DAY_TRADE' ? 'DAY' : 'GTC',
+          // DAY_PENNY is same-day intraday — expire at close like DAY_TRADE.
+          // GTC would allow after-hours fills, creating overnight exposure.
+          tif: (signal.mode === 'DAY_TRADE' || signal.mode === 'DAY_PENNY') ? 'DAY' : 'GTC',
         });
         ibOrderId = String(result.parentOrderId);
         ibTpOrderId = String(result.takeProfitOrderId);
