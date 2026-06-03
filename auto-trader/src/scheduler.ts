@@ -241,6 +241,11 @@ let _lastDeadmansAlertSent: Date | null = null;
 let _pendingDeployedDollar = 0;
 let _dailyDeployedDollar = 0;
 let _dailyDeployedDate = '';
+// Tickers that have an active paper_trade (FILLED/SUBMITTED/PENDING/PARTIAL).
+// Updated each scheduler cycle before drawdown assessment. Used to exclude orphaned
+// IB positions (stale portfolio holdings, failed-close leftovers) from the drawdown
+// calculation so they don't incorrectly block new scanner entries.
+const _trackedIbTickers = new Set<string>();
 const _processedTickers = new Set<string>();
 let _processedTickersDate = '';
 
@@ -3291,11 +3296,18 @@ function assessDrawdownMultiplier(positions: EnrichedPosition[]): {
   level: string;
   pnlPct: number;
 } {
-  if (positions.length === 0) return { multiplier: 1.0, level: 'normal', pnlPct: 0 };
+  // Only evaluate positions we are actively tracking (have an active paper_trade).
+  // Orphaned IB positions — stale portfolio holdings, failed-close leftovers, OTC
+  // shorts we can't cover — must not skew the drawdown and block new entries.
+  const tracked = _trackedIbTickers.size > 0
+    ? positions.filter(p => _trackedIbTickers.has(p.symbol.toUpperCase()))
+    : positions;
+
+  if (tracked.length === 0) return { multiplier: 1.0, level: 'normal', pnlPct: 0 };
 
   let totalPnl = 0;
   let totalCost = 0;
-  for (const pos of positions) {
+  for (const pos of tracked) {
     if (pos.mktPrice <= 0 || pos.avgCost <= 0) continue;
     totalCost += Math.abs(pos.position) * pos.avgCost;
     totalPnl += pos.unrealizedPnl;
@@ -7469,7 +7481,19 @@ async function runSchedulerCycle(): Promise<void> {
       }
     }
 
-    // 4. Portfolio health check
+    // 4. Portfolio health check — refresh tracked ticker set first so the drawdown
+    // assessment only counts IB positions backed by an active SHORT-TERM paper_trade.
+    // LONG_TERM positions are buy-and-hold investments; their unrealized P&L must not
+    // trigger the day/swing drawdown gate (the runPreTradeChecks block explicitly
+    // exempts LONG_TERM entries, so mixing LT positions into this metric is wrong).
+    // Orphaned IB positions with no paper_trade are also excluded.
+    const activePtRows = await getActiveTrades();
+    _trackedIbTickers.clear();
+    const SHORT_TERM_MODES = new Set(['DAY_TRADE', 'DAY_PENNY', 'SWING_TRADE']);
+    for (const t of activePtRows) {
+      if (SHORT_TERM_MODES.has(t.mode ?? '')) _trackedIbTickers.add(t.ticker.toUpperCase());
+    }
+
     const health = assessDrawdownMultiplier(positions);
     if (health.level !== 'normal') {
       log(`Drawdown protection: ${health.level} (${health.pnlPct.toFixed(1)}%, multiplier: ${health.multiplier})`);
