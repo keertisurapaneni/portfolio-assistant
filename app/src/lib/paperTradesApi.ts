@@ -228,17 +228,37 @@ export async function getTodayTrades(accountView: AccountView = 'paper'): Promis
   todayStart.setHours(0, 0, 0, 0);
   const todayISO = todayStart.toISOString();
 
+  // Look back 7 days to catch stale day trades the EOD sweep missed.
+  const lookbackStart = new Date(todayStart);
+  lookbackStart.setDate(lookbackStart.getDate() - 7);
+  const lookbackISO = lookbackStart.toISOString();
+
   async function fetchForTable(table: 'paper_trades' | 'live_trades', acct?: AccountType): Promise<PaperTradeWithAccount[]> {
+    // Fetch today's traded rows (opened or closed today) PLUS any still-open
+    // (FILLED/PARTIAL) day trades from the past 7 days. These are stale positions
+    // the EOD sweep missed — they belong in today's activity because the auto-trader
+    // is actively trying to close them today.
     const { data, error } = await supabase
       .from(table)
       .select('*')
-      .or(`opened_at.gte.${todayISO},closed_at.gte.${todayISO}`)
+      .or(
+        `opened_at.gte.${todayISO},` +
+        `closed_at.gte.${todayISO},` +
+        `and(status.in.(FILLED,PARTIAL),mode.in.(DAY_TRADE,DAY_PENNY),filled_at.gte.${lookbackISO})`
+      )
       .order('opened_at', { ascending: false });
 
     if (error) return [];
     const rows = (data ?? []) as PaperTrade[];
-    if (acct) return rows.map(t => ({ ...t, _accountType: acct }));
-    return rows;
+    // Deduplicate by id in case any row matches multiple OR conditions
+    const seen = new Set<string>();
+    const deduped = rows.filter(r => {
+      if (seen.has(r.id)) return false;
+      seen.add(r.id);
+      return true;
+    });
+    if (acct) return deduped.map(t => ({ ...t, _accountType: acct }));
+    return deduped;
   }
 
   if (accountView === 'live') return fetchForTable('live_trades', 'live');

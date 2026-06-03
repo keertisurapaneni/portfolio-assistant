@@ -1106,8 +1106,11 @@ async function checkStaleDayTrades(positions: EnrichedPosition[]): Promise<void>
     const closeSide = isLong ? 'SELL' : 'BUY';
     if (qty <= 0) continue;
 
+    // Sub-$1 stocks trigger IB error 2161 (regulatory price cap) with plain MKT orders.
+    // IB explicitly recommends using IBALGO (Adaptive) instead — use it for any stock ≤ $5.
+    const useAdaptiveAlgo = fillPrice <= 5;
     try {
-      const result = await placeMarketOrder({ symbol: trade.ticker, side: closeSide, quantity: qty });
+      const result = await placeMarketOrder({ symbol: trade.ticker, side: closeSide, quantity: qty, useAdaptiveAlgo });
       await recordTradeClose({
         tradeId: trade.id,
         closePrice: result.avgFillPrice,
@@ -1116,9 +1119,34 @@ async function checkStaleDayTrades(positions: EnrichedPosition[]): Promise<void>
         orderId: result.orderId,
         accountType: 'paper',
       });
-      log(`  ${trade.ticker}: stale position closed via market order @ $${result.avgFillPrice.toFixed(2)}`);
+      log(`  ${trade.ticker}: stale position closed via ${useAdaptiveAlgo ? 'Adaptive Algo' : 'market order'} @ $${result.avgFillPrice.toFixed(2)}`);
     } catch (err) {
-      log(`  ${trade.ticker}: stale close failed — ${err instanceof Error ? err.message : 'unknown'}`);
+      const errMsg = err instanceof Error ? err.message : 'unknown';
+      log(`  ${trade.ticker}: stale close failed — ${errMsg}`);
+
+      // IB error code=200 means "No security definition found" — the symbol is no longer
+      // tradeable on IB (delisted, OTC removed, etc.). The position can never be closed
+      // via IB. Mark it as CLOSED with the last known quote price so it appears in today's
+      // activity with a loss and doesn't stay invisibly stuck as FILLED forever.
+      const isNoSecurityDef = errMsg.includes('code=200') || errMsg.includes('No security definition');
+      if (isNoSecurityDef) {
+        const fallbackPrice = await getQuotePrice(trade.ticker);
+        const estimatedClose = fallbackPrice ?? fillPrice;
+        await recordTradeClose({
+          tradeId: trade.id,
+          closePrice: estimatedClose,
+          closeReason: 'stale_eod_close',
+          status: 'CLOSED',
+          accountType: 'paper',
+          overridePnlSource: 'estimated',
+          extraUpdates: { notes: `IB error: security definition not found — position may still exist in IB; close price estimated` },
+        });
+        log(`  ${trade.ticker}: no IB security definition — marked CLOSED with estimated price $${estimatedClose.toFixed(2)} (manual IB review required)`);
+        await persistEvent(trade.ticker, 'warning',
+          `⚠️ Stale position: IB can no longer find ${trade.ticker} (no security definition) — marked closed at estimated price $${estimatedClose.toFixed(2)}. Manual IB review required.`,
+          { action: 'closed', source: 'system', mode: trade.mode as string },
+        );
+      }
     }
   }
 }
@@ -3650,7 +3678,7 @@ async function executeScannerTrade(
         log(`${ticker}: skipped — market direction against BUY: SPY ${spyPct.toFixed(2)}%`);
         persistEvent(ticker, 'skipped', `Market direction: SPY ${spyPct.toFixed(2)}% against BUY`, {
           action: 'skipped', source: 'scanner', mode, skip_reason: 'market_direction',
-          spy_change_pct: spyPct,
+          metadata: { spy_change_pct: spyPct },
         });
         return 'skipped:market_direction_bearish';
       }
@@ -3658,7 +3686,7 @@ async function executeScannerTrade(
         log(`${ticker}: skipped — market direction against SELL: SPY +${spyPct.toFixed(2)}%`);
         persistEvent(ticker, 'skipped', `Market direction: SPY +${spyPct.toFixed(2)}% against SELL`, {
           action: 'skipped', source: 'scanner', mode, skip_reason: 'market_direction',
-          spy_change_pct: spyPct,
+          metadata: { spy_change_pct: spyPct },
         });
         return 'skipped:market_direction_bullish';
       }
