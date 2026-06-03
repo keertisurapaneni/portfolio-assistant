@@ -229,7 +229,12 @@ Deno.serve(async (req) => {
   // Well-known ETFs that Finnhub stock/profile2 returns empty for — always valid
   const KNOWN_ETFS = new Set(['SPY', 'QQQ', 'IWM', 'DIA', 'VXX', 'TQQQ', 'SQQQ', 'SPXU', 'SPXL', 'UVXY', 'GLD', 'SLV', 'TLT', 'HYG', 'XLF', 'XLE', 'XLK', 'XLV', 'ARKK']);
 
-  /** Returns true if the ticker exists on Finnhub (has a non-empty company name). */
+  /**
+   * Returns true if the ticker exists on Finnhub AND is listed on a named exchange.
+   * Tickers with an empty exchange field are OTC/Pink Sheet stocks — IB rejects
+   * orders for them with code=200 "No security definition found". Filter them out
+   * at import time so they never reach the IB order pipeline.
+   */
   async function isValidTicker(ticker: string): Promise<boolean> {
     if (KNOWN_ETFS.has(ticker)) return true; // ETFs don't have a profile2 — skip Finnhub check
     if (!finnhubApiKey) return true; // can't validate without key — let it through
@@ -240,7 +245,13 @@ Deno.serve(async (req) => {
       );
       if (!res.ok) return true; // don't block on Finnhub errors
       const data = await res.json() as Record<string, unknown>;
-      return !!data?.name; // empty object {} = ticker not found
+      if (!data?.name) return false; // empty object = ticker not found
+      // OTC/Pink Sheet stocks have an empty exchange field — IB cannot trade them.
+      if (typeof data.exchange === 'string' && data.exchange.trim() === '') {
+        console.warn(`[import-strategy-signals] Skipping ${ticker} — OTC/Pink Sheet stock (exchange="") not supported by IB`);
+        return false;
+      }
+      return true;
     } catch {
       return true; // don't block on network errors
     }
