@@ -63,7 +63,9 @@ export async function recordTradeClose(params: CloseTradeParams): Promise<void> 
     pnlPct = overridePnlPct ?? (fillPrice * qty > 0 ? (overridePnl / (fillPrice * qty)) * 100 : null);
     pnlSource = overridePnlSource ?? 'ib_fill_calculated';
   } else {
-    // 2. Check ib_fills for realizedPnl from commissionReport
+    // 2. Check ib_fills for realizedPnl from commissionReport.
+    // Penny stocks fill in many 100-share chunks — SUM all fills for the order
+    // rather than taking the first row (LIMIT 1 would give a ~100-share slice P&L).
     let ibRealizedPnl: number | null = null;
     if (orderId != null) {
       const fillsTableName = fillsTable(accountType);
@@ -71,13 +73,12 @@ export async function recordTradeClose(params: CloseTradeParams): Promise<void> 
         .from(fillsTableName)
         .select('realized_pnl')
         .eq('order_id', orderId)
-        .not('realized_pnl', 'is', null)
-        .limit(1);
+        .not('realized_pnl', 'is', null);
 
-      if (fills && fills.length > 0 && fills[0].realized_pnl != null) {
-        const rpnl = fills[0].realized_pnl as number;
-        if (isFinite(rpnl) && Math.abs(rpnl) < 1e6) {
-          ibRealizedPnl = rpnl;
+      if (fills && fills.length > 0) {
+        const totalRpnl = fills.reduce((sum, f) => sum + (f.realized_pnl as number), 0);
+        if (isFinite(totalRpnl) && Math.abs(totalRpnl) < 1e6) {
+          ibRealizedPnl = totalRpnl;
         }
       }
     }

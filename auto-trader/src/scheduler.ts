@@ -1155,9 +1155,11 @@ async function checkStaleDayTrades(positions: EnrichedPosition[]): Promise<void>
     const closeSide = isLong ? 'SELL' : 'BUY';
     if (qty <= 0) continue;
 
-    // Sub-$1 stocks trigger IB error 2161 (regulatory price cap) with plain MKT orders.
-    // IB explicitly recommends using IBALGO (Adaptive) instead — use it for any stock ≤ $5.
-    const useAdaptiveAlgo = fillPrice <= 5;
+    // DAY_PENNY trades can trigger IB error 2161 (regulatory price cap) with plain MKT
+    // orders regardless of price (confirmed: XOS at $6.55, TGHL at $0.86). Use Adaptive
+    // Algo for all penny-mode stale closes. Also keep the sub-$5 fallback for any mislabelled
+    // DAY_TRADE that slips through at a low price.
+    const useAdaptiveAlgo = trade.mode === 'DAY_PENNY' || fillPrice <= 5;
     try {
       const result = await placeMarketOrder({ symbol: trade.ticker, side: closeSide, quantity: qty, useAdaptiveAlgo });
       await recordTradeClose({
@@ -5147,10 +5149,15 @@ async function executeExternalStrategySignal(
           upsertSwingMetrics({ date: getETDateString(), swing_orders_placed: 1 }).catch(() => {});
         }
       } else {
+        // DAY_PENNY stocks can trigger IB error 2161 (regulatory price cap) with plain
+        // MKT orders at any price. Use Adaptive Algo for all penny-mode entries so IB
+        // routes through its algo infrastructure and avoids the cap. For regular day
+        // trades the cap is not an issue (stocks priced well above $1).
         const result = await extConnection.placeMarketOrder({
           symbol: ticker,
           side,
           quantity: sizing.quantity,
+          useAdaptiveAlgo: signal.mode === 'DAY_PENNY',
         });
         ibOrderId = String(result.orderId);
       }

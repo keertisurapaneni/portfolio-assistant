@@ -432,14 +432,14 @@ export class IBConnection {
       if (reqId != null && this._pendingOrderCallbacks.has(reqId)) {
         const pending = this._pendingOrderCallbacks.get(reqId)!;
 
-        // Code 399 = "order repriced to avoid crossing a resting order" — this is a WARNING,
-        // not a rejection. IB reprices and fills the order anyway. If we reject and delete the
-        // callback here, the subsequent orderStatus:Filled event has nowhere to resolve, the
-        // placeMarketOrder promise rejects, the caller thinks the order failed and retries —
-        // creating duplicate sells. Confirmed: caused 3× IWM sells and a 20-share accidental short.
-        // Solution: swallow the warning, keep the callback alive, let the fill event resolve it.
-        if (code === 399) {
-          console.warn(`${this.tag} Order ${reqId} (${pending.symbol}) warning code=399: ${err.message} — order repriced by IB, still waiting for fill`);
+        // Code 399 = "order repriced to avoid crossing a resting order" — advisory WARNING.
+        // Code 2161 = IB regulatory price cap — IB converts MKT to a capped limit order but
+        //   the order stays ALIVE and fills when the market cooperates. Rejecting here causes
+        //   placeMarketOrder to throw before createPaperTrade runs, so the IB fill arrives but
+        //   no paper_trade record is ever created (confirmed: XOS on 2026-06-03, 869 shares).
+        // Solution for both: swallow the advisory, keep the callback alive, let fill resolve it.
+        if (code === 399 || code === 2161) {
+          console.warn(`${this.tag} Order ${reqId} (${pending.symbol}) advisory code=${code}: ${err.message} — order still live, waiting for fill`);
           return;
         }
 
