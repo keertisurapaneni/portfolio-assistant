@@ -63,6 +63,10 @@ export interface MarketOrderParams {
   symbol: string;
   side: 'BUY' | 'SELL';
   quantity: number;
+  /** Use IB's Adaptive Algo instead of a plain MKT order.
+   *  Recommended for sub-$1 stocks to avoid IB error 2161
+   *  (regulatory price cap on plain market orders). */
+  useAdaptiveAlgo?: boolean;
 }
 
 export interface MarketOrderResult {
@@ -894,7 +898,7 @@ export class IBConnection {
       throw new Error(`${this.tag} Not connected to IB Gateway`);
     }
 
-    const { symbol, side, quantity } = params;
+    const { symbol, side, quantity, useAdaptiveAlgo } = params;
     const contract = await this.resolveContractForOrder(symbol);
 
     return new Promise((resolve, reject) => {
@@ -906,6 +910,14 @@ export class IBConnection {
         totalQuantity: quantity,
         tif: TimeInForce.DAY,
         transmit: true,
+        // IB Adaptive Algo: avoids error 2161 (regulatory price cap) on sub-$1 stocks.
+        // Set algoStrategy="Adaptive" + adaptivePriority="Urgent" so it fills quickly
+        // while still routing through IB's algo infrastructure (bypassing the plain
+        // MKT order price cap). Confirmed via IB TWS API docs: ibalgos.html
+        ...(useAdaptiveAlgo ? {
+          algoStrategy: 'Adaptive',
+          algoParams: [{ tag: 'adaptivePriority', value: 'Urgent' }],
+        } : {}),
       };
 
       const timer = setTimeout(() => {
