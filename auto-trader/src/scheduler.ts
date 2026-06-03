@@ -1989,14 +1989,20 @@ async function autoQueueDailySignalsFromTrackedVideos(): Promise<void> {
     if (!sourceName) continue;
     const sourceUrl = inferSourceUrl(video);
     const heading = (video.videoHeading ?? video.videoId).trim();
-    // daily_penny videos are explicitly penny-stock plays; always use DAY_PENNY
-    // so they bypass the $20 influencer day-trade floor (which targets illiquid
-    // mid-caps, not intentional penny signals).
-    const mode = video.strategyType === 'daily_penny' ? 'DAY_PENNY' : (video.timeframe ?? 'DAY_TRADE');
+    // Video-level base mode from strategy type / timeframe.
+    const videoBaseMode = video.strategyType === 'daily_penny' ? 'DAY_PENNY' : (video.timeframe ?? 'DAY_TRADE');
 
     for (const setup of (video.extractedSignals ?? [])) {
       const ticker = String(setup.ticker ?? '').trim().toUpperCase();
       if (!ticker) continue;
+
+      // Per-signal: if the entry trigger is sub-$5 (SEC penny stock threshold), use DAY_PENNY
+      // regardless of channel. This handles channels like Kianstrades whose video-level
+      // strategy_type may be mis-classified, and any influencer who occasionally picks pennies.
+      const entryRef = setup.longTriggerAbove ?? setup.shortTriggerBelow ?? null;
+      const mode = videoBaseMode === 'DAY_TRADE' && entryRef !== null && entryRef < 5
+        ? 'DAY_PENNY'
+        : videoBaseMode;
 
       // Minimum stop distance: 0.3% of entry. Prevents zero-width brackets when the
       // influencer gives the same price for both long and short trigger (e.g. SPY 704.7
@@ -4856,12 +4862,14 @@ async function executeExternalStrategySignal(
     return 'failed';
   }
 
-  // Influencer penny stock floor: data shows 13 influencer sub-$20 day trades = -$3,469
-  // (GFAI at $0.82, EZRA at $0.31, etc.). Block true penny stocks while still allowing
-  // influencer calls in the $20-50 range.
-  if (isInfluencerSignal && signal.mode === 'DAY_TRADE' && referencePrice < 20) {
+  // Influencer penny stock floor: block sub-$5 stocks that somehow slip through as DAY_TRADE.
+  // Intentional penny plays should be classified DAY_PENNY at signal creation (entry price < $5);
+  // this is a safety net for edge cases where classification fails.
+  // Floor lowered from $20 → $5 to match the SEC/industry penny stock definition and avoid
+  // blocking $5-$20 influencer picks that are legitimate small-cap calls.
+  if (isInfluencerSignal && signal.mode === 'DAY_TRADE' && referencePrice < 5) {
     return skipExternalSignal(
-      `Price $${referencePrice.toFixed(2)} below $20 influencer day trade floor`,
+      `Price $${referencePrice.toFixed(2)} below $5 influencer day trade floor`,
       'influencer_price_floor',
     );
   }

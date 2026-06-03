@@ -422,12 +422,14 @@ Deno.serve(async (req) => {
       const entryDesc = stockEntryCtx === 'above_todays_high'
         ? `Long above today's high (~${entryPrice})`
         : `Long above ${entryPrice}`;
+      // Sub-$5 entry price = penny stock (SEC threshold) → DAY_PENNY regardless of channel.
+      const signalMode = primaryMode === 'DAY_TRADE' && entryPrice < 5 ? 'DAY_PENNY' : primaryMode;
       toInsert.push({
         source_name: video.source_name,
         source_url: sourceUrl,
         ticker,
         signal: 'BUY',
-        mode: primaryMode,
+        mode: signalMode,
         confidence: 7,
         entry_price: entryPrice,
         stop_loss: stopLoss ?? (resolvedShortTrigger ?? null),
@@ -453,12 +455,14 @@ Deno.serve(async (req) => {
       const entryDesc = stockEntryCtx === 'below_todays_low'
         ? `Short below today's low (~${entryPrice})`
         : `Short below ${entryPrice}`;
+      // Sub-$5 entry price = penny stock (SEC threshold) → DAY_PENNY regardless of channel.
+      const signalMode = primaryMode === 'DAY_TRADE' && entryPrice < 5 ? 'DAY_PENNY' : primaryMode;
       toInsert.push({
         source_name: video.source_name,
         source_url: sourceUrl,
         ticker,
         signal: 'SELL',
-        mode: primaryMode,
+        mode: signalMode,
         confidence: 7,
         entry_price: entryPrice,
         stop_loss: stopLoss ?? (resolvedLongTrigger ?? null),
