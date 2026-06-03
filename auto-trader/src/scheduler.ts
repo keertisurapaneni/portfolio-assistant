@@ -1511,20 +1511,22 @@ export async function reconcileIBLongs(): Promise<{ closed: string[]; errors: st
       metadata: { symbols: unknownPositions.map(p => p.symbol) },
     });
 
-    // Check if any unknown positions have a CLOSED paper_trade from the last 7 days
+    // Check if any unknown positions have a CLOSED paper_trade from the last 30 days
     // that likely represents a failed EOD close (DB marked CLOSED but IB still holds shares).
+    // Window widened from 7→30 days so stale positions from multi-week-old failures
+    // (e.g. XOM from May 19 at $160 that never actually closed in IB) are caught.
     // Classification:
-    //   STALE_CLOSE — a CLOSED paper_trade exists within 7 days → auto-reopen
+    //   STALE_CLOSE — a CLOSED paper_trade exists within 30 days → auto-reopen
     //   UNKNOWN     — no recent paper_trade found → manual review required
     const unknownTickers = unknownPositions.map(p => p.symbol.toUpperCase());
-    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
     const { data: failedCloses } = await sb
       .from('paper_trades')
       .select('id, ticker, status, close_price, close_reason, quantity')
       .eq('signal', 'BUY')
       .eq('status', 'CLOSED')
       .in('ticker', unknownTickers)
-      .gte('opened_at', sevenDaysAgo)
+      .gte('opened_at', thirtyDaysAgo)
       .order('opened_at', { ascending: false });
 
     const reopened: string[] = [];
@@ -1534,7 +1536,7 @@ export async function reconcileIBLongs(): Promise<{ closed: string[]; errors: st
       if (!ibPos) continue;
       if (staleCloseTickers.has(fc.ticker.toUpperCase())) continue;
       const isSuspect = fc.close_price == null
-        || ['eod_close', 'soft_eod_close'].includes(fc.close_reason ?? '');
+        || ['eod_close', 'soft_eod_close', 'stale_eod_close'].includes(fc.close_reason ?? '');
       if (!isSuspect) continue;
 
       staleCloseTickers.add(fc.ticker.toUpperCase());
