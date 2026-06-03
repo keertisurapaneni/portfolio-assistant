@@ -463,7 +463,8 @@ export function TodayActivityTab({ events, trades, todayTrades, todaySignalsForE
               // Only show realized P&L for closed trades — active positions haven't locked in gains/losses yet
               const pnl = isActive ? null : (trade.pnl ?? null);
 
-              const isExternalSignal = trade.scanner_reason?.includes('External')
+              const isExternalSignal = !!trade.strategy_source
+                || trade.scanner_reason?.includes('External')
                 || trade.notes?.startsWith('External signal');
               const externalInfluencer = trade.strategy_source
                 ?? trade.scanner_reason?.match(/External strategy signal from (.+?)(?:\s*\||$)/)?.[1]
