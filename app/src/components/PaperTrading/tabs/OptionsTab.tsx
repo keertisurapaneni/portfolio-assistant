@@ -1294,14 +1294,15 @@ function ScalpCard({ scalp, closed }: { scalp: ScalpTrade; closed?: boolean }) {
               </p>
               {pnlPct != null && (
                 <p className={cn('text-[10px] font-semibold', isWin ? 'text-emerald-600' : 'text-red-600')}>
-                  {isWin ? '+' : ''}{pnlPct.toFixed(0)}% on cost
+                  {isWin ? '+' : ''}{pnlPct.toFixed(0)}% on debit
                 </p>
               )}
             </>
           ) : (
-            <p className="text-[10px] text-sky-600 font-semibold">
-              Cost ${totalPaid.toFixed(0)}
-            </p>
+            <div className="text-right">
+              <p className="text-sm font-bold text-sky-700">${totalPaid.toFixed(0)}</p>
+              <p className="text-[9px] text-sky-500">debit paid · max loss</p>
+            </div>
           )}
         </div>
       </div>
