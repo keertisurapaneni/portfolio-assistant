@@ -521,9 +521,18 @@ export async function closeAllScalpPositionsEod(): Promise<void> {
     const q = await finnhubFetch<{ c?: number }>(
       `https://finnhub.io/api/v1/quote?symbol=${pos.ticker}&token=${FINNHUB_KEY}`,
     );
-    const currentPremium = q?.c
-      ? (await getOptionGreeksForContract(pos.ticker, pos.option_strike, pos.option_expiry, right, q.c))?.mid ?? 0
-      : 0;
+
+    if (!q?.c) {
+      // Finnhub is unavailable (rate-limited or network failure). Never assume $0 —
+      // the option may still have meaningful value, especially for 1DTE options at
+      // 3:45 PM. Leave FILLED and let the management cycle close it tomorrow morning
+      // with a real price rather than recording a false full-loss in the DB.
+      console.log(`[Options Scalp] ${pos.ticker} — Finnhub price unavailable at EOD (rate limit?), leaving FILLED for tomorrow's management cycle`);
+      continue;
+    }
+
+    const currentPremium =
+      (await getOptionGreeksForContract(pos.ticker, pos.option_strike, pos.option_expiry, right, q.c))?.mid ?? 0;
 
     await closeScalpPosition(
       pos.id, pos.ticker, right,
@@ -550,23 +559,24 @@ async function closeScalpPosition(
 
   const pnl = (closePremium - premiumPaid) * 100;
 
-  // If premium is $0, guard against a Finnhub price-fetch failure marking a
-  // multi-week option as expired worthless. BUT scalps always have next-day
-  // expiry (≤1 day out), so for those we should close even at $0 — they're
-  // either worthless or expiring tomorrow and we want a clean DB record.
+  // If Finnhub returned a real $0 price (not a fetch failure — callers guard
+  // against fetch failures before calling here), only trust it on expiry day
+  // itself (daysToExpiry = 0). A 1DTE option at $0 via a greeks model is
+  // often a model artifact for deep OTM; with a day remaining it still has
+  // time value. Leave FILLED so the morning management cycle closes it properly.
   if (closePremium <= 0) {
     const expiryDate = new Date(expiry);
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     expiryDate.setHours(0, 0, 0, 0);
     const daysToExpiry = Math.round((expiryDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
-    if (daysToExpiry > 1) {
-      // More than 1 day to expiry — price is likely a fetch failure, not truly $0.
-      // Leave the position open; it still has meaningful time value.
-      console.log(`[Options Scalp] ${ticker} premium=$0 but expires ${expiry} (${daysToExpiry}d) — leaving FILLED, likely price-fetch failure`);
+    if (daysToExpiry > 0) {
+      // Has at least one more day — don't trust a $0 model price.
+      // Leave FILLED; management cycle will handle it on expiry day.
+      console.log(`[Options Scalp] ${ticker} premium=$0 but ${daysToExpiry}d to expiry (${expiry}) — leaving FILLED, model may be wrong`);
       return;
     }
-    // 0 or 1 day to expiry: next-day scalp, close at $0 (expired worthless).
+    // daysToExpiry = 0: actually expiring today — $0 is correct, option is worthless.
   }
 
   // Place sell-to-close order in IB when premium > $0.
