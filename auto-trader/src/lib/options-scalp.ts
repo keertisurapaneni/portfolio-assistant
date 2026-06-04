@@ -21,7 +21,7 @@
 import { getSupabase, createAutoTradeEvent } from './supabase.js';
 import { isConnected, placeOptionsOrder, cancelOrder, getDefaultAccount } from '../ib-connection.js';
 import { findAtmStrike, getOptionGreeksForContract } from './options-chain.js';
-import { finnhubFetch, FINNHUB_KEY } from './finnhub.js';
+import { fetchQuote } from './yahoo-finance.js';
 import { detectVwapReclaim, VWAP_RELIABLE_HOUR_ET } from './vwap.js';
 
 // ── Constants ────────────────────────────────────────────
@@ -109,13 +109,11 @@ export async function runOptionScalpScan(): Promise<void> {
     if (existing?.length) continue;
 
     // Get quote — need open price to measure intraday move
-    const q = await finnhubFetch<{ c?: number; o?: number }>(
-      `https://finnhub.io/api/v1/quote?symbol=${ticker}&token=${FINNHUB_KEY}`,
-    );
-    if (!q?.c || !q?.o || q.o === 0) continue;
+    const q = await fetchQuote(ticker);
+    if (!q?.price || !q?.open || q.open === 0) continue;
 
-    const price = q.c;
-    const openPrice = q.o;
+    const price = q.price;
+    const openPrice = q.open;
     const intradayMovePct = ((price - openPrice) / openPrice) * 100;
 
     if (Math.abs(intradayMovePct) < INTRADAY_MOVE_MIN_PCT) {
@@ -257,12 +255,10 @@ export async function runVwapRetestScalpScan(): Promise<void> {
     }
 
     // Get current quote for strike selection
-    const q = await finnhubFetch<{ c?: number; o?: number }>(
-      `https://finnhub.io/api/v1/quote?symbol=${ticker}&token=${FINNHUB_KEY}`,
-    );
-    if (!q?.c || q.c <= 0) continue;
+    const q = await fetchQuote(ticker);
+    if (!q?.price || q.price <= 0) continue;
 
-    const price = q.c;
+    const price = q.price;
     const vwapLevel = direction === 'BUY'
       ? (await detectVwapReclaim(ticker, 'BUY')).vwap
       : (await detectVwapReclaim(ticker, 'SELL')).vwap;
@@ -458,13 +454,11 @@ export async function manageScalpPositions(): Promise<void> {
     const right = pos.signal === 'BUY' ? 'C' : 'P';
 
     // Get current stock price for Greek lookup
-    const q = await finnhubFetch<{ c?: number }>(
-      `https://finnhub.io/api/v1/quote?symbol=${pos.ticker}&token=${FINNHUB_KEY}`,
-    );
-    if (!q?.c) continue;
+    const q = await fetchQuote(pos.ticker);
+    if (!q?.price) continue;
 
     const greeks = await getOptionGreeksForContract(
-      pos.ticker, pos.option_strike, pos.option_expiry, right, q.c,
+      pos.ticker, pos.option_strike, pos.option_expiry, right, q.price,
     );
     if (!greeks) continue;
 
@@ -519,29 +513,27 @@ export async function closeAllScalpPositionsEod(): Promise<void> {
   }>)) {
     const right = pos.signal === 'BUY' ? 'C' : 'P';
 
-    // Retry Finnhub up to 3 times with a 5-second gap — rate limits typically
-    // reset within 60s, so a few retries almost always recovers.
-    let q: { c?: number } | null = null;
+    // Fetch current stock price via Yahoo Finance (no rate limit, no API key).
+    // Retry up to 3 times with a 3-second gap for transient network failures.
+    let stockPrice: number | null = null;
     for (let attempt = 1; attempt <= 3; attempt++) {
-      q = await finnhubFetch<{ c?: number }>(
-        `https://finnhub.io/api/v1/quote?symbol=${pos.ticker}&token=${FINNHUB_KEY}`,
-      );
-      if (q?.c) break;
+      const q = await fetchQuote(pos.ticker);
+      if (q?.price) { stockPrice = q.price; break; }
       if (attempt < 3) {
-        console.log(`[Options Scalp] ${pos.ticker} — Finnhub unavailable (attempt ${attempt}/3), retrying in 5s...`);
-        await new Promise(r => setTimeout(r, 5_000));
+        console.log(`[Options Scalp] ${pos.ticker} — Yahoo quote unavailable (attempt ${attempt}/3), retrying in 3s...`);
+        await new Promise(r => setTimeout(r, 3_000));
       }
     }
 
-    if (!q?.c) {
+    if (!stockPrice) {
       // All 3 attempts failed. Never assume $0 — the option may still have value.
-      // Leave FILLED; the management cycle will close it tomorrow with a real price.
-      console.log(`[Options Scalp] ${pos.ticker} — Finnhub unavailable after 3 retries, leaving FILLED for tomorrow's management cycle`);
+      // Leave FILLED; the management cycle will close it with a real price.
+      console.log(`[Options Scalp] ${pos.ticker} — price unavailable after 3 retries, leaving FILLED for management cycle`);
       continue;
     }
 
     const currentPremium =
-      (await getOptionGreeksForContract(pos.ticker, pos.option_strike, pos.option_expiry, right, q.c))?.mid ?? 0;
+      (await getOptionGreeksForContract(pos.ticker, pos.option_strike, pos.option_expiry, right, stockPrice))?.mid ?? 0;
 
     await closeScalpPosition(
       pos.id, pos.ticker, right,
