@@ -363,10 +363,13 @@ export async function evaluateVwapAlignment(
 
   if (!aligned) {
     // Price is on the wrong side of VWAP relative to trade direction.
-    // If extended >3%: hard block — no intraday edge left (confirmed: ARM was +4.5% above
-    // VWAP on a BUY, trade drifted lower all session). Log as mild caution otherwise.
+    // If extended >5%: hard block — no intraday edge left (confirmed: ARM was +4.5% above
+    // VWAP on a BUY, trade drifted lower all session, so we need headroom above 4.5%).
+    // 3% was too tight — AVGO (+3.0%) and ARM (+3.4%) on 2026-06-04 were winners that
+    // the 3% gate killed. Raised to 5% to allow momentum continuation setups where
+    // the 4H trend is confirmed and price is running with it (not against it).
     const absDistancePct = Math.abs(distancePct);
-    if (absDistancePct > 3.0) {
+    if (absDistancePct > 5.0) {
       return {
         delta: 0,
         block: true,
