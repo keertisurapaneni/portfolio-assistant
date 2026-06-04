@@ -265,6 +265,85 @@ export async function getTodayTrades(accountView: AccountView = 'paper'): Promis
   return fetchForTable('paper_trades');
 }
 
+// ── Orphaned IB fills (no paper_trade) ───────────────────────────────────────
+//
+// Every IB execution lands in ib_fills immediately via the execDetails callback.
+// paper_trades should be fully in sync, but edge cases (reconcile loops, delayed
+// commission reports, IB restart race conditions) can leave fills with no matching
+// paper_trade. This function finds those gaps so the UI can show them even when
+// the tracking DB is incomplete.
+
+export interface OrphanedFill {
+  /** Synthetic row key */
+  _id: string;
+  ticker: string;
+  order_id: number;
+  side: 'BOT' | 'SLD';
+  total_quantity: number;
+  avg_fill_price: number;
+  realized_pnl: number | null;
+  filled_at: string;
+}
+
+export async function getTodaysOrphanedFills(
+  accountView: AccountView = 'paper',
+  knownOrderIds: Set<string> = new Set(),
+): Promise<OrphanedFill[]> {
+  const todayStart = new Date();
+  todayStart.setHours(0, 0, 0, 0);
+
+  const fillsTable = accountView === 'live' ? 'live_ib_fills' : 'ib_fills';
+
+  const { data: fills, error } = await supabase
+    .from(fillsTable)
+    .select('order_id, ticker, side, quantity, fill_price, realized_pnl, filled_at')
+    .gte('filled_at', todayStart.toISOString())
+    .not('ticker', 'is', null)
+    .neq('ticker', '');
+
+  if (error || !fills || fills.length === 0) return [];
+
+  // Group by (order_id, ticker, side)
+  const groups = new Map<string, typeof fills>();
+  for (const fill of fills) {
+    const key = `${fill.order_id}:${fill.ticker}:${fill.side}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key)!.push(fill);
+  }
+
+  const orphans: OrphanedFill[] = [];
+  for (const [, fillGroup] of groups) {
+    const first = fillGroup[0];
+    const orderIdStr = String(first.order_id);
+
+    // Skip if this order is already covered by a paper_trade
+    if (knownOrderIds.has(orderIdStr)) continue;
+
+    // Only surface SELL fills as closed-trade rows (they carry realized P&L)
+    if (first.side !== 'SLD') continue;
+
+    const totalQty = fillGroup.reduce((s, f) => s + Number(f.quantity), 0);
+    const totalValue = fillGroup.reduce((s, f) => s + Number(f.quantity) * Number(f.fill_price), 0);
+    const avgFillPrice = totalQty > 0 ? totalValue / totalQty : 0;
+    const realizedPnl = fillGroup.some(f => f.realized_pnl != null)
+      ? fillGroup.reduce((s, f) => s + (Number(f.realized_pnl) || 0), 0)
+      : null;
+
+    orphans.push({
+      _id: `orphan:${first.order_id}:${first.ticker}`,
+      ticker: first.ticker,
+      order_id: Number(first.order_id),
+      side: 'SLD',
+      total_quantity: totalQty,
+      avg_fill_price: avgFillPrice,
+      realized_pnl: realizedPnl != null ? parseFloat(realizedPnl.toFixed(2)) : null,
+      filled_at: first.filled_at,
+    });
+  }
+
+  return orphans;
+}
+
 /** Day trade validation report — answers: trend vs chop? confidence ≥7 predictive? */
 export interface DayTradeValidationReport {
   trendVsChop: Array<{
