@@ -101,7 +101,7 @@ import { checkSpxLevelSetups } from './lib/spx-level-scanner.js';
 import { checkVwapConfluenceSetups, type ConfluenceResult } from './lib/vwap-confluence-scanner.js';
 import { checkFibRetraceSetups, type FibRetraceResult } from './lib/fib-retrace-scanner.js';
 import { checkEmaPullbackSetups, type EmaPullbackResult } from './lib/ema-pullback-scanner.js';
-import { isInsideOrb } from './lib/orb.js';
+import { isInsideOrb, fetchOrb } from './lib/orb.js';
 import { evaluateVwapAlignment, detectVwapReclaim } from './lib/vwap.js';
 import { checkTrendFilter } from './lib/trend-filter.js';
 import { getStreakMultiplier } from './lib/streak-tracker.js';
@@ -3823,18 +3823,27 @@ async function executeScannerTrade(
 
   const skipOrbGate = idea.tags?.includes('vwap_confluence');
   if (mode === 'DAY_TRADE' && etMinutes < 12 * 60 && !skipOrbGate) {
+    const orb = await fetchOrb(ticker);
     const choppy = await isInsideOrb(ticker, signal as 'BUY' | 'SELL');
-    if (choppy) {
+    if (orb && orb.status === 'inside' && !choppy) {
+      // Near the ORB boundary in the trade direction — this is the setup, not chop.
+      const pct = (orb.positionInRange * 100).toFixed(0);
+      log(`${ticker}: inside ORB but near ${signal === 'BUY' ? 'high' : 'low'} boundary (${pct}% of range) — pre-breakout ${signal} setup, proceeding`);
+      persistEvent(ticker, 'info', `ORB boundary play: price at ${pct}% of range — pre-${signal === 'BUY' ? 'breakout' : 'breakdown'} entry`, {
+        action: 'proceeding', source: 'scanner', mode,
+        orb_high: orb.high, orb_low: orb.low, current_price: orb.currentPrice,
+      });
+    } else if (choppy) {
       const reclaim = await detectVwapReclaim(ticker, signal as 'BUY' | 'SELL');
       if (reclaim.reclaimed) {
-        log(`${ticker}: inside ORB but VWAP ${signal === 'BUY' ? 'reclaimed' : 'broke down'} — proceeding (${reclaim.log})`);
+        log(`${ticker}: inside ORB (choppy) but VWAP ${signal === 'BUY' ? 'reclaimed' : 'broke down'} — proceeding (${reclaim.log})`);
         persistEvent(ticker, 'info', `ORB chop overridden by VWAP reclaim: ${reclaim.log}`, {
           action: 'proceeding', source: 'scanner', mode,
           vwap: reclaim.vwap, current_price: reclaim.currentPrice,
         });
       } else {
-        log(`${ticker}: inside ORB (choppy), no VWAP reclaim — skipping ${signal} day trade (${reclaim.log})`);
-        persistEvent(ticker, 'skipped', `Inside ORB — choppy conditions, no VWAP reclaim`, {
+        log(`${ticker}: inside ORB (choppy middle), no VWAP reclaim — skipping ${signal} day trade (${reclaim.log})`);
+        persistEvent(ticker, 'skipped', `Inside ORB — choppy middle, no VWAP reclaim`, {
           action: 'skipped', source: 'scanner', mode, skip_reason: 'inside_orb',
         });
         return 'skipped:inside_orb';
