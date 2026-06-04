@@ -402,6 +402,51 @@ export async function paperTradeOptionManually(opp: OptionsScanOpportunity): Pro
   if (error) throw error;
 }
 
+// ── Options Scalps ───────────────────────────────────────
+
+export interface ScalpTrade {
+  id: string;
+  ticker: string;
+  mode: string;
+  status: string;
+  option_strike: number | null;
+  option_expiry: string | null;
+  option_premium: number | null;
+  option_contracts: number | null;
+  fill_price: number | null;
+  pnl: number | null;
+  close_reason: string | null;
+  opened_at: string;
+  closed_at: string | null;
+  notes: string | null;
+  scanner_reason: string | null;
+}
+
+const SCALP_SELECT = 'id, ticker, mode, status, option_strike, option_expiry, option_premium, option_contracts, fill_price, pnl, close_reason, opened_at, closed_at, notes, scanner_reason';
+
+export async function getOpenScalpTrades(): Promise<ScalpTrade[]> {
+  const { data, error } = await supabase
+    .from('paper_trades')
+    .select(SCALP_SELECT)
+    .eq('mode', 'OPTIONS_SCALP')
+    .in('status', ['FILLED', 'PARTIAL'])
+    .order('opened_at', { ascending: false });
+  if (error) throw error;
+  return (data ?? []) as ScalpTrade[];
+}
+
+export async function getClosedScalpTrades(limit = 40): Promise<ScalpTrade[]> {
+  const { data, error } = await supabase
+    .from('paper_trades')
+    .select(SCALP_SELECT)
+    .eq('mode', 'OPTIONS_SCALP')
+    .in('status', [...CLOSED_STATUSES])
+    .order('closed_at', { ascending: false })
+    .limit(limit);
+  if (error) throw error;
+  return (data ?? []) as ScalpTrade[];
+}
+
 // ── Activity Log ─────────────────────────────────────────
 
 export interface OptionsActivityEvent {
