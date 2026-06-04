@@ -1736,7 +1736,7 @@ async function isDayTradeLossGateActive(config: AutoTraderConfig): Promise<boole
   const { data } = await sb
     .from('paper_trades')
     .select('pnl')
-    .in('mode', ['DAY_TRADE', 'DAY_PENNY'])
+    .eq('mode', 'DAY_TRADE')              // internal DAY_TRADE only; DAY_PENNY has its own pennyMaxDailyLoss gate
     .eq('status', 'CLOSED')
     .is('strategy_source', null)          // internal scanner only
     .gte('closed_at', `${todayEt}T00:00:00Z`);
@@ -4764,11 +4764,6 @@ async function executeExternalStrategySignal(
   }
   const extAccountType = extConnections[0].accountType;
 
-  if (signal.mode === 'DAY_TRADE' && await isInfluencerLossGateActive(config)) {
-    log(`${ticker}: external signal skipped — influencer daily loss gate active`);
-    return 'skipped';
-  }
-
   // Check if our own scanner also identified this ticker today.
   const alsoInScanner = await isTickerInTodayScan(ticker);
   // Generic strategy signals use scanner-picked tickers — attribute to scanner, not influencer.
@@ -4796,6 +4791,12 @@ async function executeExternalStrategySignal(
     });
     return 'skipped';
   };
+
+  // ── Influencer daily loss gate — checked here so skipExternalSignal is in scope
+  // Applies to DAY_TRADE and DAY_PENNY (penny stocks are the main source of influencer losses).
+  if ((signal.mode === 'DAY_TRADE' || signal.mode === 'DAY_PENNY') && await isInfluencerLossGateActive(config)) {
+    return skipExternalSignal('Influencer daily loss gate active — too many losses from external signals today', 'influencer_loss_gate');
+  }
 
   const markX = !skipConfirmationGates ? await shouldMarkStrategyX(signal) : { blocked: false as const, scope: null as null, consecutiveLosses: 0 };
   if (markX.blocked) {
