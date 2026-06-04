@@ -3715,11 +3715,12 @@ async function executeScannerTrade(
     }
   }
 
-  // ── Recent-loss cooldown gate ─────────────────────────────────────────
-  // Block re-entry on any ticker that lost money in the last N days.
-  // Both swing and day trades use 5 days — swing setups change weekly,
-  // a 14-day cooldown was too aggressive and blocked valid re-entries.
-  {
+  // ── Recent-loss cooldown gate (SWING_TRADE only) ──────────────────────
+  // Swing setups change weekly — if the thesis was wrong once, wait 5 days
+  // before re-entering. Day trades are intentionally excluded: a loss on
+  // Monday tells you nothing about Tuesday's setup on the same ticker.
+  // The same-day re-entry block above already covers the intraday case.
+  if (mode === 'SWING_TRADE') {
     const lookbackDays = 5;
     if (await hasRecentLoss(ticker, lookbackDays, { excludeOptions: true })) {
       log(`${ticker}: skipped — recent loss within ${lookbackDays}d cooldown`);
@@ -3805,6 +3806,21 @@ async function executeScannerTrade(
   // Gate expires after 12 PM ET — the opening range is stale by afternoon.
   // Skip for vwap_confluence — the strategy IS a chop-exit play.
   const etMinutes = getETMinutes();
+
+  // ── Lunch-hour exclusion gate ─────────────────────────────────────────
+  // Block new day-trade entries from 12:00–13:00 ET. This is the "death
+  // zone": institutional desks step away, volume craters, moves are random
+  // and often mean-reverting. Even technically valid setups fail at elevated
+  // rates during this window. Existing positions continue to be managed
+  // normally — this only gates new entries.
+  if (mode === 'DAY_TRADE' && etMinutes >= 12 * 60 && etMinutes < 13 * 60) {
+    log(`${ticker}: skipped — lunch-hour exclusion (12:00–13:00 ET, low-quality entry window)`);
+    persistEvent(ticker, 'skipped', 'Lunch-hour exclusion: no new day-trade entries 12:00–13:00 ET', {
+      action: 'skipped', source: 'scanner', mode, skip_reason: 'lunch_hour',
+    });
+    return 'skipped:lunch_hour';
+  }
+
   const skipOrbGate = idea.tags?.includes('vwap_confluence');
   if (mode === 'DAY_TRADE' && etMinutes < 12 * 60 && !skipOrbGate) {
     const choppy = await isInsideOrb(ticker, signal as 'BUY' | 'SELL');
