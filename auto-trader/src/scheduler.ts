@@ -361,12 +361,22 @@ export function startScheduler(): void {
 
   // EOD day-trade auto-close: 3:55 PM ET on weekdays — hard backstop after soft close.
   // Mirrors browser scheduleDayTradeAutoClose — ensures positions close even when browser is shut.
+  // Also retries any options scalps left FILLED by the 3:45 PM close (e.g. Finnhub was
+  // still rate-limited after 3 retries). 10 min of market time remaining is enough for
+  // a limit order to fill; Finnhub will have recovered from any transient rate-limit.
   cron.schedule('55 15 * * 1-5', async () => {
     const config = await loadConfig();
     if (config.dayTradeAutoClose) {
       await closeAllDayTrades(config);
     } else {
       log('EOD day-trade sweep skipped (day_trade_auto_close disabled)');
+    }
+    // Scalp safety sweep — closes any scalps still FILLED after the 3:45 PM run.
+    try {
+      const { closeAllScalpPositionsEod } = await import('./lib/options-scalp.js');
+      await closeAllScalpPositionsEod();
+    } catch (err) {
+      console.error('[Scheduler] Options scalp 3:55 PM safety sweep error:', err instanceof Error ? err.message : err);
     }
   }, { timezone: 'America/New_York' });
 
