@@ -16,12 +16,15 @@ import {
   fetchWatchlistQuotes,
   getOpenCreditSpreads,
   getClosedCreditSpreads,
+  getOpenScalpTrades,
+  getClosedScalpTrades,
   type TickerQuote,
   type WatchlistTicker,
   type OpenOptionsPosition,
   type OptionsMonthlyStats,
   type OptionsActivityEvent,
   type CreditSpreadPosition,
+  type ScalpTrade,
 } from '../../../lib/optionsApi';
 
 // ── Helpers ──────────────────────────────────────────────
@@ -1235,6 +1238,100 @@ function SpreadCard({ spread, closed }: { spread: CreditSpreadPosition; closed?:
   );
 }
 
+// ── Scalp Card ───────────────────────────────────────────
+
+function ScalpCard({ scalp, closed }: { scalp: ScalpTrade; closed?: boolean }) {
+  const isCall = scalp.notes?.toLowerCase().includes('call') ?? false;
+  const side = isCall ? 'CALL' : 'PUT';
+  const premium = scalp.option_premium ?? 0;
+  const contracts = scalp.option_contracts ?? 1;
+  const totalPaid = premium * contracts * 100;
+  const pnl = scalp.pnl ?? 0;
+  const pnlPct = totalPaid > 0 ? (pnl / totalPaid) * 100 : null;
+
+  const isWin  = pnl > 0;
+  const isLoss = pnl < 0;
+  const isOpen = !closed;
+
+  const borderClass = closed
+    ? isWin  ? 'border-emerald-200 bg-emerald-50/40'
+    : isLoss ? 'border-red-200 bg-red-50/40'
+    : 'border-[hsl(var(--border))] bg-[hsl(var(--card))]'
+    : 'border-sky-200 bg-sky-50/40';
+
+  const closeLabel = (() => {
+    switch (scalp.close_reason) {
+      case 'eod_close':    return '🌙 EOD close';
+      case 'stop_loss':    return '🛑 Stop loss';
+      case '50pct_profit': return '💰 50% profit';
+      case 'no_fill':      return '❌ No fill';
+      default: return scalp.close_reason?.replace(/_/g, ' ') ?? null;
+    }
+  })();
+
+  return (
+    <div className={cn('rounded-xl border p-3', borderClass)}>
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="text-sm font-bold">{scalp.ticker}</span>
+          <span className={cn(
+            'text-[10px] px-1.5 py-0.5 rounded font-semibold',
+            isCall ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'
+          )}>
+            {side}
+          </span>
+          <span className="text-[10px] px-1.5 py-0.5 rounded bg-sky-100 text-sky-700 font-medium">⚡ Scalp</span>
+          {isOpen && <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 font-semibold animate-pulse">● Live</span>}
+          {closed && closeLabel && (
+            <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 font-medium">{closeLabel}</span>
+          )}
+        </div>
+        <div className="text-right shrink-0">
+          {closed ? (
+            <>
+              <p className={cn('text-sm font-bold', isWin ? 'text-emerald-600' : isLoss ? 'text-red-600' : 'text-[hsl(var(--muted-foreground))]')}>
+                {fmtUsd(pnl, 0, true)}
+              </p>
+              {pnlPct != null && (
+                <p className={cn('text-[10px] font-semibold', isWin ? 'text-emerald-600' : 'text-red-600')}>
+                  {isWin ? '+' : ''}{pnlPct.toFixed(0)}% on cost
+                </p>
+              )}
+            </>
+          ) : (
+            <p className="text-[10px] text-sky-600 font-semibold">
+              Cost ${totalPaid.toFixed(0)}
+            </p>
+          )}
+        </div>
+      </div>
+
+      <div className="mt-2 grid grid-cols-4 gap-1 text-center">
+        <div>
+          <p className="text-xs font-bold">${scalp.option_strike}</p>
+          <p className="text-[9px] text-[hsl(var(--muted-foreground))] mt-0.5">Strike</p>
+        </div>
+        <div>
+          <p className="text-xs font-bold">${premium.toFixed(2)}</p>
+          <p className="text-[9px] text-[hsl(var(--muted-foreground))] mt-0.5">Premium</p>
+        </div>
+        <div>
+          <p className="text-xs font-bold">{contracts}x</p>
+          <p className="text-[9px] text-[hsl(var(--muted-foreground))] mt-0.5">Contracts</p>
+        </div>
+        <div>
+          <p className="text-xs font-bold">{scalp.option_expiry ? formatExpiry(scalp.option_expiry) : '—'}</p>
+          <p className="text-[9px] text-[hsl(var(--muted-foreground))] mt-0.5">Expiry</p>
+        </div>
+      </div>
+
+      {scalp.scanner_reason && (
+        <p className="mt-2 text-[10px] text-[hsl(var(--muted-foreground))] leading-snug">{scalp.scanner_reason}</p>
+      )}
+    </div>
+  );
+}
+
 // ── Main Tab ─────────────────────────────────────────────
 
 export function OptionsTab() {
@@ -1255,7 +1352,9 @@ export function OptionsTab() {
   const [maxAllocation, setMaxAllocation] = useState<number>(500_000);
   const [openSpreads, setOpenSpreads] = useState<CreditSpreadPosition[]>([]);
   const [closedSpreads, setClosedSpreads] = useState<CreditSpreadPosition[]>([]);
-  const [activeSection, setActiveSection] = useState<'positions' | 'history' | 'watchlist' | 'log' | 'sniper' | 'spreads' | 'playbook'>('positions');
+  const [activeSection, setActiveSection] = useState<'positions' | 'history' | 'watchlist' | 'log' | 'sniper' | 'spreads' | 'scalps' | 'playbook'>('positions');
+  const [openScalps, setOpenScalps]   = useState<ScalpTrade[]>([]);
+  const [closedScalps, setClosedScalps] = useState<ScalpTrade[]>([]);
   const [tierFilter, setTierFilter]     = useState<'ALL' | 'STABLE' | 'GROWTH' | 'HIGH_VOL'>('ALL');
   const [sectorFilter, setSectorFilter] = useState<string>('ALL');
   const [newOnly, setNewOnly] = useState(false);
@@ -1263,7 +1362,7 @@ export function OptionsTab() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [openPos, closedPos, wl, monthStats, log, openSpr, closedSpr] = await Promise.all([
+      const [openPos, closedPos, wl, monthStats, log, openSpr, closedSpr, openSc, closedSc] = await Promise.all([
         getOpenOptionsPositions(),
         getClosedOptionsPositions(20),
         getOptionsWatchlist(),
@@ -1271,6 +1370,8 @@ export function OptionsTab() {
         getOptionsActivityLog(50),
         getOpenCreditSpreads(),
         getClosedCreditSpreads(20),
+        getOpenScalpTrades(),
+        getClosedScalpTrades(40),
       ]);
       setOpenPositions(openPos);
       setClosedPositions(closedPos);
@@ -1279,6 +1380,8 @@ export function OptionsTab() {
       setActivityLog(log);
       setOpenSpreads(openSpr);
       setClosedSpreads(closedSpr);
+      setOpenScalps(openSc);
+      setClosedScalps(closedSc);
     } catch (err) {
       console.error('Options tab load error:', err);
     } finally {
@@ -1503,6 +1606,7 @@ export function OptionsTab() {
   const sections = [
     { id: 'positions' as const, label: 'Open', count: openPositions.length },
     { id: 'spreads' as const, label: 'Spreads', count: openSpreads.length },
+    { id: 'scalps' as const, label: '⚡ Scalps', count: openScalps.length + closedScalps.length },
     { id: 'history' as const, label: 'History', count: closedPositions.length },
     { id: 'watchlist' as const, label: 'Watchlist', count: watchlist.filter(w => w.active).length },
     { id: 'sniper' as const, label: 'Sniper', count: 0 },
@@ -1647,6 +1751,59 @@ export function OptionsTab() {
                   {closedSpreads.map(sp => (
                     <SpreadCard key={sp.id} spread={sp} closed />
                   ))}
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
+
+      {/* Scalps */}
+      {activeSection === 'scalps' && (
+        <div className="space-y-4">
+          {openScalps.length === 0 && closedScalps.length === 0 ? (
+            <div className="text-center py-8 text-sm text-[hsl(var(--muted-foreground))]">
+              No scalp trades yet. Scans run at 10:00 AM and 11:00 AM ET.
+            </div>
+          ) : (
+            <>
+              {/* Summary strip */}
+              {closedScalps.length > 0 && (() => {
+                const wins  = closedScalps.filter(s => (s.pnl ?? 0) > 0);
+                const totalPnl = closedScalps.reduce((sum, s) => sum + (s.pnl ?? 0), 0);
+                return (
+                  <div className="flex items-center gap-3 rounded-lg bg-sky-50 border border-sky-100 px-3 py-2">
+                    <span className="text-[10px] font-semibold text-sky-700">⚡ Scalp History</span>
+                    <span className={cn('text-[11px] font-bold', totalPnl >= 0 ? 'text-emerald-700' : 'text-red-600')}>
+                      {fmtUsd(totalPnl, 0, true)}
+                    </span>
+                    <span className="text-[10px] text-sky-500">
+                      {wins.length}W / {closedScalps.length - wins.length}L
+                    </span>
+                  </div>
+                );
+              })()}
+
+              {/* Open scalps */}
+              {openScalps.length > 0 && (
+                <div className="space-y-2">
+                  <div className="flex items-center gap-2 px-1">
+                    <span className="text-xs font-bold text-sky-700">Live Positions</span>
+                    <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-sky-100 text-sky-700 font-bold animate-pulse">
+                      {openScalps.length}
+                    </span>
+                  </div>
+                  {openScalps.map(s => <ScalpCard key={s.id} scalp={s} />)}
+                </div>
+              )}
+
+              {/* Closed scalps */}
+              {closedScalps.length > 0 && (
+                <div className="space-y-2">
+                  <div className="flex items-center gap-2 px-1">
+                    <span className="text-xs font-bold text-[hsl(var(--muted-foreground))]">Recent Closed</span>
+                  </div>
+                  {closedScalps.map(s => <ScalpCard key={s.id} scalp={s} closed />)}
                 </div>
               )}
             </>
