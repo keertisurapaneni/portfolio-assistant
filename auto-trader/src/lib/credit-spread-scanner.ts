@@ -297,7 +297,7 @@ export async function runCreditSpreadScan(
     }
   }
 
-  // Log top opportunities
+  // Log top opportunities (up to 5)
   for (const opp of opportunities.slice(0, 5)) {
     await createAutoTradeEvent({
       ticker: opp.ticker,
@@ -315,6 +315,18 @@ export async function runCreditSpreadScan(
         contracts: opp.contracts,
         pullbackPct: opp.pullbackPct,
       },
+    }).catch(() => {});
+  }
+
+  // Always log a scan summary so the Options Wheel log shows the scan ran,
+  // even on days with no qualifying setups.
+  if (opportunities.length === 0) {
+    await createAutoTradeEvent({
+      ticker: 'SYSTEM',
+      mode: 'CREDIT_SPREAD',
+      event_type: 'info',
+      message: `Credit spread scan: no qualifying setups today (${skipped.length} tickers scanned, none met criteria)`,
+      metadata: { scanned: skipped.length, scanDate },
     }).catch(() => {});
   }
 
