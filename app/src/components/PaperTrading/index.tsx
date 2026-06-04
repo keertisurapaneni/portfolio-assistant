@@ -62,6 +62,8 @@ import {
   getAutoTradeEvents,
   getTodaysExecutedEvents,
   getTodayTrades,
+  getTodaysOrphanedFills,
+  type OrphanedFill,
   getDayTradeValidationReport,
   getSwingTradeValidationReport,
   clearSharedTradesCache,
@@ -153,6 +155,7 @@ export function PaperTrading() {
   const [persistedEvents, setPersistedEvents] = useState<AutoTradeEventRecord[]>(cached?.persistedEvents ?? []);
   const [todaysExecuted, setTodaysExecuted] = useState<AutoTradeEventRecord[]>(cached?.todaysExecuted ?? []);
   const [todayTrades, setTodayTrades] = useState<PaperTrade[]>(cached?.todayTrades ?? []);
+  const [orphanedFills, setOrphanedFills] = useState<OrphanedFill[]>([]);
   const [categoryPerf, setCategoryPerf] = useState<CategoryPerformance[]>(cached?.categoryPerf ?? []);
   const [sourcePerf, setSourcePerf] = useState<StrategySourcePerformance[]>(cached?.sourcePerf ?? []);
   const [videoPerf, setVideoPerf] = useState<StrategyVideoPerformance[]>(cached?.videoPerf ?? []);
@@ -211,6 +214,18 @@ export function PaperTrading() {
     setPersistedEvents(savedEvents);
     setTodaysExecuted(todayEvents);
     setTodayTrades(todayTradesResult);
+
+    // Build the set of order IDs already covered by paper_trades, then fetch
+    // any ib_fills that have no matching paper_trade (orphaned executions).
+    // This ensures Today's Activity is always complete even when tracking gaps occur.
+    const knownOrderIds = new Set<string>();
+    for (const t of todayTradesResult) {
+      if (t.ib_order_id) knownOrderIds.add(t.ib_order_id);
+      if ((t as PaperTrade & { ib_tp_order_id?: string }).ib_tp_order_id) knownOrderIds.add((t as PaperTrade & { ib_tp_order_id?: string }).ib_tp_order_id!);
+      if ((t as PaperTrade & { ib_sl_order_id?: string }).ib_sl_order_id) knownOrderIds.add((t as PaperTrade & { ib_sl_order_id?: string }).ib_sl_order_id!);
+      if ((t as PaperTrade & { ib_close_order_id?: string }).ib_close_order_id) knownOrderIds.add((t as PaperTrade & { ib_close_order_id?: string }).ib_close_order_id!);
+    }
+    getTodaysOrphanedFills(accountView, knownOrderIds).then(setOrphanedFills).catch(() => {});
     fetch('http://localhost:3001/api/scheduler/status')
       .then((r) => r.json())
       .then((d) => setLastCycleSummary(d.lastCycleSummary ?? []))
@@ -696,6 +711,7 @@ export function PaperTrading() {
               events={dedupedToday}
               trades={allTrades}
               todayTrades={todayTrades}
+              orphanedFills={orphanedFills}
               todaySignalsForExecute={todaySignalsForExecute}
               onExecuteSignal={refreshAfterAction}
               ibRealizedPnl={ibAccountPnl?.realizedPnL ?? null}

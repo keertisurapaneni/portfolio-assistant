@@ -47,6 +47,8 @@ export interface TodayActivityTabProps {
   trades: PaperTrade[];
   /** Today's trades from paper_trades — primary source of truth, driven by ib_fills trigger */
   todayTrades?: PaperTrade[];
+  /** IB fills that have no matching paper_trade — shown as supplementary rows so no execution is ever missing from Today's Activity */
+  orphanedFills?: import('../../../lib/paperTradesApi').OrphanedFill[];
   todaySignalsForExecute?: PendingStrategySignal[];
   onExecuteSignal?: () => void;
   ibRealizedPnl?: number | null;
@@ -63,7 +65,7 @@ function isTradingDay(): boolean {
   return day !== 0 && day !== 6; // 0=Sun, 6=Sat
 }
 
-export function TodayActivityTab({ events, trades, todayTrades, todaySignalsForExecute = [], onExecuteSignal, ibRealizedPnl }: TodayActivityTabProps) {
+export function TodayActivityTab({ events, trades, todayTrades, orphanedFills = [], todaySignalsForExecute = [], onExecuteSignal, ibRealizedPnl }: TodayActivityTabProps) {
   const [executingId, setExecutingId] = useState<string | null>(null);
   const [executingAll, setExecutingAll] = useState(false);
   const [filterMode, setFilterMode] = useState<FilterMode>('all');
@@ -554,6 +556,43 @@ export function TodayActivityTab({ events, trades, todayTrades, todaySignalsForE
                   </td>
                   <td className="px-4 py-3 text-right text-xs text-[hsl(var(--muted-foreground))] tabular-nums">
                     {new Date(trade.filled_at ?? trade.opened_at).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}
+                  </td>
+                </tr>
+              );
+            })}
+            {/* Orphaned IB fills — executions that had no matching paper_trade.
+                These are auto-detected from ib_fills so no execution is ever
+                invisible in Today's Activity, regardless of tracking gaps. */}
+            {orphanedFills.map((fill) => {
+              const pnl = fill.realized_pnl;
+              return (
+                <tr key={fill._id} className="bg-amber-50/30 hover:bg-amber-50/60">
+                  <td className="px-4 py-3 font-bold">
+                    <span className="inline-flex items-center gap-1.5">
+                      {fill.ticker}
+                    </span>
+                  </td>
+                  <td className="px-4 py-3">
+                    <span className="inline-flex px-1.5 py-0.5 rounded text-[10px] font-bold bg-slate-100 text-slate-600">—</span>
+                  </td>
+                  <td className="px-4 py-3">
+                    <span className="text-[10px] px-1.5 py-0.5 rounded font-medium bg-amber-100 text-amber-700">IB Fill</span>
+                  </td>
+                  <td className="px-4 py-3 text-xs text-[hsl(var(--muted-foreground))]">
+                    <span className="font-medium text-[hsl(var(--foreground))]">System · IB execution</span>
+                    <span> · {fill.total_quantity} shares @ ${fill.avg_fill_price.toFixed(2)}</span>
+                  </td>
+                  <td className={cn(
+                    'px-4 py-3 text-right tabular-nums font-semibold',
+                    pnl != null && pnl > 0 ? 'text-emerald-600' : pnl != null && pnl < 0 ? 'text-red-600' : ''
+                  )}>
+                    {pnl != null ? fmtUsd(pnl, 2, true) : '—'}
+                  </td>
+                  <td className="px-4 py-3">
+                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-50 text-blue-700 font-medium">Closed</span>
+                  </td>
+                  <td className="px-4 py-3 text-right text-xs text-[hsl(var(--muted-foreground))] tabular-nums">
+                    {new Date(fill.filled_at).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}
                   </td>
                 </tr>
               );
