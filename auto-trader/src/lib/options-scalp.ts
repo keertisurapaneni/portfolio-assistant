@@ -498,20 +498,18 @@ export async function manageScalpPositions(): Promise<void> {
 
 /**
  * EOD close — called at 3:45 PM ET.
- * Force-closes all open scalp positions.
+ * Force-closes ALL open scalp positions regardless of when they were opened.
+ * (The previous filter .gte('opened_at', todayStart) caused scalps from prior
+ * days to get permanently stuck as FILLED with no close record.)
  */
 export async function closeAllScalpPositionsEod(): Promise<void> {
   const sb = getSupabase();
-
-  const todayStart = new Date();
-  todayStart.setHours(0, 0, 0, 0);
 
   const { data: positions } = await sb
     .from('paper_trades')
     .select('id, ticker, signal, option_strike, option_expiry, option_premium')
     .eq('mode', 'OPTIONS_SCALP')
-    .in('status', ['FILLED', 'PARTIAL'])
-    .gte('opened_at', todayStart.toISOString());
+    .in('status', ['FILLED', 'PARTIAL']);
 
   if (!positions?.length) return;
 
@@ -554,19 +552,23 @@ async function closeScalpPosition(
 
   const pnl = (closePremium - premiumPaid) * 100;
 
-  // If the premium is $0, check whether the option has actually expired.
-  // If expiry is still in the future, IB still holds the position — don't
-  // mark the DB closed without a matching IB execution (IB / DB must agree).
+  // If premium is $0, guard against a Finnhub price-fetch failure marking a
+  // multi-week option as expired worthless. BUT scalps always have next-day
+  // expiry (≤1 day out), so for those we should close even at $0 — they're
+  // either worthless or expiring tomorrow and we want a clean DB record.
   if (closePremium <= 0) {
     const expiryDate = new Date(expiry);
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     expiryDate.setHours(0, 0, 0, 0);
-    if (expiryDate > today) {
-      console.log(`[Options Scalp] ${ticker} premium=$0 but expires ${expiry} — leaving FILLED, will expire naturally in IB`);
+    const daysToExpiry = Math.round((expiryDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+    if (daysToExpiry > 1) {
+      // More than 1 day to expiry — price is likely a fetch failure, not truly $0.
+      // Leave the position open; it still has meaningful time value.
+      console.log(`[Options Scalp] ${ticker} premium=$0 but expires ${expiry} (${daysToExpiry}d) — leaving FILLED, likely price-fetch failure`);
       return;
     }
-    // Expiry is today or past: option expired worthless, safe to close in DB.
+    // 0 or 1 day to expiry: next-day scalp, close at $0 (expired worthless).
   }
 
   // Place sell-to-close order in IB
