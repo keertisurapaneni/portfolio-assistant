@@ -1701,27 +1701,36 @@ export async function reconcileIBLongs(): Promise<{ closed: string[]; errors: st
   return { closed, errors };
 }
 
-// ── Daily Max-Loss Gate ────────────────────────────────────────────────────────
+// ── Daily Max-Loss Gates ───────────────────────────────────────────────────────
 //
-// Returns true if new day-trade entries should be blocked for the rest of the session.
-// Compares today's realized P&L from closed day trades against dayTradeMaxDailyLoss.
-// 0 = gate disabled.
+// Two independent gates:
+//
+//   isDayTradeLossGateActive   — counts only INTERNAL scanner trades (strategy_source IS NULL).
+//                                Threshold: dayTradeMaxDailyLoss (default $1,000).
+//                                Blocks internal scanner entries when exceeded.
+//
+//   isInfluencerLossGateActive — counts only EXTERNAL/influencer trades (strategy_source IS NOT NULL).
+//                                Threshold: influencerDailyLossMax (default $500).
+//                                Blocks only new external signals; internal scanner is unaffected.
+//
+// This prevents influencer losses from silencing our own scanner.
 
-let _dayTradeGateActive  = false;
-let _dayTradeGateChecked = ''; // ET date of last check — reset daily
+let _dayTradeGateActive     = false;
+let _dayTradeGateChecked    = ''; // ET date of last check — reset daily
+let _influencerGateActive   = false;
+let _influencerGateChecked  = '';
 
 async function isDayTradeLossGateActive(config: AutoTraderConfig): Promise<boolean> {
   if (!config.dayTradeMaxDailyLoss || config.dayTradeMaxDailyLoss <= 0) return false;
 
   const todayEt = getETDateString();
 
-  // Reset flag on new day
   if (_dayTradeGateChecked !== todayEt) {
     _dayTradeGateActive  = false;
     _dayTradeGateChecked = todayEt;
   }
 
-  if (_dayTradeGateActive) return true; // already tripped today
+  if (_dayTradeGateActive) return true;
 
   const sb       = getSupabase();
   const { data } = await sb
@@ -1729,6 +1738,7 @@ async function isDayTradeLossGateActive(config: AutoTraderConfig): Promise<boole
     .select('pnl')
     .in('mode', ['DAY_TRADE', 'DAY_PENNY'])
     .eq('status', 'CLOSED')
+    .is('strategy_source', null)          // internal scanner only
     .gte('closed_at', `${todayEt}T00:00:00Z`);
 
   const sessionPnl = (data ?? []).reduce((s, t) => s + (t.pnl ?? 0), 0);
@@ -1736,8 +1746,43 @@ async function isDayTradeLossGateActive(config: AutoTraderConfig): Promise<boole
   if (sessionPnl < -config.dayTradeMaxDailyLoss) {
     _dayTradeGateActive = true;
     log(
-      `🛑 [DailyLossGate] Session P&L $${sessionPnl.toFixed(0)} < -$${config.dayTradeMaxDailyLoss} ` +
-      `— no new day-trade entries for the rest of today`,
+      `🛑 [DailyLossGate] Internal scanner P&L $${sessionPnl.toFixed(0)} < -$${config.dayTradeMaxDailyLoss} ` +
+      `— no new internal day-trade entries for the rest of today`,
+    );
+    return true;
+  }
+
+  return false;
+}
+
+async function isInfluencerLossGateActive(config: AutoTraderConfig): Promise<boolean> {
+  if (!config.influencerDailyLossMax || config.influencerDailyLossMax <= 0) return false;
+
+  const todayEt = getETDateString();
+
+  if (_influencerGateChecked !== todayEt) {
+    _influencerGateActive  = false;
+    _influencerGateChecked = todayEt;
+  }
+
+  if (_influencerGateActive) return true;
+
+  const sb       = getSupabase();
+  const { data } = await sb
+    .from('paper_trades')
+    .select('pnl')
+    .in('mode', ['DAY_TRADE', 'DAY_PENNY'])
+    .eq('status', 'CLOSED')
+    .not('strategy_source', 'is', null)   // influencer/external signals only
+    .gte('closed_at', `${todayEt}T00:00:00Z`);
+
+  const influencerPnl = (data ?? []).reduce((s, t) => s + (t.pnl ?? 0), 0);
+
+  if (influencerPnl < -config.influencerDailyLossMax) {
+    _influencerGateActive = true;
+    log(
+      `🛑 [InfluencerLossGate] Influencer P&L $${influencerPnl.toFixed(0)} < -$${config.influencerDailyLossMax} ` +
+      `— blocking new external signals for the rest of today (internal scanner unaffected)`,
     );
     return true;
   }
@@ -4719,8 +4764,8 @@ async function executeExternalStrategySignal(
   }
   const extAccountType = extConnections[0].accountType;
 
-  if (signal.mode === 'DAY_TRADE' && await isDayTradeLossGateActive(config)) {
-    log(`${ticker}: external signal skipped — daily loss gate active`);
+  if (signal.mode === 'DAY_TRADE' && await isInfluencerLossGateActive(config)) {
+    log(`${ticker}: external signal skipped — influencer daily loss gate active`);
     return 'skipped';
   }
 

@@ -211,6 +211,7 @@ export async function loadAutoTraderConfig(): Promise<AutoTraderConfig> {
         suggestedFindPositionSize: Number(data.suggested_find_position_size ?? DEFAULT_CONFIG.suggestedFindPositionSize),
         externalSignalPositionSize: Number(data.external_signal_position_size ?? DEFAULT_CONFIG.externalSignalPositionSize),
         dayTradeMaxDailyLoss: Number(data.day_trade_max_daily_loss ?? DEFAULT_CONFIG.dayTradeMaxDailyLoss),
+        influencerDailyLossMax: Number(data.influencer_daily_loss_max ?? DEFAULT_CONFIG.influencerDailyLossMax),
 
         // Module Toggles
         tradeSignalsEnabled: data.trade_signals_enabled ?? DEFAULT_CONFIG.tradeSignalsEnabled,

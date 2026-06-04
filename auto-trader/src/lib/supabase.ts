@@ -124,6 +124,7 @@ export async function loadConfig(): Promise<AutoTraderConfig> {
     ltMaxHoldDays: Number(data.lt_max_hold_days ?? DEFAULT_CONFIG.ltMaxHoldDays),
     ltTrailingStopPct: Number(data.lt_trailing_stop_pct ?? DEFAULT_CONFIG.ltTrailingStopPct),
     dayTradeMaxDailyLoss: Number(data.day_trade_max_daily_loss ?? DEFAULT_CONFIG.dayTradeMaxDailyLoss),
+    influencerDailyLossMax: Number(data.influencer_daily_loss_max ?? DEFAULT_CONFIG.influencerDailyLossMax),
     tradeSignalsEnabled: data.trade_signals_enabled ?? DEFAULT_CONFIG.tradeSignalsEnabled,
     suggestedFindsEnabled: data.suggested_finds_enabled ?? DEFAULT_CONFIG.suggestedFindsEnabled,
     optionsWheelEnabled: data.options_wheel_enabled ?? DEFAULT_CONFIG.optionsWheelEnabled,

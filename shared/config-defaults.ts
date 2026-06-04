@@ -56,6 +56,12 @@ export interface AutoTraderConfig {
   ltMaxHoldDays: number;
   ltTrailingStopPct: number;
   dayTradeMaxDailyLoss: number;
+  /**
+   * Max total loss from influencer/external signals in a single day.
+   * When exceeded, new external signals are blocked but the internal scanner
+   * can still trade (subject to dayTradeMaxDailyLoss). 0 = disabled.
+   */
+  influencerDailyLossMax: number;
   tradeSignalsEnabled: boolean;
   suggestedFindsEnabled: boolean;
   optionsWheelEnabled: boolean;
@@ -121,7 +127,8 @@ export const DEFAULT_CONFIG: AutoTraderConfig = {
   ltProfitTakePct: 15,
   ltMaxHoldDays: 0,
   ltTrailingStopPct: 10,
-  dayTradeMaxDailyLoss: 500,
+  dayTradeMaxDailyLoss: 1000,
+  influencerDailyLossMax: 500,
   tradeSignalsEnabled: true,
   suggestedFindsEnabled: true,
   optionsWheelEnabled: true,
