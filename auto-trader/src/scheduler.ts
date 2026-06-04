@@ -1134,7 +1134,6 @@ async function checkStaleDayTrades(positions: EnrichedPosition[]): Promise<void>
 
     const fillPrice = trade.fill_price ?? trade.entry_price ?? 0;
     const isLong = trade.signal === 'BUY';
-    const qty = trade.quantity ?? 0;
 
     // If IB position no longer exists, just mark closed in DB (position already gone)
     if (!ibPos || Math.abs(ibPos.position) === 0) {
@@ -1151,6 +1150,15 @@ async function checkStaleDayTrades(positions: EnrichedPosition[]): Promise<void>
       log(`  ${trade.ticker}: no IB position found — marked CLOSED (reconciled)`);
       continue;
     }
+
+    // Use the actual IB position size, not the stale paper_trade quantity.
+    // If IB held multiple accumulated lots (e.g. 3× 31 shares = 93) but the DB
+    // only tracks 31, selling only 31 would leave 62 in IB, trigger a reopen,
+    // and repeat — creating accidental shorts and orphaned fills. Confirmed: XOM
+    // on 2026-06-04 had 93 IB shares, paper_trade tracked 31, sold 31 three times,
+    // ended up short 27 shares (required a costly cover order to clean up).
+    const ibQty = Math.abs(ibPos.position);
+    const qty = ibQty > 0 ? ibQty : (trade.quantity ?? 0);
 
     const closeSide = isLong ? 'SELL' : 'BUY';
     if (qty <= 0) continue;
