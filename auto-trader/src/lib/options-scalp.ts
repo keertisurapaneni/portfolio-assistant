@@ -437,15 +437,13 @@ async function executeScalp(p: ScalpParams): Promise<boolean> {
 export async function manageScalpPositions(): Promise<void> {
   const sb = getSupabase();
 
-  const todayStart = new Date();
-  todayStart.setHours(0, 0, 0, 0);
-
+  // No opened_at filter — include stale scalps from prior days so they get
+  // stop-loss / profit-target management until the 3:45 PM EOD close sweeps them.
   const { data: positions } = await sb
     .from('paper_trades')
     .select('id, ticker, signal, option_strike, option_expiry, option_premium, ib_order_id')
     .eq('mode', 'OPTIONS_SCALP')
-    .in('status', ['FILLED', 'PARTIAL'])
-    .gte('opened_at', todayStart.toISOString());
+    .in('status', ['FILLED', 'PARTIAL']);
 
   if (!positions?.length) return;
 
@@ -571,7 +569,11 @@ async function closeScalpPosition(
     // 0 or 1 day to expiry: next-day scalp, close at $0 (expired worthless).
   }
 
-  // Place sell-to-close order in IB
+  // Place sell-to-close order in IB when premium > $0.
+  // If the order fails we MUST NOT close in DB — IB still holds the position,
+  // and an ITM option left open in IB will auto-exercise at expiry, creating
+  // an unexpected stock position (forced buy/short). Leave as FILLED and retry
+  // on the next management cycle or EOD sweep.
   if (isConnected() && closePremium > 0) {
     try {
       await placeOptionsOrder({
@@ -585,9 +587,21 @@ async function closeScalpPosition(
         ...(account ? { account } : {}),
       });
     } catch (err) {
-      console.error(`[Options Scalp] Close order failed for ${ticker}:`, err instanceof Error ? err.message : err);
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`[Options Scalp] Close order FAILED for ${ticker} — leaving FILLED, will retry: ${msg}`);
+      createAutoTradeEvent({
+        ticker, event_type: 'error', action: 'failed', source: 'scanner', mode: 'OPTIONS_SCALP',
+        message: `Close order failed [${reason}] — position left OPEN in IB: ${msg}`,
+        metadata: { reason, closePremium, premiumPaid },
+      }).catch(() => {});
+      return; // do NOT update DB — IB still holds this position
     }
+  } else if (!isConnected() && closePremium > 0) {
+    // IB disconnected — cannot place sell order; leave FILLED so EOD sweep retries when reconnected.
+    console.warn(`[Options Scalp] ${ticker} — IB disconnected, cannot close position, leaving FILLED`);
+    return;
   }
+  // closePremium === 0: option worthless, no IB sell needed — safe to mark CLOSED in DB.
 
   await sb.from('paper_trades').update({
     status:      'CLOSED',
