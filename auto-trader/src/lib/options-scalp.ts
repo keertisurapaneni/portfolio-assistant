@@ -518,16 +518,25 @@ export async function closeAllScalpPositionsEod(): Promise<void> {
     option_strike: number; option_expiry: string; option_premium: number;
   }>)) {
     const right = pos.signal === 'BUY' ? 'C' : 'P';
-    const q = await finnhubFetch<{ c?: number }>(
-      `https://finnhub.io/api/v1/quote?symbol=${pos.ticker}&token=${FINNHUB_KEY}`,
-    );
+
+    // Retry Finnhub up to 3 times with a 5-second gap — rate limits typically
+    // reset within 60s, so a few retries almost always recovers.
+    let q: { c?: number } | null = null;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      q = await finnhubFetch<{ c?: number }>(
+        `https://finnhub.io/api/v1/quote?symbol=${pos.ticker}&token=${FINNHUB_KEY}`,
+      );
+      if (q?.c) break;
+      if (attempt < 3) {
+        console.log(`[Options Scalp] ${pos.ticker} — Finnhub unavailable (attempt ${attempt}/3), retrying in 5s...`);
+        await new Promise(r => setTimeout(r, 5_000));
+      }
+    }
 
     if (!q?.c) {
-      // Finnhub is unavailable (rate-limited or network failure). Never assume $0 —
-      // the option may still have meaningful value, especially for 1DTE options at
-      // 3:45 PM. Leave FILLED and let the management cycle close it tomorrow morning
-      // with a real price rather than recording a false full-loss in the DB.
-      console.log(`[Options Scalp] ${pos.ticker} — Finnhub price unavailable at EOD (rate limit?), leaving FILLED for tomorrow's management cycle`);
+      // All 3 attempts failed. Never assume $0 — the option may still have value.
+      // Leave FILLED; the management cycle will close it tomorrow with a real price.
+      console.log(`[Options Scalp] ${pos.ticker} — Finnhub unavailable after 3 retries, leaving FILLED for tomorrow's management cycle`);
       continue;
     }
 
