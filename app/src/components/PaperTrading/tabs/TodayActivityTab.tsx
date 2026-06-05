@@ -479,9 +479,23 @@ export function TodayActivityTab({ events, trades, todayTrades, orphanedFills = 
                 ?? trade.scanner_reason?.match(/External strategy signal from (.+?)(?:\s*\||$)/)?.[1]
                 ?? null;
 
+              // For LONG_TERM closes, surface *why* it closed (profit take / loss cut / stop)
+              // alongside the category label so it's obvious at a glance.
+              const ltCloseLabel =
+                trade.close_reason === 'profit_take'
+                  ? (() => {
+                      const tier = trade.notes?.match(/Tier\s+(\d+)/i)?.[1];
+                      const pct  = trade.notes?.match(/([\d.]+)%/)?.[1];
+                      return tier && pct ? `Profit Take T${tier} (+${pct}%)` : 'Profit Take';
+                    })()
+                  : trade.close_reason === 'stop_loss' || trade.close_reason === 'loss_cut'
+                  ? 'Loss Cut'
+                  : null;
+
               const sourceLabel = isExternalSignal
                 ? (externalInfluencer ? `External signal · ${externalInfluencer}` : 'External signal')
-                : trade.mode === 'LONG_TERM' ? 'Suggested find'
+                : trade.mode === 'LONG_TERM'
+                  ? ltCloseLabel ? `Suggested find · ${ltCloseLabel}` : 'Suggested find'
                 : 'Trade signal';
 
               const modeLabel = trade.mode === 'DAY_TRADE' ? 'Day'
