@@ -7090,7 +7090,8 @@ async function checkLossCutOpportunities(
     const activeTrades = await getActiveTrades(acctType);
     const eligible = activeTrades.filter(t =>
       (t.mode === 'LONG_TERM' || t.mode === 'SWING_TRADE') &&
-      (t.status === 'FILLED' || t.status === 'PARTIAL')
+      (t.status === 'FILLED' || t.status === 'PARTIAL') &&
+      t.signal !== 'SELL'  // partial loss cut creates SELL records — never apply loss cuts to them
     );
     if (eligible.length === 0) continue;
 
@@ -7140,27 +7141,28 @@ async function checkLossCutOpportunities(
         const side = ibPos.position > 0 ? 'SELL' : 'BUY';
         const result = await conn.placeMarketOrder({ symbol: trade.ticker, side: side as 'BUY' | 'SELL', quantity: sellQty });
 
-        // If this is a full exit (Tier 3), close the original trade
-        if (triggered.sellPct >= 100) {
+        // Determine remaining IB quantity after this sell
+        const remainingQty = Math.max(0, Math.round(ibPos.position) - sellQty);
+
+        if (triggered.sellPct >= 100 || remainingQty === 0) {
+          // Full exit — close the original trade record
           await recordTradeClose({
             tradeId: trade.id,
             closePrice: result.avgFillPrice,
-            closeReason: `loss_cut_${triggered.label.toLowerCase().replace(/\s+/g, '_')}`,
+            closeReason: 'loss_cut',
             status: 'STOPPED',
             orderId: result.orderId,
             accountType: acctType,
           });
         } else {
-          // Partial loss cut — create a SELL record (can't close the original since position remains)
-          await createPaperTrade({
-            ticker: trade.ticker, mode: trade.mode as 'LONG_TERM' | 'SWING_TRADE',
-            signal: 'SELL', entry_price: ibPos.mktPrice,
-            quantity: sellQty,
-            position_size: sellQty * ibPos.mktPrice,
-            status: 'SUBMITTED',
-            notes: `Loss cut ${triggered.label} at -${lossPct.toFixed(1)}%`,
-            entry_trigger_type: 'loss_cut',
-          }, acctType);
+          // Partial loss cut — update the original record's quantity to what remains in IB.
+          // Previously this spawned a new SELL paper_trade record which the next cycle's
+          // eligible filter would pick up as a new position and loss-cut again → cascade loop.
+          const sb = getSupabase();
+          await sb.from('paper_trades').update({
+            quantity: remainingQty,
+            notes: `Loss cut ${triggered.label} at -${lossPct.toFixed(1)}% (${sellQty} of ${Math.round(ibPos.position)} sold, ${remainingQty} remain)`,
+          }).eq('id', trade.id);
         }
 
         actedTickers.add(trade.ticker.toUpperCase());

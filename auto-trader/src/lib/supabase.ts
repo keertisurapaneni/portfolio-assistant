@@ -753,12 +753,18 @@ export async function getPastLossCutEvents(
   ticker: string
 ): Promise<{ metadata: Record<string, unknown> }[]> {
   const sb = getSupabase();
+  // Loss cut events are persisted with action='closed' (from persistEvent in scheduler).
+  // Previously queried for 'executed' which never matched → dedup was silently broken.
+  // Scope to today only so positions can be re-managed on a new day if needed.
+  const todayEt = new Date().toLocaleDateString('en-US', { timeZone: 'America/New_York' });
+  const todayStart = new Date(`${todayEt} 00:00:00 EST`).toISOString();
   const { data } = await sb
     .from('auto_trade_events')
     .select('metadata')
     .eq('ticker', ticker)
     .eq('source', 'loss_cut')
-    .eq('action', 'executed');
+    .in('action', ['closed', 'executed'])   // handle both spellings
+    .gte('created_at', todayStart);
   return (data ?? []) as { metadata: Record<string, unknown> }[];
 }
 
