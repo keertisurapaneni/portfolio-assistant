@@ -342,6 +342,8 @@ export function startScheduler(): void {
 
   // 3:45 PM soft close — close losing day trades and near-target winners before power-hour chaos.
   // Runs 10 min before the hard EOD sweep (3:55 PM) so there's a fallback if soft close misses any.
+  // NOTE: Options scalps are NOT actively closed here — they expire naturally at 4 PM.
+  // options-manager.ts handles the post-expiry DB cleanup after 4:15 PM.
   cron.schedule('45 15 * * 1-5', async () => {
     try {
       const positions = await getEnrichedPositions();
@@ -349,34 +351,17 @@ export function startScheduler(): void {
     } catch (err) {
       console.error('[SoftClose] Failed:', err instanceof Error ? err.message : err);
     }
-    // EOD close for all open scalp positions — must not hold options overnight.
-    try {
-      const { closeAllScalpPositionsEod } = await import('./lib/options-scalp.js');
-      await closeAllScalpPositionsEod();
-    } catch (err) {
-      console.error('[Scheduler] Options scalp EOD close error:', err instanceof Error ? err.message : err);
-    }
   }, { timezone: 'America/New_York' });
-  log('Day-trade soft close + options scalp EOD close: 3:45 PM ET');
+  log('Day-trade soft close: 3:45 PM ET');
 
   // EOD day-trade auto-close: 3:55 PM ET on weekdays — hard backstop after soft close.
   // Mirrors browser scheduleDayTradeAutoClose — ensures positions close even when browser is shut.
-  // Also retries any options scalps left FILLED by the 3:45 PM close (e.g. Finnhub was
-  // still rate-limited after 3 retries). 10 min of market time remaining is enough for
-  // a limit order to fill; Finnhub will have recovered from any transient rate-limit.
   cron.schedule('55 15 * * 1-5', async () => {
     const config = await loadConfig();
     if (config.dayTradeAutoClose) {
       await closeAllDayTrades(config);
     } else {
       log('EOD day-trade sweep skipped (day_trade_auto_close disabled)');
-    }
-    // Scalp safety sweep — closes any scalps still FILLED after the 3:45 PM run.
-    try {
-      const { closeAllScalpPositionsEod } = await import('./lib/options-scalp.js');
-      await closeAllScalpPositionsEod();
-    } catch (err) {
-      console.error('[Scheduler] Options scalp 3:55 PM safety sweep error:', err instanceof Error ? err.message : err);
     }
   }, { timezone: 'America/New_York' });
 
