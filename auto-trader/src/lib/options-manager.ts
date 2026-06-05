@@ -47,6 +47,7 @@ interface PositionRow {
   id: string;
   ticker: string;
   mode: string;
+  signal?: string;
   option_strike: number;
   option_expiry: string;
   option_premium: number;
@@ -438,7 +439,7 @@ export async function runOptionsManageCycle(): Promise<ManageCycleResult> {
 
   const { data, error } = await sb
     .from('paper_trades')
-    .select('id, ticker, mode, option_strike, option_expiry, option_premium, option_capital_req, option_assigned, fill_price, status, ib_order_id, roll_count, rolled_from_id')
+    .select('id, ticker, mode, signal, option_strike, option_expiry, option_premium, option_capital_req, option_assigned, fill_price, status, ib_order_id, roll_count, rolled_from_id')
     .in('mode', [...OPTIONS_MODES])
     .in('status', ['FILLED', 'PARTIAL']);
 
@@ -452,15 +453,24 @@ export async function runOptionsManageCycle(): Promise<ManageCycleResult> {
 
     // ── Check 1: Expired (past expiry date) ──
     if (dte <= 0) {
-      // Option expired — close as profit (premium kept) if not assigned
+      // Short options (SELL signal = CSP/covered call/short scalp): expiring at $0 means
+      // we keep the full premium collected → profit.
+      // Long options (BUY signal = long scalp/leap): expiring at $0 means we lose the
+      // full premium paid → loss. Use negative P&L.
+      const isLong = pos.signal === 'BUY';
+      const expiredPnl = isLong ? -(premiumCollected * 100) : premiumCollected * 100;
+      const expiredPct = isLong
+        ? -(premiumCollected / pos.option_strike) * 100
+        : (premiumCollected / pos.option_strike) * 100;
+
       await recordTradeClose({
         tradeId: pos.id,
         closePrice: 0,
         closeReason: 'expired_worthless',
         status: 'CLOSED',
         accountType: 'paper',
-        overridePnl: premiumCollected * 100,
-        overridePnlPct: (premiumCollected / pos.option_strike) * 100,
+        overridePnl: expiredPnl,
+        overridePnlPct: expiredPct,
         overridePnlSource: 'ib_fill_calculated',
         extraUpdates: { option_close_pct: 100 },
       });
