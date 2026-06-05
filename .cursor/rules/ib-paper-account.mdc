@@ -36,3 +36,18 @@ alwaysApply: true
    a position of N shares, it must verify IB holds exactly N shares before selling.
    Selling more than held creates an accidental short. This has happened with CSCO
    and AMAT (May 15, 2026) where two separate sell orders fired for the same ticker.
+
+6. **NEVER delete a `paper_trade` record that has any IB order ID set** (`ib_order_id`,
+   `ib_close_order_id`, `ib_tp_order_id`, `ib_sl_order_id`). Once IB has executed
+   against an order, deleting the tracking record orphans the `ib_fills` entry
+   permanently — the trigger already ran, found a match, and will never re-fire.
+   The daily P&L discrepancy loop (Jun 3–5, 2026) was caused entirely by deleting
+   paper_trade records that IB had already executed against. The fills lost their
+   anchor and could never be recovered without manual DB patching.
+
+   **The correct action when a paper_trade looks wrong:** Fix its `pnl`, `status`,
+   or `quantity` fields. Do NOT delete it.
+
+7. **Never do DB record cleanups without first checking IB positions.** Before
+   deleting any `paper_trade`, run `reqPositions()` or check the IB UI to confirm
+   IB no longer holds that position. If IB still holds it, the record must stay.

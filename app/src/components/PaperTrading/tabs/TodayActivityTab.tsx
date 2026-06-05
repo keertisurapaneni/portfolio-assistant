@@ -346,23 +346,27 @@ export function TodayActivityTab({ events, trades, todayTrades, orphanedFills = 
   const ibSyncing = ibConnected && ibRealizedPnl === null;
   const ibOffline = !isTradingDay() || ibRealizedPnl === undefined;
 
+  // When IB is connected, IB realized P&L is the source of truth (workspace rule).
+  // Paper_trades sum is shown as a small secondary reference only.
+  const displayPnl = effectiveIbPnl != null ? effectiveIbPnl : filteredPnl;
+
   return (
     <div className="space-y-3">
-      {/* Header P&L: our calculated P&L is primary, IB is secondary comparison */}
+      {/* Header P&L: IB realized P&L is primary when connected; paper_trades sum is secondary */}
       {filterMode === 'all' ? (
         <div className="flex items-center justify-between rounded-lg bg-[hsl(var(--secondary))] px-4 py-2.5">
           <span className="text-sm font-medium text-[hsl(var(--muted-foreground))]">{pnlLabel}</span>
           <div className="flex items-center gap-3">
-            <span className={cn('text-sm font-bold tabular-nums', filteredPnl > 0 ? 'text-emerald-600' : filteredPnl < 0 ? 'text-red-600' : '')}>
-              {fmtUsd(filteredPnl, 2, true)}
+            <span className={cn('text-sm font-bold tabular-nums', displayPnl > 0 ? 'text-emerald-600' : displayPnl < 0 ? 'text-red-600' : '')}>
+              {fmtUsd(displayPnl, 2, true)}
             </span>
             {effectiveIbPnl != null && (() => {
               const mismatch = Math.abs(filteredPnl - effectiveIbPnl) > 5;
-              return (
-                <span className={cn('text-[11px] tabular-nums', mismatch ? 'text-amber-600' : 'text-gray-400')}>
-                  IB: {fmtUsd(effectiveIbPnl, 2, true)} {mismatch ? '⚠️' : '✓'}
+              return mismatch ? (
+                <span className="text-[11px] tabular-nums text-amber-500">
+                  calc {fmtUsd(filteredPnl, 2, true)} ⚠️
                 </span>
-              );
+              ) : null;
             })()}
             {ibSyncing && (
               <span className="text-[11px] text-gray-400">IB: Syncing...</span>
