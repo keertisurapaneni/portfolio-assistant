@@ -460,25 +460,63 @@ export async function runOptionsManageCycle(): Promise<ManageCycleResult> {
     // ── Check 1: Expired (past expiry date) ──
     if (dte <= 0) {
       // OPTIONS_SCALP positions on expiry day must NOT be closed here during market hours.
-      // manageScalpPositions() tracks their live P&L and closeAllScalpPositionsEod() at 3:45 PM
-      // handles the actual close — potentially at a profit if the option is ITM at expiry.
-      // Closing here at 9:30 AM would forfeit any intraday gain on ITM long scalps.
+      // Wait until after 4:15 PM ET so the option can gain full value intraday.
       if (pos.mode === 'OPTIONS_SCALP' && !isPastOptionsExpiryET()) continue;
 
-      // Short options (SELL signal = CSP/covered call/short scalp): expiring at $0 means
-      // we keep the full premium collected → profit.
-      // Long options (BUY signal = long scalp/leap): expiring at $0 means we lose the
-      // full premium paid → loss. Use negative P&L.
-      const isLong = pos.signal === 'BUY';
-      const expiredPnl = isLong ? -(premiumCollected * 100) : premiumCollected * 100;
-      const expiredPct = isLong
-        ? -(premiumCollected / pos.option_strike) * 100
-        : (premiumCollected / pos.option_strike) * 100;
+      let expiredPnl: number;
+      let expiredPct: number;
+      let closeReason: string;
+      let logMessage: string;
+
+      if (pos.mode === 'OPTIONS_SCALP') {
+        // OPTIONS_SCALP: both BUY and SELL signals are LONG options (paid premium).
+        //   BUY signal = long call  → profits if stock > strike at expiry
+        //   SELL signal = long put  → profits if stock < strike at expiry
+        // Fetch current stock price to determine exercise value.
+        let stockPriceAtExpiry: number | null = null;
+        try {
+          const q = await finnhubFetch<{ c?: number }>(
+            `https://finnhub.io/api/v1/quote?symbol=${pos.ticker}&token=${FINNHUB_KEY}`,
+          );
+          stockPriceAtExpiry = q?.c ?? null;
+        } catch { /* non-fatal — fall back to worthless */ }
+
+        let exerciseValue = 0;
+        if (stockPriceAtExpiry !== null) {
+          exerciseValue = pos.signal === 'BUY'
+            ? Math.max(0, stockPriceAtExpiry - pos.option_strike)   // long call
+            : Math.max(0, pos.option_strike - stockPriceAtExpiry);  // long put
+        }
+
+        expiredPnl = (exerciseValue - premiumCollected) * 100;
+        expiredPct = (expiredPnl / (pos.option_strike * 100)) * 100;
+        const isItm = exerciseValue > 0;
+        closeReason = isItm ? 'expired_itm' : 'expired_worthless';
+
+        if (isItm) {
+          logMessage = `✅ ${pos.ticker} $${pos.option_strike} ${pos.signal === 'BUY' ? 'call' : 'put'} expired ITM — P&L $${expiredPnl >= 0 ? '+' : ''}${expiredPnl.toFixed(0)} (exercise $${exerciseValue.toFixed(2)} vs premium $${premiumCollected.toFixed(2)})`;
+        } else {
+          logMessage = `❌ ${pos.ticker} $${pos.option_strike} ${pos.signal === 'BUY' ? 'call' : 'put'} expired worthless — lost $${(premiumCollected * 100).toFixed(0)} premium`;
+        }
+      } else {
+        // Other option modes (OPTIONS_PUT, OPTIONS_WHEEL, OPTIONS_LEAP, OPTIONS_CALL):
+        //   SELL signal = sold option (credit received = premium collected) → profit if expires worthless
+        //   BUY signal  = bought option (debit paid = premium) → loss if expires worthless
+        const isLong = pos.signal === 'BUY';
+        expiredPnl = isLong ? -(premiumCollected * 100) : premiumCollected * 100;
+        expiredPct = isLong
+          ? -(premiumCollected / pos.option_strike) * 100
+          : (premiumCollected / pos.option_strike) * 100;
+        closeReason = 'expired_worthless';
+        logMessage = isLong
+          ? `❌ ${pos.ticker} $${pos.option_strike} expired worthless — lost $${(premiumCollected * 100).toFixed(0)} premium`
+          : `✅ ${pos.ticker} $${pos.option_strike} put expired worthless — kept $${(premiumCollected * 100).toFixed(0)} premium`;
+      }
 
       await recordTradeClose({
         tradeId: pos.id,
         closePrice: 0,
-        closeReason: 'expired_worthless',
+        closeReason,
         status: 'CLOSED',
         accountType: 'paper',
         overridePnl: expiredPnl,
@@ -488,9 +526,9 @@ export async function runOptionsManageCycle(): Promise<ManageCycleResult> {
       });
 
       result.expiredPositions.push(pos.ticker);
-      persistEvent(pos.ticker, 'success',
-        `✅ ${pos.ticker} $${pos.option_strike} put expired worthless — kept $${(premiumCollected * 100).toFixed(0)} premium`,
-        { action: 'closed', source: 'options', metadata: { reason: 'expired_worthless', premium: premiumCollected * 100 } }
+      persistEvent(pos.ticker, expiredPnl >= 0 ? 'success' : 'error',
+        logMessage,
+        { action: 'closed', source: 'options', metadata: { reason: closeReason, pnl: expiredPnl } }
       );
       continue;
     }

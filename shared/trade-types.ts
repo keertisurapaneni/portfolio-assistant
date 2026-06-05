@@ -52,7 +52,9 @@ export type CloseReason =
   | 'stale_eod_reconcile'
   | 'stop_loss_hit'
   | 'rolled'
-  | 'stopped';
+  | 'stopped'
+  | 'expired_worthless'
+  | 'expired_itm';
 
 /**
  * Full paper_trades row — superset of all columns used by any consumer.
