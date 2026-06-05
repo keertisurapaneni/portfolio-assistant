@@ -19,6 +19,12 @@ import { isConnected, placeOptionsOrder, getDefaultAccount } from '../ib-connect
 
 import type { AutoTradeEventType } from '../../../shared/auto-trade-events.js';
 
+/** Returns true only after 4:15 PM ET — when equity options have truly expired. */
+function isPastOptionsExpiryET(): boolean {
+  const et = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }));
+  return et.getHours() * 60 + et.getMinutes() >= 16 * 60 + 15;
+}
+
 function persistEvent(ticker: string, eventType: AutoTradeEventType, message: string, extra?: Record<string, unknown>): void {
   createAutoTradeEvent({ ticker, event_type: eventType, message, ...extra })
     .catch(err => console.warn(`[Options persistEvent] ${ticker}/${eventType} failed:`, err instanceof Error ? err.message : err));
@@ -453,6 +459,12 @@ export async function runOptionsManageCycle(): Promise<ManageCycleResult> {
 
     // ── Check 1: Expired (past expiry date) ──
     if (dte <= 0) {
+      // OPTIONS_SCALP positions on expiry day must NOT be closed here during market hours.
+      // manageScalpPositions() tracks their live P&L and closeAllScalpPositionsEod() at 3:45 PM
+      // handles the actual close — potentially at a profit if the option is ITM at expiry.
+      // Closing here at 9:30 AM would forfeit any intraday gain on ITM long scalps.
+      if (pos.mode === 'OPTIONS_SCALP' && !isPastOptionsExpiryET()) continue;
+
       // Short options (SELL signal = CSP/covered call/short scalp): expiring at $0 means
       // we keep the full premium collected → profit.
       // Long options (BUY signal = long scalp/leap): expiring at $0 means we lose the
