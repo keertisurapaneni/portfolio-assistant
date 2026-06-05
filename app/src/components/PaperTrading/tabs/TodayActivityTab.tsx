@@ -485,21 +485,40 @@ export function TodayActivityTab({ events, trades, todayTrades, orphanedFills = 
 
               // For LONG_TERM closes, surface *why* it closed (profit take / loss cut / stop)
               // alongside the category label so it's obvious at a glance.
+              const isDipBuy = trade.mode === 'LONG_TERM' && trade.signal === 'BUY'
+                && !!trade.notes?.toLowerCase().includes('dip buy');
+
               const ltCloseLabel =
-                trade.close_reason === 'profit_take'
+                trade.close_reason === 'profit_take' || trade.close_reason === 'profit_take_50pct'
                   ? (() => {
                       const tier = trade.notes?.match(/Tier\s+(\d+)/i)?.[1];
                       const pct  = trade.notes?.match(/([\d.]+)%/)?.[1];
+                      if (trade.close_reason === 'profit_take_50pct') return 'Profit Take 50%';
                       return tier && pct ? `Profit Take T${tier} (+${pct}%)` : 'Profit Take';
                     })()
-                  : trade.close_reason === 'stop_loss' || trade.close_reason === 'loss_cut'
+                  : trade.close_reason === 'stop_loss'
+                    || trade.close_reason === 'loss_cut'
+                    || trade.close_reason === 'stop_loss_hit'
+                    || trade.close_reason === 'stopped'
+                    || trade.close_reason === 'stop_loss_100pct'
                   ? 'Loss Cut'
+                  // Orphaned fills from loss cuts (ib_fill_auto_created SELL = loss cut fill)
+                  : trade.close_reason === 'ib_fill_auto_created' && trade.signal === 'SELL'
+                  ? 'Loss Cut'
+                  : trade.close_reason === 'eod_close' || trade.close_reason === 'stale_eod_close'
+                  ? 'EOD Close'
+                  : trade.close_reason === 'time_exit_21dte'
+                  ? '21 DTE Exit'
                   : null;
 
               const sourceLabel = isExternalSignal
                 ? (externalInfluencer ? `External signal · ${externalInfluencer}` : 'External signal')
                 : trade.mode === 'LONG_TERM'
-                  ? ltCloseLabel ? `Suggested find · ${ltCloseLabel}` : 'Suggested find'
+                  ? isDipBuy
+                    ? ltCloseLabel ? `Dip Buy · ${ltCloseLabel}` : 'Dip Buy'
+                    : ltCloseLabel ? `Suggested find · ${ltCloseLabel}` : 'Suggested find'
+                : trade.mode === 'SWING_TRADE'
+                  ? ltCloseLabel ? `Swing · ${ltCloseLabel}` : 'Swing'
                 : 'Trade signal';
 
               const modeLabel = trade.mode === 'DAY_TRADE' ? 'Day'
