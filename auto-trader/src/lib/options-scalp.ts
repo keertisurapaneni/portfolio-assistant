@@ -27,11 +27,14 @@ import { detectVwapReclaim, VWAP_RELIABLE_HOUR_ET } from './vwap.js';
 // ── Constants ────────────────────────────────────────────
 const MAX_SCALP_TRADES_PER_DAY = 2;
 const MAX_PREMIUM_PER_TRADE = 1_500;     // max $1,500 in premium per contract (ATM on $100+ stocks easily hits $500)
-const MAX_CONTRACTS = 1;
+const MAX_CONTRACTS = 2;                 // 2 contracts enables partial exits (sell 1 at first target, runner to break-even)
 const INTRADAY_MOVE_MIN_PCT = 1.5;       // stock must have moved >1.5% from open
-const PROFIT_TARGET_MULT = 2.0;          // close when premium doubles
-const STOP_LOSS_MULT = 0.50;             // close when premium halves
+const PARTIAL_TARGET_MULT = 1.5;         // sell 1st contract when premium up 50%, move stop on runner to break-even
+const PROFIT_TARGET_MULT = 2.0;          // close all remaining when premium doubles
+const STOP_LOSS_MULT = 0.50;             // close all when premium halves (only before first partial)
 const MAX_SPREAD_MARKET_ORDER_PCT = 3;   // use market order only if spread < 3% of mid
+const LAST_ENTRY_HOUR_ET = 11;           // no new scalp entries after 11:30 AM ET (90-minute rule)
+const LAST_ENTRY_MIN_ET  = 30;
 
 /** Return nearest weekly Friday expiry that is at least 1 day away, as YYYYMMDD. */
 function getNearestWeeklyExpiry(): string {
@@ -60,6 +63,13 @@ function getNearestWeeklyExpiry(): string {
  */
 export async function runOptionScalpScan(): Promise<void> {
   const sb = getSupabase();
+
+  // 90-minute rule: no new entries after 11:30 AM ET
+  const nowET = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }));
+  if (nowET.getHours() > LAST_ENTRY_HOUR_ET || (nowET.getHours() === LAST_ENTRY_HOUR_ET && nowET.getMinutes() >= LAST_ENTRY_MIN_ET)) {
+    console.log('[Options Scalp] Past 11:30 AM ET — no new entries (90-min rule)');
+    return;
+  }
 
   // Guard: IB must be connected to get live chain data
   if (!isConnected()) {
@@ -188,10 +198,15 @@ const VWAP_RETEST_UNIVERSE = [
  * Detects VWAP reclaim/breakdown + retest pattern and buys ATM call/put.
  */
 export async function runVwapRetestScalpScan(): Promise<void> {
-  // Only reliable after 10 AM ET
+  // Only reliable after 10 AM ET; no new entries after 11:30 AM ET (90-minute rule)
   const nowET = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }));
   const etHour = nowET.getHours();
-  if (etHour < VWAP_RELIABLE_HOUR_ET || etHour >= 15) return;
+  const etMin  = nowET.getMinutes();
+  if (etHour < VWAP_RELIABLE_HOUR_ET) return;
+  if (etHour > LAST_ENTRY_HOUR_ET || (etHour === LAST_ENTRY_HOUR_ET && etMin >= LAST_ENTRY_MIN_ET)) {
+    console.log('[VWAP Scalp] Past 11:30 AM ET — no new entries (90-min rule)');
+    return;
+  }
 
   if (!isConnected()) {
     console.log('[VWAP Scalp] IB not connected — skipping');
@@ -428,30 +443,42 @@ async function executeScalp(p: ScalpParams): Promise<boolean> {
 
 /**
  * Called every 15 min during market hours.
- * Checks profit target, stop loss, and writes live P&L.
+ * Implements Kay Capitals partial-exit framework:
+ *   1. At +50% (PARTIAL_TARGET): sell 1 contract, move stop on runner to break-even
+ *   2. At +100% (PROFIT_TARGET): close all remaining contracts
+ *   3. Break-even stop: if already partially exited and premium drops to entry → close runner
+ *   4. Stop loss at -50%: only applies before any partial exit
  */
 export async function manageScalpPositions(): Promise<void> {
   const sb = getSupabase();
 
   // No opened_at filter — include stale scalps from prior days so they get
-  // stop-loss / profit-target management until the 3:45 PM EOD close sweeps them.
+  // management until the 3:45 PM EOD close sweeps them.
   const { data: positions } = await sb
     .from('paper_trades')
-    .select('id, ticker, signal, option_strike, option_expiry, option_premium, ib_order_id')
+    .select('id, ticker, signal, option_strike, option_expiry, option_premium, option_contracts, ib_order_id, metadata, status')
     .eq('mode', 'OPTIONS_SCALP')
     .in('status', ['FILLED', 'PARTIAL']);
 
   if (!positions?.length) return;
 
   for (const pos of (positions as Array<{
-    id: string; ticker: string; signal: string;
+    id: string; ticker: string; signal: string; status: string;
     option_strike: number; option_expiry: string;
-    option_premium: number; ib_order_id: number | null;
+    option_premium: number; option_contracts: number | null;
+    ib_order_id: number | null; metadata: Record<string, unknown> | null;
   }>)) {
     const premiumPaid = pos.option_premium ?? 0;
     if (premiumPaid <= 0) continue;
 
     const right = pos.signal === 'BUY' ? 'C' : 'P';
+    const meta = (pos.metadata ?? {}) as Record<string, unknown>;
+    const isPartiallyExited = pos.status === 'PARTIAL';
+    const contractsRemaining = isPartiallyExited
+      ? ((meta.contracts_remaining as number | undefined) ?? 1)
+      : (pos.option_contracts ?? MAX_CONTRACTS);
+    // After first partial, runner stop moves to entry premium (break-even)
+    const breakEvenPremium = (meta.break_even_premium as number | undefined) ?? premiumPaid;
 
     // Get current stock price for Greek lookup
     const q = await fetchQuote(pos.ticker);
@@ -471,19 +498,40 @@ export async function manageScalpPositions(): Promise<void> {
       continue;
     }
 
-    const pnl = (currentPremium - premiumPaid) * 100;
-
-    // Write live P&L
-    await sb.from('paper_trades').update({ pnl }).eq('id', pos.id);
+    // Live P&L = already-realized partial P&L + unrealized on remaining contracts
+    const partialRealized = (meta.partial_realized_pnl as number | undefined) ?? 0;
+    const livePnl = partialRealized + (currentPremium - premiumPaid) * 100 * contractsRemaining;
+    await sb.from('paper_trades').update({ pnl: livePnl }).eq('id', pos.id);
 
     const profitPct = ((currentPremium - premiumPaid) / premiumPaid) * 100;
 
-    if (currentPremium >= premiumPaid * PROFIT_TARGET_MULT) {
+    if (!isPartiallyExited && currentPremium >= premiumPaid * PARTIAL_TARGET_MULT) {
+      // First target (+50%): sell 1 contract, set break-even stop on runner
+      console.log(`[Options Scalp] ${pos.ticker} — partial target hit (+${profitPct.toFixed(0)}%) @ $${currentPremium.toFixed(2)} — selling 1, runner to break-even`);
+      await closeScalpPosition(pos.id, pos.ticker, right, pos.option_strike, pos.option_expiry,
+        currentPremium, premiumPaid, 'partial_profit',
+        { contractsToSell: 1, partial: true, existingMeta: meta });
+
+    } else if (currentPremium >= premiumPaid * PROFIT_TARGET_MULT) {
+      // Full profit target (+100%): close all remaining
       console.log(`[Options Scalp] ${pos.ticker} — profit target hit (+${profitPct.toFixed(0)}%) @ $${currentPremium.toFixed(2)}`);
-      await closeScalpPosition(pos.id, pos.ticker, right, pos.option_strike, pos.option_expiry, currentPremium, premiumPaid, 'profit_target');
-    } else if (currentPremium <= premiumPaid * STOP_LOSS_MULT) {
+      await closeScalpPosition(pos.id, pos.ticker, right, pos.option_strike, pos.option_expiry,
+        currentPremium, premiumPaid, 'profit_target',
+        { contractsToSell: contractsRemaining, existingMeta: meta });
+
+    } else if (isPartiallyExited && currentPremium <= breakEvenPremium) {
+      // Runner hit break-even stop — exit at entry price, no loss on runner
+      console.log(`[Options Scalp] ${pos.ticker} — runner break-even stop @ $${currentPremium.toFixed(2)} (entry $${breakEvenPremium.toFixed(2)})`);
+      await closeScalpPosition(pos.id, pos.ticker, right, pos.option_strike, pos.option_expiry,
+        currentPremium, premiumPaid, 'break_even_stop',
+        { contractsToSell: contractsRemaining, existingMeta: meta });
+
+    } else if (!isPartiallyExited && currentPremium <= premiumPaid * STOP_LOSS_MULT) {
+      // Stop loss (-50%): only before any partial exit
       console.log(`[Options Scalp] ${pos.ticker} — stop loss hit (${profitPct.toFixed(0)}%) @ $${currentPremium.toFixed(2)}`);
-      await closeScalpPosition(pos.id, pos.ticker, right, pos.option_strike, pos.option_expiry, currentPremium, premiumPaid, 'stop_loss');
+      await closeScalpPosition(pos.id, pos.ticker, right, pos.option_strike, pos.option_expiry,
+        currentPremium, premiumPaid, 'stop_loss',
+        { contractsToSell: contractsRemaining, existingMeta: meta });
     }
   }
 }
@@ -508,12 +556,18 @@ export async function closeAllScalpPositionsEod(): Promise<void> {
   console.log(`[Options Scalp] EOD close — ${positions.length} open scalp(s)`);
 
   for (const pos of (positions as Array<{
-    id: string; ticker: string; signal: string;
+    id: string; ticker: string; signal: string; status: string;
     option_strike: number; option_expiry: string; option_premium: number;
+    option_contracts: number | null; metadata: Record<string, unknown> | null;
   }>)) {
     const right = pos.signal === 'BUY' ? 'C' : 'P';
+    const meta = (pos.metadata ?? {}) as Record<string, unknown>;
+    const isPartiallyExited = pos.status === 'PARTIAL';
+    const contractsRemaining = isPartiallyExited
+      ? ((meta.contracts_remaining as number | undefined) ?? 1)
+      : (pos.option_contracts ?? MAX_CONTRACTS);
 
-    // Fetch current stock price via Yahoo Finance (no rate limit, no API key).
+    // Fetch current stock price via Yahoo Finance.
     // Retry up to 3 times with a 3-second gap for transient network failures.
     let stockPrice: number | null = null;
     for (let attempt = 1; attempt <= 3; attempt++) {
@@ -526,24 +580,40 @@ export async function closeAllScalpPositionsEod(): Promise<void> {
     }
 
     if (!stockPrice) {
-      // All 3 attempts failed. Never assume $0 — the option may still have value.
-      // Leave FILLED; the management cycle will close it with a real price.
-      console.log(`[Options Scalp] ${pos.ticker} — price unavailable after 3 retries, leaving FILLED for management cycle`);
+      console.log(`[Options Scalp] ${pos.ticker} — price unavailable after 3 retries, leaving open for management cycle`);
       continue;
     }
 
-    const currentPremium =
-      (await getOptionGreeksForContract(pos.ticker, pos.option_strike, pos.option_expiry, right, stockPrice))?.mid ?? 0;
+    // CRITICAL: getOptionGreeksForContract returns null when IB is disconnected.
+    // null !== $0 (worthless) — if Greeks are unavailable, leave the position open
+    // rather than incorrectly marking it CLOSED at $0. The next cycle will retry.
+    const greeks = await getOptionGreeksForContract(pos.ticker, pos.option_strike, pos.option_expiry, right, stockPrice);
+    if (!greeks) {
+      console.warn(`[Options Scalp] ${pos.ticker} — IB Greeks unavailable (disconnected?), leaving open — DO NOT mark as $0`);
+      continue;
+    }
+
+    const currentPremium = greeks.mid;
 
     await closeScalpPosition(
       pos.id, pos.ticker, right,
       pos.option_strike, pos.option_expiry,
       currentPremium, pos.option_premium, 'eod_close',
+      { contractsToSell: contractsRemaining, existingMeta: meta },
     );
   }
 }
 
 // ── Close Helper ─────────────────────────────────────────
+
+interface CloseOpts {
+  /** How many contracts to sell (default 1). */
+  contractsToSell?: number;
+  /** If true, this is a partial close — update status to PARTIAL, not CLOSED. */
+  partial?: boolean;
+  /** Existing metadata to merge into (preserves partial_realized_pnl etc). */
+  existingMeta?: Record<string, unknown>;
+}
 
 async function closeScalpPosition(
   tradeId: string,
@@ -554,17 +624,18 @@ async function closeScalpPosition(
   closePremium: number,
   premiumPaid: number,
   reason: string,
+  opts: CloseOpts = {},
 ): Promise<void> {
   const sb = getSupabase();
   const account = getDefaultAccount() ?? undefined;
+  const contractsToSell = opts.contractsToSell ?? 1;
+  const isPartial = opts.partial ?? false;
+  const existingMeta = opts.existingMeta ?? {};
 
-  const pnl = (closePremium - premiumPaid) * 100;
-
-  // If Finnhub returned a real $0 price (not a fetch failure — callers guard
-  // against fetch failures before calling here), only trust it on expiry day
-  // itself (daysToExpiry = 0). A 1DTE option at $0 via a greeks model is
-  // often a model artifact for deep OTM; with a day remaining it still has
-  // time value. Leave FILLED so the morning management cycle closes it properly.
+  // If IB Greeks returned null (disconnected), closePremium will be 0 via `?.mid ?? 0`.
+  // Distinguish: $0 on expiry day = genuinely worthless. $0 any other time = IB unavailable.
+  // Callers that pass closePremium from getOptionGreeksForContract must guard: if greeks === null,
+  // they should skip rather than calling here with 0.
   if (closePremium <= 0) {
     const expiryDate = new Date(expiry);
     const today = new Date();
@@ -572,66 +643,101 @@ async function closeScalpPosition(
     expiryDate.setHours(0, 0, 0, 0);
     const daysToExpiry = Math.round((expiryDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
     if (daysToExpiry > 0) {
-      // Has at least one more day — don't trust a $0 model price.
-      // Leave FILLED; management cycle will handle it on expiry day.
-      console.log(`[Options Scalp] ${ticker} premium=$0 but ${daysToExpiry}d to expiry (${expiry}) — leaving FILLED, model may be wrong`);
+      console.log(`[Options Scalp] ${ticker} premium=$0 but ${daysToExpiry}d to expiry (${expiry}) — leaving open, model may be wrong`);
       return;
     }
-    // daysToExpiry = 0: actually expiring today — $0 is correct, option is worthless.
+    // daysToExpiry = 0: expiring today, $0 is genuine.
   }
 
   // Place sell-to-close order in IB when premium > $0.
-  // If the order fails we MUST NOT close in DB — IB still holds the position,
-  // and an ITM option left open in IB will auto-exercise at expiry, creating
-  // an unexpected stock position (forced buy/short). Leave as FILLED and retry
-  // on the next management cycle or EOD sweep.
+  // If the order fails we MUST NOT update DB — IB still holds the position.
   if (isConnected() && closePremium > 0) {
     try {
       await placeOptionsOrder({
-        symbol:    ticker,
+        symbol:     ticker,
         right,
         strike,
         expiry,
-        contracts: 1,
+        contracts:  contractsToSell,
         limitPrice: closePremium,
-        action:    'SELL',
+        action:     'SELL',
         ...(account ? { account } : {}),
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      console.error(`[Options Scalp] Close order FAILED for ${ticker} — leaving FILLED, will retry: ${msg}`);
+      console.error(`[Options Scalp] Close order FAILED for ${ticker} — leaving open, will retry: ${msg}`);
       createAutoTradeEvent({
         ticker, event_type: 'error', action: 'failed', source: 'scanner', mode: 'OPTIONS_SCALP',
         message: `Close order failed [${reason}] — position left OPEN in IB: ${msg}`,
-        metadata: { reason, closePremium, premiumPaid },
+        metadata: { reason, closePremium, premiumPaid, contractsToSell },
       }).catch(() => {});
-      return; // do NOT update DB — IB still holds this position
+      return;
     }
   } else if (!isConnected() && closePremium > 0) {
-    // IB disconnected — cannot place sell order; leave FILLED so EOD sweep retries when reconnected.
-    console.warn(`[Options Scalp] ${ticker} — IB disconnected, cannot close position, leaving FILLED`);
+    console.warn(`[Options Scalp] ${ticker} — IB disconnected, cannot close, leaving open`);
     return;
   }
-  // closePremium === 0: option worthless, no IB sell needed — safe to mark CLOSED in DB.
+  // closePremium === 0: option worthless on expiry day, no IB sell needed.
 
-  await sb.from('paper_trades').update({
-    status:      'CLOSED',
-    close_reason: reason,
-    close_price:  closePremium,
-    closed_at:    new Date().toISOString(),
-    pnl,
-  }).eq('id', tradeId);
+  const contractPnl = (closePremium - premiumPaid) * 100 * contractsToSell;
 
-  const pnlStr = pnl >= 0 ? `+$${pnl.toFixed(0)}` : `-$${Math.abs(pnl).toFixed(0)}`;
-  console.log(`[Options Scalp] ${ticker} closed [${reason}] @ $${closePremium.toFixed(2)} | P&L ${pnlStr}`);
+  if (isPartial) {
+    // Partial close: update metadata, mark PARTIAL, accumulate realized P&L
+    const prevRealized = (existingMeta.partial_realized_pnl as number | undefined) ?? 0;
+    const prevRemaining = (existingMeta.contracts_remaining as number | undefined) ?? MAX_CONTRACTS;
+    const newRealized = prevRealized + contractPnl;
+    const newRemaining = prevRemaining - contractsToSell;
 
-  createAutoTradeEvent({
-    ticker,
-    event_type: pnl >= 0 ? 'success' : 'warning',
-    action:     'closed',
-    source:     'scanner',
-    mode:       'OPTIONS_SCALP',
-    message:    `${pnl >= 0 ? '✅' : '🛑'} Scalp ${right === 'C' ? 'CALL' : 'PUT'} $${strike} closed [${reason}] @ $${closePremium.toFixed(2)} | P&L ${pnlStr}`,
-    metadata:   { reason, pnl, closePremium, premiumPaid },
-  }).catch(() => {});
+    await sb.from('paper_trades').update({
+      status: 'PARTIAL',
+      pnl:    newRealized, // realized portion only; unrealized updated each cycle
+      metadata: {
+        ...existingMeta,
+        partial_realized_pnl:  newRealized,
+        contracts_remaining:   newRemaining,
+        break_even_premium:    premiumPaid, // runner stop = entry price
+        partial_close_reason:  reason,
+        partial_closed_at:     new Date().toISOString(),
+      },
+    }).eq('id', tradeId);
+
+    const pnlStr = contractPnl >= 0 ? `+$${contractPnl.toFixed(0)}` : `-$${Math.abs(contractPnl).toFixed(0)}`;
+    console.log(`[Options Scalp] ${ticker} partial close [${reason}] @ $${closePremium.toFixed(2)} | realized ${pnlStr} | ${newRemaining} contract(s) running to break-even`);
+
+    createAutoTradeEvent({
+      ticker,
+      event_type: 'success',
+      action:     'closed',
+      source:     'scanner',
+      mode:       'OPTIONS_SCALP',
+      message:    `📊 Scalp ${right === 'C' ? 'CALL' : 'PUT'} $${strike} partial [${reason}] @ $${closePremium.toFixed(2)} | ${pnlStr} locked | runner to break-even`,
+      metadata:   { reason, contractPnl, closePremium, premiumPaid, contractsToSell, newRemaining },
+    }).catch(() => {});
+
+  } else {
+    // Full close (or final contract of a partial)
+    const prevRealized = (existingMeta.partial_realized_pnl as number | undefined) ?? 0;
+    const totalPnl = prevRealized + contractPnl;
+
+    await sb.from('paper_trades').update({
+      status:       'CLOSED',
+      close_reason: reason,
+      close_price:  closePremium,
+      closed_at:    new Date().toISOString(),
+      pnl:          totalPnl,
+    }).eq('id', tradeId);
+
+    const pnlStr = totalPnl >= 0 ? `+$${totalPnl.toFixed(0)}` : `-$${Math.abs(totalPnl).toFixed(0)}`;
+    console.log(`[Options Scalp] ${ticker} closed [${reason}] @ $${closePremium.toFixed(2)} | total P&L ${pnlStr}`);
+
+    createAutoTradeEvent({
+      ticker,
+      event_type: totalPnl >= 0 ? 'success' : 'warning',
+      action:     'closed',
+      source:     'scanner',
+      mode:       'OPTIONS_SCALP',
+      message:    `${totalPnl >= 0 ? '✅' : '🛑'} Scalp ${right === 'C' ? 'CALL' : 'PUT'} $${strike} closed [${reason}] @ $${closePremium.toFixed(2)} | P&L ${pnlStr}`,
+      metadata:   { reason, totalPnl, closePremium, premiumPaid, contractsToSell },
+    }).catch(() => {});
+  }
 }

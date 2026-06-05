@@ -638,6 +638,19 @@ export function startScheduler(): void {
   }, { timezone: 'America/New_York' });
   log('SPY Basketball 0DTE close: 3:30 PM ET');
 
+  // Options Scalp EOD close — 3:45 PM ET.
+  // Force-closes all open scalp positions before the final 15 minutes of illiquid trading.
+  // This was previously dead code (function existed but was never called) — now wired in.
+  cron.schedule('45 15 * * 1-5', async () => {
+    try {
+      const { closeAllScalpPositionsEod } = await import('./lib/options-scalp.js');
+      await closeAllScalpPositionsEod();
+    } catch (err) {
+      console.error('[Scheduler] Options scalp EOD close error:', err instanceof Error ? err.message : err);
+    }
+  }, { timezone: 'America/New_York' });
+  log('Options scalp EOD close: 3:45 PM ET');
+
   // LEAP position management — every Monday 11:30 AM ET.
   // Checks profit target (2×), thesis-break exit (−20% stock), and DTE alert (<90 days).
   cron.schedule('30 11 * * 1', async () => {
