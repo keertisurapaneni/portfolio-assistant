@@ -26,7 +26,7 @@ import { detectVwapReclaim, VWAP_RELIABLE_HOUR_ET } from './vwap.js';
 
 // ── Constants ────────────────────────────────────────────
 const MAX_SCALP_TRADES_PER_DAY = 2;
-const MAX_PREMIUM_PER_TRADE = 1_500;     // max $1,500 in premium per contract (ATM on $100+ stocks easily hits $500)
+const MAX_PREMIUM_PER_TRADE = 1_500;     // max $1,500 total premium for the trade (2 contracts × ask × 100). If 2 contracts exceed this, skip — never fall back to 1.
 const MAX_CONTRACTS = 2;                 // 2 contracts enables partial exits (sell 1 at first target, runner to break-even)
 const INTRADAY_MOVE_MIN_PCT = 1.5;       // stock must have moved >1.5% from open
 const PARTIAL_TARGET_MULT = 1.5;         // sell 1st contract when premium up 50%, move stop on runner to break-even
