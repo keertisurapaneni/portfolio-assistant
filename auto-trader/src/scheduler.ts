@@ -3682,6 +3682,11 @@ async function executeScannerTrade(
   if (mode === 'DAY_TRADE') {
     const todayEt = getETDateString();
     const sb = getSupabase();
+    // Only count scanner-originated trades (strategy_source IS NULL and strategy_video_id IS NULL).
+    // Influencer/external signal trades are independent — the scanner should not be blocked just
+    // because Somesh already traded NVDA today. This has been fixed multiple times; the filter
+    // is the canonical fix. The hasActiveTrade call above already uses systemTradesOnly:true
+    // to guard against duplicate active scanner positions.
     const { count: todayResolvedCount } = await sb
       .from('paper_trades')
       .select('id', { count: 'exact', head: true })
@@ -3689,10 +3694,12 @@ async function executeScannerTrade(
       .in('mode', ['DAY_TRADE', 'DAY_PENNY'])
       .not('mode', 'in', '(OPTIONS_PUT,OPTIONS_CALL)')
       .in('status', ['TARGET_HIT', 'STOPPED', 'CLOSED'])
+      .is('strategy_source', null)
+      .is('strategy_video_id', null)
       .gte('opened_at', `${todayEt}T00:00:00Z`);
     if ((todayResolvedCount ?? 0) > 0) {
-      log(`${ticker}: DAY_TRADE skipped — already resolved a day trade on this ticker today`);
-      persistEvent(ticker, 'skipped', 'Same-day re-entry blocked — day trade already resolved today', {
+      log(`${ticker}: DAY_TRADE skipped — already resolved a scanner day trade on this ticker today`);
+      persistEvent(ticker, 'skipped', 'Same-day re-entry blocked — scanner day trade already resolved today', {
         action: 'skipped', source: 'scanner', mode, skip_reason: 'same_day_reentry',
       });
       return 'skipped:same_day_reentry';
