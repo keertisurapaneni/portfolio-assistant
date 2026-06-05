@@ -340,22 +340,10 @@ export function startScheduler(): void {
   }, { timezone: 'America/New_York' });
   log('Dip watcher: every 5 min 10:00–15:55 ET (detects ≥5% pullbacks in uptrends)');
 
-  // 3:45 PM soft close — close losing day trades and near-target winners before power-hour chaos.
-  // Runs 10 min before the hard EOD sweep (3:55 PM) so there's a fallback if soft close misses any.
-  // NOTE: Options scalps are NOT actively closed here — they expire naturally at 4 PM.
-  // options-manager.ts handles the post-expiry DB cleanup after 4:15 PM.
-  cron.schedule('45 15 * * 1-5', async () => {
-    try {
-      const positions = await getEnrichedPositions();
-      await softCloseDayTrades(positions);
-    } catch (err) {
-      console.error('[SoftClose] Failed:', err instanceof Error ? err.message : err);
-    }
-  }, { timezone: 'America/New_York' });
-  log('Day-trade soft close: 3:45 PM ET');
-
-  // EOD day-trade auto-close: 3:55 PM ET on weekdays — hard backstop after soft close.
-  // Mirrors browser scheduleDayTradeAutoClose — ensures positions close even when browser is shut.
+  // 3:55 PM EOD day-trade close — safety net to prevent day trades from becoming
+  // unintended overnight holds. Bracket TP/SL orders handle the natural close during
+  // the day; this sweep only catches any that didn't fill by market close.
+  // Options scalps expire naturally at 4 PM; options-manager.ts cleans them up after 4:15 PM.
   cron.schedule('55 15 * * 1-5', async () => {
     const config = await loadConfig();
     if (config.dayTradeAutoClose) {
@@ -364,6 +352,7 @@ export function startScheduler(): void {
       log('EOD day-trade sweep skipped (day_trade_auto_close disabled)');
     }
   }, { timezone: 'America/New_York' });
+  log('EOD day-trade safety close: 3:55 PM ET');
 
   // 4:05 PM safety sweep — catches day trades placed in the 3:55–4:00 PM window
   // that the primary EOD sweep missed (e.g. scanner fired at exactly 3:55 PM).
