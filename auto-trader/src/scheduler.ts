@@ -6332,6 +6332,10 @@ async function checkDipBuyOpportunities(
 ): Promise<Set<string>> {
   const dipBuyTickers = new Set<string>();
   if (!config.dipBuyEnabled || !config.accountId) return dipBuyTickers;
+  // Dip buy deploys new capital — same gates as new LONG_TERM entries.
+  // If the system is paused OR suggested finds is off, do NOT add to positions.
+  if (!config.enabled) return dipBuyTickers;
+  if (config.suggestedFindsEnabled === false) return dipBuyTickers;
   if (!isModeEnabled(config, 'LONG_TERM')) return dipBuyTickers;
   // Resolve LONG_TERM routing for dip buys
   let dipConnections: RoutedConnection[];
