@@ -22,7 +22,7 @@
     <array>
         <string>/bin/bash</string>
         <string>-c</string>
-        <string>cd ~/Git-RV/portfolio-assistant/auto-trader &amp;&amp; ./start.sh</string>
+        <string>cd ~/Git-RV/star-automation-regular/auto-trader &amp;&amp; ./start.sh</string>
     </array>
 
     <!-- Ensure Homebrew and system tools are on PATH — LaunchAgents inherit a minimal env -->
