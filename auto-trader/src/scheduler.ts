@@ -4809,6 +4809,13 @@ async function executeExternalStrategySignal(
     return 'skipped';
   };
 
+  // ── Per-source block list ──────────────────────────────────────────────────
+  // Hard block specific influencers whose signals have a consistent loss record.
+  const BLOCKED_SOURCES: string[] = ['Kianstrades'];
+  if (signal.source_name && BLOCKED_SOURCES.some(s => signal.source_name!.toLowerCase().includes(s.toLowerCase()))) {
+    return skipExternalSignal(`Source "${signal.source_name}" is blocked (consistent losses — 0% win rate)`, 'blocked_source');
+  }
+
   // ── Influencer daily loss gate — checked here so skipExternalSignal is in scope
   // Applies to DAY_TRADE and DAY_PENNY (penny stocks are the main source of influencer losses).
   if ((signal.mode === 'DAY_TRADE' || signal.mode === 'DAY_PENNY') && await isInfluencerLossGateActive(config)) {
@@ -6322,14 +6329,15 @@ async function reconcileOrphanedPositions(
 async function checkDipBuyOpportunities(
   config: AutoTraderConfig,
   positions: EnrichedPosition[],
-): Promise<void> {
-  if (!config.dipBuyEnabled || !config.accountId) return;
-  if (!isModeEnabled(config, 'LONG_TERM')) return;
+): Promise<Set<string>> {
+  const dipBuyTickers = new Set<string>();
+  if (!config.dipBuyEnabled || !config.accountId) return dipBuyTickers;
+  if (!isModeEnabled(config, 'LONG_TERM')) return dipBuyTickers;
   // Resolve LONG_TERM routing for dip buys
   let dipConnections: RoutedConnection[];
   try {
     dipConnections = getConnectionForMode('LONG_TERM', config).connections;
-  } catch { return; }
+  } catch { return dipBuyTickers; }
   const dipAcct = dipConnections[0].accountType;
 
   const activeTrades = await getActiveTrades(dipAcct);
@@ -6454,12 +6462,14 @@ async function checkDipBuyOpportunities(
           action: 'executed', source: 'dip_buy', mode: 'LONG_TERM',
           metadata: { tier: triggered.label, dipPct: absDip, addOnQty, addOnDollar },
         }, dipAcctType);
+        dipBuyTickers.add(ticker.toUpperCase());
         dipExecuted = true;
       } catch (err) {
         log(`${ticker}: [${dipAcctType}] Dip buy failed — ${err instanceof Error ? err.message : 'unknown'}`);
       }
     }
   }
+  return dipBuyTickers;
 }
 
 // ── Capital Recycling ────────────────────────────────────
@@ -7052,6 +7062,7 @@ async function checkDayTradeTrailingStops(
 async function checkLossCutOpportunities(
   config: AutoTraderConfig,
   positions: EnrichedPosition[],
+  dipBuyTickers: Set<string> = new Set(),
 ): Promise<Set<string>> {
   const actedTickers = new Set<string>();
   if (!config.lossCutEnabled || !config.accountId) return actedTickers;
@@ -7106,6 +7117,13 @@ async function checkLossCutOpportunities(
       // records for the same ticker), skip — persistEvent is fire-and-forget so the DB dedup
       // check below won't see the first iteration's event before the second iteration runs.
       if (actedTickers.has(trade.ticker.toUpperCase())) continue;
+
+      // Never loss-cut a ticker where a dip buy already fired this cycle. Buying and
+      // immediately selling would be contradictory and locks in an unnecessary loss.
+      if (dipBuyTickers.has(trade.ticker.toUpperCase())) {
+        log(`${trade.ticker}: loss cut skipped — dip buy already fired this cycle (contradictory action)`);
+        continue;
+      }
 
       const pastEvents = await getPastLossCutEvents(trade.ticker);
       if (pastEvents.some(e => e.metadata?.tier === triggered.label)) continue;
@@ -7677,9 +7695,9 @@ async function runSchedulerCycle(): Promise<void> {
     // These ALWAYS run regardless of config.enabled — existing positions must be actively managed.
     await checkStaleDayTrades(positions);              // flag/close day trades stuck FILLED from a prior day
     await checkDayTradeTrailingStops(config, positions);       // software trailing stop for day trades in profit (+1R)
-    await checkDipBuyOpportunities(config, positions);
+    const dipBuyTickers = await checkDipBuyOpportunities(config, positions);
     const trimmedTickers = await checkProfitTakeOpportunities(config, positions);
-    const lossCutTickers = await checkLossCutOpportunities(config, positions);
+    const lossCutTickers = await checkLossCutOpportunities(config, positions, dipBuyTickers);
     await checkSwingHoldExpiry(config, positions);     // free capital from stale swing trades
     const skipTickers = new Set([...trimmedTickers, ...lossCutTickers]);
     await checkLongTermAutoSell(config, positions, skipTickers);
