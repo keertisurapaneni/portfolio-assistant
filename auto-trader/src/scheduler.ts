@@ -7128,6 +7128,11 @@ async function checkLossCutOpportunities(
       const triggered = tiers.find(t => lossPct >= t.pct);
       if (!triggered) continue;
 
+      // In-memory guard: if we already acted on this ticker during THIS loop (e.g. two LONG_TERM
+      // records for the same ticker), skip — persistEvent is fire-and-forget so the DB dedup
+      // check below won't see the first iteration's event before the second iteration runs.
+      if (actedTickers.has(trade.ticker.toUpperCase())) continue;
+
       const pastEvents = await getPastLossCutEvents(trade.ticker);
       if (pastEvents.some(e => e.metadata?.tier === triggered.label)) continue;
 
@@ -7140,6 +7145,11 @@ async function checkLossCutOpportunities(
       try {
         const side = ibPos.position > 0 ? 'SELL' : 'BUY';
         const result = await conn.placeMarketOrder({ symbol: trade.ticker, side: side as 'BUY' | 'SELL', quantity: sellQty });
+
+        // Claim the ticker immediately so any subsequent records for the same ticker in this
+        // loop iteration are blocked by the in-memory guard above (persistEvent is fire-and-forget
+        // so the DB dedup check can't protect against within-loop duplicates).
+        actedTickers.add(trade.ticker.toUpperCase());
 
         // Determine remaining IB quantity after this sell
         const remainingQty = Math.max(0, Math.round(ibPos.position) - sellQty);
@@ -7165,7 +7175,6 @@ async function checkLossCutOpportunities(
           }).eq('id', trade.id);
         }
 
-        actedTickers.add(trade.ticker.toUpperCase());
         const realizedLoss = ibPos.position > 0
           ? sellQty * (ibPos.avgCost - ibPos.mktPrice)
           : sellQty * (ibPos.mktPrice - ibPos.avgCost);
