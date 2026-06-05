@@ -24,7 +24,6 @@ BEGIN
     fill_price = NEW.fill_price,
     filled_at  = COALESCE(filled_at, NEW.filled_at),
     status     = CASE WHEN status IN ('PENDING', 'SUBMITTED') THEN 'FILLED' ELSE status END,
-    updated_at = NOW()
   WHERE ib_order_id = NEW.order_id::text
     AND status IN ('PENDING', 'SUBMITTED', 'FILLED');
 
@@ -36,8 +35,7 @@ BEGIN
     pnl          = COALESCE(NEW.realized_pnl, (NEW.fill_price - fill_price) * quantity * CASE WHEN signal = 'SELL' THEN -1 ELSE 1 END),
     pnl_percent  = CASE WHEN fill_price > 0 THEN ROUND(((NEW.fill_price - fill_price) / fill_price * 100 * CASE WHEN signal = 'SELL' THEN -1 ELSE 1 END)::numeric, 2) ELSE NULL END,
     pnl_source   = CASE WHEN NEW.realized_pnl IS NOT NULL THEN 'ib_realized' ELSE 'ib_fill_calculated' END,
-    close_reason = 'target_hit',
-    updated_at   = NOW()
+    close_reason = 'target_hit'
   WHERE ib_tp_order_id = NEW.order_id::text AND status = 'FILLED';
 
   -- (3) SL FILL
@@ -48,8 +46,7 @@ BEGIN
     pnl          = COALESCE(NEW.realized_pnl, (NEW.fill_price - fill_price) * quantity * CASE WHEN signal = 'SELL' THEN -1 ELSE 1 END),
     pnl_percent  = CASE WHEN fill_price > 0 THEN ROUND(((NEW.fill_price - fill_price) / fill_price * 100 * CASE WHEN signal = 'SELL' THEN -1 ELSE 1 END)::numeric, 2) ELSE NULL END,
     pnl_source   = CASE WHEN NEW.realized_pnl IS NOT NULL THEN 'ib_realized' ELSE 'ib_fill_calculated' END,
-    close_reason = 'stopped',
-    updated_at   = NOW()
+    close_reason = 'stopped'
   WHERE ib_sl_order_id = NEW.order_id::text AND status = 'FILLED';
 
   -- (4) CLOSE FILL — ib_close_order_id match
@@ -165,7 +162,6 @@ BEGIN
                    THEN (close_price - fill_price) * COALESCE(quantity, 0) * CASE WHEN signal = 'SELL' THEN -1 ELSE 1 END
                    ELSE pnl
                  END,
-    updated_at = NOW()
   WHERE ib_order_id = NEW.order_id::text
     AND status IN ('PENDING', 'SUBMITTED', 'FILLED');
 
@@ -177,8 +173,7 @@ BEGIN
     pnl          = COALESCE(NEW.realized_pnl, (NEW.fill_price - fill_price) * quantity * CASE WHEN signal = 'SELL' THEN -1 ELSE 1 END),
     pnl_percent  = CASE WHEN fill_price > 0 THEN ROUND(((NEW.fill_price - fill_price) / fill_price * 100 * CASE WHEN signal = 'SELL' THEN -1 ELSE 1 END)::numeric, 2) ELSE NULL END,
     pnl_source   = CASE WHEN NEW.realized_pnl IS NOT NULL THEN 'ib_realized' ELSE 'ib_fill_calculated' END,
-    close_reason = 'target_hit',
-    updated_at   = NOW()
+    close_reason = 'target_hit'
   WHERE ib_tp_order_id = NEW.order_id::text AND status = 'FILLED';
 
   -- (3) SL FILL
@@ -189,8 +184,7 @@ BEGIN
     pnl          = COALESCE(NEW.realized_pnl, (NEW.fill_price - fill_price) * quantity * CASE WHEN signal = 'SELL' THEN -1 ELSE 1 END),
     pnl_percent  = CASE WHEN fill_price > 0 THEN ROUND(((NEW.fill_price - fill_price) / fill_price * 100 * CASE WHEN signal = 'SELL' THEN -1 ELSE 1 END)::numeric, 2) ELSE NULL END,
     pnl_source   = CASE WHEN NEW.realized_pnl IS NOT NULL THEN 'ib_realized' ELSE 'ib_fill_calculated' END,
-    close_reason = 'stopped',
-    updated_at   = NOW()
+    close_reason = 'stopped'
   WHERE ib_sl_order_id = NEW.order_id::text AND status = 'FILLED';
 
   -- (4) CLOSE FILL
