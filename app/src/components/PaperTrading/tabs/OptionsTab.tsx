@@ -37,8 +37,14 @@ function daysUntil(dateStr: string): number {
 
 function formatExpiry(dateStr: string): string {
   if (!dateStr) return '—';
-  const d = new Date(dateStr);
-  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  // Parse YYYY-MM-DD as a local date (not UTC) to avoid the midnight UTC
+  // timezone shift that shows "Jun 5" as "Jun 4" in UTC-4 browsers.
+  const parts = dateStr.split('-').map(Number);
+  if (parts.length === 3) {
+    const d = new Date(parts[0], parts[1] - 1, parts[2]);
+    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  }
+  return new Date(dateStr).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 
 function dteBadgeColor(dte: number): string {
@@ -1328,6 +1334,11 @@ function ScalpCard({ scalp, closed }: { scalp: ScalpTrade; closed?: boolean }) {
 
       {scalp.scanner_reason && (
         <p className="mt-2 text-[10px] text-[hsl(var(--muted-foreground))] leading-snug">{scalp.scanner_reason}</p>
+      )}
+      {scalp.opened_at && (
+        <p className="mt-1 text-[10px] text-[hsl(var(--muted-foreground))]">
+          Submitted {new Date(scalp.opened_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} · {new Date(scalp.opened_at).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true })}
+        </p>
       )}
     </div>
   );
