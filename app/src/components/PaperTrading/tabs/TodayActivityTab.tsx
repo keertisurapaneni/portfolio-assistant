@@ -542,8 +542,18 @@ export function TodayActivityTab({ events, trades, todayTrades, orphanedFills = 
 
               const acctType = (trade as PaperTrade & { _accountType?: 'paper' | 'live' })._accountType;
 
+              // Stale trades: opened on a prior day but closed today by stale_eod_close.
+              // Show their original open date so the user knows this isn't a fresh trade.
+              const todayMidnight = new Date(); todayMidnight.setHours(0, 0, 0, 0);
+              const isStaleClose = trade.close_reason === 'stale_eod_close'
+                && trade.opened_at != null
+                && new Date(trade.opened_at) < todayMidnight;
+              const staleOpenDate = isStaleClose
+                ? new Date(trade.opened_at!).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+                : null;
+
               return (
-                <tr key={trade.id} className="hover:bg-[hsl(var(--secondary))]/50">
+                <tr key={trade.id} className={cn('hover:bg-[hsl(var(--secondary))]/50', isStaleClose && 'bg-amber-50/20')}>
                   <td className="px-4 py-3 font-bold">
                     <span className="inline-flex items-center gap-1.5">
                       {acctType === 'live' && <AccountDot type="live" />}
@@ -567,6 +577,11 @@ export function TodayActivityTab({ events, trades, todayTrades, orphanedFills = 
                     )}
                     {closePrice != null && (
                       <span className="ml-1 text-[10px]">→ ${closePrice.toFixed(2)}</span>
+                    )}
+                    {isStaleClose && staleOpenDate && (
+                      <span className="ml-1.5 px-1 py-0.5 rounded text-[9px] font-medium bg-amber-100 text-amber-700" title="Trade opened on a prior day — cleaned up today by stale EOD close">
+                        opened {staleOpenDate}
+                      </span>
                     )}
                     {trade.strategy_video_heading && (
                       <p className="text-[10px] text-[hsl(var(--muted-foreground))] truncate max-w-[180px] mt-0.5" title={trade.strategy_video_heading}>
