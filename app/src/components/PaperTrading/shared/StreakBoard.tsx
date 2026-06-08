@@ -5,7 +5,7 @@ import { supabase } from '../../../lib/supabaseClient';
 import { CLOSED_STATUSES } from '../../../../../shared/trade-status-sets.ts';
 import { fmtUsd } from '../utils';
 
-type StrategyRow = 'DAY_TRADE' | 'DAY_PENNY' | 'SWING_TRADE' | 'LONG_TERM' | 'OVERALL';
+type StrategyRow = 'DAY_TRADE' | 'DAY_PENNY' | 'SWING_TRADE' | 'LONG_TERM' | 'OPTIONS_SCALP' | 'OVERALL';
 
 interface DayCell {
   date: string;
@@ -23,12 +23,20 @@ interface StreakState {
 }
 
 const ROW_CONFIG: { key: StrategyRow; label: string; modes: string[] }[] = [
-  { key: 'DAY_TRADE', label: 'Day Trades', modes: ['DAY_TRADE'] },
-  { key: 'DAY_PENNY', label: 'Penny', modes: ['DAY_PENNY'] },
-  { key: 'SWING_TRADE', label: 'Swing', modes: ['SWING_TRADE'] },
-  { key: 'LONG_TERM', label: 'Long Term', modes: ['LONG_TERM'] },
-  { key: 'OVERALL', label: 'Overall', modes: ['DAY_TRADE', 'DAY_PENNY', 'SWING_TRADE', 'LONG_TERM'] },
+  { key: 'DAY_TRADE',     label: 'Day Trades', modes: ['DAY_TRADE'] },
+  { key: 'DAY_PENNY',     label: 'Penny',      modes: ['DAY_PENNY'] },
+  { key: 'SWING_TRADE',   label: 'Swing',      modes: ['SWING_TRADE'] },
+  { key: 'LONG_TERM',     label: 'Long Term',  modes: ['LONG_TERM'] },
+  { key: 'OPTIONS_SCALP', label: 'Options',    modes: ['OPTIONS_SCALP'] },
+  { key: 'OVERALL', label: 'Overall', modes: ['DAY_TRADE', 'DAY_PENNY', 'SWING_TRADE', 'LONG_TERM', 'OPTIONS_SCALP'] },
 ];
+
+/** Convert a UTC ISO timestamp to an Eastern-time YYYY-MM-DD date string.
+ *  Handles DST automatically. This ensures EOD/overnight closes that are
+ *  UTC "next day" (e.g. 01:46 UTC = 9:46 PM ET) map to the correct trading day. */
+function toEasternDate(isoStr: string): string {
+  return new Date(isoStr).toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+}
 
 const DAYS = 10;
 const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -80,7 +88,10 @@ export function StreakBoard() {
         .in('status', [...CLOSED_STATUSES])
         .not('pnl', 'is', null)
         .not('fill_price', 'is', null)
-        .in('mode', ['DAY_TRADE', 'DAY_PENNY', 'SWING_TRADE', 'LONG_TERM'])
+        // Exclude ib_reconciliation_cover mechanics (pnl=0 exercise cover buys);
+        // their P&L is already captured on the originating OPTIONS_SCALP trade.
+        .neq('close_reason', 'ib_reconciliation_cover')
+        .in('mode', ['DAY_TRADE', 'DAY_PENNY', 'SWING_TRADE', 'LONG_TERM', 'OPTIONS_SCALP'])
         .gte('closed_at', since + 'T00:00:00')
         .order('closed_at', { ascending: true });
 
@@ -95,8 +106,12 @@ export function StreakBoard() {
       const byModeDate = new Map<string, { pnl: number; count: number }>();
       for (const t of trades ?? []) {
         if (!t.closed_at) continue;
-        const closedDate = t.closed_at.slice(0, 10);
-        // Day trades: attribute to opened_at date (they close same day; stale closes shouldn't shift P&L)
+        // Convert UTC closed_at to Eastern time (handles DST). Overnight/EOD closes
+        // that are UTC "next day" (e.g. 01:46 UTC = 9:46 PM ET) map correctly to the
+        // Friday trading day instead of falling on a weekend and being invisible.
+        const closedDate = toEasternDate(t.closed_at);
+        // Day trades: attribute to opened_at date (they open+close same day;
+        // stale closes from prior days shouldn't shift P&L to today).
         const openedDate = (DAY_MODES.has(t.mode) && t.opened_at) ? t.opened_at.slice(0, 10) : null;
         const dateStr = (openedDate && daySet.has(openedDate)) ? openedDate : closedDate;
         for (const row of ROW_CONFIG) {
