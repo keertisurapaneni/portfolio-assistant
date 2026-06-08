@@ -92,7 +92,8 @@ export function StreakBoard() {
         // pnl values. Excluding them hides all ghost closes (ASTS swing losses, AOS,
         // GATX, NEM long-term closes) making those rows look far better than reality.
         // pnl IS NOT NULL is already sufficient to exclude unfilled/cancelled trades.
-        .neq('close_reason', 'ib_reconciliation_cover')
+        // Must use OR IS NULL — plain .neq() drops NULL close_reason rows too (SQL NULL != x is UNKNOWN).
+        .or('close_reason.neq.ib_reconciliation_cover,close_reason.is.null')
         .in('mode', ['DAY_TRADE', 'DAY_PENNY', 'SWING_TRADE', 'LONG_TERM', 'OPTIONS_SCALP'])
         .gte('closed_at', since + 'T00:00:00')
         .order('closed_at', { ascending: true });
