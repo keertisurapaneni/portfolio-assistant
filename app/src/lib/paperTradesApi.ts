@@ -246,9 +246,13 @@ export async function getTodayTrades(accountView: AccountView = 'paper'): Promis
         `closed_at.gte.${todayISO},` +
         `and(status.in.(FILLED,PARTIAL),mode.in.(DAY_TRADE,DAY_PENNY),filled_at.gte.${lookbackISO})`
       )
-      // Exclude exercise-cover mechanics (pnl=0 cover buys from reconcileIBShorts).
-      // Must use OR IS NULL — plain .neq() drops NULL close_reason rows too (SQL NULL != x is UNKNOWN).
+      // Exclude ib_reconciliation_cover (pnl=0 cover buys — P&L flows via auto_trade_events).
+      // Exclude stale_eod_close (historical cleanups of old positions — IB settled them long
+      // ago; they don't appear in IB's today realized P&L and cause a calc/IB mismatch).
+      // Each filter uses OR IS NULL — plain .neq() drops NULL close_reason rows too
+      // because SQL NULL != x evaluates to UNKNOWN, not TRUE.
       .or('close_reason.neq.ib_reconciliation_cover,close_reason.is.null')
+      .or('close_reason.neq.stale_eod_close,close_reason.is.null')
       .order('opened_at', { ascending: false });
 
     if (error) return [];
