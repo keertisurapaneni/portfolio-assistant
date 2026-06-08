@@ -16,6 +16,7 @@ export type AutoTradeAction =
   | 'proceeding'
   | 'health_check'
   | 'RECONCILIATION'
+  | 'GHOST_CLOSE_LINKED'
   | 'scan_complete';
 
 export type AutoTradeSource =

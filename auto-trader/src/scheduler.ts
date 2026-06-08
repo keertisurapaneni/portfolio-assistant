@@ -95,7 +95,7 @@ import { getOptionsChain } from './lib/options-chain.js';
 import { runEarningsScan, closeExpiredEarningsPositions } from './lib/earnings-scanner.js';
 import { runWatchlistScreener } from './lib/watchlist-screener.js';
 import { runOptionsManageCycle } from './lib/options-manager.js';
-import { runEndOfDayReconciliation } from './lib/reconcile-executions.js';
+import { runEndOfDayReconciliation, reconcileGhostCloses } from './lib/reconcile-executions.js';
 import { runDipWatcher } from './lib/dip-watcher.js';
 import { checkSpxLevelSetups } from './lib/spx-level-scanner.js';
 import { checkVwapConfluenceSetups, type ConfluenceResult } from './lib/vwap-confluence-scanner.js';
@@ -1711,6 +1711,13 @@ export async function reconcileIBLongs(): Promise<{ closed: string[]; errors: st
       });
     }
   }
+
+  // Link any ib_fill_auto_created ghost records to their corresponding FILLED SWING_TRADE /
+  // LONG_TERM paper_trades. This handles positions closed by IB (via bracket SL/TP or
+  // external close) where our code never called recordTradeClose.
+  await reconcileGhostCloses('paper_trades', 'paper').catch(err =>
+    log(`[IBLongReconcile] reconcileGhostCloses error: ${err instanceof Error ? err.message : err}`),
+  );
 
   if (confirmedGhosts.length === 0) {
     log('[IBLongReconcile] No confirmed ghost day-trade longs to close');
