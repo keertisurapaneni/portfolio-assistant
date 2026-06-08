@@ -183,13 +183,37 @@ Add entry-quality filters after exits are fixed (bad exits ruin good entries fir
 
 **For puts — mirror of the above.**
 
-### Phase 4 — P3: Runner Logic
+### Phase 4 — P3: Runner Logic (trailing stop on stock structure)
 
-Once partials are working:
-- Target next hourly level
-- Trailing stop under/over structure
-- VWAP / 8 EMA runner hold logic
-- Time-based runner exit
+**Source:** Kay Capitals video on holding runners (Jun 7, 2026)
+
+> "Base your stop loss on the stock price, not on the option price. Every time a new higher low forms, bring your stop loss up based on actual market structure."
+
+Currently the break-even stop is static — once set at entry price, it never moves. The real system trails it upward as the stock makes higher lows (for calls) or lower highs (for puts).
+
+**How it works:**
+```
+Call example — stock in uptrend:
+  Entry stock price: $300, break-even stop set at $300
+  Stock makes higher low at $305 → trail stop up to $305
+  Stock makes higher low at $310 → trail stop up to $310
+  Stock breaks below most recent higher low → exit runner
+```
+
+This is how he catches $5–$20 stock moves instead of exiting at a fixed +100% premium target. The option stop follows stock structure, not option premium math.
+
+**Implementation requirements:**
+- Every management cycle (every 15 min), for PARTIAL positions (runner active):
+  1. Fetch recent 5-min candles for the stock
+  2. Detect most recent higher low (calls) or lower high (puts)
+  3. If new higher low > previous stop level → update `metadata.runner_stop_price`
+  4. If stock price drops below `runner_stop_price` → close runner
+- Store `runner_stop_price` in metadata (stock price level, not option premium)
+- Current break-even stop stays as the floor — runner stop can only move in profit direction
+
+**Also from this video:**
+- Hide option bid/ask from view entirely — trade off stock price chart, not option price
+- This is psychology, not code — but it confirms the runner stop should be stock-price-based, not premium-based
 
 ---
 
