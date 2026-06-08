@@ -173,6 +173,19 @@ function get5mSmaDirection(bars: IntradayBar[], currentPrice: number): 'C' | 'P'
   return currentPrice > sma200 ? 'C' : 'P';
 }
 
+/**
+ * Parse an option expiry string (YYYYMMDD or YYYY-MM-DD) to a local Date at midnight.
+ * Returns null if the format is unrecognised.
+ */
+function parseExpiryDate(expiry: string): Date | null {
+  const cleaned = expiry.replace(/-/g, '');
+  if (!/^\d{8}$/.test(cleaned)) return null;
+  const y = parseInt(cleaned.slice(0, 4), 10);
+  const m = parseInt(cleaned.slice(4, 6), 10) - 1;
+  const d = parseInt(cleaned.slice(6, 8), 10);
+  return new Date(y, m, d);
+}
+
 /** Return nearest weekly Friday expiry that is at least 1 day away, as YYYYMMDD. */
 function getNearestWeeklyExpiry(): string {
   const now = new Date();
@@ -686,6 +699,9 @@ export async function manageScalpPositions(): Promise<void> {
 
   if (!positions?.length) return;
 
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
   for (const pos of (positions as Array<{
     id: string; ticker: string; signal: string; status: string;
     option_strike: number; option_expiry: string;
@@ -693,6 +709,26 @@ export async function manageScalpPositions(): Promise<void> {
     ib_order_id: number | null; metadata: Record<string, unknown> | null;
     filled_at: string | null;
   }>)) {
+    // Skip options that have already passed their expiry date — the contract no longer
+    // exists in IB so Greeks calls will always fail. closeAllScalpPositionsEod handles
+    // these on expiry day; they should not reappear in management on subsequent days.
+    const expiryDate = parseExpiryDate(pos.option_expiry ?? '');
+    if (expiryDate && expiryDate < today) {
+      console.log(`[Options Scalp] ${pos.ticker} — option_expiry ${pos.option_expiry} is in the past, closing as expired_worthless (missed by EOD close)`);
+      const right2 = pos.signal === 'BUY' ? 'C' : 'P';
+      const meta2 = ((pos.metadata ?? {}) as Record<string, unknown>);
+      const isPartial2 = pos.status === 'PARTIAL';
+      const remaining2 = isPartial2 ? ((meta2.contracts_remaining as number | undefined) ?? 1) : (pos.option_contracts ?? MAX_CONTRACTS);
+      // Fetch stock price to determine if expired ITM (auto-exercised) or OTM (worthless)
+      const q2 = await fetchQuote(pos.ticker);
+      const stockPx2 = q2?.price ?? null;
+      const isItm2 = stockPx2 != null && (right2 === 'C' ? stockPx2 > pos.option_strike : stockPx2 < pos.option_strike);
+      await closeScalpPosition(pos.id, pos.ticker, right2, pos.option_strike, pos.option_expiry,
+        0, pos.option_premium, isItm2 ? 'auto_exercised' : 'expired_worthless',
+        { contractsToSell: remaining2, existingMeta: meta2 });
+      continue;
+    }
+
     const premiumPaid = pos.option_premium ?? 0;
     if (premiumPaid <= 0) continue;
 
@@ -866,9 +902,47 @@ export async function closeAllScalpPositionsEod(): Promise<void> {
     // CRITICAL: getOptionGreeksForContract returns null when IB is disconnected.
     // null !== $0 (worthless) — if Greeks are unavailable, leave the position open
     // rather than incorrectly marking it CLOSED at $0. The next cycle will retry.
+    //
+    // Exception: if the option is ON its expiry date, IB drops the contract from
+    // its chain after exercise/expiry — Greeks will always be null. In this case
+    // we use the live stock price to determine ITM vs OTM and close accordingly.
     const greeks = await getOptionGreeksForContract(pos.ticker, pos.option_strike, pos.option_expiry, right, stockPrice);
     if (!greeks) {
-      console.warn(`[Options Scalp] ${pos.ticker} — IB Greeks unavailable (disconnected?), leaving open — DO NOT mark as $0`);
+      const expiryDate = parseExpiryDate(pos.option_expiry ?? '');
+      const todayEod = new Date();
+      todayEod.setHours(0, 0, 0, 0);
+
+      if (expiryDate && expiryDate <= todayEod) {
+        // Option has reached or passed its expiry — contract no longer exists in IB.
+        // Use stock price to determine whether it expired ITM (auto-exercised) or OTM (worthless).
+        const isItm = right === 'C'
+          ? stockPrice > pos.option_strike
+          : stockPrice < pos.option_strike;
+
+        if (isItm) {
+          // ITM at expiry → OCC auto-exercised. A short stock position (for puts) or long
+          // stock position (for calls) was created in IB. reconcileIBShorts/Longs will
+          // detect and handle the resulting stock position. Mark the option record closed.
+          console.log(`[Options Scalp] ${pos.ticker} — expired ITM on ${pos.option_expiry} (${right === 'C' ? 'CALL' : 'PUT'} $${pos.option_strike}, stock $${stockPrice.toFixed(2)}) — auto-exercised, P&L tracked when stock cover happens`);
+          await closeScalpPosition(
+            pos.id, pos.ticker, right,
+            pos.option_strike, pos.option_expiry,
+            0, pos.option_premium, 'auto_exercised',
+            { contractsToSell: contractsRemaining, existingMeta: meta },
+          );
+        } else {
+          // OTM at expiry → expired worthless. Full premium is the loss.
+          console.log(`[Options Scalp] ${pos.ticker} — expired OTM worthless on ${pos.option_expiry} (${right === 'C' ? 'CALL' : 'PUT'} $${pos.option_strike}, stock $${stockPrice.toFixed(2)})`);
+          await closeScalpPosition(
+            pos.id, pos.ticker, right,
+            pos.option_strike, pos.option_expiry,
+            0, pos.option_premium, 'expired_worthless',
+            { contractsToSell: contractsRemaining, existingMeta: meta },
+          );
+        }
+      } else {
+        console.warn(`[Options Scalp] ${pos.ticker} — IB Greeks unavailable (disconnected?), leaving open — DO NOT mark as $0`);
+      }
       continue;
     }
 
@@ -996,7 +1070,11 @@ async function closeScalpPosition(
   } else {
     // Full close (or final contract of a partial)
     const prevRealized = (existingMeta.partial_realized_pnl as number | undefined) ?? 0;
-    const totalPnl = prevRealized + contractPnl;
+
+    // auto_exercised: option was ITM at expiry and exercised by OCC, creating a stock
+    // position in IB. The stock P&L is unknown until reconcileIBShorts/Longs covers it.
+    // Store pnl=null here; reconcileIBShorts will update it with the full round-trip P&L.
+    const totalPnl = reason === 'auto_exercised' ? null : prevRealized + contractPnl;
 
     await sb.from('paper_trades').update({
       status:       'CLOSED',
@@ -1006,16 +1084,21 @@ async function closeScalpPosition(
       pnl:          totalPnl,
     }).eq('id', tradeId);
 
-    const pnlStr = totalPnl >= 0 ? `+$${totalPnl.toFixed(0)}` : `-$${Math.abs(totalPnl).toFixed(0)}`;
+    // totalPnl is null for auto_exercised (P&L tracked by reconcileIBShorts on cover)
+    const pnlStr = totalPnl == null
+      ? 'pending exercise cover'
+      : totalPnl >= 0 ? `+$${totalPnl.toFixed(0)}` : `-$${Math.abs(totalPnl).toFixed(0)}`;
     console.log(`[Options Scalp] ${ticker} closed [${reason}] @ $${closePremium.toFixed(2)} | total P&L ${pnlStr}`);
 
     createAutoTradeEvent({
       ticker,
-      event_type: totalPnl >= 0 ? 'success' : 'warning',
+      event_type: totalPnl == null ? 'info' : totalPnl >= 0 ? 'success' : 'warning',
       action:     'closed',
       source:     'scanner',
       mode:       'OPTIONS_SCALP',
-      message:    `${totalPnl >= 0 ? '✅' : '🛑'} Scalp ${right === 'C' ? 'CALL' : 'PUT'} $${strike} closed [${reason}] @ $${closePremium.toFixed(2)} | P&L ${pnlStr}`,
+      message:    totalPnl == null
+        ? `📋 Scalp ${right === 'C' ? 'CALL' : 'PUT'} $${strike} auto-exercised ITM [${reason}] — P&L pending stock cover by reconcileIBShorts`
+        : `${totalPnl >= 0 ? '✅' : '🛑'} Scalp ${right === 'C' ? 'CALL' : 'PUT'} $${strike} closed [${reason}] @ $${closePremium.toFixed(2)} | P&L ${pnlStr}`,
       metadata:   { reason, totalPnl, closePremium, premiumPaid, contractsToSell },
     }).catch(() => {});
   }

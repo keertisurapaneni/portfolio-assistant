@@ -1267,10 +1267,18 @@ function ScalpCard({ scalp, closed }: { scalp: ScalpTrade; closed?: boolean }) {
 
   const closeLabel = (() => {
     switch (scalp.close_reason) {
-      case 'eod_close':    return '🌙 EOD close';
-      case 'stop_loss':    return '🛑 Stop loss';
-      case '50pct_profit': return '💰 50% profit';
-      case 'no_fill':      return '❌ No fill';
+      case 'eod_close':          return '🌙 EOD close';
+      case 'stop_loss':          return '🛑 Stop loss';
+      case 'break_even_stop':    return '🛑 Break-even stop';
+      case 'runner_stop':        return '🛑 Runner stop';
+      case 'partial_profit':     return '💰 Partial profit';
+      case 'profit_target':      return '✅ Profit target';
+      case '50pct_profit':       return '💰 50% profit';
+      case 'no_fill':            return '❌ No fill';
+      case 'expired_worthless':  return '📭 Expired worthless';
+      case 'auto_exercised':     return '⚙️ Auto-exercised';
+      case 'ib_reconciliation_cover': return '🔄 Exercise cover';
+      case 'manual':             return '✋ Manual';
       default: return scalp.close_reason?.replace(/_/g, ' ') ?? null;
     }
   })();

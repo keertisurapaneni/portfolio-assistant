@@ -441,6 +441,10 @@ export async function getClosedScalpTrades(limit = 40): Promise<ScalpTrade[]> {
     .select(SCALP_SELECT)
     .eq('mode', 'OPTIONS_SCALP')
     .in('status', [...CLOSED_STATUSES])
+    // Exclude exercise-cover mechanics records (pnl=0 cover buys from reconcileIBShorts).
+    // These are audit-trail entries only — the P&L is attributed to the originating
+    // options trade (auto_exercised). Including them would add noise to the scalp history.
+    .neq('close_reason', 'ib_reconciliation_cover')
     .order('closed_at', { ascending: false })
     .limit(limit);
   if (error) throw error;

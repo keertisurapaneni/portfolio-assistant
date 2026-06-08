@@ -1471,28 +1471,83 @@ export async function reconcileIBShorts(): Promise<{ closed: string[]; errors: s
         }).eq('id', orphan.id);
         log(`[IBReconcile] Linked cover orderId=${coverOrderId} to paper_trade ${orphan.id} for ${pos.symbol} (pnl $${finalPnl.toFixed(2)}, source=${pnlSource})`);
       } else {
-        // No orphaned SELL paper_trade found — insert a new one so this cover appears
-        // in Today's Activity with the correct IB P&L. The Postgres trigger will upgrade
-        // pnl_source to 'ib_realized' if the realized_pnl arrives later via execDetails.
-        const nowIso = new Date().toISOString();
-        await sb.from('paper_trades').insert({
-          ticker: pos.symbol,
-          signal: 'BUY',
-          mode: 'DAY_TRADE',
-          quantity: qty,
-          fill_price: avgFillPrice,
-          close_price: avgFillPrice,
-          pnl: finalPnl,
-          pnl_source: pnlSource,
-          status: 'CLOSED',
-          ib_order_id: String(coverOrderId),
-          close_reason: 'ib_reconciliation_cover',
-          opened_at: nowIso,
-          filled_at: nowIso,
-          closed_at: nowIso,
-          notes: `Short cover orderId=${coverOrderId} filled @ $${avgFillPrice.toFixed(2)} by reconcileIBShorts (avg cost $${pos.avgCost.toFixed(2)})`,
-        });
-        log(`[IBReconcile] Inserted cover paper_trade for ${pos.symbol} (pnl $${finalPnl.toFixed(2)}, source=${pnlSource})`);
+        // No orphaned SELL paper_trade found.
+        // Before inserting a generic DAY_TRADE cover record, check if there's an
+        // OPTIONS_SCALP PUT trade for this ticker that expired recently and is awaiting
+        // its exercise P&L (pnl=null, close_reason='auto_exercised'). If found, update
+        // the options record directly — this keeps P&L in the Options Scalp history where
+        // the user expects it, avoids a spurious DAY_TRADE row in Today's Activity, and
+        // prevents double-counting between the options record and a cover trade.
+        const twoWeeksAgo = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString();
+        const { data: exercisedScalpTrade } = await sb
+          .from('paper_trades')
+          .select('id')
+          .eq('ticker', pos.symbol)
+          .eq('mode', 'OPTIONS_SCALP')
+          .eq('signal', 'SELL')   // SELL = bought a put
+          .eq('status', 'CLOSED')
+          .eq('close_reason', 'auto_exercised')
+          .is('pnl', null)
+          .gte('closed_at', twoWeeksAgo)
+          .order('closed_at', { ascending: false })
+          .limit(1);
+
+        const exercisedScalp = (exercisedScalpTrade ?? [])[0] as { id: string } | undefined;
+
+        if (exercisedScalp) {
+          // Found the originating options trade — write the full round-trip P&L back to it.
+          // IB's avgCost for the short already includes the put premium (it's deducted from
+          // the cost basis), so finalPnl here is the true net P&L of the whole options trade.
+          await sb.from('paper_trades').update({
+            pnl:        finalPnl,
+            pnl_source: pnlSource,
+            notes: `Auto-exercised ITM put covered by reconcileIBShorts: BUY ${qty} @ $${avgFillPrice.toFixed(2)} (IB avg cost $${pos.avgCost.toFixed(2)}, orderId=${coverOrderId})`,
+          }).eq('id', exercisedScalp.id);
+          log(`[IBReconcile] Updated OPTIONS_SCALP ${exercisedScalp.id} with exercise P&L $${finalPnl.toFixed(2)} for ${pos.symbol}`);
+
+          // Insert a minimal cover record for audit trail, with pnl=0 to avoid double-counting.
+          const nowIso = new Date().toISOString();
+          await sb.from('paper_trades').insert({
+            ticker: pos.symbol,
+            signal: 'BUY',
+            mode: 'OPTIONS_SCALP',
+            quantity: qty,
+            fill_price: avgFillPrice,
+            close_price: avgFillPrice,
+            pnl: 0,
+            pnl_source: 'options_exercise_cover',
+            status: 'CLOSED',
+            ib_order_id: String(coverOrderId),
+            close_reason: 'ib_reconciliation_cover',
+            opened_at: nowIso,
+            filled_at: nowIso,
+            closed_at: nowIso,
+            notes: `Short cover orderId=${coverOrderId} filled @ $${avgFillPrice.toFixed(2)} by reconcileIBShorts (avg cost $${pos.avgCost.toFixed(2)}) — P&L attributed to OPTIONS_SCALP trade ${exercisedScalp.id}`,
+          });
+          log(`[IBReconcile] Inserted OPTIONS_SCALP cover record for ${pos.symbol} (pnl=0, P&L in scalp trade ${exercisedScalp.id})`);
+        } else {
+          // No matching options trade — insert a standard DAY_TRADE cover record so this
+          // cover appears in Today's Activity with the correct IB P&L.
+          const nowIso = new Date().toISOString();
+          await sb.from('paper_trades').insert({
+            ticker: pos.symbol,
+            signal: 'BUY',
+            mode: 'DAY_TRADE',
+            quantity: qty,
+            fill_price: avgFillPrice,
+            close_price: avgFillPrice,
+            pnl: finalPnl,
+            pnl_source: pnlSource,
+            status: 'CLOSED',
+            ib_order_id: String(coverOrderId),
+            close_reason: 'ib_reconciliation_cover',
+            opened_at: nowIso,
+            filled_at: nowIso,
+            closed_at: nowIso,
+            notes: `Short cover orderId=${coverOrderId} filled @ $${avgFillPrice.toFixed(2)} by reconcileIBShorts (avg cost $${pos.avgCost.toFixed(2)})`,
+          });
+          log(`[IBReconcile] Inserted cover paper_trade for ${pos.symbol} (pnl $${finalPnl.toFixed(2)}, source=${pnlSource})`);
+        }
       }
 
       await createAutoTradeEvent({
