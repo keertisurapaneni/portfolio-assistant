@@ -501,7 +501,7 @@ export async function manageScalpPositions(): Promise<void> {
   // management until the 3:45 PM EOD close sweeps them.
   const { data: positions } = await sb
     .from('paper_trades')
-    .select('id, ticker, signal, option_strike, option_expiry, option_premium, option_contracts, ib_order_id, metadata, status')
+    .select('id, ticker, signal, option_strike, option_expiry, option_premium, option_contracts, ib_order_id, metadata, status, filled_at')
     .eq('mode', 'OPTIONS_SCALP')
     .in('status', ['FILLED', 'PARTIAL']);
 
@@ -512,6 +512,7 @@ export async function manageScalpPositions(): Promise<void> {
     option_strike: number; option_expiry: string;
     option_premium: number; option_contracts: number | null;
     ib_order_id: number | null; metadata: Record<string, unknown> | null;
+    filled_at: string | null;
   }>)) {
     const premiumPaid = pos.option_premium ?? 0;
     if (premiumPaid <= 0) continue;
@@ -568,9 +569,14 @@ export async function manageScalpPositions(): Promise<void> {
         console.log(`[Options Scalp] ${pos.ticker} — runner stop initialized @ $${initialStop.toFixed(2)} (stock $${q.price.toFixed(2)})`);
 
       } else {
-        // Try to trail the stop based on recent 5-min higher lows / lower highs
-        const intradayBars = await fetchIntradayBars(pos.ticker, '5m', '1d');
+        // Kay Capitals: 2-min chart for first 30 min (9:30–10:00), 5-min chart 10:00–11:00.
+        // Use whichever interval matches the session window the trade was entered in.
+        const entryHour = pos.filled_at ? new Date(pos.filled_at as string).getUTCHours() - 4 : 10;
+        const barInterval: '2m' | '5m' = entryHour < 10 ? '2m' : '5m';
+
+        const intradayBars = await fetchIntradayBars(pos.ticker, barInterval, '1d');
         if (intradayBars && intradayBars.length >= 4) {
+          console.log(`[Options Scalp] ${pos.ticker} — checking runner stop on ${barInterval} bars (${intradayBars.length} candles)`);
           const newStop = trailRunnerStop(intradayBars, runnerStop, right);
           if (newStop !== null) {
             await getSupabase().from('paper_trades').update({
