@@ -1626,8 +1626,8 @@ export function OptionsTab() {
   const sections = [
     { id: 'positions' as const, label: 'Open', count: openPositions.length },
     { id: 'spreads' as const, label: 'Spreads', count: openSpreads.length },
-    { id: 'scalps' as const, label: '⚡ Scalps', count: openScalps.length + closedScalps.length },
-    { id: 'history' as const, label: 'History', count: closedPositions.length },
+    { id: 'scalps' as const, label: '⚡ Scalps', count: openScalps.length },
+    { id: 'history' as const, label: 'History', count: closedPositions.length + closedScalps.length },
     { id: 'watchlist' as const, label: 'Watchlist', count: watchlist.filter(w => w.active).length },
     { id: 'sniper' as const, label: 'Sniper', count: 0 },
     { id: 'log' as const, label: 'Log', count: activityLog.length },
@@ -1816,16 +1816,6 @@ export function OptionsTab() {
                   {openScalps.map(s => <ScalpCard key={s.id} scalp={s} />)}
                 </div>
               )}
-
-              {/* Closed scalps */}
-              {closedScalps.length > 0 && (
-                <div className="space-y-2">
-                  <div className="flex items-center gap-2 px-1">
-                    <span className="text-xs font-bold text-[hsl(var(--muted-foreground))]">Recent Closed</span>
-                  </div>
-                  {closedScalps.map(s => <ScalpCard key={s.id} scalp={s} closed />)}
-                </div>
-              )}
             </>
           )}
         </div>
@@ -1833,11 +1823,30 @@ export function OptionsTab() {
 
       {/* History */}
       {activeSection === 'history' && (
-        <div className="space-y-2">
-          {closedPositions.length === 0 ? (
+        <div className="space-y-4">
+
+          {/* Scalp history */}
+          {closedScalps.length > 0 && (
+            <div className="space-y-2">
+              <div className="flex items-center gap-2 px-1">
+                <span className="text-xs font-bold text-[hsl(var(--muted-foreground))] uppercase tracking-wide">⚡ Scalp History</span>
+                <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-600 font-bold">{closedScalps.length}</span>
+              </div>
+              {closedScalps.map(s => <ScalpCard key={s.id} scalp={s} closed />)}
+            </div>
+          )}
+
+          {/* Credit spread / wheel history */}
+          {closedPositions.length === 0 && closedScalps.length === 0 ? (
             <div className="text-center py-8 text-sm text-[hsl(var(--muted-foreground))]">No closed options trades yet</div>
-          ) : (
-            closedPositions.map(pos => {
+          ) : closedPositions.length > 0 && (
+            <div className="space-y-2">
+              {closedScalps.length > 0 && (
+                <div className="flex items-center gap-2 px-1">
+                  <span className="text-xs font-bold text-[hsl(var(--muted-foreground))] uppercase tracking-wide">Credit Spreads / Wheel</span>
+                </div>
+              )}
+            {closedPositions.map(pos => {
               const isRolled    = pos.close_reason === 'rolled';
               const isStopped   = pos.close_reason === 'stop_loss';
               const isExpired   = pos.close_reason === 'expired_worthless';
@@ -1911,7 +1920,8 @@ export function OptionsTab() {
                   </div>
                 </div>
               );
-            })
+            })}
+            </div>
           )}
         </div>
       )}
