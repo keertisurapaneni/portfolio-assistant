@@ -247,8 +247,8 @@ export async function getTodayTrades(accountView: AccountView = 'paper'): Promis
         `and(status.in.(FILLED,PARTIAL),mode.in.(DAY_TRADE,DAY_PENNY),filled_at.gte.${lookbackISO})`
       )
       // Exclude exercise-cover mechanics (pnl=0 cover buys from reconcileIBShorts).
-      // P&L for these is already attributed to the originating OPTIONS_SCALP trade.
-      .neq('close_reason', 'ib_reconciliation_cover')
+      // Must use OR IS NULL — plain .neq() drops NULL close_reason rows too (SQL NULL != x is UNKNOWN).
+      .or('close_reason.neq.ib_reconciliation_cover,close_reason.is.null')
       .order('opened_at', { ascending: false });
 
     if (error) return [];

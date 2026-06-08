@@ -346,9 +346,7 @@ export function TodayActivityTab({ events, trades, todayTrades, orphanedFills = 
   const ibSyncing = ibConnected && ibRealizedPnl === null;
   const ibOffline = !isTradingDay() || ibRealizedPnl === undefined;
 
-  // When IB is connected, IB realized P&L is the source of truth (workspace rule).
-  // Paper_trades sum is shown as a small secondary reference only.
-  const displayPnl = effectiveIbPnl != null ? effectiveIbPnl : filteredPnl;
+  // Our calc P&L is always the primary green display; IB P&L is shown in amber as a secondary check.
 
   return (
     <div className="space-y-3">
@@ -357,14 +355,16 @@ export function TodayActivityTab({ events, trades, todayTrades, orphanedFills = 
         <div className="flex items-center justify-between rounded-lg bg-[hsl(var(--secondary))] px-4 py-2.5">
           <span className="text-sm font-medium text-[hsl(var(--muted-foreground))]">{pnlLabel}</span>
           <div className="flex items-center gap-3">
-            <span className={cn('text-sm font-bold tabular-nums', displayPnl > 0 ? 'text-emerald-600' : displayPnl < 0 ? 'text-red-600' : '')}>
-              {fmtUsd(displayPnl, 2, true)}
+            {/* Our calc P&L — always primary in green/red */}
+            <span className={cn('text-sm font-bold tabular-nums', filteredPnl > 0 ? 'text-emerald-600' : filteredPnl < 0 ? 'text-red-600' : '')}>
+              {fmtUsd(filteredPnl, 2, true)}
             </span>
+            {/* IB P&L — amber secondary reference */}
             {effectiveIbPnl != null && (() => {
               const mismatch = Math.abs(filteredPnl - effectiveIbPnl) > 5;
               return mismatch ? (
                 <span className="text-[11px] tabular-nums text-amber-500">
-                  calc {fmtUsd(filteredPnl, 2, true)} ⚠️
+                  IB {fmtUsd(effectiveIbPnl, 2, true)} ⚠️
                 </span>
               ) : null;
             })()}
