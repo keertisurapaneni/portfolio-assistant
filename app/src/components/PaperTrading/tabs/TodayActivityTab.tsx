@@ -270,6 +270,13 @@ export function TodayActivityTab({ events, trades, todayTrades, orphanedFills = 
   const computeTradePnl = (tradeList: PaperTrade[]) =>
     tradeList.filter(t => !isTradeActive(t)).reduce((sum, t) => sum + (t.pnl ?? 0), 0);
 
+  // P&L from system events (e.g. IBReconcile cover buys) that carry a real pnl in metadata.
+  // These are tracked via auto_trade_events (not paper_trades) so they aren't in computeTradePnl.
+  // Only add to calc when showing "all" — system events are cross-mode (options cover trades).
+  const systemEventsPnl = filterMode === 'all'
+    ? systemEvents.reduce((sum, ev) => sum + ((ev.metadata as { pnl?: number } | null)?.pnl ?? 0), 0)
+    : 0;
+
   const effectiveIbPnl = isTradingDay() ? ibRealizedPnl : null;
 
   function handleSort(key: SortKey) {
@@ -331,7 +338,10 @@ export function TodayActivityTab({ events, trades, todayTrades, orphanedFills = 
     });
   }, [primaryTrades, filterMode, sortKey, sortDir]);
 
-  const filteredPnl = useMemo(() => computeTradePnl(filteredSortedTrades), [filteredSortedTrades]);
+  const filteredPnl = useMemo(
+    () => computeTradePnl(filteredSortedTrades) + systemEventsPnl,
+    [filteredSortedTrades, systemEventsPnl]
+  );
   const pnlLabel = filterMode === 'all' ? "Today's Realized P&L"
     : filterMode === 'day' ? 'Day Trade P&L'
     : filterMode === 'penny' ? 'Penny P&L'
@@ -649,37 +659,41 @@ export function TodayActivityTab({ events, trades, todayTrades, orphanedFills = 
                 </tr>
               );
             })}
-            {/* System/reconcile events shown as supplementary rows */}
-            {systemEvents.map((ev) => (
-              <tr key={ev.id} className="bg-slate-50/50 hover:bg-[hsl(var(--secondary))]/50">
-                <td className="px-4 py-3 font-bold text-slate-500">
-                  <span className="inline-flex items-center gap-1.5">
-                    {ev.ticker}
-                  </span>
-                </td>
-                <td className="px-4 py-3">
-                  <span className="inline-flex px-1.5 py-0.5 rounded text-[10px] font-bold bg-slate-100 text-slate-600">—</span>
-                </td>
-                <td className="px-4 py-3">
-                  <span className="text-[10px] px-1.5 py-0.5 rounded font-medium bg-purple-50 text-purple-600">Close</span>
-                </td>
-                <td className="px-4 py-3 text-xs text-[hsl(var(--muted-foreground))]">
-                  <span className="font-medium text-[hsl(var(--foreground))]">System</span>
-                  <span> · {ev.message?.slice(0, 60)}</span>
-                </td>
-                <td className="px-4 py-3 text-right tabular-nums font-semibold text-slate-400">
-                  {(ev.metadata as { pnl?: number } | null)?.pnl != null
-                    ? fmtUsd((ev.metadata as { pnl: number }).pnl, 2, true)
-                    : '—'}
-                </td>
-                <td className="px-4 py-3">
-                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-50 text-blue-700 font-medium">Closed</span>
-                </td>
-                <td className="px-4 py-3 text-right text-xs text-[hsl(var(--muted-foreground))] tabular-nums">
-                  {new Date(ev.created_at).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}
-                </td>
-              </tr>
-            ))}
+            {/* System/reconcile events shown as supplementary rows (e.g. IBReconcile cover buys) */}
+            {systemEvents.map((ev) => {
+              const evPnl = (ev.metadata as { pnl?: number } | null)?.pnl ?? null;
+              return (
+                <tr key={ev.id} className="hover:bg-[hsl(var(--secondary))]/50">
+                  <td className="px-4 py-3 font-bold">
+                    <span className="inline-flex items-center gap-1.5">
+                      {ev.ticker}
+                    </span>
+                  </td>
+                  <td className="px-4 py-3">
+                    <span className="inline-flex px-1.5 py-0.5 rounded text-[10px] font-bold bg-slate-100 text-slate-600">—</span>
+                  </td>
+                  <td className="px-4 py-3">
+                    <span className="text-[10px] px-1.5 py-0.5 rounded font-medium bg-purple-50 text-purple-600">System</span>
+                  </td>
+                  <td className="px-4 py-3 text-xs text-[hsl(var(--muted-foreground))]">
+                    <span className="font-medium text-[hsl(var(--foreground))]">System</span>
+                    <span> · {ev.message?.slice(0, 60)}</span>
+                  </td>
+                  <td className={cn(
+                    'px-4 py-3 text-right tabular-nums font-semibold',
+                    evPnl != null && evPnl > 0 ? 'text-emerald-600' : evPnl != null && evPnl < 0 ? 'text-red-600' : ''
+                  )}>
+                    {evPnl != null ? fmtUsd(evPnl, 2, true) : '—'}
+                  </td>
+                  <td className="px-4 py-3">
+                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-50 text-blue-700 font-medium">Closed</span>
+                  </td>
+                  <td className="px-4 py-3 text-right text-xs text-[hsl(var(--muted-foreground))] tabular-nums">
+                    {new Date(ev.created_at).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
