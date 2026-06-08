@@ -87,9 +87,11 @@ export function StreakBoard() {
         .select('mode, pnl, closed_at, opened_at')
         .in('status', [...CLOSED_STATUSES])
         .not('pnl', 'is', null)
-        .not('fill_price', 'is', null)
-        // Exclude ib_reconciliation_cover mechanics (pnl=0 exercise cover buys);
-        // their P&L is already captured on the originating OPTIONS_SCALP trade.
+        // Do NOT filter fill_price IS NOT NULL — ib_fill_auto_created ghost records
+        // (closing fills with no original entry in DB) have fill_price=null but correct
+        // pnl values. Excluding them hides all ghost closes (ASTS swing losses, AOS,
+        // GATX, NEM long-term closes) making those rows look far better than reality.
+        // pnl IS NOT NULL is already sufficient to exclude unfilled/cancelled trades.
         .neq('close_reason', 'ib_reconciliation_cover')
         .in('mode', ['DAY_TRADE', 'DAY_PENNY', 'SWING_TRADE', 'LONG_TERM', 'OPTIONS_SCALP'])
         .gte('closed_at', since + 'T00:00:00')
