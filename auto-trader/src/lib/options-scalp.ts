@@ -21,7 +21,7 @@
 import { getSupabase, createAutoTradeEvent } from './supabase.js';
 import { isConnected, placeOptionsOrder, cancelOrder, getDefaultAccount } from '../ib-connection.js';
 import { findAtmStrike, getOptionGreeksForContract } from './options-chain.js';
-import { fetchQuote, fetchIntradayBars, type IntradayBar } from './yahoo-finance.js';
+import { fetchQuote, fetchIntradayBars, fetchDailyBars, type IntradayBar } from './yahoo-finance.js';
 import { detectVwapReclaim, VWAP_RELIABLE_HOUR_ET } from './vwap.js';
 
 // ── Constants ────────────────────────────────────────────
@@ -33,8 +33,145 @@ const PARTIAL_TARGET_MULT = 1.5;         // sell 1st contract when premium up 50
 const PROFIT_TARGET_MULT = 2.0;          // close all remaining when premium doubles
 const STOP_LOSS_MULT = 0.50;             // close all when premium halves (only before first partial)
 const MAX_SPREAD_MARKET_ORDER_PCT = 3;   // use market order only if spread < 3% of mid
-const LAST_ENTRY_HOUR_ET = 11;           // no new scalp entries after 11:30 AM ET (90-minute rule)
-const LAST_ENTRY_MIN_ET  = 30;
+const LAST_ENTRY_HOUR_ET = 11;           // no new scalp entries after 11:00 AM ET (90-minute rule)
+const LAST_ENTRY_MIN_ET  = 0;
+const ORB_END_HOUR_ET    = 9;            // ORB forms during 9:30–9:45; no entries before 9:45
+const ORB_END_MIN_ET     = 45;
+const ORB_RETEST_BUFFER  = 0.15;        // price must be within $0.15 of ORB level to count as retest
+const ORB_SMA200_PERIOD  = 200;          // 200-period SMA on 5-min bars for direction filter
+
+// ── NTZ / ORB helpers ────────────────────────────────────
+
+/**
+ * Fetch No-Trading-Zone boundaries for a ticker.
+ * NTZ = box formed by max(premarket_high, yesterday_high) and min(premarket_low, yesterday_low).
+ * Returns null if data is unavailable.
+ */
+async function fetchNtz(ticker: string): Promise<{ ntzTop: number; ntzBottom: number } | null> {
+  const [preBars, dailyBars] = await Promise.all([
+    fetchIntradayBars(ticker, '5m', '1d', true),   // pre-market data included
+    fetchDailyBars(ticker, '5d'),
+  ]);
+
+  // Pre-market high/low: bars before 9:30 AM ET (Unix: today 13:30 UTC)
+  if (!preBars?.length) return null;
+  const todayEt = new Date();
+  const marketOpenUtc = new Date();
+  marketOpenUtc.setUTCHours(13, 30, 0, 0); // 9:30 AM ET = 13:30 UTC
+  const preMarketBars = preBars.filter(b => b.timestamp * 1000 < marketOpenUtc.getTime());
+  if (!preMarketBars.length) return null;
+
+  const preHigh = Math.max(...preMarketBars.map(b => b.high));
+  const preLow  = Math.min(...preMarketBars.map(b => b.low));
+
+  // Yesterday's high/low from daily bars
+  if (!dailyBars?.length || dailyBars.length < 2) return null;
+  const todayDateStr = todayEt.toISOString().slice(0, 10).replace(/-/g, '');
+  const yesterday = dailyBars.filter(b => b.date < todayDateStr).at(-1);
+  if (!yesterday) return null;
+
+  const ntzTop    = Math.max(preHigh, yesterday.high);
+  const ntzBottom = Math.min(preLow,  yesterday.low);
+
+  return { ntzTop, ntzBottom };
+}
+
+/**
+ * Calculate the ORB (Opening Range Breakout) for a ticker.
+ * ORB = high and low of the first 15 minutes of market open (9:30–9:45 AM ET).
+ * Returns null if not enough bars.
+ */
+async function fetchOrb(ticker: string): Promise<{ orbHigh: number; orbLow: number } | null> {
+  const bars = await fetchIntradayBars(ticker, '5m', '1d', false);
+  if (!bars?.length) return null;
+
+  // 9:30–9:45 AM ET = 13:30–13:45 UTC
+  const orbStart = new Date();
+  orbStart.setUTCHours(13, 30, 0, 0);
+  const orbEnd = new Date();
+  orbEnd.setUTCHours(13, 45, 0, 0);
+
+  const orbBars = bars.filter(b => {
+    const ts = b.timestamp * 1000;
+    return ts >= orbStart.getTime() && ts < orbEnd.getTime();
+  });
+  if (orbBars.length < 2) return null; // need at least 2 5-min bars (9:30 and 9:35)
+
+  return {
+    orbHigh: Math.max(...orbBars.map(b => b.high)),
+    orbLow:  Math.min(...orbBars.map(b => b.low)),
+  };
+}
+
+/**
+ * Detect ORB breakout + retest setup on 5-min bars.
+ *
+ * Returns direction ('C' for calls if broke above, 'P' for puts if broke below)
+ * and whether the current price is retesting the ORB level with low volume.
+ *
+ * Kay's "sexy ORB" rule:
+ *  1. Wait for 2 independent candles to fully close above/below ORB (no part touching the line)
+ *  2. Then price comes back and retests the ORB level
+ *  3. Retest candle volume < breakout candle volume (otherwise it's a trap)
+ *  4. Enter on the NEXT candle after the retest
+ */
+function detectOrbSetup(
+  bars: IntradayBar[],
+  orb: { orbHigh: number; orbLow: number },
+  currentPrice: number,
+): { direction: 'C' | 'P'; breakoutVol: number; retestVol: number } | null {
+  // Only look at bars after ORB formation (after 9:45 AM ET = timestamp > 13:45 UTC)
+  const orbEndUtc = new Date();
+  orbEndUtc.setUTCHours(13, 45, 0, 0);
+  const postOrbBars = bars.filter(b => b.timestamp * 1000 >= orbEndUtc.getTime());
+  if (postOrbBars.length < 3) return null;
+
+  // Scan for 2 independent candles fully closed above orbHigh
+  for (let i = 0; i <= postOrbBars.length - 3; i++) {
+    const b1 = postOrbBars[i];
+    const b2 = postOrbBars[i + 1];
+    const b3 = postOrbBars[i + 2]; // potential retest candle
+
+    // ── Bullish: 2 candles fully above orbHigh, then retest from above ──
+    if (b1.low > orb.orbHigh && b2.low > orb.orbHigh) {
+      // b3 is the retest: its low touches near orbHigh
+      const isRetest = b3.low <= orb.orbHigh + ORB_RETEST_BUFFER && b3.close > orb.orbHigh - ORB_RETEST_BUFFER;
+      if (isRetest) {
+        const breakoutVol = Math.max(b1.volume, b2.volume);
+        if (b3.volume < breakoutVol && currentPrice > orb.orbHigh - ORB_RETEST_BUFFER) {
+          return { direction: 'C', breakoutVol, retestVol: b3.volume };
+        }
+      }
+    }
+
+    // ── Bearish: 2 candles fully below orbLow, then retest from below ──
+    if (b1.high < orb.orbLow && b2.high < orb.orbLow) {
+      const isRetest = b3.high >= orb.orbLow - ORB_RETEST_BUFFER && b3.close < orb.orbLow + ORB_RETEST_BUFFER;
+      if (isRetest) {
+        const breakoutVol = Math.max(b1.volume, b2.volume);
+        if (b3.volume < breakoutVol && currentPrice < orb.orbLow + ORB_RETEST_BUFFER) {
+          return { direction: 'P', breakoutVol, retestVol: b3.volume };
+        }
+      }
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Compute 200-period SMA from 5-min bars.
+ * Returns 'C' if price above SMA (calls), 'P' if below (puts), null if chopping around it.
+ */
+function get5mSmaDirection(bars: IntradayBar[], currentPrice: number): 'C' | 'P' | null {
+  if (bars.length < ORB_SMA200_PERIOD) return null;
+  const closes = bars.map(b => b.close);
+  const sum = closes.slice(-ORB_SMA200_PERIOD).reduce((a, b) => a + b, 0);
+  const sma200 = sum / ORB_SMA200_PERIOD;
+  const distPct = Math.abs(currentPrice - sma200) / sma200 * 100;
+  if (distPct < 0.3) return null; // within 0.3% = chopping, no edge
+  return currentPrice > sma200 ? 'C' : 'P';
+}
 
 /** Return nearest weekly Friday expiry that is at least 1 day away, as YYYYMMDD. */
 function getNearestWeeklyExpiry(): string {
@@ -63,11 +200,19 @@ function getNearestWeeklyExpiry(): string {
  */
 export async function runOptionScalpScan(): Promise<void> {
   const sb = getSupabase();
-
-  // 90-minute rule: no new entries after 11:30 AM ET
   const nowET = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }));
-  if (nowET.getHours() > LAST_ENTRY_HOUR_ET || (nowET.getHours() === LAST_ENTRY_HOUR_ET && nowET.getMinutes() >= LAST_ENTRY_MIN_ET)) {
-    console.log('[Options Scalp] Past 11:30 AM ET — no new entries (90-min rule)');
+  const etHour = nowET.getHours();
+  const etMin  = nowET.getMinutes();
+
+  // Wait for ORB to form — no entries before 9:45 AM ET
+  if (etHour < ORB_END_HOUR_ET || (etHour === ORB_END_HOUR_ET && etMin < ORB_END_MIN_ET)) {
+    console.log('[Options Scalp] Before 9:45 AM ET — waiting for ORB to form');
+    return;
+  }
+
+  // 90-minute rule: no new entries after 11:00 AM ET
+  if (etHour > LAST_ENTRY_HOUR_ET || (etHour === LAST_ENTRY_HOUR_ET && etMin >= LAST_ENTRY_MIN_ET)) {
+    console.log('[Options Scalp] Past 11:00 AM ET — no new entries (90-min rule)');
     return;
   }
 
@@ -118,25 +263,57 @@ export async function runOptionScalpScan(): Promise<void> {
       .gte('opened_at', todayStart.toISOString());
     if (existing?.length) continue;
 
-    // Get quote — need open price to measure intraday move
-    const q = await fetchQuote(ticker);
-    if (!q?.price || !q?.open || q.open === 0) continue;
-
+    // ── Get quote + 5-min bars ───────────────────────────────────────────────
+    const [q, bars5m] = await Promise.all([
+      fetchQuote(ticker),
+      fetchIntradayBars(ticker, '5m', '2d'),  // 2d = enough history for 200 SMA (200 × 5min ≈ 2.5 sessions)
+    ]);
+    if (!q?.price || !bars5m?.length) continue;
     const price = q.price;
-    const openPrice = q.open;
-    const intradayMovePct = ((price - openPrice) / openPrice) * 100;
 
-    if (Math.abs(intradayMovePct) < INTRADAY_MOVE_MIN_PCT) {
-      console.log(`[Options Scalp] ${ticker}: move ${intradayMovePct.toFixed(1)}% — below threshold, skipping`);
+    // ── 200 SMA direction filter ─────────────────────────────────────────────
+    const smaDirection = get5mSmaDirection(bars5m, price);
+    if (smaDirection === null) {
+      console.log(`[Options Scalp] ${ticker}: price chopping around 200 SMA — no edge, skipping`);
       continue;
     }
 
-    const signal = intradayMovePct > 0 ? 'BUY' : 'SELL';
-    const right   = signal === 'BUY' ? 'C' : 'P';
+    // ── NTZ filter ───────────────────────────────────────────────────────────
+    const ntz = await fetchNtz(ticker);
+    if (ntz) {
+      const insideNtz = price > ntz.ntzBottom && price < ntz.ntzTop;
+      if (insideNtz) {
+        console.log(`[Options Scalp] ${ticker}: price $${price.toFixed(2)} inside NTZ ($${ntz.ntzBottom.toFixed(2)}–$${ntz.ntzTop.toFixed(2)}) — skipping`);
+        continue;
+      }
+    }
 
-    console.log(`[Options Scalp] ${ticker}: ${intradayMovePct.toFixed(1)}% intraday → ${signal === 'BUY' ? 'CALL' : 'PUT'}`);
+    // ── ORB calculation ──────────────────────────────────────────────────────
+    const orb = await fetchOrb(ticker);
+    if (!orb) {
+      console.log(`[Options Scalp] ${ticker}: ORB not available — skipping`);
+      continue;
+    }
 
-    // Find ATM strike (kaycapitals rule: ATM, round strike, real bid)
+    // ── Detect ORB breakout + retest ─────────────────────────────────────────
+    const setup = detectOrbSetup(bars5m, orb, price);
+    if (!setup) {
+      console.log(`[Options Scalp] ${ticker}: no valid ORB retest setup (ORB $${orb.orbLow.toFixed(2)}–$${orb.orbHigh.toFixed(2)})`);
+      continue;
+    }
+
+    // ── Direction agreement: SMA must agree with ORB setup ──────────────────
+    if (setup.direction !== smaDirection) {
+      console.log(`[Options Scalp] ${ticker}: ORB says ${setup.direction} but 200 SMA says ${smaDirection} — conflicting, skipping`);
+      continue;
+    }
+
+    const right  = setup.direction;
+    const signal = right === 'C' ? 'BUY' : 'SELL';
+
+    console.log(`[Options Scalp] ${ticker}: ORB retest setup — ${right === 'C' ? 'CALL' : 'PUT'} | breakout vol ${setup.breakoutVol} vs retest vol ${setup.retestVol} | price $${price.toFixed(2)}`);
+
+    // ── Find ATM strike ──────────────────────────────────────────────────────
     const atm = await findAtmStrike(ticker, right, price, expiry);
     if (!atm) {
       console.log(`[Options Scalp] ${ticker}: no ATM strike found`);
@@ -153,6 +330,8 @@ export async function runOptionScalpScan(): Promise<void> {
       console.log(`[Options Scalp] ${ticker}: premium $${premiumCost.toFixed(0)} > cap $${MAX_PREMIUM_PER_TRADE} — skipping`);
       continue;
     }
+
+    const intradayMovePct = q.open ? ((price - q.open) / q.open) * 100 : 0;
 
     // Execute
     const ok = await executeScalp({
@@ -204,7 +383,7 @@ export async function runVwapRetestScalpScan(): Promise<void> {
   const etMin  = nowET.getMinutes();
   if (etHour < VWAP_RELIABLE_HOUR_ET) return;
   if (etHour > LAST_ENTRY_HOUR_ET || (etHour === LAST_ENTRY_HOUR_ET && etMin >= LAST_ENTRY_MIN_ET)) {
-    console.log('[VWAP Scalp] Past 11:30 AM ET — no new entries (90-min rule)');
+    console.log('[VWAP Scalp] Past 11:00 AM ET — no new entries (90-min rule)');
     return;
   }
 

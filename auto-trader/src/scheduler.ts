@@ -586,9 +586,11 @@ export function startScheduler(): void {
   }, { timezone: 'America/New_York' });
   log('Credit spread management: every 30 min, Mon-Fri 10-4 PM ET');
 
-  // Options Scalp scan — 10:00 AM and 11:00 AM ET (after early volatility settles).
-  // Buys ATM call/put when a HIGH_VOL ticker has moved >1.5% from open.
-  cron.schedule('0 10,11 * * 1-5', async () => {
+  // Options Scalp scan — every 5 min from 9:45 AM to 11:00 AM ET.
+  // Runs frequently to catch ORB retest windows (retests last only 5-10 min).
+  // Internal guards in runOptionScalpScan() enforce the 9:45–11:00 window and
+  // skip the scan when ORB hasn't formed yet or daily cap is reached.
+  cron.schedule('*/5 9-10 * * 1-5', async () => {
     try {
       const { runOptionScalpScan } = await import('./lib/options-scalp.js');
       await runOptionScalpScan();
@@ -596,7 +598,7 @@ export function startScheduler(): void {
       console.error('[Scheduler] Options scalp scan error:', err instanceof Error ? err.message : err);
     }
   }, { timezone: 'America/New_York' });
-  log('Options scalp scan: 10:00 AM and 11:00 AM ET, Mon-Fri');
+  log('Options scalp scan: every 5 min, 9:45–11:00 AM ET, Mon-Fri');
 
   // Options Scalp position management + VWAP retest scan — every 15 min during market hours.
   // Management: checks profit target (100%) and stop loss (50%).

@@ -121,9 +121,10 @@ export async function fetchIntradayBars(
   symbol: string,
   interval: '1m' | '2m' | '5m' | '15m' = '5m',
   range: '1d' | '2d' = '1d',
+  includePrePost = false,
 ): Promise<IntradayBar[] | null> {
   try {
-    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=${range}&interval=${interval}&includePrePost=false`;
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=${range}&interval=${interval}&includePrePost=${includePrePost}`;
     const res = await fetch(url, {
       headers: YAHOO_HEADERS,
       signal: AbortSignal.timeout(TIMEOUT_MS),
