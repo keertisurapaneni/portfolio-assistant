@@ -1240,6 +1240,15 @@ function SpreadCard({ spread, closed }: { spread: CreditSpreadPosition; closed?:
           {spread.scanner_reason}
         </p>
       )}
+
+      {spread.opened_at && (
+        <p className="mt-1.5 text-[10px] text-[hsl(var(--muted-foreground))]">
+          Placed {new Date(spread.opened_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })} · {new Date(spread.opened_at).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true })}
+          {closed && spread.closed_at && (
+            <> · Closed {new Date(spread.closed_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}</>
+          )}
+        </p>
+      )}
     </div>
   );
 }
