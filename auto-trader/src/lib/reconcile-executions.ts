@@ -227,6 +227,71 @@ export async function runEndOfDayReconciliation(accountType: AccountType = 'pape
     }
   }
 
+  // 3b. Patch zero-pnl ghost records (ib_fill_auto_created) using IB execution realizedPnl.
+  //
+  // Ghost records are created by the DB trigger when a SELL fill arrives but no matching
+  // open paper_trade exists. The trigger inserts pnl = COALESCE(realized_pnl, 0) — if the
+  // IB commission report arrives before the trigger fires, pnl is correct. If it arrives
+  // after (or never arrives), the ghost is stuck at pnl=0.
+  //
+  // The main loop above can't fix this because it only looks up by ib_order_id /
+  // ib_tp_order_id / ib_sl_order_id — ghosts only have ib_close_order_id.
+  //
+  // Safety constraints:
+  //   - Only touch records with close_reason='ib_fill_auto_created' (never touch normal trades)
+  //   - Only patch when pnl=0 (trigger already set a non-zero value → leave it alone)
+  //   - Only patch when exec.realizedPnl is available (never guess from fill price)
+  {
+    const ghostTrades = trades.filter(t =>
+      t.close_reason === 'ib_fill_auto_created' &&
+      t.pnl === 0 &&
+      t.ib_close_order_id != null,
+    );
+
+    if (ghostTrades.length > 0) {
+      log(`Checking ${ghostTrades.length} zero-pnl ghost record(s) for IB realizedPnl...`);
+
+      // Group executions by orderId for O(1) lookup
+      const execsByOrderId = new Map<number, IBExecution[]>();
+      for (const exec of executions) {
+        const bucket = execsByOrderId.get(exec.orderId) ?? [];
+        bucket.push(exec);
+        execsByOrderId.set(exec.orderId, bucket);
+      }
+
+      for (const ghost of ghostTrades) {
+        const closeOrderId = parseInt(ghost.ib_close_order_id!, 10);
+        const matchingExecs = execsByOrderId.get(closeOrderId);
+
+        if (!matchingExecs || matchingExecs.length === 0) {
+          log(`Ghost ${ghost.ticker} (closeOrder ${closeOrderId}): no matching IB execution — cannot patch`);
+          continue;
+        }
+
+        // Sum realizedPnl across all partial-fill executions for this order
+        const rpnls = matchingExecs
+          .map(e => e.realizedPnl)
+          .filter((p): p is number => p != null);
+
+        if (rpnls.length === 0) {
+          log(`Ghost ${ghost.ticker} (closeOrder ${closeOrderId}): commission report not available — pnl stays 0`);
+          continue;
+        }
+
+        const totalPnl = parseFloat(rpnls.reduce((s, p) => s + p, 0).toFixed(2));
+
+        await sb.from(tTable).update({
+          pnl:        totalPnl,
+          pnl_source: 'ib_realized_pnl',
+        }).eq('id', ghost.id);
+
+        corrected++;
+        correctionDetails.push(`${ghost.ticker}: ghost pnl 0 → ${totalPnl} [IB realized, closeOrder ${closeOrderId}]`);
+        log(`Patched ghost ${ghost.ticker} (closeOrder ${closeOrderId}): pnl 0 → $${totalPnl.toFixed(2)}`);
+      }
+    }
+  }
+
   // 4. Check for trades with IB orders but no matching execution (potential issues)
   let flagged = 0;
   for (const trade of trades) {

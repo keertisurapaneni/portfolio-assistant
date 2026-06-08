@@ -84,6 +84,7 @@ export interface PaperTrade {
   ib_parent_order_id: string | null;
   ib_tp_order_id: string | null;
   ib_sl_order_id: string | null;
+  ib_close_order_id: string | null;
   status: TradeStatus;
   fill_price: number | null;
   close_price: number | null;
