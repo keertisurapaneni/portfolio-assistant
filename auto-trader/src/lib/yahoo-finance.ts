@@ -98,6 +98,65 @@ export async function fetchOHLCV(symbol: string, days: number): Promise<DailyBar
   return bars.slice(-days);
 }
 
+// ── Intraday candles ─────────────────────────────────────────────────────────
+
+export interface IntradayBar {
+  timestamp: number;  // Unix seconds
+  open:  number;
+  high:  number;
+  low:   number;
+  close: number;
+  volume: number;
+}
+
+/**
+ * Fetch intraday OHLCV bars from Yahoo Finance v8 chart API.
+ * Returns oldest-first (chronological). Never throws — returns null on failure.
+ *
+ * @param symbol    Ticker symbol (e.g. "SPY")
+ * @param interval  Bar size: "1m" | "2m" | "5m" | "15m"
+ * @param range     Lookback: "1d" (today only) | "2d" (two sessions)
+ */
+export async function fetchIntradayBars(
+  symbol: string,
+  interval: '1m' | '2m' | '5m' | '15m' = '5m',
+  range: '1d' | '2d' = '1d',
+): Promise<IntradayBar[] | null> {
+  try {
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=${range}&interval=${interval}&includePrePost=false`;
+    const res = await fetch(url, {
+      headers: YAHOO_HEADERS,
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    });
+    if (!res.ok) return null;
+
+    const data = await res.json() as Record<string, unknown>;
+    const result = (data?.chart as Record<string, unknown>)?.result as Record<string, unknown>[] | undefined;
+    if (!result?.[0]) return null;
+
+    const r = result[0];
+    const timestamps = r.timestamp as number[] | undefined;
+    if (!timestamps?.length) return null;
+
+    const q = ((r.indicators as Record<string, unknown>)?.quote as Record<string, unknown>[])?.[0] ?? {};
+    const opens   = (q.open   as (number | null)[]) ?? [];
+    const highs   = (q.high   as (number | null)[]) ?? [];
+    const lows    = (q.low    as (number | null)[]) ?? [];
+    const closes  = (q.close  as (number | null)[]) ?? [];
+    const volumes = (q.volume as (number | null)[]) ?? [];
+
+    const bars: IntradayBar[] = [];
+    for (let i = 0; i < timestamps.length; i++) {
+      const o = opens[i], h = highs[i], l = lows[i], c = closes[i];
+      if (o == null || h == null || l == null || c == null) continue;
+      bars.push({ timestamp: timestamps[i], open: o, high: h, low: l, close: c, volume: volumes[i] ?? 0 });
+    }
+    return bars; // oldest-first
+  } catch {
+    return null;
+  }
+}
+
 // ── SMA helper ───────────────────────────────────────────────────────────────
 
 /** Compute the N-period simple moving average of the last N values. */

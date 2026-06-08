@@ -21,7 +21,7 @@
 import { getSupabase, createAutoTradeEvent } from './supabase.js';
 import { isConnected, placeOptionsOrder, cancelOrder, getDefaultAccount } from '../ib-connection.js';
 import { findAtmStrike, getOptionGreeksForContract } from './options-chain.js';
-import { fetchQuote } from './yahoo-finance.js';
+import { fetchQuote, fetchIntradayBars, type IntradayBar } from './yahoo-finance.js';
 import { detectVwapReclaim, VWAP_RELIABLE_HOUR_ET } from './vwap.js';
 
 // ── Constants ────────────────────────────────────────────
@@ -439,6 +439,51 @@ async function executeScalp(p: ScalpParams): Promise<boolean> {
   return true;
 }
 
+// ── Runner Stop Trailing ──────────────────────────────────
+
+/**
+ * Trail the runner stop based on stock structure (higher lows for calls,
+ * lower highs for puts) — Kay Capitals: "base your stop on the stock price,
+ * not the option price. Every time a new higher low forms, bring your stop up."
+ *
+ * Uses the last N completed 5-min bars (excludes the current incomplete bar).
+ * Returns the new stop price if a better level is found, or null if not.
+ *
+ * Minimum improvement required ($MIN_TRAIL_MOVE) prevents stop from creeping
+ * on noise — the new level must be meaningfully better than the current stop.
+ */
+const MIN_TRAIL_MOVE = 0.15; // stock must move at least $0.15 to trail stop
+
+function trailRunnerStop(
+  bars: IntradayBar[],
+  currentStop: number,
+  right: 'C' | 'P',
+): number | null {
+  // Exclude last bar — it may still be forming (incomplete candle)
+  const completed = bars.slice(0, -1);
+  if (completed.length < 3) return null;
+
+  // Scan backwards to find the most recent confirmed structure point
+  for (let i = completed.length - 1; i >= 1; i--) {
+    if (right === 'C') {
+      // For calls: trail stop up to higher lows
+      const thisLow = completed[i].low;
+      const prevLow = completed[i - 1].low;
+      if (thisLow > prevLow && thisLow > currentStop + MIN_TRAIL_MOVE) {
+        return thisLow;
+      }
+    } else {
+      // For puts: trail stop down to lower highs
+      const thisHigh = completed[i].high;
+      const prevHigh = completed[i - 1].high;
+      if (thisHigh < prevHigh && thisHigh < currentStop - MIN_TRAIL_MOVE) {
+        return thisHigh;
+      }
+    }
+  }
+  return null;
+}
+
 // ── Position Management ───────────────────────────────────
 
 /**
@@ -505,6 +550,62 @@ export async function manageScalpPositions(): Promise<void> {
 
     const profitPct = ((currentPremium - premiumPaid) / premiumPaid) * 100;
 
+    // ── Runner trailing stop (stock-price based, PARTIAL positions only) ──
+    // Kay Capitals: "trail your stop based on higher highs and higher lows,
+    // not the option premium."
+    if (isPartiallyExited) {
+      const runnerStop = (meta.runner_stop_price as number | undefined);
+
+      if (runnerStop == null) {
+        // First cycle after partial: initialize runner stop to current stock price
+        // (with a tiny buffer so it doesn't exit immediately on noise)
+        const initialStop = right === 'C'
+          ? q.price * 0.998   // 0.2% below current for calls
+          : q.price * 1.002;  // 0.2% above current for puts
+        await getSupabase().from('paper_trades').update({
+          metadata: { ...meta, runner_stop_price: initialStop },
+        }).eq('id', pos.id);
+        console.log(`[Options Scalp] ${pos.ticker} — runner stop initialized @ $${initialStop.toFixed(2)} (stock $${q.price.toFixed(2)})`);
+
+      } else {
+        // Try to trail the stop based on recent 5-min higher lows / lower highs
+        const intradayBars = await fetchIntradayBars(pos.ticker, '5m', '1d');
+        if (intradayBars && intradayBars.length >= 4) {
+          const newStop = trailRunnerStop(intradayBars, runnerStop, right);
+          if (newStop !== null) {
+            await getSupabase().from('paper_trades').update({
+              metadata: { ...meta, runner_stop_price: newStop },
+            }).eq('id', pos.id);
+            console.log(`[Options Scalp] ${pos.ticker} — runner stop trailed: $${runnerStop.toFixed(2)} → $${newStop.toFixed(2)}`);
+            meta.runner_stop_price = newStop; // use updated value for exit check below
+          }
+        }
+
+        // Check if stock price has crossed the runner stop
+        const activeStop = (meta.runner_stop_price as number | undefined) ?? runnerStop;
+        const stopHit = right === 'C'
+          ? q.price <= activeStop
+          : q.price >= activeStop;
+
+        if (stopHit) {
+          console.log(`[Options Scalp] ${pos.ticker} — runner stock stop hit (stock $${q.price.toFixed(2)} ${right === 'C' ? '<=' : '>='} stop $${activeStop.toFixed(2)})`);
+          await closeScalpPosition(pos.id, pos.ticker, right, pos.option_strike, pos.option_expiry,
+            currentPremium, premiumPaid, 'runner_stop',
+            { contractsToSell: contractsRemaining, existingMeta: meta });
+          continue;
+        }
+
+        // Fallback: break-even option premium stop (in case stock stop isn't yet set or is stale)
+        if (currentPremium <= breakEvenPremium) {
+          console.log(`[Options Scalp] ${pos.ticker} — runner break-even stop @ $${currentPremium.toFixed(2)} (entry $${breakEvenPremium.toFixed(2)})`);
+          await closeScalpPosition(pos.id, pos.ticker, right, pos.option_strike, pos.option_expiry,
+            currentPremium, premiumPaid, 'break_even_stop',
+            { contractsToSell: contractsRemaining, existingMeta: meta });
+          continue;
+        }
+      }
+    }
+
     if (!isPartiallyExited && currentPremium >= premiumPaid * PARTIAL_TARGET_MULT) {
       // First target (+50%): sell 1 contract, set break-even stop on runner
       console.log(`[Options Scalp] ${pos.ticker} — partial target hit (+${profitPct.toFixed(0)}%) @ $${currentPremium.toFixed(2)} — selling 1, runner to break-even`);
@@ -517,13 +618,6 @@ export async function manageScalpPositions(): Promise<void> {
       console.log(`[Options Scalp] ${pos.ticker} — profit target hit (+${profitPct.toFixed(0)}%) @ $${currentPremium.toFixed(2)}`);
       await closeScalpPosition(pos.id, pos.ticker, right, pos.option_strike, pos.option_expiry,
         currentPremium, premiumPaid, 'profit_target',
-        { contractsToSell: contractsRemaining, existingMeta: meta });
-
-    } else if (isPartiallyExited && currentPremium <= breakEvenPremium) {
-      // Runner hit break-even stop — exit at entry price, no loss on runner
-      console.log(`[Options Scalp] ${pos.ticker} — runner break-even stop @ $${currentPremium.toFixed(2)} (entry $${breakEvenPremium.toFixed(2)})`);
-      await closeScalpPosition(pos.id, pos.ticker, right, pos.option_strike, pos.option_expiry,
-        currentPremium, premiumPaid, 'break_even_stop',
         { contractsToSell: contractsRemaining, existingMeta: meta });
 
     } else if (!isPartiallyExited && currentPremium <= premiumPaid * STOP_LOSS_MULT) {
