@@ -139,7 +139,7 @@ export function TodayActivityTab({ events, trades, todayTrades, orphanedFills = 
   // Primary data source: todayTrades (from paper_trades, kept accurate by ib_fills trigger).
   // Include all modes — options trades visible via the "Options" filter chip.
   // Fall back to filtering allTrades for backward compatibility.
-  const primaryTrades: PaperTrade[] = (todayTrades ?? trades.filter(t => {
+  const primaryTradesRaw: PaperTrade[] = (todayTrades ?? trades.filter(t => {
     const openedToday = t.opened_at && t.opened_at >= todayISO;
     const closedToday = t.closed_at && t.closed_at >= todayISO;
     return openedToday || closedToday;
@@ -151,6 +151,20 @@ export function TodayActivityTab({ events, trades, todayTrades, orphanedFills = 
     // still excluded.
     return t.close_reason === 'never_filled' && t.opened_at != null && t.opened_at >= todayISO;
   });
+
+  // Deduplicate ib_fill_auto_created ghosts: the trigger races with recordTradeClose and
+  // can create a ghost even when a real paper_trade exists (because insertIbFill fires
+  // before ib_close_order_id is written). Remove ghost records when a non-ghost record
+  // already exists for the same ticker. Genuine ghosts (no real trade for that ticker)
+  // are kept so no execution is ever invisible.
+  const tickersWithRealTrades = new Set(
+    primaryTradesRaw
+      .filter(t => t.close_reason !== 'ib_fill_auto_created')
+      .map(t => t.ticker)
+  );
+  const primaryTrades: PaperTrade[] = primaryTradesRaw.filter(t =>
+    t.close_reason !== 'ib_fill_auto_created' || !tickersWithRealTrades.has(t.ticker)
+  );
 
   // Legacy lookup: events for system-only messages (reconcile warnings, orphan alerts)
   const tradesByTicker = new Map<string, PaperTrade[]>();
@@ -552,11 +566,13 @@ export function TodayActivityTab({ events, trades, todayTrades, orphanedFills = 
 
               const acctType = (trade as PaperTrade & { _accountType?: 'paper' | 'live' })._accountType;
 
-              // Stale trades: opened on a prior day but closed today by stale_eod_close.
+              // Stale trades: opened on a prior day but closed/reconciled today.
               // Show their original open date so the user knows this isn't a fresh trade.
+              // Use opened_at < today (not close_reason) because IBLongReconcile can clear
+              // close_reason when it reopens a stale position, causing the final close to
+              // land with close_reason='eod_close' instead of 'stale_eod_close'.
               const todayMidnight = new Date(); todayMidnight.setHours(0, 0, 0, 0);
-              const isStaleClose = trade.close_reason === 'stale_eod_close'
-                && trade.opened_at != null
+              const isStaleClose = trade.opened_at != null
                 && new Date(trade.opened_at) < todayMidnight;
               const staleOpenDate = isStaleClose
                 ? new Date(trade.opened_at!).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
