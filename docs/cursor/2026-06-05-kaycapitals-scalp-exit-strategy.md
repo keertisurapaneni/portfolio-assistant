@@ -1,239 +1,250 @@
-# Kay Capitals Options Scalp — Exit Strategy Design
+# Kay Capitals Options Scalp — Strategy & Implementation
 
-**Date:** 2026-06-05  
-**Source:** 3 Kay Capitals YouTube videos (A+ Strategy series)  
-**Context:** Today all 6 scalp positions expired worthless (-$2,559) because the bot held to expiration with no partial exits. This doc captures the correct exit design from the source strategy.
+**Created:** 2026-06-05  
+**Last updated:** 2026-06-07  
+**Sources:** Kay Capitals YouTube — "My Options Strategy Is Boring", "The 3-Step A+ Options Strategy", and 3 additional strategy/walkthrough videos  
 
 ---
 
-## What Kay Capitals Actually Does
+## The Full Kay Capitals Framework
 
-### Contract Selection (we have this right)
-- Kay's rule: buy the **first OTM strike** — the strike just outside current price
-- Never ITM (too expensive, delta already high), never deep OTM (needs too large a move)
-- Goal: catch the option crossing OTM → ITM — that's where intrinsic value jumps
+Everything below is distilled directly from his videos. This is the strategy our bot is designed to implement.
 
-**Practical nuance:** First OTM on 0DTE is aggressive and binary — if the stock doesn't move enough, it goes to zero fast (exactly what happened today). Many experienced scalpers prefer ATM or slightly ITM for better delta, tighter spreads, more reliable fills, and residual value if the move is small.
+### Pre-Market Routine (before 9:30 AM)
 
-Our `findAtmStrike` picks the closest whole-dollar strike to current price — effectively ATM, slightly more conservative than Kay's first OTM. This is acceptable and arguably safer for 0DTE.
+1. **Mark hourly levels** — go to hourly chart, extended hours ON, switch to line chart. Draw 2–3 levels above and 2–3 below current price wherever price clearly "bent" (turned, paused, or rejected) in the last few days. These are **exit zones**, not entry signals. "I use levels to get OUT of a trade."
 
-**The critical constraint regardless of which strike:** 0DTE OTM/ATM contracts **must** have an active exit plan — partial at first level, break-even stop on runner. Holding to expiration is not a valid exit strategy for this contract type. ATM has slightly more residual value at expiry than first OTM, but both go to near-zero if the move doesn't materialize and you hold too long.
+2. **Mark NTZ (No Trading Zone)** — draw a box from:
+   ```
+   NTZ top    = max(pre-market high, yesterday's high)
+   NTZ bottom = min(pre-market low,  yesterday's low)
+   ```
+   No trades while price is inside this box. "Inside NTZ is where beginners get destroyed — false breakouts, trap wicks, algorithm games."
 
-### The 90-Minute Rule
-- Only trade the **first 90 minutes** (9:30–11:00 AM)
-- After 11:00 AM the market gets choppy and traders give profits back
-- Our scanner fires at 10:00 AM and 11:00 AM — borderline acceptable, but VWAP retest scan running until 3 PM is outside his window
+3. **Check news calendar** — only care about market-moving events: CPI, FOMC, PMI, non-farm payrolls, or mega-cap earnings (AAPL, NVDA, TSLA). Set alarms 2 min before any event that falls during the trading window. Everything else is noise.
 
-### Entry Filters (in priority order)
-1. NTZ break — price must break out of (yesterday's high/low + pre-market high/low) box
-2. ORB retest — wait for break of 15-min opening range, then retest with **low volume**
-3. VWAP confluence — price above VWAP = bullish, below = bearish
-4. 200 SMA on 5-min chart — confirms direction
-5. **Volume filter on retest** — retest candle volume must be LOWER than breakout candle; high retest volume = trap, skip or reverse
+---
+
+### Trading Window and Timeframes
+
+| Time | Chart | What you're doing |
+|---|---|---|
+| Before 9:30 | Hourly | Mark levels + NTZ |
+| 9:30–9:45 | 5-min | Wait. Let ORB form. Do nothing. |
+| 9:45–10:00 | 2-min | Look for ORB breakout + retest |
+| 10:00–11:00 | 5-min | Continue watching. Last entries by 11:00 AM. |
+| After 11:00 | 10-min | Wind down. Market gets choppy. |
+
+**Hard rule: no new entries after 11:00 AM.** The first 90 minutes gives the cleanest moves. After that, price chops and most traders give their profits back.
+
+---
+
+### The 3-Step Entry Framework
+
+All three must pass before entering.
+
+#### Step 1 — NTZ Break (price must be outside the box)
+
+Price must have fully broken out of the NTZ before you even look for a trade. If SPY is ranging between yesterday's high and low, there is no trade. Wait for a breakout.
+
+#### Step 2 — ORB Breakout + Retest (the "sexy" version)
+
+**ORB** = first 15-minute range (9:30–9:45 AM, 3 × 5-min candles).
+
+Kay's exact rule:
+1. Wait for **2 independent 5-min candles** to **fully close** above ORB high (for calls) or below ORB low (for puts). No part of either candle can touch the ORB line.
+2. Wait for price to come back and **retest** the ORB level.
+3. **Retest candle volume must be lower than the breakout candle volume.** High retest volume = trap or reversal → skip.
+4. Enter on the **NEXT candle after the retest** — not on the retest candle itself. He repeats this 4+ times in his videos.
+5. Stop loss goes on the **other side of the ORB** (not a fixed %).
+
+The same breakout + retest logic works for:
+- ORB high/low
+- Pre-market high/low  
+- NTZ top/bottom
+- Any hourly level
+
+#### Step 3 — Direction Filter
+
+- **200 SMA on 5-min chart**: price above = calls only, price below = puts only, price chopping around it = no trade
+- Both the ORB setup direction and the 200 SMA must agree before entering
+
+#### Confluence Rule
+
+> "You never want to take a trade by independence. One reason = gambling. You want confluence — multiple reasons aligning at the same spot."
+
+Ideal confluence: ORB level + Fibonacci (0.236 or 0.382 retracement) + 8 EMA bounce, all at the same price. Our bot currently checks ORB + 200 SMA which is a solid starting point.
+
+---
 
 ### Exit Strategy — "Negative Risk Management"
 
-This is the piece our bot is missing entirely.
+This is the piece that separates Kay's results from average traders. The goal is to trade the runner with **zero risk** after the first partial.
 
-**With N contracts (he uses 10, we use 1–2):**
+**With 2 contracts (our minimum):**
 
-| Step | Action |
-|------|--------|
-| Entry | Buy N contracts at first OTM strike |
-| First level hit | Sell 50% (N/2), move stop on remainder to **break-even** |
-| Second level hit | Sell 50% of remainder, stop still break-even |
-| Third level hit | Sell 50% of remainder again |
-| Runner | Last contract(s) run to next level with zero risk (stop = break-even) |
-| EOD cutoff | Hard close all remaining contracts before value disappears |
-
-**Key principle: break-even stop after first partial**  
-Once first target is hit and half is sold, the worst case on remaining contracts is break-even. This is why his losses stay small and winners get large — he's never giving back more than the original stop after the first exit.
-
-**Levels are exits, not entries**  
-"People use levels to get into a trade. I use levels to get out of a trade." — every hourly level marked pre-market becomes a profit-taking zone, not an entry signal.
-
-**Never depend on expiration**  
-He closes everything during the move. EOD is a rare safety net, not the primary exit. Options only have value while the stock is moving — once momentum stalls at a level, he's out.
-
----
-
-## What Our Bot Does Today (broken)
-
-1. Buys 1 contract at ATM strike ✓
-2. Waits for 2× premium (profit target) or 0.5× premium (stop loss)
-3. If neither is hit → holds all the way to EOD
-4. EOD close tries to get IB Greeks → if IB disconnected, marks as $0 and closes in DB without placing sell order
-5. Option expires worthless
-
-**Result today:** 3 positions were ITM at expiry (NVDL +$757, IWM +$935, SOFI +$199) but the bot never took profits during the move. All expired at $0 because EOD close failed due to IB disconnect during auto-trader restart.
-
----
-
-## What the Bot Should Do (target design)
-
-### Contract sizing
-Buy **2 contracts** instead of 1. This is the minimum needed to execute the partial exit strategy — you can't split 1 contract.
-
-### Exit sequence
 ```
-Entry: BUY 2 contracts @ ATM strike
+Entry: BUY 2 contracts at ATM strike
 
 First level hit (+50% premium):
   → SELL 1 contract (lock in profit)
-  → Move stop on contract #2 to break-even (entry price)
-  → Record partial close in DB, IB order #1
+  → Move stop on contract #2 to BREAK-EVEN (entry price)
+  → Worst case on runner: break-even. No loss possible.
 
-Second level hit (+100% premium):
+Runner management:
+  → Trail stop up based on STOCK STRUCTURE (not option price)
+  → Every time stock makes a higher low (calls) or lower high (puts):
+     update stop to that level
+  → Exit runner when stock breaks below the most recent higher low
+
+Second target (+100% or next hourly level):
   → SELL contract #2
-  → Record full close in DB, IB order #2
+  → Book the profit
 
 EOD hard close (3:45 PM):
-  → If any contracts still open: SELL at market/mid
-  → This must place a real IB order, not just update DB
-  → Only mark CLOSED in DB after fill confirmation
+  → Close any remaining contracts with a real IB sell order
 ```
 
-### EOD close fix (critical)
-- `closeAllScalpPositionsEod()` exists but is **never called** (dead function)
-- When IB Greeks return null (disconnected), `null?.mid ?? 0` = 0 → incorrectly assumes worthless
-- Fix: treat null separately from $0 — null means IB unavailable, leave FILLED; $0 means genuinely worthless
-
-### Volume filter (entry improvement)
-Before firing a VWAP retest scalp, compare:
-- Retest candle volume vs. breakout candle volume
-- If retest volume > breakout volume → skip (or reverse direction)
-- This would filter false signals and reduce the number of positions held to EOD
+**"Levels are profit-taking areas, not entry signals."**  
+Pre-market hourly levels become the zones where he scales out. He trims into strength, not weakness.
 
 ---
 
-## Why Today's -$2,559 Loss Happened
+### Sizing — Bell Curve
 
-Root cause chain:
+- First trade of the day: **small**
+- If market is clean and you're in rhythm: size up
+- If red or unsure: stay small or stop entirely
+- Never go max size on the first trade
+- **Never trade 1 contract** — you can't execute the partial exit strategy with 1. Minimum 2.
+
+### Walk Away Rule
+
+> "If you make money in the first 30 minutes, you do not have to stay around. Cash those chips in. The money is not yours until you close the broker."
+
+He made $11K in 26 minutes on two trades and called it a day. Consistency > trying to have one giant day. One huge day leads to overconfidence which leads to blowing the account.
+
+---
+
+## Implementation Status
+
+### Phase 1 — Exit Management ✅ DONE (Jun 5, 2026)
+
+| Change | Status |
+|---|---|
+| 2-contract minimum | ✅ `MAX_CONTRACTS = 2` |
+| Partial exit at +50%: sell 1, runner to break-even | ✅ `PARTIAL_TARGET_MULT = 1.5` |
+| Full close at +100% | ✅ `PROFIT_TARGET_MULT = 2.0` |
+| Stop loss -50% (before first partial only) | ✅ `STOP_LOSS_MULT = 0.5` |
+| Wire `closeAllScalpPositionsEod()` into scheduler | ✅ Runs at 3:45 PM ET |
+| Fix null IB response → no longer marks $0 | ✅ Leaves FILLED if IB unavailable |
+
+### Phase 2 — Runner Trailing Stop ✅ DONE (Jun 7, 2026)
+
+| Change | Status |
+|---|---|
+| `fetchIntradayBars()` with 5-min and 2-min support | ✅ Yahoo Finance v8 API |
+| Initialize `runner_stop_price` in metadata after first partial | ✅ At current stock price ±0.2% |
+| Trail stop on higher lows (calls) / lower highs (puts) | ✅ `trailRunnerStop()` helper |
+| Use 2-min bars for early session (9:30–10:00), 5-min after | ✅ Based on `filled_at` time |
+| Close runner if stock price crosses the trailing stop | ✅ In `manageScalpPositions()` |
+| Break-even premium stop as fallback if bars unavailable | ✅ |
+
+### Phase 3 — ORB + NTZ + 200 SMA Entry Framework ✅ DONE (Jun 7, 2026)
+
+| Change | Status |
+|---|---|
+| No entries before 9:45 AM (let ORB form) | ✅ `ORB_END_HOUR/MIN_ET` guard |
+| Entry cutoff at 11:00 AM (was 11:30) | ✅ `LAST_ENTRY_MIN_ET = 0` |
+| Scan every 5 min (was twice daily) | ✅ `*/5 9-10 * * 1-5` cron |
+| NTZ filter — skip if inside box | ✅ `fetchNtz()` |
+| ORB calculation from 9:30–9:45 bars | ✅ `fetchOrb()` |
+| 2-candle breakout + low-volume retest detection | ✅ `detectOrbSetup()` |
+| 200 SMA on 5-min bars for direction filter | ✅ `get5mSmaDirection()` |
+| Direction agreement required (ORB + SMA must agree) | ✅ |
+| `fetchIntradayBars()` now supports `includePrePost` | ✅ For pre-market H/L |
+
+---
+
+## What Still Differs From Kay's Framework
+
+| Kay's Rule | Our Bot | Gap |
+|---|---|---|
+| Hourly levels as profit-taking zones | Fixed % targets (+50%, +100%) | Exits aren't at real price levels |
+| Bell curve sizing (start small, size up) | Fixed 2 contracts always | No dynamic sizing |
+| Fibonacci 0.236/0.382 as confluence | Not implemented | Lower priority |
+| 8 EMA as confluence | Not implemented | Lower priority |
+| After 11:00 → stop all new entries | ✅ 11:00 AM cutoff | Done |
+| VWAP retest scan also stops at 11:00 AM | ✅ Updated | Done |
+| "Two independent candles" fully outside ORB | ✅ Implemented | Done |
+| Enter on NEXT candle after retest | Partially — 5-min scan frequency means we catch it on the following cycle | Close enough |
+
+---
+
+## Key Code Files
+
+| File | Purpose |
+|---|---|
+| `auto-trader/src/lib/options-scalp.ts` | Core strategy: entry scan, position management, partial exits, runner stops |
+| `auto-trader/src/lib/yahoo-finance.ts` | `fetchIntradayBars()`, `fetchDailyBars()` — data for NTZ, ORB, 200 SMA |
+| `auto-trader/src/lib/options-chain.ts` | `findAtmStrike()` — IB option chain lookup |
+| `auto-trader/src/scheduler.ts` | Cron wiring: scan every 5 min (9:45–11), manage every 15 min, EOD close 3:45 PM |
+
+---
+
+## How the Entry Decision Flow Works (current code)
+
+```
+runOptionScalpScan() — runs every 5 min, 9:45–11:00 AM ET
+
+For each HIGH_VOL watchlist ticker:
+
+  1. Time guard: skip if before 9:45 or after 11:00 AM
+  2. IB connected? If not, skip
+  3. Daily cap reached (2 trades)? If so, stop
+  4. Already in open scalp for this ticker today? Skip
+
+  5. Fetch quote + 5-min bars (2-day range for 200 SMA)
+
+  6. 200 SMA direction check:
+     - Above SMA → calls only
+     - Below SMA → puts only
+     - Within 0.3% (chopping) → skip
+
+  7. NTZ filter:
+     - Fetch pre-market bars (includePrePost=true) → premarket H/L
+     - Fetch daily bars → yesterday H/L
+     - NTZ = max(preHigh, yesterdayHigh) to min(preLow, yesterdayLow)
+     - Price inside NTZ → skip
+
+  8. ORB calculation:
+     - First 15-min bars (9:30–9:45) → ORB high + ORB low
+     - Not enough bars → skip
+
+  9. ORB retest detection (detectOrbSetup):
+     - Find 2 consecutive bars with lows fully above ORB high (or highs below ORB low)
+     - Check if next bar is retesting the ORB level
+     - Check retest volume < breakout volume
+     - No valid setup → skip
+
+  10. Direction agreement: ORB direction must match 200 SMA direction
+
+  11. Find ATM strike → check bid, spread, premium cap
+
+  12. Execute trade (2 contracts)
+```
+
+---
+
+## Why Today's -$2,559 Loss Happened (Jun 5, 2026 post-mortem)
+
+Root cause chain that triggered this entire refactor:
 1. Bot held all 6 positions to EOD (no partial exits during the move)
 2. Auto-trader restarted multiple times → IB connection was unstable at 3:45 PM
-3. `closeAllScalpPositionsEod()` was never wired into the scheduler anyway
-4. `manageScalpPositions` (every 15 min) called `getOptionGreeksForContract` → IB disconnected → returned null → `null?.mid ?? 0` = 0
-5. `closePremium = 0` + `daysToExpiry = 0` → code assumed all options worthless → marked DB CLOSED at $0 without placing IB sell orders
+3. `closeAllScalpPositionsEod()` was never wired into the scheduler (dead code)
+4. `manageScalpPositions` called `getOptionGreeksForContract` → IB disconnected → null → `null?.mid ?? 0` = 0
+5. Code assumed all options worthless → marked DB CLOSED at $0 without placing IB sell orders
 6. IB still held all 7 positions; 3 were ITM but no sell orders ever fired
 7. Options expired, value lost
 
-If partial exits had been taken during the day, most positions would have been closed or at break-even before the EOD failure mode was even reached.
-
----
-
-## Current System vs Kay's Framework
-
-| What the bot does | What Kay's framework does |
-|---|---|
-| Find momentum / VWAP setup | Wait for clean market structure |
-| Buy one ATM option | Enter only after break + retest confirmation |
-| Hold as a single position | Take partial profits at levels |
-| Hope EOD logic closes it | Move stop / manage runners |
-| | Be done early, never rely on expiration |
-
-These are fundamentally different systems. The entries could be decent and still lose money if profits are not harvested. A 0DTE option can go +$300 unrealized → +$0 → -$500 very quickly with no partial exit or stop management.
-
----
-
-## Implementation Plan
-
-### Phase 1 — P0: Fix Accounting and Actual Exits (do first)
-
-Before improving entries, fix the system so it cannot lie about position state.
-
-**Required state model:**
-```
-OPEN → CLOSING_SUBMITTED → PARTIALLY_CLOSED → CLOSED
-                                            → CLOSE_FAILED
-```
-
-- `Submitted sell order ≠ closed trade`
-- `Filled sell order = closed trade`
-- Never calculate final realized P&L until IB confirms fill price
-
-**Required changes:**
-- 2-contract minimum (can't do partials with 1)
-- Partial exit at first target: sell 1, move stop on runner to break-even
-- Let second contract run to next level / trailing stop / time stop
-- Wire `closeAllScalpPositionsEod()` into scheduler — currently dead code
-- EOD close ladder: 3:45 PM limit → 3:50 PM tighten → 3:55 PM aggressive → 3:58 PM marketable limit → 4:00 PM no open 0DTE scalps allowed
-- Mark CLOSED only after IB fill confirmation, not on order submission
-
-### Phase 2 — P1: 90-Minute Rule
-
-Stop entering trades outside the regime Kay describes.
-
-- Entry window: **9:45 AM – 11:00 AM ET** (maybe 11:30 AM on strong trend days)
-- No new entries after 11:30 AM
-- Closing logic can run later, but no new positions in the afternoon
-
-Currently the VWAP scanner runs until 3 PM — well outside his window and in the choppy regime he explicitly warns against.
-
-### Phase 3 — P2: ORB + NTZ + 200 SMA Entry Filters
-
-Add entry-quality filters after exits are fixed (bad exits ruin good entries first).
-
-**For calls — all must be true:**
-- Price > ORB high (15-min opening range)
-- Price > VWAP
-- Price > 200 SMA (5-min chart)
-- NTZ broken (outside yesterday's high/low + pre-market high/low box)
-- Retest candle volume < breakout candle volume
-- Next candle confirms
-
-**For puts — mirror of the above.**
-
-### Phase 4 — P3: Runner Logic (trailing stop on stock structure)
-
-**Source:** Kay Capitals video on holding runners (Jun 7, 2026)
-
-> "Base your stop loss on the stock price, not on the option price. Every time a new higher low forms, bring your stop loss up based on actual market structure."
-
-Currently the break-even stop is static — once set at entry price, it never moves. The real system trails it upward as the stock makes higher lows (for calls) or lower highs (for puts).
-
-**How it works:**
-```
-Call example — stock in uptrend:
-  Entry stock price: $300, break-even stop set at $300
-  Stock makes higher low at $305 → trail stop up to $305
-  Stock makes higher low at $310 → trail stop up to $310
-  Stock breaks below most recent higher low → exit runner
-```
-
-This is how he catches $5–$20 stock moves instead of exiting at a fixed +100% premium target. The option stop follows stock structure, not option premium math.
-
-**Implementation requirements:**
-- Every management cycle (every 15 min), for PARTIAL positions (runner active):
-  1. Fetch recent 5-min candles for the stock
-  2. Detect most recent higher low (calls) or lower high (puts)
-  3. If new higher low > previous stop level → update `metadata.runner_stop_price`
-  4. If stock price drops below `runner_stop_price` → close runner
-- Store `runner_stop_price` in metadata (stock price level, not option premium)
-- Current break-even stop stays as the floor — runner stop can only move in profit direction
-
-**Also from this video:**
-- Hide option bid/ask from view entirely — trade off stock price chart, not option price
-- This is psychology, not code — but it confirms the runner stop should be stock-price-based, not premium-based
-
----
-
-## Contract Selection (keep ATM, don't chase first OTM)
-
-Kay says "first OTM" but for automation ATM is safer:
-- Better delta, tighter spreads, more reliable fills
-- Liquid ATM > cheap but thin OTM for 0DTE
-
-Keep current `findAtmStrike` behavior. Enforce:
-- `spread <= max allowed`
-- `bid > 0.10`
-- `premium <= cap`
-- `delta` in acceptable range
-- Volume / open interest check
-
----
-
-## Bottom Line
-
-> For 0DTE options, exit management is not optional. It is the strategy.
-
-The bot currently has the entry signal layer partially built but the entire exit layer missing. Fix exits first, then improve entries.
+If partial exits had fired during the day, most positions would have been closed or at break-even before the EOD failure was ever reached.
