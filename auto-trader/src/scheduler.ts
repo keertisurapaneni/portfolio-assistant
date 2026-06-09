@@ -7280,9 +7280,14 @@ async function checkLossCutOpportunities(
           // Partial loss cut — update the original record's quantity to what remains in IB.
           // Previously this spawned a new SELL paper_trade record which the next cycle's
           // eligible filter would pick up as a new position and loss-cut again → cascade loop.
+          // Set close_price, close_reason, and closed_at so Today's Activity picks up this
+          // trade via the closed_at.gte.today condition even though it isn't fully closed.
           const sb = getSupabase();
           await sb.from('paper_trades').update({
             quantity: remainingQty,
+            close_price: result.avgFillPrice,
+            close_reason: 'loss_cut',
+            closed_at: new Date().toISOString(),
             notes: `Loss cut ${triggered.label} at -${lossPct.toFixed(1)}% (${sellQty} of ${Math.round(ibPos.position)} sold, ${remainingQty} remain)`,
           }).eq('id', trade.id);
         }
