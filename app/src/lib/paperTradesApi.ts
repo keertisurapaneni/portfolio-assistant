@@ -318,6 +318,26 @@ export async function getTodaysOrphanedFills(
     groups.get(key)!.push(fill);
   }
 
+  // knownOrderIds is built from todayTradesResult (trades opened/closed today).
+  // But LONG_TERM/SWING positions opened before today can be partially closed today —
+  // their ib_close_order_id won't be in todayTradesResult. Do a targeted DB lookup
+  // for any fill order_id that matches an ib_close_order_id on any paper_trade.
+  const uncoveredIds = [...groups.keys()]
+    .map(k => String(groups.get(k)![0].order_id))
+    .filter(id => !knownOrderIds.has(id));
+
+  if (uncoveredIds.length > 0) {
+    const tradesTable = accountView === 'live' ? 'live_trades' : 'paper_trades';
+    const { data: closeMatches } = await supabase
+      .from(tradesTable)
+      .select('ib_close_order_id')
+      .in('ib_close_order_id', uncoveredIds)
+      .not('ib_close_order_id', 'is', null);
+    (closeMatches ?? []).forEach(t => {
+      if (t.ib_close_order_id) knownOrderIds.add(t.ib_close_order_id);
+    });
+  }
+
   const orphans: OrphanedFill[] = [];
   for (const [, fillGroup] of groups) {
     const first = fillGroup[0];
