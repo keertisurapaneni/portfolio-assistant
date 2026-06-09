@@ -63,6 +63,10 @@ export interface MarketOrderParams {
   symbol: string;
   side: 'BUY' | 'SELL';
   quantity: number;
+  /** Pre-allocate the IB order ID before calling placeMarketOrder, so callers can stamp
+   *  ib_close_order_id on the paper_trade BEFORE placing the order. This prevents the
+   *  DB trigger from creating ghost records when the fill arrives before recordTradeClose runs. */
+  preAllocatedOrderId?: number;
   /** Use IB's Adaptive Algo instead of a plain MKT order.
    *  Recommended for sub-$1 stocks to avoid IB error 2161
    *  (regulatory price cap on plain market orders). */
@@ -898,11 +902,11 @@ export class IBConnection {
       throw new Error(`${this.tag} Not connected to IB Gateway`);
     }
 
-    const { symbol, side, quantity, useAdaptiveAlgo } = params;
+    const { symbol, side, quantity, useAdaptiveAlgo, preAllocatedOrderId } = params;
     const contract = await this.resolveContractForOrder(symbol);
 
     return new Promise((resolve, reject) => {
-      const orderId = this.getNextOrderId();
+      const orderId = preAllocatedOrderId ?? this.getNextOrderId();
 
       const order: Order = {
         action: side === 'BUY' ? OrderAction.BUY : OrderAction.SELL,
