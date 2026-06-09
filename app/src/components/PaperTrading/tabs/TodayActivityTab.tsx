@@ -1,5 +1,5 @@
 import { useState, useMemo } from 'react';
-import { Zap, Play, Clock, PlayCircle, AlertCircle, ChevronUp, ChevronDown, ChevronsUpDown } from 'lucide-react';
+import { Zap, Play, Clock, PlayCircle, AlertCircle, ChevronUp, ChevronDown, ChevronsUpDown, CheckCircle } from 'lucide-react';
 import { cn } from '../../../lib/utils';
 import type { AutoTradeEventRecord, PaperTrade, PendingStrategySignal } from '../../../lib/paperTradesApi';
 import { executeSignal } from '../../../lib/paperTradesApi';
@@ -71,19 +71,47 @@ export function TodayActivityTab({ events, trades, todayTrades, orphanedFills = 
   const [filterMode, setFilterMode] = useState<FilterMode>('all');
   const [sortKey, setSortKey] = useState<SortKey>(null);
   const [sortDir, setSortDir] = useState<SortDir>('desc');
+  // Track signals executed this session for immediate grey-out (optimistic, no refresh needed)
+  const [locallyExecutedKeys, setLocallyExecutedKeys] = useState<Set<string>>(new Set());
+
   const todayStart = (() => {
     const d = new Date();
     d.setHours(0, 0, 0, 0);
     return d;
   })();
+  const todayISO = todayStart.toISOString();
+
+  // Build the set of already-executed signal keys from todayTrades + locally tracked ones.
+  // Key = ticker_signal_videoId so each influencer source is independent of auto-trader signals.
+  const executedSignalKeys = useMemo(() => {
+    const nonTerminal = new Set(['SUBMITTED', 'ACTIVE', 'FILLED', 'CLOSED']);
+    const keys = new Set<string>(locallyExecutedKeys);
+    (todayTrades ?? [])
+      .filter(t => nonTerminal.has(t.status ?? '') && t.opened_at && t.opened_at >= todayISO)
+      .forEach(t => {
+        const vid = (t as PaperTrade & { strategy_video_id?: string | null }).strategy_video_id ?? '';
+        keys.add(`${t.ticker.toUpperCase()}_${(t.signal ?? '').toUpperCase()}_${vid}`);
+      });
+    return keys;
+  }, [todayTrades, locallyExecutedKeys, todayISO]);
+
+  const signalKey = (s: PendingStrategySignal) =>
+    `${s.ticker.toUpperCase()}_${(s.signal ?? '').toUpperCase()}_${s.strategy_video_id ?? ''}`;
+
+  const isSignalExecuted = (s: PendingStrategySignal) => executedSignalKeys.has(signalKey(s));
 
   const handleExecuteSignal = async (signal: PendingStrategySignal) => {
+    if (isSignalExecuted(signal)) return;
     setExecutingId(signal.id);
     try {
       const out = await executeSignal(signal.id);
       if (out.ok) {
         const executed = (out as { executed?: boolean; reason?: string }).executed;
         const reason = (out as { reason?: string }).reason;
+        if (executed) {
+          // Immediately grey out so re-clicking does nothing before the refresh arrives
+          setLocallyExecutedKeys(prev => new Set([...prev, signalKey(signal)]));
+        }
         onExecuteSignal?.();
         if (!executed && reason) {
           alert(`${signal.ticker} skipped: ${reason}`);
@@ -101,18 +129,21 @@ export function TodayActivityTab({ events, trades, todayTrades, orphanedFills = 
   };
 
   const handleExecuteAll = async () => {
-    if (todaySignalsForExecute.length === 0) return;
+    // Only execute signals that haven't been executed yet — greyed-out ones are skipped
+    const pending = todaySignalsForExecute.filter(s => !isSignalExecuted(s));
+    if (pending.length === 0) return;
     setExecutingAll(true);
     let executed = 0;
     let skipped = 0;
     const skipReasons: string[] = [];
-    for (const s of todaySignalsForExecute) {
+    for (const s of pending) {
       const out = await executeSignal(s.id);
       if (out.ok) {
         const didExec = (out as { executed?: boolean }).executed;
         const reason = (out as { reason?: string }).reason;
         if (didExec) {
           executed += 1;
+          setLocallyExecutedKeys(prev => new Set([...prev, signalKey(s)]));
           onExecuteSignal?.();
         } else {
           skipped += 1;
@@ -125,14 +156,13 @@ export function TodayActivityTab({ events, trades, todayTrades, orphanedFills = 
       }
     }
     setExecutingAll(false);
-    onExecuteSignal?.(); // refresh to update list
+    onExecuteSignal?.();
     if (skipped > 0) {
       alert(executed > 0
         ? `${executed} executed, ${skipped} skipped:\n${skipReasons.slice(0, 5).join('\n')}${skipReasons.length > 5 ? '\n...' : ''}`
         : `All skipped:\n${skipReasons.slice(0, 5).join('\n')}${skipReasons.length > 5 ? '\n...' : ''}`);
     }
   };
-  const todayISO = todayStart.toISOString();
 
   const OPTIONS_MODES = new Set(['OPTIONS_PUT', 'OPTIONS_CALL', 'CALENDAR_SPREAD', 'CREDIT_SPREAD', 'EARNINGS_CALENDAR', 'OPTIONS_SCALP', 'OPTIONS_LEAP']);
 
@@ -217,57 +247,69 @@ export function TodayActivityTab({ events, trades, todayTrades, orphanedFills = 
               </button>
             </div>
             <div className="divide-y divide-[hsl(var(--border))]">
-              {todaySignalsForExecute.map((s) => (
-                <div key={s.id} className="flex items-center justify-between gap-3 px-4 py-2.5">
-                  <div className="min-w-0">
-                    <span className="font-bold text-sm text-[hsl(var(--foreground))]">{s.ticker}</span>
-                    <span className={cn('ml-1.5 px-1.5 py-0.5 rounded text-[10px] font-medium', s.signal === 'BUY' ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700')}>
-                      {s.signal}
-                    </span>
-                    <span className="ml-1.5 text-[10px] text-[hsl(var(--muted-foreground))]">{s.mode.replace('_', ' ')}</span>
-                    {s.source_name && (
-                      <p className="text-[10px] text-[hsl(var(--muted-foreground))] truncate mt-0.5">{s.source_name}</p>
-                    )}
-                    {s.failure_reason && (
-                      <p className="text-[10px] text-red-500 mt-0.5 max-w-xs truncate" title={s.failure_reason}>
-                        {formatSkipReason(s.failure_reason)}
-                      </p>
-                    )}
-                  </div>
-                  <div className="flex items-center gap-2 flex-shrink-0">
-                    {s.status === 'EXPIRED' && (
-                      <span className="flex items-center gap-1 text-[10px] text-amber-600">
-                        <Clock className="w-3 h-3" />
-                        Expired
+              {todaySignalsForExecute.map((s) => {
+                const alreadyDone = isSignalExecuted(s);
+                return (
+                  <div key={s.id} className={cn('flex items-center justify-between gap-3 px-4 py-2.5', alreadyDone && 'opacity-40')}>
+                    <div className="min-w-0">
+                      <span className="font-bold text-sm text-[hsl(var(--foreground))]">{s.ticker}</span>
+                      <span className={cn('ml-1.5 px-1.5 py-0.5 rounded text-[10px] font-medium', s.signal === 'BUY' ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700')}>
+                        {s.signal}
                       </span>
-                    )}
-                    {s.status === 'SKIPPED' && (
-                      <span className="flex items-center gap-1 text-[10px] text-amber-600">
-                        <AlertCircle className="w-3 h-3" />
-                        Skipped
-                      </span>
-                    )}
-                    <button
-                      onClick={() => handleExecuteSignal(s)}
-                      disabled={executingId !== null || executingAll}
-                      className={cn(
-                        'flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg border transition-all',
-                        'bg-emerald-50 border-emerald-200 text-emerald-700 hover:bg-emerald-100',
-                        (executingId !== null || executingAll) && 'opacity-50 cursor-not-allowed'
+                      <span className="ml-1.5 text-[10px] text-[hsl(var(--muted-foreground))]">{s.mode.replace('_', ' ')}</span>
+                      {s.source_name && (
+                        <p className="text-[10px] text-[hsl(var(--muted-foreground))] truncate mt-0.5">{s.source_name}</p>
                       )}
-                    >
-                      {executingId === s.id ? (
-                        <span className="animate-pulse">Executing…</span>
+                      {s.failure_reason && !alreadyDone && (
+                        <p className="text-[10px] text-red-500 mt-0.5 max-w-xs truncate" title={s.failure_reason}>
+                          {formatSkipReason(s.failure_reason)}
+                        </p>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2 flex-shrink-0">
+                      {alreadyDone ? (
+                        <span className="flex items-center gap-1 text-[10px] text-emerald-600 font-medium">
+                          <CheckCircle className="w-3 h-3" />
+                          Executed
+                        </span>
                       ) : (
                         <>
-                          <Play className="w-3 h-3" />
-                          Execute
+                          {s.status === 'EXPIRED' && (
+                            <span className="flex items-center gap-1 text-[10px] text-amber-600">
+                              <Clock className="w-3 h-3" />
+                              Expired
+                            </span>
+                          )}
+                          {s.status === 'SKIPPED' && (
+                            <span className="flex items-center gap-1 text-[10px] text-amber-600">
+                              <AlertCircle className="w-3 h-3" />
+                              Skipped
+                            </span>
+                          )}
+                          <button
+                            onClick={() => handleExecuteSignal(s)}
+                            disabled={executingId !== null || executingAll}
+                            className={cn(
+                              'flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg border transition-all',
+                              'bg-emerald-50 border-emerald-200 text-emerald-700 hover:bg-emerald-100',
+                              (executingId !== null || executingAll) && 'opacity-50 cursor-not-allowed'
+                            )}
+                          >
+                            {executingId === s.id ? (
+                              <span className="animate-pulse">Executing…</span>
+                            ) : (
+                              <>
+                                <Play className="w-3 h-3" />
+                                Execute
+                              </>
+                            )}
+                          </button>
                         </>
                       )}
-                    </button>
+                    </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         )}
@@ -743,52 +785,64 @@ export function TodayActivityTab({ events, trades, todayTrades, orphanedFills = 
             </button>
           </div>
           <div className="divide-y divide-[hsl(var(--border))]">
-            {todaySignalsForExecute.map((s) => (
-              <div key={s.id} className="flex items-center justify-between gap-3 px-4 py-2.5">
-                <div className="min-w-0">
-                  <span className="font-bold text-sm text-[hsl(var(--foreground))]">{s.ticker}</span>
-                  <span className={cn('ml-1.5 px-1.5 py-0.5 rounded text-[10px] font-medium', s.signal === 'BUY' ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700')}>
-                    {s.signal}
-                  </span>
-                  <span className="ml-1.5 text-[10px] text-[hsl(var(--muted-foreground))]">{s.mode.replace('_', ' ')}</span>
-                  {s.source_name && (
-                    <p className="text-[10px] text-[hsl(var(--muted-foreground))] truncate mt-0.5">{s.source_name}</p>
-                  )}
-                </div>
-                <div className="flex items-center gap-2 flex-shrink-0">
-                  {s.status === 'EXPIRED' && (
-                    <span className="flex items-center gap-1 text-[10px] text-amber-600">
-                      <Clock className="w-3 h-3" />
-                      Expired
+            {todaySignalsForExecute.map((s) => {
+              const alreadyDone = isSignalExecuted(s);
+              return (
+                <div key={s.id} className={cn('flex items-center justify-between gap-3 px-4 py-2.5', alreadyDone && 'opacity-40')}>
+                  <div className="min-w-0">
+                    <span className="font-bold text-sm text-[hsl(var(--foreground))]">{s.ticker}</span>
+                    <span className={cn('ml-1.5 px-1.5 py-0.5 rounded text-[10px] font-medium', s.signal === 'BUY' ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700')}>
+                      {s.signal}
                     </span>
-                  )}
-                  {s.status === 'SKIPPED' && (
-                    <span className="flex items-center gap-1 text-[10px] text-amber-600">
-                      <AlertCircle className="w-3 h-3" />
-                      Skipped
-                    </span>
-                  )}
-                  <button
-                    onClick={() => handleExecuteSignal(s)}
-                    disabled={executingId !== null || executingAll}
-                    className={cn(
-                      'flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg border transition-all',
-                      'bg-emerald-50 border-emerald-200 text-emerald-700 hover:bg-emerald-100',
-                      (executingId !== null || executingAll) && 'opacity-50 cursor-not-allowed'
+                    <span className="ml-1.5 text-[10px] text-[hsl(var(--muted-foreground))]">{s.mode.replace('_', ' ')}</span>
+                    {s.source_name && (
+                      <p className="text-[10px] text-[hsl(var(--muted-foreground))] truncate mt-0.5">{s.source_name}</p>
                     )}
-                  >
-                    {executingId === s.id ? (
-                      <span className="animate-pulse">Executing…</span>
+                  </div>
+                  <div className="flex items-center gap-2 flex-shrink-0">
+                    {alreadyDone ? (
+                      <span className="flex items-center gap-1 text-[10px] text-emerald-600 font-medium">
+                        <CheckCircle className="w-3 h-3" />
+                        Executed
+                      </span>
                     ) : (
                       <>
-                        <Play className="w-3 h-3" />
-                        Execute
+                        {s.status === 'EXPIRED' && (
+                          <span className="flex items-center gap-1 text-[10px] text-amber-600">
+                            <Clock className="w-3 h-3" />
+                            Expired
+                          </span>
+                        )}
+                        {s.status === 'SKIPPED' && (
+                          <span className="flex items-center gap-1 text-[10px] text-amber-600">
+                            <AlertCircle className="w-3 h-3" />
+                            Skipped
+                          </span>
+                        )}
+                        <button
+                          onClick={() => handleExecuteSignal(s)}
+                          disabled={executingId !== null || executingAll}
+                          className={cn(
+                            'flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg border transition-all',
+                            'bg-emerald-50 border-emerald-200 text-emerald-700 hover:bg-emerald-100',
+                            (executingId !== null || executingAll) && 'opacity-50 cursor-not-allowed'
+                          )}
+                        >
+                          {executingId === s.id ? (
+                            <span className="animate-pulse">Executing…</span>
+                          ) : (
+                            <>
+                              <Play className="w-3 h-3" />
+                              Execute
+                            </>
+                          )}
+                        </button>
                       </>
                     )}
-                  </button>
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}
