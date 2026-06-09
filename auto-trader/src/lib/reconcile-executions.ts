@@ -345,18 +345,24 @@ export async function runEndOfDayReconciliation(accountType: AccountType = 'pape
 }
 
 /**
- * Link `ib_fill_auto_created` ghost records to their corresponding still-open FILLED paper_trades.
+ * EOD safety sweep: link any remaining `ib_fill_auto_created` ghost records to their
+ * corresponding still-open FILLED SWING_TRADE / LONG_TERM paper_trades.
  *
- * This handles the case where IB closes a SWING_TRADE or LONG_TERM position that our code didn't
- * initiate (bracket SL/TP, manual close, etc.). The DB trigger sees the SELL fill, finds no
- * matching open paper_trade with ib_close_order_id set, and creates a ghost. The real trade stays
- * FILLED. This function links the two:
- *   1. Find ghosts closed in the last 7 days with mode in [SWING_TRADE, LONG_TERM]
- *   2. For each ticker+mode pair, find the oldest FILLED real paper_trade
- *   3. Sum the ghost P&Ls and close the real trade, zero the ghosts
+ * Primary close paths now use stampAndPlaceClose() which pre-stamps ib_close_order_id so
+ * the trigger closes the real trade inline — no ghost is created. This function handles
+ * the residual cases where ghosts can still appear:
+ *   - Bracket TP/SL orders fired by IB (ib_tp_order_id / ib_sl_order_id paths)
+ *   - Manual closes in IB UI
+ *   - Auto-trader crash between stamping and placing
  *
- * Safe to call at any time — only touches records with close_reason='ib_fill_auto_created'.
- * Returns the number of real paper_trades that were closed.
+ * Algorithm:
+ *   1. Find all ib_fill_auto_created ghosts for SWING_TRADE/LONG_TERM in the last 7 days
+ *   2. For each, skip if no FILLED real paper_trade exists for the same ticker+mode
+ *   3. Look up actual P&L from ib_fills.realized_pnl (source of truth — avoids ghost.pnl
+ *      timing issues where commission report arrives after trigger fires)
+ *   4. Close the real trade, zero the ghosts
+ *
+ * Only runs at EOD (called from runEndOfDayReconciliation). Not called every 15 min.
  */
 export async function reconcileGhostCloses(
   tTable: string = 'paper_trades',
@@ -365,15 +371,15 @@ export async function reconcileGhostCloses(
   const sb = getSupabase();
   const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
 
-  // Fetch recent ghosts for SWING_TRADE / LONG_TERM
+  // All SWING_TRADE / LONG_TERM ghosts in the last 7 days — no pnl/notes filter.
+  // We look up the real P&L from ib_fills below, so ghost.pnl doesn't matter here.
   const { data: ghosts, error: ghostsErr } = await sb
     .from(tTable)
-    .select('id, ticker, mode, pnl, close_price, ib_close_order_id, closed_at, notes')
+    .select('id, ticker, mode, close_price, ib_close_order_id, closed_at')
     .eq('close_reason', 'ib_fill_auto_created')
     .eq('status', 'CLOSED')
     .in('mode', ['SWING_TRADE', 'LONG_TERM'])
-    .gte('closed_at', sevenDaysAgo)
-    .neq('pnl', 0); // already-zeroed ghosts are already handled
+    .gte('closed_at', sevenDaysAgo);
 
   if (ghostsErr) {
     log(`[GhostClose] Error fetching ghosts: ${ghostsErr.message}`);
@@ -381,87 +387,84 @@ export async function reconcileGhostCloses(
   }
 
   const ghostList = (ghosts ?? []) as Array<{
-    id: string; ticker: string; mode: string; pnl: number | null;
-    close_price: number | null; ib_close_order_id: string | null;
-    closed_at: string; notes: string | null;
+    id: string; ticker: string; mode: string;
+    close_price: number | null; ib_close_order_id: string | null; closed_at: string;
   }>;
 
   if (ghostList.length === 0) {
-    log('[GhostClose] No unlinked ghosts found — skipping');
+    log('[GhostClose] No ghosts found — skipping');
     return 0;
   }
 
-  log(`[GhostClose] Found ${ghostList.length} unlinked ghost(s) across SWING_TRADE/LONG_TERM`);
-
-  // Group ghosts by ticker+mode
-  const grouped = new Map<string, typeof ghostList>();
+  // Filter to only ghosts where a FILLED real paper_trade still exists for ticker+mode.
+  // This is the definitive check — if no FILLED real trade, there's nothing to link.
+  const groupedByKey = new Map<string, typeof ghostList>();
   for (const g of ghostList) {
     const key = `${g.ticker}|${g.mode}`;
-    const bucket = grouped.get(key) ?? [];
+    const bucket = groupedByKey.get(key) ?? [];
     bucket.push(g);
-    grouped.set(key, bucket);
+    groupedByKey.set(key, bucket);
   }
 
   let linked = 0;
 
-  for (const [key, ghostGroup] of grouped) {
+  for (const [key, ghostGroup] of groupedByKey) {
     const [ticker, mode] = key.split('|');
-    const latestGhostAt = ghostGroup.reduce(
-      (latest, g) => (g.closed_at > latest ? g.closed_at : latest),
-      ghostGroup[0].closed_at,
-    );
-    const latestGhost = ghostGroup.find(g => g.closed_at === latestGhostAt)!;
+    const latestGhost = ghostGroup.reduce((latest, g) =>
+      g.closed_at > latest.closed_at ? g : latest, ghostGroup[0]);
 
-    // Find the oldest still-FILLED real paper_trade for this ticker+mode
+    // Does a still-FILLED real paper_trade exist for this ticker+mode?
     const { data: realTrades } = await sb
       .from(tTable)
-      .select('id, ticker, mode, fill_price, quantity, signal, opened_at, pnl, notes')
+      .select('id, fill_price, quantity, signal, opened_at')
       .eq('ticker', ticker)
       .eq('mode', mode)
       .eq('status', 'FILLED')
-      .lt('opened_at', latestGhostAt) // opened before the ghost was created
       .neq('close_reason', 'ib_fill_auto_created')
+      .lt('opened_at', latestGhost.closed_at)
       .order('opened_at', { ascending: true })
       .limit(1);
 
     const realTrade = (realTrades ?? [])[0] as {
-      id: string; ticker: string; mode: string; fill_price: number | null;
-      quantity: number | null; signal: string; opened_at: string;
-      pnl: number | null; notes: string | null;
+      id: string; fill_price: number | null; quantity: number | null;
+      signal: string; opened_at: string;
     } | undefined;
 
-    if (!realTrade) {
-      log(`[GhostClose] ${ticker} (${mode}): no FILLED real trade found — ghost(s) left unchanged`);
-      continue;
-    }
+    if (!realTrade) continue; // No open trade to link — ghost is standalone, leave it
 
-    // Sum the P&L across all ghosts for this position
-    const combinedPnl = parseFloat(
-      ghostGroup.reduce((s, g) => s + (g.pnl ?? 0), 0).toFixed(2),
-    );
+    // Look up actual realized P&L from ib_fills for each ghost's close order.
+    // This is the source of truth and avoids the timing issue where ghost.pnl = 0
+    // because the commission report arrived after the trigger fired.
+    let combinedPnl = 0;
+    for (const g of ghostGroup) {
+      if (!g.ib_close_order_id) continue;
+      const { data: fills } = await sb
+        .from('ib_fills')
+        .select('realized_pnl')
+        .eq('order_id', parseInt(g.ib_close_order_id, 10))
+        .not('realized_pnl', 'is', null);
+      const pnlFromFills = (fills ?? []).reduce((s, f) => s + (f.realized_pnl ?? 0), 0);
+      combinedPnl += pnlFromFills;
+    }
+    combinedPnl = parseFloat(combinedPnl.toFixed(2));
+
     const latestClosePrice = latestGhost.close_price;
-    const closedAt = latestGhost.closed_at;
-    const closeOrderIds = ghostGroup
-      .map(g => g.ib_close_order_id)
-      .filter(Boolean)
-      .join(',');
+    const closeOrderIds = ghostGroup.map(g => g.ib_close_order_id).filter(Boolean).join(',');
 
     log(
-      `[GhostClose] Closing ${ticker} real trade ${realTrade.id} ` +
-      `(opened ${realTrade.opened_at}) via ${ghostGroup.length} ghost(s) — ` +
-      `pnl=$${combinedPnl.toFixed(2)}, closePrice=$${latestClosePrice ?? 'N/A'}, orders=[${closeOrderIds}]`,
+      `[GhostClose] ${ticker} (${mode}): linking ${ghostGroup.length} ghost(s) → real trade ${realTrade.id} ` +
+      `opened ${realTrade.opened_at} — P&L $${combinedPnl.toFixed(2)} (orders [${closeOrderIds}])`,
     );
 
-    // Close the real trade
     const { error: closeErr } = await sb.from(tTable).update({
       status: 'CLOSED',
       close_price: latestClosePrice,
       close_reason: 'eod_close',
       pnl: combinedPnl,
       pnl_source: 'ib_realized',
-      closed_at: closedAt,
+      closed_at: latestGhost.closed_at,
       ib_close_order_id: latestGhost.ib_close_order_id,
-      notes: `Closed via reconcileGhostCloses — ${ghostGroup.length} IB fill ghost(s) [${closeOrderIds}] combined pnl $${combinedPnl.toFixed(2)}`,
+      notes: `Closed by EOD reconcileGhostCloses — orders [${closeOrderIds}] combined IB realized P&L $${combinedPnl.toFixed(2)}`,
     }).eq('id', realTrade.id);
 
     if (closeErr) {
@@ -469,38 +472,26 @@ export async function reconcileGhostCloses(
       continue;
     }
 
-    // Zero out all ghosts that were linked to this real trade
     for (const g of ghostGroup) {
       await sb.from(tTable).update({
         pnl: 0,
-        notes: `duplicate ghost — attributed to real paper_trade ${realTrade.id} by reconcileGhostCloses (pnl zeroed)`,
+        notes: `ghost zeroed — P&L attributed to real paper_trade ${realTrade.id} by EOD reconcileGhostCloses`,
       }).eq('id', g.id);
     }
 
     await createAutoTradeEvent({
-      ticker,
-      event_type: 'info',
-      action: 'GHOST_CLOSE_LINKED',
-      source: 'system',
-      message: `[GhostClose] ${ticker} (${mode}): closed real trade ${realTrade.id} using ${ghostGroup.length} ghost record(s). Combined P&L: $${combinedPnl.toFixed(2)}.`,
-      metadata: {
-        realTradeId: realTrade.id,
-        ghostIds: ghostGroup.map(g => g.id),
-        closeOrderIds,
-        combinedPnl,
-        latestClosePrice,
-      },
+      ticker, event_type: 'info', action: 'GHOST_CLOSE_LINKED', source: 'system',
+      message: `[GhostClose] ${ticker} (${mode}): closed real trade ${realTrade.id}. P&L: $${combinedPnl.toFixed(2)}.`,
+      metadata: { realTradeId: realTrade.id, ghostIds: ghostGroup.map(g => g.id), closeOrderIds, combinedPnl },
     }, accountType);
 
     linked++;
   }
 
-  if (linked > 0) {
-    log(`[GhostClose] ✓ Linked and closed ${linked} real trade(s) via ghost records`);
-  } else {
-    log('[GhostClose] No ghost→trade links were made (all tickers already closed or no match)');
-  }
-
+  log(linked > 0
+    ? `[GhostClose] ✓ ${linked} real trade(s) closed via ghost records`
+    : '[GhostClose] No unlinked ghosts with matching open trades found',
+  );
   return linked;
 }
 

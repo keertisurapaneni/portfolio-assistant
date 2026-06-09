@@ -1716,13 +1716,6 @@ export async function reconcileIBLongs(): Promise<{ closed: string[]; errors: st
     }
   }
 
-  // Link any ib_fill_auto_created ghost records to their corresponding FILLED SWING_TRADE /
-  // LONG_TERM paper_trades. This handles positions closed by IB (via bracket SL/TP or
-  // external close) where our code never called recordTradeClose.
-  await reconcileGhostCloses('paper_trades', 'paper').catch(err =>
-    log(`[IBLongReconcile] reconcileGhostCloses error: ${err instanceof Error ? err.message : err}`),
-  );
-
   if (confirmedGhosts.length === 0) {
     log('[IBLongReconcile] No confirmed ghost day-trade longs to close');
     return { closed: [], errors: [] };
