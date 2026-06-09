@@ -983,9 +983,9 @@ async function closeAllDayTrades(config: AutoTraderConfig): Promise<void> {
           catch (e) { log(`${trade.ticker}: EOD — cancel SL #${trade.ib_sl_order_id} failed: ${e instanceof Error ? e.message : 'unknown'}`); }
         }
 
-        let fillResult: { avgFillPrice: number } | null = null;
+        let fillResult: import('./ib-connection.js').MarketOrderResult | null = null;
         try {
-          fillResult = await conn.placeMarketOrder({ symbol: trade.ticker, side: closeSide, quantity: qty });
+          fillResult = await stampAndPlaceClose(conn, trade.id, { symbol: trade.ticker, side: closeSide, quantity: qty }, acctType);
           log(`${trade.ticker}: EOD close filled [${acctType}] (${qty} shares ${closeSide}) @ $${fillResult.avgFillPrice.toFixed(2)}`);
         } catch (orderErr) {
           log(`EOD sweep: ${trade.ticker} — IB order failed (${orderErr instanceof Error ? orderErr.message : 'unknown'}) — will retry on next sweep`);
@@ -998,7 +998,7 @@ async function closeAllDayTrades(config: AutoTraderConfig): Promise<void> {
           closePrice: fillResult.avgFillPrice,
           closeReason: 'eod_close',
           status: 'CLOSED',
-          orderId: (fillResult as { orderId?: number }).orderId,
+          orderId: fillResult.orderId,
           accountType: acctType,
         });
         log(`${trade.ticker}: EOD closed [${acctType}] (${qty} shares ${closeSide}) @ $${fillResult.avgFillPrice.toFixed(2)}`);
@@ -1073,9 +1073,9 @@ async function softCloseDayTrades(positions: EnrichedPosition[]): Promise<void> 
       }
 
       try {
-        let fillResult: { avgFillPrice: number } | null = null;
+        let fillResult: import('./ib-connection.js').MarketOrderResult | null = null;
         try {
-          fillResult = await conn.placeMarketOrder({ symbol: trade.ticker, side: closeSide, quantity: qty });
+          fillResult = await stampAndPlaceClose(conn, trade.id, { symbol: trade.ticker, side: closeSide, quantity: qty }, acctType);
           log(`${trade.ticker}: [SoftClose:${acctType}] close filled @ $${fillResult.avgFillPrice.toFixed(2)} — ${reason}`);
         } catch (orderErr) {
           log(`${trade.ticker}: [SoftClose] IB order failed (${orderErr instanceof Error ? orderErr.message : 'unknown'}) — will retry at 3:55 PM hard close`);
@@ -1088,7 +1088,7 @@ async function softCloseDayTrades(positions: EnrichedPosition[]): Promise<void> 
           closePrice: fillResult.avgFillPrice,
           closeReason: 'soft_eod_close',
           status: 'CLOSED',
-          orderId: (fillResult as { orderId?: number }).orderId,
+          orderId: fillResult.orderId,
           accountType: acctType,
         });
         log(`${trade.ticker}: [SoftClose:${acctType}] DB marked closed — ${reason} — fill $${fillResult.avgFillPrice.toFixed(2)}`);
@@ -1168,7 +1168,11 @@ async function checkStaleDayTrades(positions: EnrichedPosition[]): Promise<void>
     // DAY_TRADE that slips through at a low price.
     const useAdaptiveAlgo = trade.mode === 'DAY_PENNY' || fillPrice <= 5;
     try {
-      const result = await placeMarketOrder({ symbol: trade.ticker, side: closeSide, quantity: qty, useAdaptiveAlgo });
+      const result = await stampAndPlaceClose(
+        getConnectionForAccount('paper'), trade.id,
+        { symbol: trade.ticker, side: closeSide, quantity: qty, useAdaptiveAlgo },
+        'paper',
+      );
       await recordTradeClose({
         tradeId: trade.id,
         closePrice: result.avgFillPrice,
@@ -1963,6 +1967,31 @@ export async function forceExecuteSignal(signalId: string): Promise<{
 
 function log(msg: string): void {
   console.log(`[Scheduler] ${msg}`);
+}
+
+/**
+ * Pre-stamp ib_close_order_id on a paper_trade, then place a market close order.
+ *
+ * By writing ib_close_order_id BEFORE the IB order is submitted, the DB trigger
+ * (sync_ib_fill_to_paper_trades) can match the incoming fill to this trade and close it
+ * properly instead of creating a ghost record. Without this, the fill arrives during the
+ * await, the trigger fires before recordTradeClose runs, and a ghost is created.
+ *
+ * Use this helper for every close-initiating placeMarketOrder call that has a known tradeId.
+ */
+async function stampAndPlaceClose(
+  conn: IBConnection,
+  tradeId: string,
+  params: Omit<import('./ib-connection.js').MarketOrderParams, 'preAllocatedOrderId'>,
+  accountType: AccountType = 'paper',
+): Promise<import('./ib-connection.js').MarketOrderResult> {
+  const sb = getSupabase();
+  const preId = conn.getNextOrderId();
+  await sb
+    .from(tradesTable(accountType))
+    .update({ ib_close_order_id: String(preId) })
+    .eq('id', tradeId);
+  return conn.placeMarketOrder({ ...params, preAllocatedOrderId: preId });
 }
 
 /** Log and append to lastCycleSummary (kept for status API, max 30 lines) */
@@ -6603,7 +6632,7 @@ async function checkSwingHoldExpiry(
 
     for (const { connection: swingConn, accountType: swAcct } of swingConnections) {
       try {
-        const result = await swingConn.placeMarketOrder({ symbol: trade.ticker, side, quantity: qty });
+        const result = await stampAndPlaceClose(swingConn, trade.id, { symbol: trade.ticker, side, quantity: qty }, swAcct);
         await recordTradeClose({
           tradeId: trade.id,
           closePrice: result.avgFillPrice,
@@ -6845,7 +6874,7 @@ async function checkLongTermAutoSell(
 
     for (const { connection: ltConn, accountType: ltAcctType } of ltConnections) {
       try {
-        const result = await ltConn.placeMarketOrder({ symbol: trade.ticker, side, quantity: qty });
+        const result = await stampAndPlaceClose(ltConn, trade.id, { symbol: trade.ticker, side, quantity: qty }, ltAcctType);
         const avgFillPrice = result.avgFillPrice;
         const fillPnlPct = ibPos.avgCost > 0
           ? ((avgFillPrice - ibPos.avgCost) / ibPos.avgCost) * 100
@@ -6921,7 +6950,11 @@ async function makeRoomForTrade(
     const side: 'BUY' | 'SELL' = candidate.ibPos.position > 0 ? 'SELL' : 'BUY';
 
     try {
-      const result = await placeMarketOrder({ symbol: candidate.trade.ticker, side, quantity: qty });
+      const result = await stampAndPlaceClose(
+        getConnectionForAccount('paper'), candidate.trade.id,
+        { symbol: candidate.trade.ticker, side, quantity: qty },
+        'paper',
+      );
       await recordTradeClose({
         tradeId: candidate.trade.id,
         closePrice: result.avgFillPrice,
@@ -7126,7 +7159,7 @@ async function checkDayTradeTrailingStops(
       }
 
       try {
-        const result = await conn.placeMarketOrder({ symbol: trade.ticker, side: closeSide, quantity: qty });
+        const result = await stampAndPlaceClose(conn, trade.id, { symbol: trade.ticker, side: closeSide, quantity: qty }, acctType);
         await recordTradeClose({
           tradeId: trade.id,
           closePrice: result.avgFillPrice,
@@ -7224,7 +7257,13 @@ async function checkLossCutOpportunities(
 
       try {
         const side = ibPos.position > 0 ? 'SELL' : 'BUY';
-        const result = await conn.placeMarketOrder({ symbol: trade.ticker, side: side as 'BUY' | 'SELL', quantity: sellQty });
+        // Pre-stamp ib_close_order_id before placing so the DB trigger can match the
+        // incoming fill to this paper_trade instead of creating a ghost record.
+        const result = await stampAndPlaceClose(
+          conn, trade.id,
+          { symbol: trade.ticker, side: side as 'BUY' | 'SELL', quantity: sellQty },
+          acctType,
+        );
 
         // Claim the ticker immediately so any subsequent records for the same ticker in this
         // loop iteration are blocked by the in-memory guard above (persistEvent is fire-and-forget
