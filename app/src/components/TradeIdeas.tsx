@@ -146,26 +146,28 @@ export function TradeIdeas({ onSelectTicker }: TradeIdeasProps) {
     return () => clearInterval(t);
   }, []);
 
-  // Load tickers that have a DAY_TRADE or SWING_TRADE placed today.
-  // "TRADED" badge only lights up when the scanner acted on this EXACT idea (ticker + direction).
-  // Keyed as "TICKER_SIGNAL" (e.g. "PLTR_BUY") so a Somesh BUY does NOT mark an AI SELL as traded.
+  // Load tickers that have a DAY_TRADE or SWING_TRADE placed today by the AUTO-TRADER only.
+  // TRADED badge rules:
+  //   1. ticker+signal keyed (PLTR_BUY ≠ PLTR_SELL) so direction matters
+  //   2. CANCELLED/REJECTED/EXPIRED excluded — phantom orders don't light up the badge
+  //   3. Influencer/external trades excluded (strategy_video_id or strategy_source set) —
+  //      influencer trades are independent and must NEVER affect auto-trader signal status
   useEffect(() => {
     const todayET = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
     Promise.all([getActiveTrades(), getAllTrades(50)])
       .then(([active, all]) => {
         const relevantModes = new Set(['DAY_TRADE', 'SWING_TRADE', 'DAY_PENNY']);
-        const tickers = new Set<string>();
-        // Only include trades that were actually executed today — exclude CANCELLED,
-        // REJECTED, EXPIRED so phantom/failed orders don't light up the TRADED badge.
         const nonTerminal = new Set(['SUBMITTED', 'ACTIVE', 'FILLED', 'CLOSED']);
+        const tickers = new Set<string>();
         [...active, ...all]
           .filter(t =>
             relevantModes.has(t.mode ?? '') &&
             (t.opened_at ?? '').startsWith(todayET) &&
-            nonTerminal.has(t.status ?? '')
+            nonTerminal.has(t.status ?? '') &&
+            !t.strategy_video_id &&   // influencer trades are independent — never affect trade signals
+            !t.strategy_source        // influencer trades are independent — never affect trade signals
           )
           .forEach(t => {
-            // Key by ticker+signal so PLTR BUY ≠ PLTR SELL
             tickers.add(`${t.ticker.toUpperCase()}_${(t.signal ?? '').toUpperCase()}`);
           });
         setTradedTickers(tickers);
