@@ -171,6 +171,7 @@ interface TradingSignalsResponse {
 
 interface EnrichedPosition {
   symbol: string;
+  secType: string;
   position: number;
   avgCost: number;
   conId: number;
@@ -1031,7 +1032,7 @@ async function softCloseDayTrades(positions: EnrichedPosition[]): Promise<void> 
     let closed = 0;
 
     for (const trade of dayTrades) {
-      const ibPos = positions.find(p => p.symbol.toUpperCase() === trade.ticker.toUpperCase());
+      const ibPos = positions.find(p => p.symbol.toUpperCase() === trade.ticker.toUpperCase() && p.secType === 'STK');
       if (!ibPos || ibPos.mktPrice <= 0) continue;
 
       const fillPrice    = trade.fill_price ?? trade.entry_price ?? 0;
@@ -1124,7 +1125,7 @@ async function checkStaleDayTrades(positions: EnrichedPosition[]): Promise<void>
   log(`⚠️  [StaleCheck] ${stale.length} day trade(s) still FILLED from a prior day — EOD sweep likely failed`);
 
   for (const trade of stale) {
-    const ibPos = positions.find(p => p.symbol.toUpperCase() === trade.ticker.toUpperCase());
+    const ibPos = positions.find(p => p.symbol.toUpperCase() === trade.ticker.toUpperCase() && p.secType === 'STK');
     const tradeDate = trade.filled_at
       ? new Date(trade.filled_at).toLocaleDateString('en-CA', { timeZone: 'America/New_York' })
       : 'unknown';
@@ -3072,6 +3073,7 @@ async function getEnrichedPositions(): Promise<EnrichedPosition[]> {
       : costBasis - mktValue;
     return {
       symbol: p.symbol,
+      secType: p.secType ?? 'STK',
       position: p.position,
       avgCost: p.avgCost,
       conId: p.conId,
@@ -5865,7 +5867,7 @@ async function _syncPositionsForAccount(
     if (trade.mode === 'OPTIONS_PUT' || trade.mode === 'OPTIONS_CALL') continue;
 
     const ibPos = positions.find(
-      p => p.symbol.toUpperCase() === trade.ticker.toUpperCase()
+      p => p.symbol.toUpperCase() === trade.ticker.toUpperCase() && p.secType === 'STK'
     );
 
     if (ibPos && ibPos.position !== 0) {
@@ -6476,7 +6478,7 @@ async function checkDipBuyOpportunities(
   const MAX_ENTRIES_PER_TICKER = 3;
 
   for (const [ticker, { trade, isGoldMine }] of initialByTicker) {
-    const ibPos = positions.find(p => p.symbol.toUpperCase() === ticker.toUpperCase());
+    const ibPos = positions.find(p => p.symbol.toUpperCase() === ticker.toUpperCase() && p.secType === 'STK');
     if (!ibPos || ibPos.mktPrice <= 0 || ibPos.avgCost <= 0) continue;
 
     const dipPct = ((ibPos.mktPrice - ibPos.avgCost) / ibPos.avgCost) * 100;
@@ -6613,7 +6615,7 @@ async function checkSwingHoldExpiry(
   );
 
   for (const trade of stale) {
-    const ibPos = positions.find(p => p.symbol.toUpperCase() === trade.ticker.toUpperCase());
+    const ibPos = positions.find(p => p.symbol.toUpperCase() === trade.ticker.toUpperCase() && p.secType === 'STK');
     if (!ibPos || ibPos.position === 0) continue;
 
     const qty = Math.abs(ibPos.position);
@@ -6744,7 +6746,7 @@ async function checkLongTermAutoSell(
       log(`${trade.ticker}: skipping LT auto-sell — already trimmed by profit-take this cycle`);
       continue;
     }
-    const ibPos = positions.find(p => p.symbol.toUpperCase() === tickerUpper);
+    const ibPos = positions.find(p => p.symbol.toUpperCase() === tickerUpper && p.secType === 'STK');
     if (!ibPos || ibPos.position === 0) continue;
 
     const currentPrice = ibPos.mktPrice;
@@ -6927,7 +6929,7 @@ async function makeRoomForTrade(
   // Build candidates with live P&L from IB positions, sorted best gain first
   const candidates = swingsFilled
     .map(t => {
-      const ibPos = positions.find(p => p.symbol.toUpperCase() === t.ticker.toUpperCase());
+      const ibPos = positions.find(p => p.symbol.toUpperCase() === t.ticker.toUpperCase() && p.secType === 'STK');
       if (!ibPos || ibPos.position === 0 || ibPos.avgCost <= 0) return null;
       const gainPct = (ibPos.mktPrice - ibPos.avgCost) / ibPos.avgCost * 100;
       const marketValue = Math.abs(ibPos.position) * ibPos.mktPrice;
@@ -7000,7 +7002,7 @@ async function checkProfitTakeOpportunities(
   ];
 
   for (const trade of longTermFilled) {
-    const ibPos = positions.find(p => p.symbol.toUpperCase() === trade.ticker.toUpperCase());
+    const ibPos = positions.find(p => p.symbol.toUpperCase() === trade.ticker.toUpperCase() && p.secType === 'STK');
     if (!ibPos || ibPos.mktPrice <= 0 || ibPos.avgCost <= 0) continue;
 
     const gainPct = ((ibPos.mktPrice - ibPos.avgCost) / ibPos.avgCost) * 100;
@@ -7096,7 +7098,7 @@ async function checkDayTradeTrailingStops(
     if (dayTrades.length === 0) continue;
 
     for (const trade of dayTrades) {
-      const ibPos = positions.find(p => p.symbol.toUpperCase() === trade.ticker.toUpperCase());
+      const ibPos = positions.find(p => p.symbol.toUpperCase() === trade.ticker.toUpperCase() && p.secType === 'STK');
       if (!ibPos || ibPos.mktPrice <= 0) continue;
 
       const fillPrice  = trade.fill_price ?? trade.entry_price ?? 0;
@@ -7211,7 +7213,7 @@ async function checkLossCutOpportunities(
     }
 
     for (const trade of eligible) {
-      const ibPos = positions.find(p => p.symbol.toUpperCase() === trade.ticker.toUpperCase());
+      const ibPos = positions.find(p => p.symbol.toUpperCase() === trade.ticker.toUpperCase() && p.secType === 'STK');
       if (!ibPos || ibPos.mktPrice <= 0 || ibPos.avgCost <= 0) continue;
 
       const lossPct = ((ibPos.avgCost - ibPos.mktPrice) / ibPos.avgCost) * 100;
