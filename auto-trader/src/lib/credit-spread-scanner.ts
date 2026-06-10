@@ -525,6 +525,12 @@ export async function manageCreditSpreadPositions(): Promise<void> {
             });
             ibCloseOrderId = closeResult.orderId;
             console.log(`[Credit Spread Manager] IB buy-to-close dispatched for ${pos.ticker} (order #${ibCloseOrderId})`);
+            // Pre-stamp ib_close_order_id immediately so the trigger can match incoming
+            // fill events even if recordTradeClose() hasn't written to the DB yet.
+            // Without this, fills arriving before the recordTradeClose write create ghost records.
+            await getSupabase().from('paper_trades').update({
+              ib_close_order_id: String(ibCloseOrderId),
+            }).eq('id', pos.id);
           } catch (ibErr) {
             console.warn(`[Credit Spread Manager] IB buy-to-close FAILED for ${pos.ticker}: ${ibErr instanceof Error ? ibErr.message : ibErr}`);
           }
