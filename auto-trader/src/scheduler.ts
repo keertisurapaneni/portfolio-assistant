@@ -7279,19 +7279,65 @@ async function checkLossCutOpportunities(
             accountType: acctType,
           });
         } else {
-          // Partial loss cut — update the original record's quantity to what remains in IB.
-          // Previously this spawned a new SELL paper_trade record which the next cycle's
-          // eligible filter would pick up as a new position and loss-cut again → cascade loop.
-          // Set close_price, close_reason, and closed_at so Today's Activity picks up this
-          // trade via the closed_at.gte.today condition even though it isn't fully closed.
+          // Partial loss cut — create a child CLOSED record for the sold portion only.
+          // The original record stays FILLED with reduced quantity (the remaining IB position).
+          //
+          // Why a child record (not mutating the original):
+          //   - The Supabase trigger (section 4) uses `paper_trades.quantity` to compute fallback
+          //     P&L. Mutating the original sets quantity=remainingQty, so the trigger computes
+          //     P&L on the wrong qty. Child record has quantity=sellQty → trigger is always right.
+          //   - The original represents the OPEN position. Setting close fields on it makes
+          //     `Today's Activity` and `syncPositions` see a conflicted state (open yet closed).
+          //   - Cascade-loop risk: the eligible filter blocks t.signal !== 'SELL', but a STOPPED
+          //     child record also can't loop (status != FILLED/PARTIAL → not in eligible).
           const sb = getSupabase();
-          await sb.from('paper_trades').update({
-            quantity: remainingQty,
-            close_price: result.avgFillPrice,
-            close_reason: 'loss_cut',
-            closed_at: new Date().toISOString(),
-            notes: `Loss cut ${triggered.label} at -${lossPct.toFixed(1)}% (${sellQty} of ${Math.round(ibPos.position)} sold, ${remainingQty} remain)`,
-          }).eq('id', trade.id);
+
+          // 1. Insert a child record for the sold shares. Starts as FILLED so recordTradeClose
+          //    can mark it STOPPED and the trigger's section-4 can target it via ib_close_order_id.
+          const { data: child } = await sb
+            .from(tradesTable(acctType))
+            .insert({
+              ticker: trade.ticker,
+              signal: trade.signal,
+              mode: trade.mode,
+              status: 'FILLED',
+              quantity: sellQty,
+              entry_price: trade.entry_price,
+              fill_price: trade.fill_price,
+              ib_close_order_id: String(result.orderId),
+              entry_trigger_type: trade.entry_trigger_type,
+              strategy_source: trade.strategy_source,
+              opened_at: trade.opened_at,
+              notes: `Partial loss cut ${triggered.label}: sold ${sellQty} of ${Math.round(ibPos.position)} shares at -${lossPct.toFixed(1)}%`,
+            })
+            .select('id')
+            .single();
+
+          // 2. Close the child — recordTradeClose looks up ib_fills for realized P&L (correct
+          //    sellQty), and falls back to formula with sellQty if commission report hasn't landed.
+          if (child?.id) {
+            await recordTradeClose({
+              tradeId: child.id,
+              closePrice: result.avgFillPrice,
+              closeReason: 'loss_cut',
+              status: 'STOPPED',
+              orderId: result.orderId,
+              accountType: acctType,
+            });
+          } else {
+            log(`${trade.ticker}: Partial loss cut child record insert failed — ib_close_order_id ${result.orderId} orphaned`);
+          }
+
+          // 3. Reduce original quantity and clear ib_close_order_id (now owned by child).
+          //    No close fields — the original is still an open FILLED position.
+          await sb
+            .from(tradesTable(acctType))
+            .update({
+              quantity: remainingQty,
+              ib_close_order_id: null,
+              notes: `Partial loss cut ${triggered.label}: sold ${sellQty}, ${remainingQty} remain in IB`,
+            })
+            .eq('id', trade.id);
         }
 
         const realizedLoss = ibPos.position > 0
