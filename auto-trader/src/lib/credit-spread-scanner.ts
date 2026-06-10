@@ -450,6 +450,13 @@ export async function manageCreditSpreadPositions(): Promise<void> {
 
   for (const pos of positions) {
     try {
+      // Close order already in-flight — skip management until trigger confirms the fill.
+      // Prevents placing a second close order while the first is still working.
+      if (pos.ib_close_order_id) {
+        console.log(`[Credit Spread Manager] ${pos.ticker}: close order #${pos.ib_close_order_id} in-flight, waiting for fill confirmation`);
+        continue;
+      }
+
       const netCredit = pos.spread_net_credit ?? pos.entry_price ?? 0;
       const maxGainPerShare = netCredit;
       const contracts = pos.option_contracts ?? pos.quantity ?? 1;
@@ -536,39 +543,53 @@ export async function manageCreditSpreadPositions(): Promise<void> {
           }
         }
 
-        if (!ibCloseOrderId && isConnected()) {
-          console.warn(`[Credit Spread Manager] ${pos.ticker} — close trigger ${closeReason} but IB close order failed, leaving position open for retry`);
-          await createAutoTradeEvent({
-            ticker: pos.ticker,
-            mode: 'CREDIT_SPREAD',
-            event_type: 'warning',
-            action: 'skipped',
-            message: `${pos.ticker} ${closeReason} triggered but IB buy-to-close failed — position left open for retry`,
-            metadata: { closeReason, pnl: pnlTotal, dte, pnlPctOfMaxGain },
-          });
+        if (!ibCloseOrderId) {
+          // IB connected but order placement failed — skip this cycle, retry next run
+          if (isConnected()) {
+            console.warn(`[Credit Spread Manager] ${pos.ticker} — close trigger ${closeReason} but IB close order failed, leaving position open for retry`);
+            await createAutoTradeEvent({
+              ticker: pos.ticker,
+              mode: 'CREDIT_SPREAD',
+              event_type: 'warning',
+              action: 'skipped',
+              message: `${pos.ticker} ${closeReason} triggered but IB buy-to-close failed — position left open for retry`,
+              metadata: { closeReason, pnl: pnlTotal, dte, pnlPctOfMaxGain },
+            });
+          } else {
+            // IB disconnected — fall back to estimated P&L close so the position doesn't run dark
+            await recordTradeClose({
+              tradeId: pos.id,
+              closePrice: currentSpreadValue,
+              closeReason,
+              status: 'CLOSED',
+              accountType: 'paper',
+              overridePnl: pnlTotal,
+              overridePnlPct: maxGainTotal > 0 ? (pnlTotal / maxGainTotal) * 100 : 0,
+              overridePnlSource: 'estimated',
+            });
+            await createAutoTradeEvent({
+              ticker: pos.ticker,
+              mode: 'CREDIT_SPREAD',
+              event_type: 'warning',
+              action: 'closed',
+              message: `Closed ${pos.spread_type}: ${pos.spread_short_strike}/${pos.spread_long_strike} | ${closeReason} | P&L $${pnlTotal.toFixed(0)} (estimated — IB disconnected)`,
+              metadata: { closeReason, pnl: pnlTotal, dte, pnlPctOfMaxGain },
+            });
+          }
           continue;
         }
 
-        await recordTradeClose({
-          tradeId: pos.id,
-          closePrice: currentSpreadValue,
-          closeReason,
-          status: 'CLOSED',
-          orderId: ibCloseOrderId ?? undefined,
-          accountType: 'paper',
-          overridePnl: pnlTotal,
-          overridePnlPct: maxGainTotal > 0 ? (pnlTotal / maxGainTotal) * 100 : 0,
-          overridePnlSource: ibCloseOrderId ? 'ib_fill_calculated' : 'estimated',
-        });
-
-        const ibTag = ibCloseOrderId ? ` (IB #${ibCloseOrderId})` : ' (model-based, IB disconnected)';
+        // IB order placed successfully — ib_close_order_id is already stamped on the DB record.
+        // The Supabase trigger will confirm the close with actual fill prices when both legs land.
+        // Do NOT call recordTradeClose here — that would write an estimated P&L that the trigger
+        // cannot correct (realized_pnl=null for combo fills).
         await createAutoTradeEvent({
           ticker: pos.ticker,
           mode: 'CREDIT_SPREAD',
-          event_type: pnlTotal >= 0 ? 'success' : 'warning',
-          action: 'closed',
-          message: `Closed ${pos.spread_type}: ${pos.spread_short_strike}/${pos.spread_long_strike} | ${closeReason} | P&L $${pnlTotal.toFixed(0)} (${pnlPctOfMaxGain.toFixed(0)}% of max)${ibTag}`,
-          metadata: { closeReason, pnl: pnlTotal, dte, pnlPctOfMaxGain, ibCloseOrderId },
+          event_type: 'info',
+          action: 'proceeding',
+          message: `${pos.spread_type} ${pos.spread_short_strike}/${pos.spread_long_strike}: close order #${ibCloseOrderId} placed (${closeReason}, est P&L $${pnlTotal.toFixed(0)}) — waiting for fill confirmation`,
+          metadata: { closeReason, estimatedPnl: pnlTotal, dte, ibCloseOrderId },
         });
       }
     } catch (err) {
