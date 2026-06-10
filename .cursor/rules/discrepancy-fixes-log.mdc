@@ -1,0 +1,39 @@
+---
+description: Require reading the discrepancy fixes log before touching any reconciliation, P&L, or Today's Activity code
+globs:
+alwaysApply: true
+---
+
+# Discrepancy Fixes Log — Read Before Every Fix
+
+## Rule
+
+Before making ANY change related to:
+- Today's Activity vs IB discrepancies
+- `paper_trades` P&L, status, close_price, or quantity
+- `ib_fills` trigger or reconciliation
+- `scheduler.ts`, `credit-spread-scanner.ts`, `reconcile-executions.ts`, `trade-closer.ts`
+- `TodayActivityTab.tsx` or `paperTradesApi.ts`
+- Any DB patch to `paper_trades` records
+
+**You MUST read `docs/cursor/discrepancy-fixes-log.md` first.**
+
+Search the log for the ticker/symptom before touching anything.
+
+If the symptom already appears in the log:
+- Read the root cause column
+- Read what regressions were previously introduced
+- Do NOT repeat the same fix without understanding why it didn't hold
+
+## After Every Fix
+
+Add a row to `docs/cursor/discrepancy-fixes-log.md` immediately:
+- Date, symptom, root cause, files changed, PR number, any side effects
+
+## Why
+
+This codebase has introduced regressions while fixing bugs on multiple consecutive days:
+- PR #432 fixed RKLB phantom P&L → introduced 7 falsely-closed credit spreads next morning
+- PR #431 fixed ADBE display → used wrong partial-close logic, required PR #434 to undo
+
+The log is the only way to break this cycle.
