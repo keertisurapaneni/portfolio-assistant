@@ -6,7 +6,7 @@
  */
 
 import { EventName } from '@stoqey/ib';
-import { getIBApi, isConnected, getNextOrderId, getDefaultAccount, type IBConnection, getConnectionForAccount } from '../ib-connection.js';
+import { getIBApi, isConnected, getNextOrderId, getDefaultAccount, type IBConnection, getConnectionForAccount, requestPositions } from '../ib-connection.js';
 import { getSupabase, createAutoTradeEvent, tradesTable, type PaperTrade } from './supabase.js';
 import { recalculatePerformance } from './feedback.js';
 import type { AccountType } from '../../../shared/trade-types.js';
@@ -450,6 +450,30 @@ export async function reconcileGhostCloses(
 
     const latestClosePrice = latestGhost.close_price;
     const closeOrderIds = ghostGroup.map(g => g.ib_close_order_id).filter(Boolean).join(',');
+
+    // Safety check: verify IB no longer holds this position before closing the DB record.
+    // Without this, a ghost created by a partial fill would cause premature closure of
+    // the real trade while IB still holds the remaining shares (NEM bug, Jun 10 2026).
+    if (isConnected()) {
+      try {
+        const ibPositions = await requestPositions();
+        const ibHolding = ibPositions.find(p => p.symbol === ticker && p.position !== 0);
+        if (ibHolding) {
+          log(
+            `[GhostClose] ${ticker} (${mode}): SKIPPING close — IB still holds ${ibHolding.position} ` +
+            `shares/contracts. Ghost was from a partial fill; real trade ${realTrade.id} remains open.`,
+          );
+          await createAutoTradeEvent({
+            ticker, event_type: 'warning', action: 'skipped', source: 'system',
+            message: `[GhostClose] ${ticker}: skipped close — IB still holds position (${ibHolding.position} units). Partial fill ghost, not a full close.`,
+            metadata: { realTradeId: realTrade.id, ghostIds: ghostGroup.map(g => g.id), ibPosition: ibHolding.position },
+          }, accountType);
+          continue;
+        }
+      } catch (posErr) {
+        log(`[GhostClose] ${ticker}: reqPositions failed (${posErr instanceof Error ? posErr.message : posErr}) — proceeding with close anyway`);
+      }
+    }
 
     log(
       `[GhostClose] ${ticker} (${mode}): linking ${ghostGroup.length} ghost(s) → real trade ${realTrade.id} ` +
