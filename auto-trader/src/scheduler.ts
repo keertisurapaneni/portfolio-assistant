@@ -7315,6 +7315,8 @@ async function checkLossCutOpportunities(
 
           // 2. Close the child — recordTradeClose looks up ib_fills for realized P&L (correct
           //    sellQty), and falls back to formula with sellQty if commission report hasn't landed.
+          //    positionDirection is required: the child has signal='SELL' (for Today's Activity
+          //    display) but the underlying position direction is determined by IB's position sign.
           if (child?.id) {
             await recordTradeClose({
               tradeId: child.id,
@@ -7323,6 +7325,7 @@ async function checkLossCutOpportunities(
               status: 'STOPPED',
               orderId: result.orderId,
               accountType: acctType,
+              positionDirection: ibPos.position > 0 ? 'LONG' : 'SHORT',
             });
           } else {
             log(`${trade.ticker}: Partial loss cut child record insert failed — ib_close_order_id ${result.orderId} orphaned`);
