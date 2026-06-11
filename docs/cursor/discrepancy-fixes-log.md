@@ -29,6 +29,7 @@ Before making any fix:
 | Jun 10 | `reconcileGhostCloses` closed NEM prematurely (IB still held 3 shares) | `reconcileGhostCloses` closed real trade when ghost existed, without checking IB live positions | `reconcile-executions.ts` | #435 | None |
 | Jun 10 | NBIS `6ab19f67` spuriously closed with `close_reason=manual`, `pnl=0` | **Root cause still unresolved.** Attribution: scheduler SUBMITTED detection path suspected, but CREDIT_SPREAD is `continue`d before that block. Reopened manually. | DB patch: reopened `6ab19f67` | none | Needs investigation — if root cause not found, will recur |
 | Jun 10 | Credit spread P&L wrong in Today's Activity (estimated Greeks, not actual fills) | `manageCreditSpreadPositions` called `recordTradeClose` immediately after placing close order with estimated P&L. Trigger couldn't correct it — combo fills have `realized_pnl=null`, trigger section 4 requires `realized_pnl IS NOT NULL` | `credit-spread-scanner.ts`, new trigger section (4b) | #436 | None known |
+| Jun 11 | ADBE/NEM loss cut child records showing "BUY" signal instead of "SELL" | PR #434 child record insert used `signal: trade.signal` — inherited `'BUY'` from original LONG_TERM position. Loss cut is a sell action, should be `'SELL'` | `scheduler.ts` line 7301 | #437 | None |
 
 ---
 
