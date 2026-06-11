@@ -204,7 +204,7 @@ For each HIGH_VOL watchlist ticker:
   3. Daily cap reached (2 trades)? If so, stop
   4. Already in open scalp for this ticker today? Skip
 
-  5. Fetch quote + 5-min bars (2-day range for 200 SMA)
+  5. Fetch quote + 5-min bars (5-day range for 200 SMA — ~390 bars)
 
   6. 200 SMA direction check:
      - Above SMA → calls only
