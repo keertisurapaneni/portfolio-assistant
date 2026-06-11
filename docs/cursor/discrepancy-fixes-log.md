@@ -30,6 +30,7 @@ Before making any fix:
 | Jun 10 | NBIS `6ab19f67` spuriously closed with `close_reason=manual`, `pnl=0` | **Root cause still unresolved.** Attribution: scheduler SUBMITTED detection path suspected, but CREDIT_SPREAD is `continue`d before that block. Reopened manually. | DB patch: reopened `6ab19f67` | none | Needs investigation — if root cause not found, will recur |
 | Jun 10 | Credit spread P&L wrong in Today's Activity (estimated Greeks, not actual fills) | `manageCreditSpreadPositions` called `recordTradeClose` immediately after placing close order with estimated P&L. Trigger couldn't correct it — combo fills have `realized_pnl=null`, trigger section 4 requires `realized_pnl IS NOT NULL` | `credit-spread-scanner.ts`, new trigger section (4b) | #436 | None known |
 | Jun 11 | ADBE/NEM loss cut child records showing "BUY" signal instead of "SELL" | PR #434 child record insert used `signal: trade.signal` — inherited `'BUY'` from original LONG_TERM position. Loss cut is a sell action, should be `'SELL'` | `scheduler.ts` line 7301 | #437 | None |
+| Jun 11 | OPTIONS_SCALP ORB scanner placed 0 trades silently for 2+ days | `fetchIntradayBars(ticker, '5m', '2d')` returns `null` from Yahoo Finance — `range=2d` unsupported. All 20 HIGH_VOL tickers silently skipped at `!bars5m?.length` (no log). Also `ORB_SMA200_PERIOD=200` unreachable — max ~78 bars/day. | `options-scalp.ts`: `'2d'`→`'1d'`, period 200→50, added data-unavailable log | #438 | SMA50 on 5-min = ~4h trend filter; equivalent direction signal |
 
 ---
 
