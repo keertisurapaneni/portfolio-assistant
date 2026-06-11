@@ -38,7 +38,7 @@ const LAST_ENTRY_MIN_ET  = 0;
 const ORB_END_HOUR_ET    = 9;            // ORB forms during 9:30–9:45; no entries before 9:45
 const ORB_END_MIN_ET     = 45;
 const ORB_RETEST_BUFFER  = 0.15;        // price must be within $0.15 of ORB level to count as retest
-const ORB_SMA50_PERIOD   = 50;           // 50-period SMA on 5-min bars ≈ 4h trend filter (fits in 1d range)
+const ORB_SMA200_PERIOD  = 200;          // 200-period SMA on 5-min bars — Kay Capitals direction filter (needs 5d range)
 
 // ── NTZ / ORB helpers ────────────────────────────────────
 
@@ -160,17 +160,17 @@ function detectOrbSetup(
 }
 
 /**
- * Compute 50-period SMA from 5-min bars (~4h trend filter).
- * Returns 'C' if price above SMA (calls), 'P' if below (puts), null if chopping around it.
+ * Compute 200-period SMA from 5-min bars — Kay Capitals direction filter.
+ * Returns 'C' if price above SMA (calls only), 'P' if below (puts only), null if chopping.
  */
 function get5mSmaDirection(bars: IntradayBar[], currentPrice: number): 'C' | 'P' | null {
-  if (bars.length < ORB_SMA50_PERIOD) return null;
+  if (bars.length < ORB_SMA200_PERIOD) return null;
   const closes = bars.map(b => b.close);
-  const sum = closes.slice(-ORB_SMA50_PERIOD).reduce((a, b) => a + b, 0);
-  const sma50 = sum / ORB_SMA50_PERIOD;
-  const distPct = Math.abs(currentPrice - sma50) / sma50 * 100;
+  const sum = closes.slice(-ORB_SMA200_PERIOD).reduce((a, b) => a + b, 0);
+  const sma200 = sum / ORB_SMA200_PERIOD;
+  const distPct = Math.abs(currentPrice - sma200) / sma200 * 100;
   if (distPct < 0.3) return null; // within 0.3% = chopping, no edge
-  return currentPrice > sma50 ? 'C' : 'P';
+  return currentPrice > sma200 ? 'C' : 'P';
 }
 
 /**
@@ -282,7 +282,7 @@ export async function runOptionScalpScan(): Promise<void> {
     // ── Get quote + 5-min bars ───────────────────────────────────────────────
     const [q, bars5m] = await Promise.all([
       fetchQuote(ticker),
-      fetchIntradayBars(ticker, '5m', '1d'),  // 1d = ~78 bars; 50-period SMA needs at least 50 bars
+      fetchIntradayBars(ticker, '5m', '5d'),  // 5d = ~390 bars; Kay Capitals 200-period SMA requires ≥200 bars
     ]);
     if (!q?.price || !bars5m?.length) {
       console.log(`[Options Scalp] ${ticker}: data unavailable (quote=${q?.price ?? 'null'}, bars=${bars5m?.length ?? 'null'})`);
@@ -290,10 +290,10 @@ export async function runOptionScalpScan(): Promise<void> {
     }
     const price = q.price;
 
-    // ── 50 SMA direction filter (~4h trend) ─────────────────────────────────
+    // ── 200 SMA direction filter (Kay Capitals) ─────────────────────────────
     const smaDirection = get5mSmaDirection(bars5m, price);
     if (smaDirection === null) {
-      console.log(`[Options Scalp] ${ticker}: price chopping around 50 SMA — no edge, skipping`);
+      console.log(`[Options Scalp] ${ticker}: price chopping around 200 SMA — no edge, skipping`);
       continue;
     }
 

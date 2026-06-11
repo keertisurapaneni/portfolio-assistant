@@ -115,12 +115,12 @@ export interface IntradayBar {
  *
  * @param symbol    Ticker symbol (e.g. "SPY")
  * @param interval  Bar size: "1m" | "2m" | "5m" | "15m"
- * @param range     Lookback: "1d" (today only) | "2d" (two sessions)
+ * @param range     Lookback: "1d" (today only) | "2d" (two sessions) | "5d" (five sessions, ~390 5-min bars — needed for 200-period SMA)
  */
 export async function fetchIntradayBars(
   symbol: string,
   interval: '1m' | '2m' | '5m' | '15m' = '5m',
-  range: '1d' | '2d' = '1d',
+  range: '1d' | '2d' | '5d' = '1d',
   includePrePost = false,
 ): Promise<IntradayBar[] | null> {
   try {
