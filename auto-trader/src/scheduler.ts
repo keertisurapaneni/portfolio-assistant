@@ -7298,7 +7298,7 @@ async function checkLossCutOpportunities(
             .from(tradesTable(acctType))
             .insert({
               ticker: trade.ticker,
-              signal: trade.signal,
+              signal: 'SELL',
               mode: trade.mode,
               status: 'FILLED',
               quantity: sellQty,
