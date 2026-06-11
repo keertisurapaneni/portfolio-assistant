@@ -25,6 +25,18 @@ export interface CloseTradeParams {
   overridePnl?: number;
   overridePnlPct?: number;
   overridePnlSource?: PnlSource;
+  /**
+   * Explicit position direction for P&L sign calculation.
+   * Required when the trade record's `signal` field reflects a close *action* rather than
+   * the original entry direction — specifically partial loss cut child records (signal='SELL'
+   * for display, but the underlying position was long). Without this, the fallback formula
+   * treats the close as a short cover and flips the sign.
+   *
+   * TODO(architecture): The real fix is a `display_action` column on paper_trades so that
+   * `signal` always means entry direction and display derives from `display_action ?? signal`.
+   * Until then, callers creating child records must pass this explicitly.
+   */
+  positionDirection?: 'LONG' | 'SHORT';
   /** Extra fields to write (r_multiple, notes, missing_since, etc.) */
   extraUpdates?: Record<string, unknown>;
 }
@@ -32,7 +44,7 @@ export interface CloseTradeParams {
 export async function recordTradeClose(params: CloseTradeParams): Promise<void> {
   const {
     tradeId, closePrice, closeReason, status, orderId,
-    accountType, overridePnl, overridePnlPct, overridePnlSource, extraUpdates,
+    accountType, overridePnl, overridePnlPct, overridePnlSource, positionDirection, extraUpdates,
   } = params;
 
   // 1. Look up the trade
@@ -88,8 +100,12 @@ export async function recordTradeClose(params: CloseTradeParams): Promise<void> 
       pnl = ibRealizedPnl;
       pnlSource = 'ib_realized';
     } else {
-      // 3b. Calculate from fill prices
-      const isLong = signal === 'BUY';
+      // 3b. Calculate from fill prices.
+      // positionDirection overrides signal-based inference — needed for partial loss cut
+      // child records where signal='SELL' (display) but the underlying position is LONG.
+      const isLong = positionDirection
+        ? positionDirection === 'LONG'
+        : signal === 'BUY';
       pnl = isLong
         ? (closePrice - fillPrice) * qty
         : (fillPrice - closePrice) * qty;
