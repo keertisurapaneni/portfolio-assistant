@@ -55,7 +55,8 @@ export type CloseReason =
   | 'stopped'
   | 'expired_worthless'
   | 'expired_itm'
-  | 'ib_fill_auto_created';
+  | 'ib_fill_auto_created'
+  | 'ib_reconciliation_cover';
 
 /**
  * Full paper_trades row — superset of all columns used by any consumer.
