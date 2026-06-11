@@ -152,6 +152,8 @@ export function TradeIdeas({ onSelectTicker }: TradeIdeasProps) {
   //   2. CANCELLED/REJECTED/EXPIRED excluded — phantom orders don't light up the badge
   //   3. Influencer/external trades excluded (strategy_video_id or strategy_source set) —
   //      influencer trades are independent and must NEVER affect auto-trader signal status
+  //   4. ib_reconciliation_cover excluded — these are orphaned-short cover buys by the
+  //      reconciler, not real signal executions; showing TRADED for them is misleading
   useEffect(() => {
     const todayET = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
     Promise.all([getActiveTrades(), getAllTrades(50)])
@@ -165,7 +167,8 @@ export function TradeIdeas({ onSelectTicker }: TradeIdeasProps) {
             (t.opened_at ?? '').startsWith(todayET) &&
             nonTerminal.has(t.status ?? '') &&
             !t.strategy_video_id &&   // influencer trades are independent — never affect trade signals
-            !t.strategy_source        // influencer trades are independent — never affect trade signals
+            !t.strategy_source &&     // influencer trades are independent — never affect trade signals
+            t.close_reason !== 'ib_reconciliation_cover'  // reconciler covers are not signal executions
           )
           .forEach(t => {
             tickers.add(`${t.ticker.toUpperCase()}_${(t.signal ?? '').toUpperCase()}`);
