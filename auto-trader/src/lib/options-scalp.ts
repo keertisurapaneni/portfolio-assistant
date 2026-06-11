@@ -186,21 +186,28 @@ function parseExpiryDate(expiry: string): Date | null {
   return new Date(y, m, d);
 }
 
-/** Return nearest weekly Friday expiry that is at least 1 day away, as YYYYMMDD. */
-function getNearestWeeklyExpiry(): string {
-  const now = new Date();
-  const dayOfWeek = now.getDay(); // 0=Sun, 5=Fri
-  const daysUntilFriday = (5 - dayOfWeek + 7) % 7 || 7; // if already Fri, go to next Fri
-  const candidate = new Date(now);
-  candidate.setDate(now.getDate() + daysUntilFriday);
-
-  // If less than 1 calendar day to this Friday, jump to next Friday
-  const msToFriday = candidate.getTime() - now.getTime();
-  if (msToFriday < 86_400_000) candidate.setDate(candidate.getDate() + 7);
-
-  const y  = candidate.getFullYear();
-  const mo = String(candidate.getMonth() + 1).padStart(2, '0');
-  const d  = String(candidate.getDate()).padStart(2, '0');
+/**
+ * Return today's expiry date as YYYYMMDD — 0DTE (same-day expiration).
+ *
+ * Kay Capitals (Somesh) explicitly uses "same day expiration contracts on SPY."
+ * 0DTE options:
+ *   - SPY has daily expirations Mon–Fri so there is always a valid 0DTE chain.
+ *   - Cheap premium → 100–200% moves happen in minutes when the setup is right.
+ *   - Hard EOD close at 3:45 PM ensures we never hold overnight.
+ *   - If IB rejects the 0DTE order (e.g. expiry no longer tradeable), executeScalp
+ *     returns false and the trade is skipped — no fallback to weekly.
+ *
+ * Previous implementation picked "next Friday at least 1 day out" which meant
+ * we were buying expensive multi-day options. When the EOD close failed (pre-Jun-5
+ * fix) those held overnight and expired worthless. Even with the EOD close working,
+ * multi-day options require a larger move to double, reducing win rate.
+ */
+function getTodayExpiry(): string {
+  // Use ET date — the option chain date IB expects is the calendar date in ET.
+  const nowET = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }));
+  const y  = nowET.getFullYear();
+  const mo = String(nowET.getMonth() + 1).padStart(2, '0');
+  const d  = String(nowET.getDate()).padStart(2, '0');
   return `${y}${mo}${d}`;
 }
 
@@ -260,7 +267,7 @@ export async function runOptionScalpScan(): Promise<void> {
     .eq('tier', 'HIGH_VOL');
   if (!watchlist?.length) return;
 
-  const expiry = getNearestWeeklyExpiry();
+  const expiry = getTodayExpiry();
   const slotsLeft = MAX_SCALP_TRADES_PER_DAY - usedToday;
 
   console.log(`[Options Scalp] Scanning ${watchlist.length} HIGH_VOL tickers | expiry ${expiry} | slots ${slotsLeft}`);
@@ -429,7 +436,7 @@ export async function runVwapRetestScalpScan(): Promise<void> {
     return;
   }
 
-  const expiry = getNearestWeeklyExpiry();
+  const expiry = getTodayExpiry();
   const slotsLeft = MAX_SCALP_TRADES_PER_DAY - usedToday;
   let placed = 0;
 
