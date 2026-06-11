@@ -5983,6 +5983,12 @@ async function _syncPositionsForAccount(
       const tpFill = !Number.isNaN(tpId) ? await getOrderFillPriceWithFallback(tpId) : undefined;
       const slFill = !Number.isNaN(slId) ? await getOrderFillPriceWithFallback(slId) : undefined;
       let ibExitFill = tpFill ?? slFill;
+      // Track which bracket leg actually fired so ib_close_order_id is stamped correctly.
+      // Using tpId || slId (TP first) was wrong — if SL fired, ib_close_order_id got the TP
+      // order ID, recordTradeClose found no matching ib_fill, and commissions were excluded.
+      const bracketCloseOrderId = tpFill !== undefined ? tpId
+        : slFill !== undefined ? slId
+        : (!Number.isNaN(tpId) ? tpId : slId) || undefined;
 
       // Fallback for direct market sells (no bracket IDs): when the auto-trader placed
       // a sell order that timed out or disconnected before the fill arrived, the paper_trade
@@ -6098,7 +6104,7 @@ async function _syncPositionsForAccount(
         closePrice: actual,
         closeReason,
         status,
-        orderId: tpId || slId || undefined,
+        orderId: bracketCloseOrderId,
         accountType: syncAcct,
         overridePnlSource: pnlSource as 'ib_fill_calculated' | 'quote_fallback' | 'estimated',
         extraUpdates: { r_multiple: rMultiple, missing_since: null },
