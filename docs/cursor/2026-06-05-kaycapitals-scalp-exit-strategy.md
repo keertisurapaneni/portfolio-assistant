@@ -1,8 +1,9 @@
-# Kay Capitals Options Scalp — Strategy & Implementation
+# Somesh (Kay Capitals) Options Scalp — Strategy & Implementation
 
 **Created:** 2026-06-05  
-**Last updated:** 2026-06-07  
-**Sources:** Kay Capitals YouTube — "My Options Strategy Is Boring", "The 3-Step A+ Options Strategy", and 3 additional strategy/walkthrough videos  
+**Last updated:** 2026-06-11  
+**Sources:** Somesh's YouTube channel (Kay Capitals) — "My Options Strategy Is Boring", "The 3-Step A+ Options Strategy", and 3 additional strategy/walkthrough videos  
+**Note:** Kay Capitals is Somesh's YouTube channel. This doc and `docs/guides/somesh-strategies.md` are both from the same person.
 
 ---
 

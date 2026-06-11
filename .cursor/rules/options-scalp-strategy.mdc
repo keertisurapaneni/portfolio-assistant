@@ -1,5 +1,5 @@
 ---
-description: Require reading the Kay Capitals strategy doc before touching options scalp code
+description: Require reading the Somesh (Kay Capitals) strategy doc before touching options scalp code
 globs:
   - "auto-trader/src/lib/options-scalp.ts"
   - "auto-trader/src/lib/spy-basketball.ts"
@@ -15,22 +15,26 @@ Before making ANY change to options scalp code (`options-scalp.ts`, `spy-basketb
 
 **You MUST read `docs/cursor/2026-06-05-kaycapitals-scalp-exit-strategy.md` first.**
 
-This is the Kay Capitals strategy document. It defines:
+This is Somesh's strategy — he goes by Kay Capitals on his YouTube channel. Both
+`docs/guides/somesh-strategies.md` and `docs/cursor/2026-06-05-kaycapitals-scalp-exit-strategy.md`
+are from the same person. The options scalp is his framework.
+
+The doc defines:
 - The exact entry framework (NTZ → ORB breakout → 200 SMA direction)
 - The exit strategy (partial at +50%, runner to break-even, full at +100%)
 - Key constants and their strategic meaning
-- What differs from Kay's framework and why
+- What differs from his framework and why
 
 ## Do not assume — verify
 
 Before changing any constant or logic in `options-scalp.ts`:
-1. Find the relevant section in the Kay Capitals doc
+1. Find the relevant section in Somesh's doc
 2. Confirm your change aligns with the strategy
 3. If changing a constant (SMA period, profit target, etc.) — state which part of the strategy it maps to
 
 ## Key facts to remember
 
-- **200-period SMA on 5-min bars** — Kay Capitals direction filter. Requires `'5d'` range from Yahoo Finance (~334 bars). `'2d'` only gives ~100 bars (not enough). `'1d'` gives ~78 (not enough).
+- **200-period SMA on 5-min bars** — Somesh's direction filter. Requires `'5d'` range from Yahoo Finance (~334 bars). `'2d'` only gives ~100 bars (not enough). `'1d'` gives ~78 (not enough). Validated live: 5d=334 bars, 2d=100 bars.
 - **ORB = first 15-min range** (9:30–9:45 AM ET, 3 × 5-min candles)
 - **NTZ = max(premarket high, yesterday high) to min(premarket low, yesterday low)**
 - **2 contracts minimum** — required for the partial exit strategy (can't execute with 1)
@@ -39,6 +43,6 @@ Before changing any constant or logic in `options-scalp.ts`:
 
 ## Strategy source docs
 
-- `docs/cursor/2026-06-05-kaycapitals-scalp-exit-strategy.md` — full Kay Capitals framework + implementation status
+- `docs/cursor/2026-06-05-kaycapitals-scalp-exit-strategy.md` — Somesh's full framework + implementation status (Kay Capitals = Somesh's channel)
+- `docs/guides/somesh-strategies.md` — Somesh's other strategies (ORB, VWAP, SPX levels, confluence)
 - `docs/cursor/2026-05-28-options-three-strategies.md` — how scalp fits alongside wheel and LEAPs
-- `docs/guides/somesh-strategies.md` — Somesh's strategies (ORB + VWAP overlap, but scalp is Kay Capitals)
