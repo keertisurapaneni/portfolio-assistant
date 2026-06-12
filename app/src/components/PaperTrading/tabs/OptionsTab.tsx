@@ -961,15 +961,26 @@ function StatsHeader({
   maxAllocation,
   openPositions,
   openPrices,
+  openSpreads,
+  closedSpreads,
 }: {
   stats: OptionsMonthlyStats;
   deployed: number;
   maxAllocation: number;
   openPositions: OpenOptionsPosition[];
   openPrices: Map<string, TickerQuote>;
+  openSpreads: CreditSpreadPosition[];
+  closedSpreads: CreditSpreadPosition[];
 }) {
   // Unrealized P&L across all open positions (negative = premium moved against us)
   const totalUnrealizedPnl = openPositions.reduce((s, p) => s + (p.pnl ?? 0), 0);
+
+  // Spread summary for the header row
+  const spreadRealizedPnl = closedSpreads.reduce((s, sp) => s + (sp.pnl ?? 0), 0);
+  const spreadUnrealizedPnl = openSpreads.reduce((s, sp) => s + (sp.pnl ?? 0), 0);
+  const spreadWins = closedSpreads.filter(sp => (sp.pnl ?? 0) > 0).length;
+  const spreadLosses = closedSpreads.length - spreadWins;
+  const hasSpreadActivity = closedSpreads.length > 0 || openSpreads.length > 0;
   // Progress = realized + premium in play vs monthly target
   // (premium in play = cash already collected from open positions, kept if they expire OTM)
   const potentialIncome = stats.premiumCollected + stats.openPremiumAtRisk;
@@ -1046,6 +1057,26 @@ function StatsHeader({
               {fmtUsd(stats.scalpPnl, 0, true)}
             </span>
             <span className="text-[9px] text-sky-500">({stats.scalpTrades} trade{stats.scalpTrades !== 1 ? 's' : ''})</span>
+          </div>
+        )}
+
+        {/* Spread P&L row — only shown if any spread activity exists */}
+        {hasSpreadActivity && (
+          <div className="flex items-center gap-2 rounded-lg bg-teal-50 border border-teal-100 px-3 py-1.5">
+            <span className="text-[10px] font-semibold text-teal-700">📊 Spread P&L</span>
+            {closedSpreads.length > 0 && (
+              <>
+                <span className={cn('text-[10px] font-bold', spreadRealizedPnl >= 0 ? 'text-emerald-700' : 'text-red-600')}>
+                  {fmtUsd(spreadRealizedPnl, 0, true)}
+                </span>
+                <span className="text-[9px] text-teal-500">{spreadWins}W / {spreadLosses}L</span>
+              </>
+            )}
+            {openSpreads.length > 0 && (
+              <span className={cn('text-[9px]', spreadUnrealizedPnl >= 0 ? 'text-emerald-600' : 'text-amber-600')}>
+                · {openSpreads.length} open {fmtUsd(spreadUnrealizedPnl, 0, true)} unrealized
+              </span>
+            )}
           </div>
         )}
 
@@ -1665,7 +1696,7 @@ export function OptionsTab() {
 
       {/* Stats Header — income progress + budget meter */}
       {stats && (
-        <StatsHeader stats={stats} deployed={deployed} maxAllocation={maxAllocation} openPositions={openPositions} openPrices={openPrices} />
+        <StatsHeader stats={stats} deployed={deployed} maxAllocation={maxAllocation} openPositions={openPositions} openPrices={openPrices} openSpreads={openSpreads} closedSpreads={closedSpreads} />
       )}
 
       {/* Section Tabs */}
@@ -1697,6 +1728,22 @@ export function OptionsTab() {
       {/* Open Positions — split into Needs Attention / Healthy */}
       {activeSection === 'positions' && (
         <div className="space-y-4">
+          {/* Wheel history summary strip */}
+          {closedPositions.length > 0 && (() => {
+            const realizedPnl = closedPositions.reduce((s, p) => s + (p.pnl ?? 0), 0);
+            const wins = closedPositions.filter(p => (p.pnl ?? 0) > 0).length;
+            return (
+              <div className="flex items-center gap-3 rounded-lg bg-violet-50 border border-violet-100 px-3 py-2">
+                <span className="text-[10px] font-semibold text-violet-700">🔄 Wheel History</span>
+                <span className={cn('text-[11px] font-bold', realizedPnl >= 0 ? 'text-emerald-700' : 'text-red-600')}>
+                  {fmtUsd(realizedPnl, 0, true)}
+                </span>
+                <span className="text-[10px] text-violet-500">
+                  {wins}W / {closedPositions.length - wins}L
+                </span>
+              </div>
+            );
+          })()}
           {openPositions.length === 0 ? (
             <div className="text-center py-8 text-sm text-[hsl(var(--muted-foreground))]">No open options positions</div>
           ) : (
@@ -1759,6 +1806,33 @@ export function OptionsTab() {
             </div>
           ) : (
             <>
+              {/* Summary strip */}
+              {(() => {
+                const realizedPnl = closedSpreads.reduce((s, sp) => s + (sp.pnl ?? 0), 0);
+                const unrealizedPnl = openSpreads.reduce((s, sp) => s + (sp.pnl ?? 0), 0);
+                const wins = closedSpreads.filter(sp => (sp.pnl ?? 0) > 0).length;
+                return (
+                  <div className="flex items-center gap-3 rounded-lg bg-teal-50 border border-teal-100 px-3 py-2">
+                    <span className="text-[10px] font-semibold text-teal-700">📊 Spread History</span>
+                    {closedSpreads.length > 0 && (
+                      <>
+                        <span className={cn('text-[11px] font-bold', realizedPnl >= 0 ? 'text-emerald-700' : 'text-red-600')}>
+                          {fmtUsd(realizedPnl, 0, true)}
+                        </span>
+                        <span className="text-[10px] text-teal-500">
+                          {wins}W / {closedSpreads.length - wins}L
+                        </span>
+                      </>
+                    )}
+                    {openSpreads.length > 0 && (
+                      <span className={cn('text-[10px]', unrealizedPnl >= 0 ? 'text-emerald-600' : 'text-amber-600')}>
+                        · {openSpreads.length} open {fmtUsd(unrealizedPnl, 0, true)}
+                      </span>
+                    )}
+                  </div>
+                );
+              })()}
+
               {openSpreads.length > 0 && (
                 <div className="space-y-2">
                   <div className="flex items-center gap-2 px-1">
@@ -1903,7 +1977,19 @@ export function OptionsTab() {
                         {pos.option_assigned && <span className="text-[10px] px-1 py-0.5 rounded bg-amber-100 text-amber-700">📌 Assigned</span>}
                       </div>
                       <p className="text-[10px] text-[hsl(var(--muted-foreground))]">
-                        Strike ${pos.option_strike} · Collected ${Math.round((pos.option_premium ?? 0) * (pos.option_contracts ?? 1) * 100)} · Exp {formatExpiry(pos.option_expiry)}
+                        ${pos.option_strike} strike · {pos.mode === 'OPTIONS_CALL' ? 'CALL' : 'PUT'}
+                        {pos.fill_price != null && (
+                          <> · Sold <span className="font-semibold text-emerald-700">${pos.fill_price.toFixed(2)}</span></>
+                        )}
+                        {pos.close_price != null && pos.close_price > 0 && (
+                          <> → Closed <span className="font-semibold text-red-600">${pos.close_price.toFixed(2)}</span></>
+                        )}
+                        {pos.fill_price != null && pos.close_price != null && pos.close_price > 0 && (
+                          <span className={cn('ml-1 font-semibold', pos.fill_price > pos.close_price ? 'text-emerald-600' : 'text-red-600')}>
+                            ({pos.fill_price > pos.close_price ? '+' : ''}{((pos.fill_price - pos.close_price) * (pos.option_contracts ?? 1) * 100).toFixed(0)} gross)
+                          </span>
+                        )}
+                        {' · '}{pos.option_contracts ?? 1} contract{(pos.option_contracts ?? 1) !== 1 ? 's' : ''} · Exp {formatExpiry(pos.option_expiry)}
                       </p>
                     </div>
                     <div className="text-right shrink-0">

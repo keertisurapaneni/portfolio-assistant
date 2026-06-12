@@ -131,6 +131,8 @@ export interface OpenOptionsPosition {
   option_assigned: boolean;
   status: string;
   close_reason: string | null;
+  fill_price: number | null;
+  close_price: number | null;
   pnl: number | null;
   opened_at: string;
   closed_at: string | null;
@@ -261,7 +263,7 @@ export async function getRecentOptionsScan(daysBack = 3): Promise<OptionsScanOpp
 export async function getOpenOptionsPositions(): Promise<OpenOptionsPosition[]> {
   const { data, error } = await supabase
     .from('paper_trades')
-    .select('id, ticker, mode, option_strike, option_expiry, option_premium, option_contracts, option_capital_req, option_prob_profit, option_iv_rank, option_annual_yield, option_net_price, option_delta, option_assigned, status, close_reason, pnl, opened_at, closed_at, notes, scanner_reason, ib_order_id')
+    .select('id, ticker, mode, option_strike, option_expiry, option_premium, option_contracts, option_capital_req, option_prob_profit, option_iv_rank, option_annual_yield, option_net_price, option_delta, option_assigned, status, close_reason, fill_price, close_price, pnl, opened_at, closed_at, notes, scanner_reason, ib_order_id')
     .in('mode', ['OPTIONS_PUT', 'OPTIONS_CALL'])
     .in('status', ['FILLED', 'PARTIAL'])
     .order('option_expiry', { ascending: true });
@@ -284,7 +286,7 @@ export async function getOptionsMaxAllocation(): Promise<number | null> {
 export async function getClosedOptionsPositions(limit = 50): Promise<OpenOptionsPosition[]> {
   const { data, error } = await supabase
     .from('paper_trades')
-    .select('id, ticker, mode, option_strike, option_expiry, option_premium, option_capital_req, option_prob_profit, option_iv_rank, option_annual_yield, option_net_price, option_delta, option_assigned, status, close_reason, pnl, opened_at, closed_at, notes, scanner_reason')
+    .select('id, ticker, mode, option_strike, option_expiry, option_premium, option_contracts, option_capital_req, option_prob_profit, option_iv_rank, option_annual_yield, option_net_price, option_delta, option_assigned, status, close_reason, fill_price, close_price, pnl, opened_at, closed_at, notes, scanner_reason, ib_order_id')
     .in('mode', ['OPTIONS_PUT', 'OPTIONS_CALL'])
     .in('status', [...CLOSED_STATUSES])
     .order('closed_at', { ascending: false })

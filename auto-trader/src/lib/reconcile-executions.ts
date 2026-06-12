@@ -603,6 +603,127 @@ function requestExecutions(
   });
 }
 
+/**
+ * Startup reconciliation: close any SWING_TRADE / LONG_TERM paper_trades whose
+ * bracket TP/SL order filled while the auto-trader was offline.
+ *
+ * Problem: When the auto-trader is offline (overnight / restart), IB fires bracket
+ * orders (TP/SL). The execDetails callback is never received, so no ib_fills row is
+ * written and the Postgres trigger never closes the trade. On reconnect,
+ * reconcileIBLongs only checks positions still OPEN in IB — already-closed positions
+ * are invisible to it. runEndOfDayReconciliation queries only today's trades, missing
+ * positions filled days ago.
+ *
+ * Fix: at startup, call reqExecutions for today's fills and cross-reference against
+ * ALL FILLED paper_trades that have ib_tp_order_id / ib_sl_order_id set (no date filter).
+ * When a match is found, close the trade directly.
+ *
+ * Called 45 s after startup (after reconcileIBLongs/Shorts complete).
+ * The EOD runEndOfDayReconciliation at 4:15 PM will correct any P&L discrepancies.
+ */
+export async function reconcileMissedBracketFills(
+  accountType: AccountType = 'paper',
+): Promise<void> {
+  const conn = getConnectionForAccount(accountType);
+  if (!conn.isConnected()) {
+    log('[StartupBracket] Skipped — IB not connected');
+    return;
+  }
+  const ib = conn.getIBApi();
+  const account = conn.getDefaultAccount();
+  if (!ib || !account) return;
+
+  const etNow = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }));
+  const yyyy = etNow.getFullYear();
+  const mm = String(etNow.getMonth() + 1).padStart(2, '0');
+  const dd = String(etNow.getDate()).padStart(2, '0');
+  const todayFilterET = `${yyyy}${mm}${dd} 00:00:00`;
+
+  const executions = await requestExecutions(ib, account, todayFilterET, conn);
+  log(`[StartupBracket] ${executions.length} execution(s) from IB today`);
+  if (executions.length === 0) return;
+
+  // Only look at SELL fills — bracket TP/SL orders on long positions are sells.
+  const sellExecs = executions.filter(e => e.side === 'SLD' || e.side === 'SELL');
+  if (sellExecs.length === 0) return;
+
+  // All FILLED trades that have bracket order IDs — no date filter.
+  // This is intentionally broader than runEndOfDayReconciliation which only queries
+  // today's trades; bracket fills can happen days after the entry fill.
+  const sb = getSupabase();
+  const tTable = tradesTable(accountType);
+  const { data: bracketTrades } = await sb
+    .from(tTable)
+    .select('id, ticker, signal, quantity, fill_price, entry_price, ib_tp_order_id, ib_sl_order_id, ib_close_order_id')
+    .eq('status', 'FILLED')
+    .or('ib_tp_order_id.not.is.null,ib_sl_order_id.not.is.null');
+
+  const trades = (bracketTrades ?? []) as PaperTrade[];
+  if (trades.length === 0) {
+    log('[StartupBracket] No FILLED bracket trades — nothing to check');
+    return;
+  }
+
+  const tradeByTpOrderId = new Map<number, PaperTrade>();
+  const tradeBySlOrderId = new Map<number, PaperTrade>();
+  for (const t of trades) {
+    if (t.ib_tp_order_id) tradeByTpOrderId.set(parseInt(t.ib_tp_order_id, 10), t);
+    if (t.ib_sl_order_id) tradeBySlOrderId.set(parseInt(t.ib_sl_order_id, 10), t);
+  }
+
+  let stamped = 0;
+  for (const exec of sellExecs) {
+    let trade = tradeByTpOrderId.get(exec.orderId);
+    let matchType: 'tp' | 'sl' = 'tp';
+    if (!trade) { trade = tradeBySlOrderId.get(exec.orderId); matchType = 'sl'; }
+    if (!trade) continue;
+    if (trade.ib_close_order_id) continue; // already stamped — idempotent
+
+    const isLong = (trade.signal ?? 'BUY') === 'BUY';
+    const fillPrice = trade.fill_price ?? trade.entry_price ?? 0;
+    const qty = trade.quantity ?? 1;
+
+    // Prefer IB's realizedPnl (commission-inclusive, source of truth).
+    // Fall back to formula only when IB didn't send a commission report.
+    let pnl: number;
+    let pnlSource: string;
+    if (exec.realizedPnl != null) {
+      pnl = exec.realizedPnl;
+      pnlSource = 'ib_realized_pnl';
+    } else {
+      pnl = isLong ? (exec.price - fillPrice) * qty : (fillPrice - exec.price) * qty;
+      pnlSource = 'ib_fill_calculated';
+    }
+
+    const status = matchType === 'tp' ? 'TARGET_HIT' : 'STOPPED';
+    const closeReason = matchType === 'tp' ? 'target_hit' : 'stop_loss';
+
+    await sb.from(tTable).update({
+      status,
+      close_price: exec.price,
+      close_reason: closeReason,
+      ib_close_order_id: exec.orderId.toString(),
+      pnl: parseFloat(pnl.toFixed(2)),
+      pnl_source: pnlSource,
+      closed_at: new Date().toISOString(),
+    }).eq('id', trade.id);
+
+    await createAutoTradeEvent({
+      ticker: trade.ticker,
+      event_type: 'info',
+      action: 'closed',
+      source: 'system',
+      message: `[Startup] ${trade.ticker}: ${matchType.toUpperCase()} bracket order #${exec.orderId} filled offline @ $${exec.price.toFixed(2)} — closed P&L $${pnl.toFixed(2)}`,
+      metadata: { tradeId: trade.id, orderId: exec.orderId, matchType, closePrice: exec.price, pnl, pnlSource },
+    }, accountType);
+
+    stamped++;
+    log(`[StartupBracket] ${trade.ticker} — ${matchType.toUpperCase()} order #${exec.orderId} filled @ $${exec.price.toFixed(2)} while offline, P&L $${pnl.toFixed(2)} (${pnlSource})`);
+  }
+
+  log(`[StartupBracket] Done — ${stamped} missed bracket fill(s) reconciled`);
+}
+
 async function logReconciliationSummary(
   matched: number,
   corrected: number,
