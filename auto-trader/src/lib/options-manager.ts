@@ -167,6 +167,14 @@ async function evaluateAndRollPut(
       logLine: `${pos.ticker}: IB buy-to-close failed for old put leg $${pos.option_strike}P — roll aborted`,
     };
   }
+  if (ibCloseOldPut.timedOut) {
+    await stampPendingBtcOrder(pos.id, ibCloseOldPut.orderId, pos.ticker, pos.option_strike, 'P');
+    return {
+      rolled: false,
+      reason: 'btc_gtc_pending',
+      logLine: `${pos.ticker}: buy-to-close order #${ibCloseOldPut.orderId} placed GTC — roll deferred until fill confirmed`,
+    };
+  }
   const rollClosePremium = ibCloseOldPut.avgFillPrice;
   const pnl = (premiumCollected - rollClosePremium) * 100;
 
@@ -286,10 +294,24 @@ async function getCurrentCallPremium(
 }
 
 /**
+ * Discriminated union result for ibBuyToCloseOption.
+ *
+ * - timedOut=false: order filled immediately — use avgFillPrice for P&L
+ * - timedOut=true:  GTC order is live in IB, orderId known — stamp ib_close_order_id
+ *                   and skip recordTradeClose; the Postgres trigger will close the
+ *                   trade when the fill arrives
+ * - null:           hard failure (IB disconnected or order rejected) — no action
+ */
+type IBCloseResult =
+  | { timedOut: false; orderId: number; avgFillPrice: number; filledQty: number }
+  | { timedOut: true;  orderId: number };
+
+/**
  * Place an IB buy-to-close order for a short option position.
- * Returns the fill result, or null if IB is disconnected or the order fails/times out.
+ *
+ * Returns an IBCloseResult (see above), or null on hard failure.
  * The limit is set 5% above currentPremium (the mid) to improve fill probability;
- * the actual fill price (avgFillPrice) is what gets used for P&L.
+ * the actual fill price (avgFillPrice) is what gets used for P&L when timedOut=false.
  */
 async function ibBuyToCloseOption(
   ticker: string,
@@ -297,7 +319,7 @@ async function ibBuyToCloseOption(
   strike: number,
   expiryISO: string,
   currentPremium: number,
-): Promise<{ orderId: number; avgFillPrice: number; filledQty: number } | null> {
+): Promise<IBCloseResult | null> {
   if (!isConnected()) return null;
   const expiry = expiryISO.replace(/-/g, '');
   const buyLimit = Math.max(0.01, currentPremium * 1.05);
@@ -313,17 +335,44 @@ async function ibBuyToCloseOption(
       account: getDefaultAccount() ?? undefined,
     });
     if (result.timedOut) {
-      // Order is live in IB as GTC but didn't fill within the timeout window.
-      // Return null so callers don't record a premature close at $0.
-      // The position stays open; the GTC order will fill later (or the user cancels it).
-      console.warn(`[Options Manager] IB buy-to-close for ${ticker} $${strike}${right} timed out (order #${result.orderId}) — leaving position open until fill confirmed`);
-      return null;
+      // GTC order is live in IB but didn't fill within the await window.
+      // Return the orderId so the caller can stamp ib_close_order_id immediately.
+      // The Postgres trigger will close the trade when the fill eventually arrives.
+      console.warn(`[Options Manager] IB buy-to-close for ${ticker} $${strike}${right} timed out (order #${result.orderId}) — GTC order live, stamping ib_close_order_id`);
+      return { timedOut: true, orderId: result.orderId };
     }
-    return result;
+    return { timedOut: false, orderId: result.orderId, avgFillPrice: result.avgFillPrice, filledQty: result.filledQty };
   } catch (err) {
     console.warn(`[Options Manager] IB buy-to-close FAILED for ${ticker} $${strike}${right}: ${err instanceof Error ? err.message : err}`);
     return null;
   }
+}
+
+/**
+ * Stamp ib_close_order_id on a paper_trade after a GTC buy-to-close order is placed
+ * but before the fill arrives. This ensures the Postgres trigger can match the fill
+ * and auto-close the trade when it eventually executes.
+ *
+ * Called only when ibBuyToCloseOption returns { timedOut: true }.
+ */
+async function stampPendingBtcOrder(
+  tradeId: string,
+  orderId: number,
+  ticker: string,
+  strike: number,
+  right: 'P' | 'C',
+): Promise<void> {
+  const sb = getSupabase();
+  await sb
+    .from('paper_trades')
+    .update({ ib_close_order_id: orderId.toString() })
+    .eq('id', tradeId);
+  persistEvent(
+    ticker,
+    'info',
+    `⏳ ${ticker} $${strike}${right} buy-to-close order #${orderId} placed GTC — awaiting fill (trade will auto-close when IB fills)`,
+    { action: 'pending', source: 'options', metadata: { reason: 'btc_gtc_pending', ibOrderId: orderId } },
+  );
 }
 
 // ── Load Open Positions ──────────────────────────────────
@@ -578,6 +627,10 @@ export async function runOptionsManageCycle(): Promise<ManageCycleResult> {
         );
         continue;
       }
+      if (ibClose.timedOut) {
+        await stampPendingBtcOrder(pos.id, ibClose.orderId, pos.ticker, pos.option_strike, 'P');
+        continue;
+      }
       const closePremium = ibClose.avgFillPrice;
       const closePnl = (premiumCollected - closePremium) * 100;
       const closeProfitPct = premiumCollected > 0 ? Math.max(0, (1 - closePremium / premiumCollected) * 100) : 0;
@@ -618,6 +671,10 @@ export async function runOptionsManageCycle(): Promise<ManageCycleResult> {
           `⚠️ ${pos.ticker} $${pos.option_strike}P profit target hit but IB buy-to-close failed — position left open for retry`,
           { action: 'skipped', source: 'options', metadata: { reason: 'ib_close_failed', trigger: '50pct_profit', currentPremium, premiumCollected } }
         );
+        continue;
+      }
+      if (ibClose.timedOut) {
+        await stampPendingBtcOrder(pos.id, ibClose.orderId, pos.ticker, pos.option_strike, 'P');
         continue;
       }
       const closePremium = ibClose.avgFillPrice;
@@ -690,6 +747,10 @@ export async function runOptionsManageCycle(): Promise<ManageCycleResult> {
           );
           continue;
         }
+        if (ibClose.timedOut) {
+          await stampPendingBtcOrder(pos.id, ibClose.orderId, pos.ticker, pos.option_strike, 'P');
+          continue;
+        }
         const closePremium = ibClose.avgFillPrice;
         const closePnl = (premiumCollected - closePremium) * 100;
         const closeProfitPct = premiumCollected > 0 ? Math.max(0, (1 - closePremium / premiumCollected) * 100) : 0;
@@ -740,6 +801,10 @@ export async function runOptionsManageCycle(): Promise<ManageCycleResult> {
             `⚠️ ${pos.ticker} $${pos.option_strike}P 21 DTE deep loser close triggered but IB buy-to-close failed — position left open for retry`,
             { action: 'skipped', source: 'options', metadata: { reason: 'ib_close_failed', trigger: '21dte_close', currentPremium, premiumCollected } }
           );
+          continue;
+        }
+        if (ibCloseDeep.timedOut) {
+          await stampPendingBtcOrder(pos.id, ibCloseDeep.orderId, pos.ticker, pos.option_strike, 'P');
           continue;
         }
         const deepClosePremium = ibCloseDeep.avgFillPrice;
@@ -913,6 +978,10 @@ export async function runOptionsManageCycle(): Promise<ManageCycleResult> {
         );
         continue;
       }
+      if (ibCloseCall.timedOut) {
+        await stampPendingBtcOrder(pos.id, ibCloseCall.orderId, pos.ticker, pos.option_strike, 'C');
+        continue;
+      }
       const callClosePremium = ibCloseCall.avgFillPrice;
       const callClosePnl = (premiumCollected - callClosePremium) * 100;
       const callCloseProfitPct = premiumCollected > 0 ? Math.max(0, (1 - callClosePremium / premiumCollected) * 100) : 0;
@@ -948,6 +1017,10 @@ export async function runOptionsManageCycle(): Promise<ManageCycleResult> {
         );
         continue;
       }
+      if (ibCloseCall21.timedOut) {
+        await stampPendingBtcOrder(pos.id, ibCloseCall21.orderId, pos.ticker, pos.option_strike, 'C');
+        continue;
+      }
       const call21ClosePremium = ibCloseCall21.avgFillPrice;
       const call21ClosePnl = (premiumCollected - call21ClosePremium) * 100;
       const call21CloseProfitPct = premiumCollected > 0 ? Math.max(0, (1 - call21ClosePremium / premiumCollected) * 100) : 0;
@@ -980,6 +1053,10 @@ export async function runOptionsManageCycle(): Promise<ManageCycleResult> {
           `⚠️ ${pos.ticker} $${pos.option_strike}C stop-loss triggered but IB buy-to-close failed — position left open for retry`,
           { action: 'skipped', source: 'options', metadata: { reason: 'ib_close_failed', trigger: 'call_stop', currentCallPremium, premiumCollected } }
         );
+        continue;
+      }
+      if (ibCloseCallStop.timedOut) {
+        await stampPendingBtcOrder(pos.id, ibCloseCallStop.orderId, pos.ticker, pos.option_strike, 'C');
         continue;
       }
       const callStopClosePremium = ibCloseCallStop.avgFillPrice;
@@ -1121,6 +1198,14 @@ async function evaluateAndRollCall(
       rolled: false,
       reason: 'ib_close_failed',
       logLine: `${pos.ticker}: IB buy-to-close failed for old call leg $${pos.option_strike}C — roll aborted`,
+    };
+  }
+  if (ibCloseOldCall.timedOut) {
+    await stampPendingBtcOrder(pos.id, ibCloseOldCall.orderId, pos.ticker, pos.option_strike, 'C');
+    return {
+      rolled: false,
+      reason: 'btc_gtc_pending',
+      logLine: `${pos.ticker}: buy-to-close order #${ibCloseOldCall.orderId} placed GTC — roll deferred until fill confirmed`,
     };
   }
   const rollCallClosePremium = ibCloseOldCall.avgFillPrice;

@@ -95,7 +95,7 @@ import { getOptionsChain } from './lib/options-chain.js';
 import { runEarningsScan, closeExpiredEarningsPositions } from './lib/earnings-scanner.js';
 import { runWatchlistScreener } from './lib/watchlist-screener.js';
 import { runOptionsManageCycle } from './lib/options-manager.js';
-import { runEndOfDayReconciliation, reconcileGhostCloses } from './lib/reconcile-executions.js';
+import { runEndOfDayReconciliation, reconcileGhostCloses, reconcileMissedBracketFills } from './lib/reconcile-executions.js';
 import { runDipWatcher } from './lib/dip-watcher.js';
 import { checkSpxLevelSetups } from './lib/spx-level-scanner.js';
 import { checkVwapConfluenceSetups, type ConfluenceResult } from './lib/vwap-confluence-scanner.js';
@@ -754,6 +754,19 @@ Action needed: Check the auto-trader service and restart if necessary.`,
       console.error('[Scheduler] Startup IB reconcile failed:', err instanceof Error ? err.message : err);
     }
   }, 30_000);
+
+  // Startup bracket fill reconciliation — runs 45s after boot (after the 30s IB position
+  // reconcile above). Catches GTC TP/SL bracket orders that fired while the auto-trader
+  // was offline. Uses reqExecutions to get today's IB fills and closes any FILLED paper_trades
+  // whose ib_tp_order_id / ib_sl_order_id matches. The EOD reconciler at 4:15 PM will
+  // verify/correct P&L for anything this stamps.
+  setTimeout(async () => {
+    try {
+      await reconcileMissedBracketFills();
+    } catch (err) {
+      console.error('[Scheduler] Startup bracket fill reconcile failed:', err instanceof Error ? err.message : err);
+    }
+  }, 45_000);
 
   // Run once on startup (delayed 10s to let IB connect)
   setTimeout(() => {
