@@ -4049,19 +4049,25 @@ async function executeScannerTrade(
       // Tiny stops (< 0.5%) almost always get hit on normal open volatility —
       // they produce huge share counts via risk-sizing and then gap through on fast markets.
       const minStopDist = livePrice * 0.008;
-      // Day trades: hard cap stop at 1.5% of entry — daily ATR-based stops are for swings,
-      // not intraday. Confirmed: ARM ($19 stop = 5.6%) and AMD ($31 stop = 6.2%) both
-      // drifted against us all session without triggering, then closed at soft EOD.
-      const maxStopDist = mode === 'DAY_TRADE' ? livePrice * 0.015 : Infinity;
+      // Day trades: hard cap on stop distance.
+      // ETFs (SPY, QQQ, IWM, etc.) have a ~0.5–1.5% daily range — a 1.5% stop puts TP at 3%
+      // which almost never gets hit intraday. Cap ETF stops at 0.75% → TP lands at 1.5%,
+      // which is achievable most days. Individual stocks (TSLA, NVDA, AMD…) legitimately move
+      // 2–4% intraday so they keep the 1.5% cap → 3% TP.
+      // Confirmed: ARM ($19=5.6%) and AMD ($31=6.2%) needed the 1.5% cap for stocks.
+      const ETF_TICKERS = new Set(['SPY','QQQ','IWM','DIA','SMH','GDX','GLD','TLT','SOXL','TQQQ','NVDL','TSLL','XLF','XLE','XLK','XLV','XLI','ARKK']);
+      const maxStopPct = mode === 'DAY_TRADE' ? (ETF_TICKERS.has(ticker) ? 0.0075 : 0.015) : Infinity;
+      const maxStopDist = maxStopPct === Infinity ? Infinity : livePrice * maxStopPct;
       const actualStopDist = Math.abs(entryPrice - stopLoss);
       if (actualStopDist < minStopDist) {
         stopLoss = signal === 'BUY' ? r2(entryPrice - minStopDist) : r2(entryPrice + minStopDist);
         targetPrice = signal === 'BUY' ? r2(entryPrice + minStopDist * 2) : r2(entryPrice - minStopDist * 2);
         log(`${ticker}: stop too tight (${actualStopDist.toFixed(2)}) — widened to min 0.8% (${minStopDist.toFixed(2)})`);
       } else if (actualStopDist > maxStopDist) {
+        const capPct = ETF_TICKERS.has(ticker) ? '0.75%' : '1.5%';
         const clampedStop = signal === 'BUY' ? r2(entryPrice - maxStopDist) : r2(entryPrice + maxStopDist);
         const clampedTarget = signal === 'BUY' ? r2(entryPrice + maxStopDist * 2) : r2(entryPrice - maxStopDist * 2);
-        log(`${ticker}: [DAY_TRADE] stop too wide (${actualStopDist.toFixed(2)} = ${(actualStopDist / livePrice * 100).toFixed(1)}%) — clamped to 1.5% (${maxStopDist.toFixed(2)}): sl=${clampedStop} tp=${clampedTarget}`);
+        log(`${ticker}: [DAY_TRADE] stop too wide (${actualStopDist.toFixed(2)} = ${(actualStopDist / livePrice * 100).toFixed(1)}%) — clamped to ${capPct} (${maxStopDist.toFixed(2)}): sl=${clampedStop} tp=${clampedTarget}`);
         stopLoss = clampedStop;
         targetPrice = clampedTarget;
       }
