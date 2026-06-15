@@ -378,8 +378,10 @@ export function TodayActivityTab({ events, trades, todayTrades, orphanedFills = 
         aVal = a.ticker;
         bVal = b.ticker;
       } else if (sortKey === 'time') {
-        aVal = a.opened_at;
-        bVal = b.opened_at;
+        const closedA = a.close_price != null || terminalStatusSet.has(a.status) || a.closed_at != null;
+        const closedB = b.close_price != null || terminalStatusSet.has(b.status) || b.closed_at != null;
+        aVal = closedA && a.closed_at ? a.closed_at : (a.filled_at ?? a.opened_at);
+        bVal = closedB && b.closed_at ? b.closed_at : (b.filled_at ?? b.opened_at);
       } else if (sortKey === 'pnl') {
         aVal = a.pnl ?? null;
         bVal = b.pnl ?? null;
@@ -677,7 +679,7 @@ export function TodayActivityTab({ events, trades, todayTrades, orphanedFills = 
                     )}
                   </td>
                   <td className="px-4 py-3 text-right text-xs text-[hsl(var(--muted-foreground))] tabular-nums">
-                    {new Date(trade.filled_at ?? trade.opened_at).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}
+                    {new Date(isClosed && trade.closed_at ? trade.closed_at : (trade.filled_at ?? trade.opened_at)).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}
                   </td>
                 </tr>
               );
