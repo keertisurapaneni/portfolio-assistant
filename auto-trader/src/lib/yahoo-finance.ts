@@ -179,9 +179,10 @@ export interface YahooQuote {
 }
 
 /**
- * Fetch live quote data for one symbol via Yahoo Finance v7.
- * Returns price, open, beta, 52-week high, and next earnings timestamp.
- * No API key required. Returns null on failure.
+ * Fetch live quote data for one symbol.
+ * Primary: Yahoo Finance v7/finance/quote (price, open, beta, 52w-high, earnings).
+ * Fallback: latest 5-min intraday bar (price + open only; beta/high52w/earningsTs = null).
+ * Callers that use beta/high52w already guard with `!= null` — null is safe.
  */
 export async function fetchQuote(symbol: string): Promise<YahooQuote | null> {
   try {
@@ -191,26 +192,44 @@ export async function fetchQuote(symbol: string): Promise<YahooQuote | null> {
       headers: YAHOO_HEADERS,
       signal: AbortSignal.timeout(TIMEOUT_MS),
     });
-    if (!res.ok) return null;
-    const data = await res.json() as Record<string, unknown>;
-    const quotes = ((data?.quoteResponse as Record<string, unknown>)?.result as Record<string, unknown>[]) ?? [];
-    const q = quotes.find((r: Record<string, unknown>) => r.symbol === symbol) ?? quotes[0];
-    if (!q) return null;
-    const price = q.regularMarketPrice as number | undefined;
-    if (!price) return null;
-    return {
-      price,
-      open:       (q.regularMarketOpen as number | undefined) ?? null,
-      volume:     (q.regularMarketVolume as number | undefined) ?? null,
-      beta:       (q.beta       as number | undefined) ?? null,
-      high52w:    (q.fiftyTwoWeekHigh as number | undefined) ?? null,
-      earningsTs: (q.earningsTimestamp as number | undefined)
-                    ? (q.earningsTimestamp as number) * 1000
-                    : null,
-    };
-  } catch {
-    return null;
-  }
+    if (res.ok) {
+      const data = await res.json() as Record<string, unknown>;
+      const quotes = ((data?.quoteResponse as Record<string, unknown>)?.result as Record<string, unknown>[]) ?? [];
+      const q = quotes.find((r: Record<string, unknown>) => r.symbol === symbol) ?? quotes[0];
+      if (q) {
+        const price = q.regularMarketPrice as number | undefined;
+        if (price) {
+          return {
+            price,
+            open:       (q.regularMarketOpen as number | undefined) ?? null,
+            volume:     (q.regularMarketVolume as number | undefined) ?? null,
+            beta:       (q.beta       as number | undefined) ?? null,
+            high52w:    (q.fiftyTwoWeekHigh as number | undefined) ?? null,
+            earningsTs: (q.earningsTimestamp as number | undefined)
+                          ? (q.earningsTimestamp as number) * 1000
+                          : null,
+          };
+        }
+      }
+    }
+  } catch { /* fall through to bar-based fallback */ }
+
+  // Fallback: derive price + open from the latest 5-min intraday bars (v8/chart still works).
+  // beta, high52w, earningsTs will be null — callers already handle null for these fields.
+  const bars = await fetchIntradayBars(symbol, '5m', '1d');
+  if (!bars?.length) return null;
+  const lastBar = bars[bars.length - 1];
+  // Today's open = first bar on or after 9:30 AM ET (13:30 UTC)
+  const marketOpenUtcMs = (() => { const d = new Date(); d.setUTCHours(13, 30, 0, 0); return d.getTime(); })();
+  const todayOpen = bars.find(b => b.timestamp * 1000 >= marketOpenUtcMs)?.open ?? null;
+  return {
+    price:      lastBar.close,
+    open:       todayOpen,
+    volume:     null,
+    beta:       null,
+    high52w:    null,
+    earningsTs: null,
+  };
 }
 
 // ── Annualised historical volatility (proxy for IV) ──────────────────────────
