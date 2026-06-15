@@ -599,7 +599,9 @@ export function TodayActivityTab({ events, trades, todayTrades, orphanedFills = 
                 : '—';
 
               const entrySignal = trade.signal ?? 'BUY';
-              const isSell = entrySignal === 'SELL';
+              // Closed positions show the exit action: BUY long → SELL (sold to exit), SELL short → BUY (covered)
+              const displaySignal = isClosed ? (entrySignal === 'BUY' ? 'SELL' : 'BUY') : entrySignal;
+              const isSell = displaySignal === 'SELL';
               const signalColor = isSell ? 'bg-red-100 text-red-700' : 'bg-emerald-100 text-emerald-700';
 
               const qty = trade.quantity;
@@ -630,7 +632,7 @@ export function TodayActivityTab({ events, trades, todayTrades, orphanedFills = 
                   </td>
                   <td className="px-4 py-3">
                     <span className={cn('inline-flex px-1.5 py-0.5 rounded text-[10px] font-bold', signalColor)}>
-                      {entrySignal}
+                      {displaySignal}
                     </span>
                   </td>
                   <td className="px-4 py-3">
