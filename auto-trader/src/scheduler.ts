@@ -1954,26 +1954,6 @@ export async function forceExecuteSignal(signalId: string): Promise<{
   if (!config.enabled) return { ok: false, error: 'Auto-trading disabled' };
   if (!config.accountId) return { ok: false, error: 'No IB account configured' };
 
-  // Entry trigger check before force-executing: if price hasn't reached Somesh's
-  // level, expire the signal immediately instead of leaving it PENDING in the queue.
-  // "Execute All" should only fire signals whose conditions have actually been met.
-  // Signals that never triggered should be cleaned out of the queue, not left waiting.
-  if (signal.entry_price != null) {
-    const currentPrice = await getQuotePrice(signal.ticker).catch(() => null);
-    if (currentPrice != null) {
-      const triggerCrossed = signal.signal === 'BUY'
-        ? currentPrice >= signal.entry_price
-        : currentPrice <= signal.entry_price;
-      if (!triggerCrossed) {
-        const direction = signal.signal === 'BUY' ? 'above' : 'below';
-        const reason = `Entry trigger not reached: price $${currentPrice.toFixed(2)} not ${direction} entry $${signal.entry_price.toFixed(2)} — auto-expired from Execute All queue`;
-        await updateExternalStrategySignal(signalId, { status: 'EXPIRED', failure_reason: reason });
-        log(`${signal.ticker} [${signal.signal}]: ${reason}`);
-        return { ok: true, result: 'expired', executed: false, reason };
-      }
-    }
-  }
-
   const positions = await getEnrichedPositions();
   // Re-open expired or skipped so executeExternalStrategySignal can retry
   if (signal.status === 'EXPIRED' || signal.status === 'SKIPPED') {
