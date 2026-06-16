@@ -1580,6 +1580,41 @@ export async function reconcileIBShorts(): Promise<{ closed: string[]; errors: s
       const msg = err instanceof Error ? err.message : 'unknown';
       log(`[IBReconcile] ✗ ${pos.symbol}: BUY failed — ${msg}`);
       errors.push(`${pos.symbol}: ${msg}`);
+
+      // "No security definition" means IB can no longer trade this symbol
+      // (delisted, paper-account artifact, stale contract). Log a deduplicated
+      // critical event so it surfaces in Today's Activity for manual review,
+      // but don't retry — the position MUST be closed from IB directly.
+      const isNoSecDef = msg.includes('code=200') || msg.includes('No security definition');
+      if (isNoSecDef) {
+        const todayStr = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(new Date());
+        const { data: existingAlert } = await getSupabase()
+          .from('auto_trade_events')
+          .select('id')
+          .eq('ticker', pos.symbol)
+          .gte('created_at', `${todayStr}T00:00:00Z`)
+          .ilike('message', '%no security definition%orphaned short%')
+          .limit(1);
+
+        if (!existingAlert?.length) {
+          await createAutoTradeEvent({
+            ticker: pos.symbol,
+            event_type: 'error',
+            action: 'failed',
+            source: 'system',
+            message: `[IBReconcile] ⚠️ CRITICAL: ${pos.symbol} orphaned short (${qty} @ $${pos.avgCost.toFixed(2)}) — no security definition. Cannot auto-cover. Close this position manually from IB.`,
+            metadata: {
+              reconcile_type: 'ib_short_reconcile_no_security_def',
+              qty,
+              avg_cost: pos.avgCost,
+              error: msg,
+            },
+          });
+          log(`[IBReconcile] ⚠️ ${pos.symbol}: logged critical event — manual IB close required (no security definition)`);
+        } else {
+          log(`[IBReconcile] ${pos.symbol}: no-security-def alert already logged today — skipping duplicate`);
+        }
+      }
     }
   }
 
@@ -1661,14 +1696,25 @@ export async function reconcileIBLongs(): Promise<{ closed: string[]; errors: st
   if (unknownPositions.length > 0) {
     const symbols = unknownPositions.map(p => `${p.symbol}(${Math.round(p.position)})`).join(', ');
     log(`[IBLongReconcile] ⚠️ ${unknownPositions.length} unrecognised IB long position(s) — NOT auto-closing (could be portfolio holdings): ${symbols}`);
-    await createAutoTradeEvent({
-      ticker: '*',
-      event_type: 'warning',
-      action: 'skipped',
-      source: 'system',
-      message: `[IBLongReconcile] ${unknownPositions.length} IB long position(s) have no active paper_trade but are NOT ghost orders — manual review required: ${symbols}`,
-      metadata: { symbols: unknownPositions.map(p => p.symbol) },
-    });
+    // Deduplicate: only fire one event per calendar day for the same set of symbols
+    const todayStr = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(new Date());
+    const { data: existingLongAlert } = await getSupabase()
+      .from('auto_trade_events')
+      .select('id')
+      .eq('ticker', '*')
+      .gte('created_at', `${todayStr}T00:00:00Z`)
+      .ilike('message', '%IB long position(s) have no active paper_trade%')
+      .limit(1);
+    if (!existingLongAlert?.length) {
+      await createAutoTradeEvent({
+        ticker: '*',
+        event_type: 'warning',
+        action: 'skipped',
+        source: 'system',
+        message: `[IBLongReconcile] ${unknownPositions.length} IB long position(s) have no active paper_trade but are NOT ghost orders — manual review required: ${symbols}`,
+        metadata: { symbols: unknownPositions.map(p => p.symbol) },
+      });
+    }
 
     // Check if any unknown positions have a CLOSED paper_trade from the last 30 days
     // that likely represents a failed EOD close (DB marked CLOSED but IB still holds shares).
