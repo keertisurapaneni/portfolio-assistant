@@ -164,7 +164,7 @@ export function TodayActivityTab({ events, trades, todayTrades, orphanedFills = 
     }
   };
 
-  const OPTIONS_MODES = new Set(['OPTIONS_PUT', 'OPTIONS_CALL', 'CALENDAR_SPREAD', 'CREDIT_SPREAD', 'EARNINGS_CALENDAR', 'OPTIONS_SCALP', 'OPTIONS_LEAP']);
+  const OPTIONS_MODES = new Set(['OPTIONS_PUT', 'OPTIONS_CALL', 'CREDIT_SPREAD', 'EARNINGS_CALENDAR', 'OPTIONS_SCALP', 'OPTIONS_LEAP']);
 
   // Primary data source: todayTrades (from paper_trades, kept accurate by ib_fills trigger).
   // Include all modes — options trades visible via the "Options" filter chip.
@@ -597,7 +597,7 @@ export function TodayActivityTab({ events, trades, todayTrades, orphanedFills = 
                 : trade.mode === 'OPTIONS_LEAP' ? 'Leap'
                 : trade.mode === 'OPTIONS_PUT' ? 'Put'
                 : trade.mode === 'OPTIONS_CALL' ? 'Call'
-                : (trade.mode === 'CREDIT_SPREAD' || trade.mode === 'CALENDAR_SPREAD' || trade.mode === 'EARNINGS_CALENDAR') ? 'Spread'
+                : (trade.mode === 'CREDIT_SPREAD' || trade.mode === 'EARNINGS_CALENDAR') ? 'Spread'
                 : '—';
 
               const entrySignal = trade.signal ?? 'BUY';

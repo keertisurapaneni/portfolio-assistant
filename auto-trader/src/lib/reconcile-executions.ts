@@ -29,7 +29,7 @@ function log(msg: string): void {
   console.log(`[Reconcile] ${msg}`);
 }
 
-export async function runEndOfDayReconciliation(accountType: AccountType = 'paper'): Promise<void> {
+export async function runEndOfDayReconciliation(accountType: AccountType = 'paper', ibRealizedPnl?: number): Promise<void> {
   const conn = getConnectionForAccount(accountType);
   if (!conn.isConnected()) {
     log(`Skipped — IB:${accountType} not connected`);
@@ -216,6 +216,7 @@ export async function runEndOfDayReconciliation(accountType: AccountType = 'pape
           await sb.from(tTable).update({
             close_price: exec.price,
             pnl: parseFloat(pnl.toFixed(2)),
+            ...(exec.realizedPnl != null ? { ib_pnl: parseFloat(pnl.toFixed(2)) } : {}),
             pnl_percent: parseFloat(pnlPct.toFixed(2)),
           }).eq('id', trade.id);
           corrected++;
@@ -282,6 +283,7 @@ export async function runEndOfDayReconciliation(accountType: AccountType = 'pape
 
         await sb.from(tTable).update({
           pnl:        totalPnl,
+          ib_pnl:     totalPnl,
           pnl_source: 'ib_realized_pnl',
         }).eq('id', ghost.id);
 
@@ -485,6 +487,7 @@ export async function reconcileGhostCloses(
       close_price: latestClosePrice,
       close_reason: 'eod_close',
       pnl: combinedPnl,
+      ib_pnl: combinedPnl,
       pnl_source: 'ib_realized',
       closed_at: latestGhost.closed_at,
       ib_close_order_id: latestGhost.ib_close_order_id,
@@ -704,6 +707,7 @@ export async function reconcileMissedBracketFills(
       close_reason: closeReason,
       ib_close_order_id: exec.orderId.toString(),
       pnl: parseFloat(pnl.toFixed(2)),
+      ...(exec.realizedPnl != null ? { ib_pnl: parseFloat(pnl.toFixed(2)) } : {}),
       pnl_source: pnlSource,
       closed_at: new Date().toISOString(),
     }).eq('id', trade.id);

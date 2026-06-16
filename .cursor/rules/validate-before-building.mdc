@@ -1,0 +1,25 @@
+---
+description: Validate what's already in the codebase before planning or building anything
+alwaysApply: true
+---
+
+# Validate Before Building
+
+Before creating a todo list, proposing an implementation plan, or writing any new code:
+
+1. **Check if it already exists.** Search migrations, source files, and DB schemas for the column/function/job you're about to add. Never assume a field is missing — grep for it first.
+
+2. **Read the actual code, not just the summary.** Read the real file contents before describing what a function or trigger does. If you haven't `Read` the file, you don't know what's in it.
+
+3. **Confirm what's wired end-to-end.** A column existing in a migration doesn't mean it's populated. A listener existing doesn't mean it reads the right field. Trace the full data path.
+
+4. **Only plan what's actually missing.** After validating, strike through any task that's already implemented. Don't re-implement what's already there.
+
+## Concrete pattern
+
+```
+❌ BAD: Assume execDetails doesn't capture realizedPNL → add task to wire it
+✅ GOOD: Read ib-connection.ts lines 560–595 first → confirm execDetails skips realizedPNL, commissionReport has it → then plan correctly
+```
+
+This rule exists because architectural proposals were created based on assumed gaps that turned out to be partially or fully implemented, leading to wasted work and regressions.

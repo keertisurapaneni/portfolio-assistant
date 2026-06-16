@@ -81,7 +81,7 @@ router.put('/live/mode-routing', async (req, res) => {
     const validModes = [
       'DAY_TRADE', 'DAY_PENNY', 'SWING_TRADE', 'LONG_TERM',
       'OPTIONS_PUT', 'OPTIONS_CALL',
-      'CREDIT_SPREAD', 'CALENDAR_SPREAD', 'EARNINGS_CALENDAR',
+      'CREDIT_SPREAD', 'EARNINGS_CALENDAR',
     ];
     const validTargets: RouteTarget[] = ['off', 'paper', 'live', 'both'];
     for (const [mode, target] of Object.entries(modeRouting)) {

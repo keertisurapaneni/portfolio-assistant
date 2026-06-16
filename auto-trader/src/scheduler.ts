@@ -544,20 +544,6 @@ export function startScheduler(): void {
   }, { timezone: 'America/New_York' });
   log('Weekly LEAP scan: Monday 10:30 AM ET (alongside watchlist screener)');
 
-  // Weekly calendar spread scan — Monday 11:00 AM ET (after options market stabilizes).
-  // Phase 1: paper only, logs opportunities to activity feed for human review.
-  cron.schedule('0 11 * * 1', async () => {
-    try {
-      log('[Scheduler] Running weekly calendar spread scan...');
-      const { runCalendarSpreadScan } = await import('./lib/calendar-spread-scanner.js');
-      const result = await runCalendarSpreadScan();
-      log(`[Scheduler] Calendar scan done — ${result.opportunities.length} opportunities found`);
-    } catch (err) {
-      console.error('[Scheduler] Calendar spread scan error:', err instanceof Error ? err.message : err);
-    }
-  }, { timezone: 'America/New_York' });
-  log('Calendar spread scan: every Monday 11:00 AM ET');
-
   // Credit spread scan — Mon-Fri 10:30 AM ET.
   // Scans for vertical credit spread entries (bull puts / bear calls).
   // Executes qualifying trades automatically (≥40% credit/width, trend-following pullbacks).
@@ -1953,7 +1939,7 @@ export async function triggerManualRun(): Promise<string> {
 export async function triggerOptionsScan(): Promise<{ ok: boolean; opportunities: number; skipped: number; message: string }> {
   try {
     const config = await loadConfig();
-    const owEnabled = isModeEnabled(config, 'OPTIONS_PUT') || isModeEnabled(config, 'OPTIONS_CALL') || isModeEnabled(config, 'CREDIT_SPREAD') || isModeEnabled(config, 'CALENDAR_SPREAD');
+    const owEnabled = isModeEnabled(config, 'OPTIONS_PUT') || isModeEnabled(config, 'OPTIONS_CALL') || isModeEnabled(config, 'CREDIT_SPREAD');
     if (!owEnabled) {
       return { ok: false, opportunities: 0, skipped: 0, message: 'Options Wheel module disabled' };
     }
@@ -5940,7 +5926,7 @@ async function _syncPositionsForAccount(
 
   for (const trade of activeTrades) {
     // Options and spread positions are managed by their own dedicated managers — never touch them here.
-    if (trade.mode === 'OPTIONS_PUT' || trade.mode === 'OPTIONS_CALL' || trade.mode === 'CREDIT_SPREAD' || trade.mode === 'CALENDAR_SPREAD') continue;
+    if (trade.mode === 'OPTIONS_PUT' || trade.mode === 'OPTIONS_CALL' || trade.mode === 'CREDIT_SPREAD') continue;
 
     const ibPos = positions.find(
       p => p.symbol.toUpperCase() === trade.ticker.toUpperCase() && p.secType === 'STK'
@@ -8510,7 +8496,7 @@ async function runSchedulerCycle(): Promise<void> {
     }
 
     // 13. Options wheel — manage open positions (every cycle, 30-min intervals)
-    const optionsWheelEnabled = isModeEnabled(config, 'OPTIONS_PUT') || isModeEnabled(config, 'OPTIONS_CALL') || isModeEnabled(config, 'CREDIT_SPREAD') || isModeEnabled(config, 'CALENDAR_SPREAD');
+    const optionsWheelEnabled = isModeEnabled(config, 'OPTIONS_PUT') || isModeEnabled(config, 'OPTIONS_CALL') || isModeEnabled(config, 'CREDIT_SPREAD');
     if (!optionsWheelEnabled) {
       log('Options Wheel module disabled — skipping management + scan');
     } else {

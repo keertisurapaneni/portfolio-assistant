@@ -19,7 +19,6 @@ export type TradeMode =
   | 'OPTIONS_CALL'
   | 'OPTIONS_SCALP'
   | 'OPTIONS_LEAP'
-  | 'CALENDAR_SPREAD'
   | 'CREDIT_SPREAD'
   | 'EARNINGS_CALENDAR';
 
@@ -90,6 +89,7 @@ export interface PaperTrade {
   fill_price: number | null;
   close_price: number | null;
   pnl: number | null;
+  ib_pnl: number | null;
   pnl_percent: number | null;
   opened_at: string;
   filled_at: string | null;

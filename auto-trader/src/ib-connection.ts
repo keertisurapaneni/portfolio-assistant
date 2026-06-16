@@ -125,21 +125,6 @@ export interface OptionsOrderResult {
   timedOut?: boolean;
 }
 
-export interface CalendarSpreadOrderParams {
-  symbol: string;
-  right: 'P' | 'C';
-  strike: number;
-  frontExpiry: string;
-  backExpiry: string;
-  contracts: number;
-  limitPrice: number;
-  account?: string;
-}
-
-export interface CalendarSpreadOrderResult {
-  orderId: number;
-}
-
 export interface VerticalSpreadOrderParams {
   symbol: string;
   right: 'P' | 'C';
@@ -1222,62 +1207,6 @@ export class IBConnection {
     return null;
   }
 
-  // ── Calendar Spread ──────────────────────────────────
-
-  async placeCalendarSpreadOrder(
-    params: CalendarSpreadOrderParams,
-  ): Promise<CalendarSpreadOrderResult> {
-    if (!this.ib || !this._connected) {
-      throw new Error(`${this.tag} Not connected to IB Gateway`);
-    }
-
-    const { symbol, right, strike, frontExpiry, backExpiry, contracts, account } = params;
-
-    const [frontResult, backResult] = await Promise.all([
-      this.resolveOptionConId(symbol, right, strike, frontExpiry),
-      this.resolveOptionConId(symbol, right, strike, backExpiry),
-    ]);
-    if (!frontResult || !backResult) {
-      throw new Error(`Could not resolve conIds for ${symbol} ${strike}${right} ${frontExpiry}/${backExpiry}`);
-    }
-    const frontConId = frontResult.conId;
-    const backConId = backResult.conId;
-
-    const tick = params.limitPrice >= 3.0 ? 0.05 : 0.01;
-    const limitPrice = Math.round(params.limitPrice / tick) * tick;
-
-    const contract: Contract = {
-      symbol: symbol.toUpperCase(),
-      secType: SecType.BAG,
-      exchange: 'SMART',
-      currency: 'USD',
-      comboLegs: [
-        { conId: frontConId, ratio: 1, action: OrderAction.SELL, exchange: 'SMART' },
-        { conId: backConId,  ratio: 1, action: OrderAction.BUY,  exchange: 'SMART' },
-      ],
-    };
-
-    const orderId = this.getNextOrderId();
-
-    const order: Order = {
-      action: OrderAction.BUY,
-      orderType: OrderType.LMT,
-      totalQuantity: contracts,
-      lmtPrice: limitPrice,
-      tif: TimeInForce.GTC,
-      transmit: true,
-      ...(account ? { account } : {}),
-    };
-
-    try {
-      this.ib.placeOrder(orderId, contract, order);
-      console.log(`${this.tag} Calendar spread placed: ${symbol} ${strike}${right} sell ${frontExpiry} / buy ${backExpiry} x${contracts} @ $${limitPrice} net debit (orderId=${orderId})`);
-      return { orderId };
-    } catch (err) {
-      throw err;
-    }
-  }
-
   // ── Vertical Spread ──────────────────────────────────
 
   async placeVerticalSpreadOrder(
@@ -1500,7 +1429,6 @@ const disconnectedStub = Object.freeze({
   placeBracketOrder: () => Promise.reject(new Error('Live connection not initialized')),
   placeMarketOrder: () => Promise.reject(new Error('Live connection not initialized')),
   placeOptionsOrder: () => Promise.reject(new Error('Live connection not initialized')),
-  placeCalendarSpreadOrder: () => Promise.reject(new Error('Live connection not initialized')),
   placeVerticalSpreadOrder: () => Promise.reject(new Error('Live connection not initialized')),
   cancelOrder: () => { throw new Error('Live connection not initialized'); },
   requestPositions: () => Promise.reject(new Error('Live connection not initialized')),
@@ -1616,13 +1544,6 @@ export function requestOpenOrders(): Promise<OpenOrderData[]> {
 export function placeOptionsOrder(params: OptionsOrderParams): Promise<OptionsOrderResult> {
   if (!paperConn) return Promise.reject(new Error('Not connected to IB Gateway'));
   return paperConn.placeOptionsOrder(params);
-}
-
-export async function placeCalendarSpreadOrder(
-  params: CalendarSpreadOrderParams,
-): Promise<CalendarSpreadOrderResult> {
-  if (!paperConn) throw new Error('Not connected to IB Gateway');
-  return paperConn.placeCalendarSpreadOrder(params);
 }
 
 export async function placeVerticalSpreadOrder(

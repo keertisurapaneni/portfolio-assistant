@@ -116,7 +116,7 @@ function TradingModulesSection({
     onUpdate({ modeRouting: { ...routing, [mode]: target } });
   };
 
-  const OPTIONS_MODES = ['OPTIONS_PUT', 'OPTIONS_CALL', 'CREDIT_SPREAD', 'CALENDAR_SPREAD', 'EARNINGS_CALENDAR'];
+  const OPTIONS_MODES = ['OPTIONS_PUT', 'OPTIONS_CALL', 'CREDIT_SPREAD', 'EARNINGS_CALENDAR'];
   const setAllOptions = (target: RouteTarget) => {
     const updated = { ...routing };
     OPTIONS_MODES.forEach(m => { updated[m] = target; });
