@@ -547,10 +547,40 @@ export async function runOptionsManageCycle(): Promise<ManageCycleResult> {
         } else {
           logMessage = `❌ ${pos.ticker} $${pos.option_strike} ${pos.signal === 'BUY' ? 'call' : 'put'} expired worthless — lost $${(premiumCollected * 100).toFixed(0)} premium`;
         }
+      } else if (pos.mode === 'OPTIONS_PUT' && pos.signal === 'SELL') {
+        // Short put: must distinguish OTM (expired worthless, keep premium) from
+        // ITM (assigned — stock put to us at strike price, P&L ≠ full premium).
+        let priceAtExpiry: number | null = null;
+        try {
+          const eq = await finnhubFetch<{ c?: number }>(
+            `https://finnhub.io/api/v1/quote?symbol=${pos.ticker}&token=${FINNHUB_KEY}`,
+          );
+          priceAtExpiry = eq?.c ?? null;
+        } catch { /* non-fatal — fallback uses option_assigned flag */ }
+
+        // ITM = stock below put strike. Fallback: if we already flagged assignment at DTE≤5
+        // and can't get a live quote, assume it stayed ITM.
+        const isItmAtExpiry = priceAtExpiry !== null
+          ? priceAtExpiry < pos.option_strike
+          : (pos.option_assigned === true);
+
+        if (isItmAtExpiry) {
+          // Actually assigned — call handleAssignment() which writes the correct P&L
+          // (premium - intrinsic loss on the shares) and emits the event internally.
+          await handleAssignment(pos.id);
+          result.expiredPositions.push(pos.ticker);
+          continue; // handleAssignment() already called recordTradeClose + persistEvent
+        }
+
+        // OTM at expiry — keep full premium (this is the goal of the wheel strategy)
+        expiredPnl = premiumCollected * 100;
+        expiredPct = (premiumCollected / pos.option_strike) * 100;
+        closeReason = 'expired_worthless';
+        logMessage = `✅ ${pos.ticker} $${pos.option_strike} put expired worthless (OTM) — kept $${(premiumCollected * 100).toFixed(0)} premium`;
       } else {
-        // Other option modes (OPTIONS_PUT, OPTIONS_WHEEL, OPTIONS_LEAP, OPTIONS_CALL):
-        //   SELL signal = sold option (credit received = premium collected) → profit if expires worthless
-        //   BUY signal  = bought option (debit paid = premium) → loss if expires worthless
+        // Other option modes (OPTIONS_WHEEL, OPTIONS_LEAP, long options with BUY signal):
+        //   SELL signal = sold option (credit received) → profit if expires worthless
+        //   BUY signal  = bought option (debit paid) → loss if expires worthless
         const isLong = pos.signal === 'BUY';
         expiredPnl = isLong ? -(premiumCollected * 100) : premiumCollected * 100;
         expiredPct = isLong
@@ -833,8 +863,47 @@ export async function runOptionsManageCycle(): Promise<ManageCycleResult> {
         continue;
       }
 
-      // Mild loser (loss within 1× premium collected) — let theta decay work
-      console.log(`[Options Manager] 21 DTE HOLD: ${pos.ticker} $${pos.option_strike}P — loss -$${Math.abs(pnl).toFixed(0)} within premium ($${premiumInDollars.toFixed(0)}), riding theta (${dte}d left)`);
+      // Mild loser (loss within 1× premium collected) — let theta decay work.
+      // EXCEPTION: at ≤3 DTE force-close to avoid weekend / expiry-day assignment risk.
+      // Between 21 DTE and 4 DTE we intentionally ride theta; the final 3 days carry
+      // asymmetric assignment risk that outweighs the remaining theta left to capture.
+      if (dte <= 3) {
+        const ibClose = await ibBuyToCloseOption(pos.ticker, 'P', pos.option_strike, pos.option_expiry, currentPremium);
+        if (!ibClose) {
+          persistEvent(pos.ticker, 'warning',
+            `⚠️ ${pos.ticker} $${pos.option_strike}P ≤3 DTE forced close triggered but IB buy-to-close failed — will retry next cycle`,
+            { action: 'skipped', source: 'options', metadata: { reason: 'ib_close_failed', trigger: '3dte_forced_close', currentPremium, premiumCollected, dte } }
+          );
+          continue;
+        }
+        if (ibClose.timedOut) {
+          await stampPendingBtcOrder(pos.id, ibClose.orderId, pos.ticker, pos.option_strike, 'P');
+          continue;
+        }
+        const closePremium = ibClose.avgFillPrice;
+        const closePnl = (premiumCollected - closePremium) * 100;
+        const closeProfitPct = premiumCollected > 0 ? Math.max(0, (1 - closePremium / premiumCollected) * 100) : 0;
+        await recordTradeClose({
+          tradeId: pos.id,
+          closePrice: closePremium,
+          closeReason: '3dte_forced_close',
+          status: 'CLOSED',
+          orderId: ibClose.orderId,
+          accountType: 'paper',
+          overridePnl: closePnl,
+          overridePnlPct: (closePnl / (pos.option_capital_req ?? pos.option_strike * 100)) * 100,
+          overridePnlSource: 'ib_fill_calculated',
+          extraUpdates: { option_close_pct: closeProfitPct },
+        });
+        result.rollAlerts.push(pos.ticker);
+        console.log(`[Options Manager] 3 DTE FORCED CLOSE (mild loser): ${pos.ticker} $${pos.option_strike}P — capped at $${closePnl.toFixed(0)} with ${dte}d left`);
+        persistEvent(pos.ticker, 'warning',
+          `⚠️ ${pos.ticker} $${pos.option_strike} put force-closed at ${dte} DTE — capped loss at $${closePnl.toFixed(0)} to avoid assignment risk`,
+          { action: 'closed', source: 'options', metadata: { reason: '3dte_forced_close', dte, pnl: closePnl, ibOrderId: ibClose.orderId } }
+        );
+      } else {
+        console.log(`[Options Manager] 21 DTE HOLD: ${pos.ticker} $${pos.option_strike}P — loss -$${Math.abs(pnl).toFixed(0)} within premium ($${premiumInDollars.toFixed(0)}), riding theta (${dte}d left)`);
+      }
     }
 
     // ── Check 5: Assignment detection (stock price below strike at/near expiry) ──
@@ -930,22 +999,59 @@ export async function runOptionsManageCycle(): Promise<ManageCycleResult> {
     const dte = daysUntil(pos.option_expiry);
     const premiumCollected = pos.option_premium ?? 0;
 
-    // Check A: Expired worthless (stock stayed below call strike) — keep premium
+    // Check A: Expired — distinguish OTM (worthless, keep premium) vs ITM (called away)
     if (dte <= 0) {
-      await recordTradeClose({
-        tradeId: pos.id,
-        closePrice: 0,
-        closeReason: 'expired_worthless',
-        status: 'CLOSED',
-        accountType: 'paper',
-        overridePnl: premiumCollected * 100,
-        overridePnlPct: (premiumCollected / pos.option_strike) * 100,
-        overridePnlSource: 'ib_fill_calculated',
-      });
-      persistEvent(pos.ticker, 'success',
-        `✅ ${pos.ticker} $${pos.option_strike} covered call expired worthless — kept $${(premiumCollected * 100).toFixed(0)} premium`,
-        { action: 'closed', source: 'options', metadata: { reason: 'expired_worthless', premium: premiumCollected * 100 } }
-      );
+      let callPriceAtExpiry: number | null = null;
+      try {
+        const ccEq = await finnhubFetch<{ c?: number }>(
+          `https://finnhub.io/api/v1/quote?symbol=${pos.ticker}&token=${FINNHUB_KEY}`,
+        );
+        callPriceAtExpiry = ccEq?.c ?? null;
+      } catch { /* non-fatal */ }
+
+      const isCalledAway = callPriceAtExpiry !== null && callPriceAtExpiry > pos.option_strike;
+
+      if (isCalledAway) {
+        // Stock ended above call strike → shares called away at strike price.
+        // P&L = premium collected + gain/loss on shares vs acquisition cost (fill_price).
+        // fill_price is the stock price at the time this covered-call record was created
+        // (either the assignment price from the put, or spot price when manually queued).
+        const acquisitionPrice = pos.fill_price ?? pos.option_strike;
+        const sharePnl = (pos.option_strike - acquisitionPrice) * 100;
+        const totalPnl = premiumCollected * 100 + sharePnl;
+        const totalPnlPct = acquisitionPrice > 0 ? (totalPnl / (acquisitionPrice * 100)) * 100 : 0;
+        await recordTradeClose({
+          tradeId: pos.id,
+          closePrice: pos.option_strike,
+          closeReason: 'called_away',
+          status: 'CLOSED',
+          accountType: 'paper',
+          overridePnl: totalPnl,
+          overridePnlPct: totalPnlPct,
+          overridePnlSource: 'ib_fill_calculated',
+        });
+        const shareLabel = sharePnl >= 0 ? `+$${sharePnl.toFixed(0)} shares` : `-$${Math.abs(sharePnl).toFixed(0)} shares`;
+        persistEvent(pos.ticker, totalPnl >= 0 ? 'success' : 'warning',
+          `📤 ${pos.ticker} $${pos.option_strike} covered call expired ITM — called away at $${pos.option_strike} (premium $${(premiumCollected * 100).toFixed(0)} + ${shareLabel} = total $${totalPnl.toFixed(0)})`,
+          { action: 'closed', source: 'options', metadata: { reason: 'called_away', premium: premiumCollected * 100, sharePnl, totalPnl, acquisitionPrice, callStrike: pos.option_strike } }
+        );
+      } else {
+        // OTM — stock stayed below call strike; keep full premium
+        await recordTradeClose({
+          tradeId: pos.id,
+          closePrice: 0,
+          closeReason: 'expired_worthless',
+          status: 'CLOSED',
+          accountType: 'paper',
+          overridePnl: premiumCollected * 100,
+          overridePnlPct: (premiumCollected / pos.option_strike) * 100,
+          overridePnlSource: 'ib_fill_calculated',
+        });
+        persistEvent(pos.ticker, 'success',
+          `✅ ${pos.ticker} $${pos.option_strike} covered call expired worthless (OTM) — kept $${(premiumCollected * 100).toFixed(0)} premium`,
+          { action: 'closed', source: 'options', metadata: { reason: 'expired_worthless', premium: premiumCollected * 100 } }
+        );
+      }
       continue;
     }
 
