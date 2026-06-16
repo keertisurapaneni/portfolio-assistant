@@ -1284,6 +1284,94 @@ function SpreadCard({ spread, closed }: { spread: CreditSpreadPosition; closed?:
   );
 }
 
+// ── Closed Position Card (rich history view) ─────────────
+function ClosedPositionCard({ pos }: { pos: OpenOptionsPosition }) {
+  const isRolled    = pos.close_reason === 'rolled';
+  const isStopped   = pos.close_reason === 'stop_loss';
+  const isExpired   = pos.close_reason === 'expired_worthless';
+  const isProfit    = pos.close_reason === '50pct_profit';
+  const is21DteWin  = pos.close_reason === '21dte_profit';
+  const is21DteCut  = pos.close_reason === '21dte_close';
+  const isEarningsIv = pos.close_reason?.startsWith('earnings_iv_crush') ?? false;
+  const histROC = calcAnnualizedROC(pos.pnl, pos.option_capital_req, pos.opened_at, pos.closed_at);
+
+  const closeExplanation = (() => {
+    if (isProfit)      return 'Premium decayed to 50% of what was collected — locked in half the max profit early. This frees capital for the next trade and avoids the final weeks of gamma risk.';
+    if (isExpired)     return 'Stock stayed above the strike at expiry, so the put expired worthless. Maximum profit kept — the best possible outcome for a put seller.';
+    if (isStopped)     return 'Premium rose to 3× the original amount AND the stock was below the strike — real assignment risk. Position closed to limit losses and preserve capital for better setups.';
+    if (is21DteWin)    return 'Closed at 21 days to expiry while profitable. Gamma risk accelerates sharply in the final 3 weeks — closing here locks in gains and avoids potential whipsaw from last-minute moves.';
+    if (is21DteCut)    return 'Closed at 21 days to expiry even without full profit. Staying in the final 3 weeks exposes the position to elevated gamma risk with little additional reward.';
+    if (isRolled)      return pos.notes ?? 'Rolled to a new strike and/or expiry — extended the trade to collect additional premium and avoid or delay assignment.';
+    if (isEarningsIv)  return 'Earnings IV crush exit — front-month premium collapsed after the announcement. Calendar spread closed at estimated profit.';
+    if (pos.option_assigned) return 'Stock was below the strike at or near expiry — assigned the shares. Wheel continues: selling a covered call on the assigned shares to collect more premium.';
+    return pos.close_reason?.replace(/_/g, ' ') ?? 'Position closed.';
+  })();
+
+  return (
+    <div className={cn(
+      'rounded-xl border p-3 space-y-2',
+      isRolled  ? 'border-blue-200 bg-blue-50' :
+      isStopped ? 'border-red-200 bg-red-50' :
+      'border-[hsl(var(--border))] bg-[hsl(var(--card))]'
+    )}>
+      {/* Top row: ticker + badges + P&L */}
+      <div className="flex items-start justify-between gap-2">
+        <div className="space-y-0.5 min-w-0">
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <span className="text-sm font-bold">{pos.ticker}</span>
+            <span className="text-[10px] px-1 py-0.5 rounded bg-violet-100 text-violet-700">
+              {pos.mode === 'OPTIONS_CALL' ? 'CALL' : 'PUT'}
+            </span>
+            {isRolled    && <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 font-semibold">↩️ Rolled</span>}
+            {isStopped   && <span className="text-[10px] px-1.5 py-0.5 rounded bg-red-100 text-red-700 font-semibold">🛑 Stopped</span>}
+            {isExpired   && <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 font-semibold">✅ Expired worthless</span>}
+            {isProfit    && <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 font-semibold">💰 50% profit close</span>}
+            {is21DteWin  && <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 font-semibold">⏱️ 21 DTE close (profit)</span>}
+            {is21DteCut  && <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 font-semibold">⚠️ 21 DTE cut (risk)</span>}
+            {isEarningsIv && <span className="text-[10px] px-1.5 py-0.5 rounded bg-purple-100 text-purple-700 font-semibold">📉 IV crush exit</span>}
+            {pos.option_assigned && <span className="text-[10px] px-1 py-0.5 rounded bg-amber-100 text-amber-700">📌 Assigned</span>}
+          </div>
+          <p className="text-[10px] text-[hsl(var(--muted-foreground))]">
+            ${pos.option_strike} strike · {pos.mode === 'OPTIONS_CALL' ? 'CALL' : 'PUT'}
+            {pos.fill_price != null && (
+              <> · Sold <span className="font-semibold text-emerald-700">${pos.fill_price.toFixed(2)}</span></>
+            )}
+            {pos.close_price != null && pos.close_price > 0 && (
+              <> → Closed <span className="font-semibold text-red-600">${pos.close_price.toFixed(2)}</span></>
+            )}
+            {pos.fill_price != null && pos.close_price != null && pos.close_price > 0 && (
+              <span className={cn('ml-1 font-semibold', pos.fill_price > pos.close_price ? 'text-emerald-600' : 'text-red-600')}>
+                ({pos.fill_price > pos.close_price ? '+' : ''}{((pos.fill_price - pos.close_price) * (pos.option_contracts ?? 1) * 100).toFixed(0)} gross)
+              </span>
+            )}
+            {' · '}{pos.option_contracts ?? 1} contract{(pos.option_contracts ?? 1) !== 1 ? 's' : ''} · Exp {formatExpiry(pos.option_expiry)}
+          </p>
+        </div>
+        <div className="text-right shrink-0">
+          <p className={cn('text-sm font-bold', (pos.pnl ?? 0) >= 0 ? 'text-emerald-600' : 'text-red-600')}>
+            {fmtUsd(pos.pnl ?? 0, 0, true)}
+          </p>
+          {histROC != null && (
+            <p className={cn('text-[10px] font-semibold', histROC >= 0 ? 'text-emerald-600' : 'text-red-600')}>
+              {histROC >= 0 ? '+' : ''}{histROC.toFixed(0)}% ann. ROC
+            </p>
+          )}
+        </div>
+      </div>
+      {/* Why it was closed */}
+      <div className={cn(
+        'rounded-lg px-2.5 py-1.5 text-[10px] leading-relaxed',
+        isStopped  ? 'bg-red-100/70 text-red-800' :
+        is21DteCut ? 'bg-amber-100/70 text-amber-800' :
+        isRolled   ? 'bg-blue-100/70 text-blue-800' :
+        'bg-[hsl(var(--muted))] text-[hsl(var(--muted-foreground))]'
+      )}>
+        <span className="font-semibold">Why closed: </span>{closeExplanation}
+      </div>
+    </div>
+  );
+}
+
 // ── Scalp Card ───────────────────────────────────────────
 
 function ScalpCard({ scalp, closed }: { scalp: ScalpTrade; closed?: boolean }) {
@@ -1492,7 +1580,7 @@ export function OptionsTab() {
   const [maxAllocation, setMaxAllocation] = useState<number>(500_000);
   const [openSpreads, setOpenSpreads] = useState<CreditSpreadPosition[]>([]);
   const [closedSpreads, setClosedSpreads] = useState<CreditSpreadPosition[]>([]);
-  const [activeSection, setActiveSection] = useState<'positions' | 'history' | 'watchlist' | 'log' | 'sniper' | 'spreads' | 'scalps' | 'playbook'>('positions');
+  const [activeSection, setActiveSection] = useState<'positions' | 'watchlist' | 'log' | 'sniper' | 'spreads' | 'scalps' | 'playbook'>('positions');
   const [openScalps, setOpenScalps]   = useState<ScalpTrade[]>([]);
   const [closedScalps, setClosedScalps] = useState<ScalpTrade[]>([]);
 
@@ -1749,7 +1837,6 @@ export function OptionsTab() {
     { id: 'positions' as const, label: 'Open', count: openPositions.length },
     { id: 'spreads' as const, label: 'Spreads', count: openSpreads.length },
     { id: 'scalps' as const, label: '⚡ Scalps', count: openScalps.length },
-    { id: 'history' as const, label: 'History', count: closedPositions.length + closedScalps.length },
     { id: 'watchlist' as const, label: 'Watchlist', count: watchlist.filter(w => w.active).length },
     { id: 'sniper' as const, label: 'Sniper', count: 0 },
     { id: 'log' as const, label: 'Log', count: activityLog.length },
@@ -1873,14 +1960,17 @@ export function OptionsTab() {
           ) : (
             <div className="space-y-2">
               {filteredPositions.map(pos => {
-                const isOpen = pos.status === 'FILLED' || pos.status === 'PARTIAL';
+                const isClosed = pos.closed_at != null;
                 const isAtRisk = atRiskReasons.has(pos.id);
+                if (isClosed) {
+                  return <ClosedPositionCard key={pos.id} pos={pos} />;
+                }
                 return (
                   <PositionCard
                     key={pos.id}
                     pos={pos}
                     currentPrice={openPrices.get(pos.ticker)}
-                    atRisk={isOpen && isAtRisk}
+                    atRisk={isAtRisk}
                     atRiskReason={atRiskReasons.get(pos.id)}
                     onSubmitToIB={handleSubmitToIB}
                     onDiscard={handleDiscardPaperTrade}
@@ -1983,122 +2073,6 @@ export function OptionsTab() {
         </div>
       )}
 
-      {/* History */}
-      {activeSection === 'history' && (
-        <div className="space-y-4">
-
-          {/* Scalp history */}
-          {closedScalps.length > 0 && (
-            <div className="space-y-2">
-              <div className="flex items-center gap-2 px-1">
-                <span className="text-xs font-bold text-[hsl(var(--muted-foreground))] uppercase tracking-wide">⚡ Scalp History</span>
-                <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-600 font-bold">{closedScalps.length}</span>
-              </div>
-              {closedScalps.map(s => <ScalpCard key={s.id} scalp={s} closed />)}
-            </div>
-          )}
-
-          {/* Credit spread / wheel history */}
-          {closedPositions.length === 0 && closedScalps.length === 0 ? (
-            <div className="text-center py-8 text-sm text-[hsl(var(--muted-foreground))]">No closed options trades yet</div>
-          ) : closedPositions.length > 0 && (
-            <div className="space-y-2">
-              {closedScalps.length > 0 && (
-                <div className="flex items-center gap-2 px-1">
-                  <span className="text-xs font-bold text-[hsl(var(--muted-foreground))] uppercase tracking-wide">Credit Spreads / Wheel</span>
-                </div>
-              )}
-            {closedPositions.map(pos => {
-              const isRolled    = pos.close_reason === 'rolled';
-              const isStopped   = pos.close_reason === 'stop_loss';
-              const isExpired   = pos.close_reason === 'expired_worthless';
-              const isProfit    = pos.close_reason === '50pct_profit';
-              const is21DteWin  = pos.close_reason === '21dte_profit';
-              const is21DteCut  = pos.close_reason === '21dte_close';
-              const isEarningsIv = pos.close_reason?.startsWith('earnings_iv_crush') ?? false;
-              const histROC = calcAnnualizedROC(pos.pnl, pos.option_capital_req, pos.opened_at, pos.closed_at);
-
-              // Plain-English explanation of why this position was closed
-              const closeExplanation = (() => {
-                if (isProfit)     return 'Premium decayed to 50% of what was collected — locked in half the max profit early. This frees capital for the next trade and avoids the final weeks of gamma risk.';
-                if (isExpired)    return 'Stock stayed above the strike at expiry, so the put expired worthless. Maximum profit kept — the best possible outcome for a put seller.';
-                if (isStopped)    return 'Premium rose to 3× the original amount AND the stock was below the strike — real assignment risk. Position closed to limit losses and preserve capital for better setups.';
-                if (is21DteWin)   return 'Closed at 21 days to expiry while profitable. Gamma risk accelerates sharply in the final 3 weeks — closing here locks in gains and avoids potential whipsaw from last-minute moves.';
-                if (is21DteCut)   return 'Closed at 21 days to expiry even without full profit. Staying in the final 3 weeks exposes the position to elevated gamma risk with little additional reward.';
-                if (isRolled)     return pos.notes ?? 'Rolled to a new strike and/or expiry — extended the trade to collect additional premium and avoid or delay assignment.';
-                if (isEarningsIv) return 'Earnings IV crush exit — front-month premium collapsed after the announcement. Calendar spread closed at estimated profit.';
-                if (pos.option_assigned) return 'Stock was below the strike at or near expiry — assigned the shares. Wheel continues: selling a covered call on the assigned shares to collect more premium.';
-                return pos.close_reason?.replace(/_/g, ' ') ?? 'Position closed.';
-              })();
-
-              return (
-                <div key={pos.id} className={cn(
-                  'rounded-xl border p-3 space-y-2',
-                  isRolled  ? 'border-blue-200 bg-blue-50' :
-                  isStopped ? 'border-red-200 bg-red-50' :
-                  'border-[hsl(var(--border))] bg-[hsl(var(--card))]'
-                )}>
-                  {/* Top row: ticker + badges + P&L */}
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="space-y-0.5 min-w-0">
-                      <div className="flex items-center gap-1.5 flex-wrap">
-                        <span className="text-sm font-bold">{pos.ticker}</span>
-                        <span className="text-[10px] px-1 py-0.5 rounded bg-violet-100 text-violet-700">
-                          {pos.mode === 'OPTIONS_CALL' ? 'CALL' : 'PUT'}
-                        </span>
-                        {isRolled    && <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 font-semibold">↩️ Rolled</span>}
-                        {isStopped   && <span className="text-[10px] px-1.5 py-0.5 rounded bg-red-100 text-red-700 font-semibold">🛑 Stopped</span>}
-                        {isExpired   && <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 font-semibold">✅ Expired worthless</span>}
-                        {isProfit    && <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 font-semibold">💰 50% profit close</span>}
-                        {is21DteWin  && <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 font-semibold">⏱️ 21 DTE close (profit)</span>}
-                        {is21DteCut  && <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 font-semibold">⚠️ 21 DTE cut (risk)</span>}
-                        {isEarningsIv && <span className="text-[10px] px-1.5 py-0.5 rounded bg-purple-100 text-purple-700 font-semibold">📉 IV crush exit</span>}
-                        {pos.option_assigned && <span className="text-[10px] px-1 py-0.5 rounded bg-amber-100 text-amber-700">📌 Assigned</span>}
-                      </div>
-                      <p className="text-[10px] text-[hsl(var(--muted-foreground))]">
-                        ${pos.option_strike} strike · {pos.mode === 'OPTIONS_CALL' ? 'CALL' : 'PUT'}
-                        {pos.fill_price != null && (
-                          <> · Sold <span className="font-semibold text-emerald-700">${pos.fill_price.toFixed(2)}</span></>
-                        )}
-                        {pos.close_price != null && pos.close_price > 0 && (
-                          <> → Closed <span className="font-semibold text-red-600">${pos.close_price.toFixed(2)}</span></>
-                        )}
-                        {pos.fill_price != null && pos.close_price != null && pos.close_price > 0 && (
-                          <span className={cn('ml-1 font-semibold', pos.fill_price > pos.close_price ? 'text-emerald-600' : 'text-red-600')}>
-                            ({pos.fill_price > pos.close_price ? '+' : ''}{((pos.fill_price - pos.close_price) * (pos.option_contracts ?? 1) * 100).toFixed(0)} gross)
-                          </span>
-                        )}
-                        {' · '}{pos.option_contracts ?? 1} contract{(pos.option_contracts ?? 1) !== 1 ? 's' : ''} · Exp {formatExpiry(pos.option_expiry)}
-                      </p>
-                    </div>
-                    <div className="text-right shrink-0">
-                      <p className={cn('text-sm font-bold', (pos.pnl ?? 0) >= 0 ? 'text-emerald-600' : 'text-red-600')}>
-                        {fmtUsd(pos.pnl ?? 0, 0, true)}
-                      </p>
-                      {histROC != null && (
-                        <p className={cn('text-[10px] font-semibold', histROC >= 0 ? 'text-emerald-600' : 'text-red-600')}>
-                          {histROC >= 0 ? '+' : ''}{histROC.toFixed(0)}% ann. ROC
-                        </p>
-                      )}
-                    </div>
-                  </div>
-                  {/* Why it was closed */}
-                  <div className={cn(
-                    'rounded-lg px-2.5 py-1.5 text-[10px] leading-relaxed',
-                    isStopped  ? 'bg-red-100/70 text-red-800' :
-                    is21DteCut ? 'bg-amber-100/70 text-amber-800' :
-                    isRolled   ? 'bg-blue-100/70 text-blue-800' :
-                    'bg-[hsl(var(--muted))] text-[hsl(var(--muted-foreground))]'
-                  )}>
-                    <span className="font-semibold">Why closed: </span>{closeExplanation}
-                  </div>
-                </div>
-              );
-            })}
-            </div>
-          )}
-        </div>
-      )}
 
       {/* Activity Log */}
       {activeSection === 'log' && (
