@@ -324,7 +324,7 @@ export function TodayActivityTab({ events, trades, todayTrades, orphanedFills = 
     return !closed && (t.status === 'FILLED' || t.status === 'PARTIAL');
   };
   const computeTradePnl = (tradeList: PaperTrade[]) =>
-    tradeList.filter(t => !isTradeActive(t)).reduce((sum, t) => sum + (t.pnl ?? 0), 0);
+    tradeList.filter(t => !isTradeActive(t)).reduce((sum, t) => sum + (t.ib_pnl ?? t.pnl ?? 0), 0);
 
   // P&L from system events (e.g. IBReconcile cover buys) that carry a real pnl in metadata.
   // These are tracked via auto_trade_events (not paper_trades) so they aren't in computeTradePnl.
@@ -362,8 +362,8 @@ export function TodayActivityTab({ events, trades, todayTrades, orphanedFills = 
         if (filterMode === 'swing') return mode === 'SWING_TRADE';
         if (filterMode === 'long_term') return mode === 'LONG_TERM';
         if (filterMode === 'options') return OPTIONS_MODES.has(mode ?? '');
-        if (filterMode === 'gainers') return t.pnl != null && t.pnl > 0;
-        if (filterMode === 'losers') return t.pnl != null && t.pnl < 0;
+        if (filterMode === 'gainers') return (t.ib_pnl ?? t.pnl ?? 0) > 0;
+        if (filterMode === 'losers') return (t.ib_pnl ?? t.pnl ?? 0) < 0;
         return true;
       });
     }
@@ -383,8 +383,8 @@ export function TodayActivityTab({ events, trades, todayTrades, orphanedFills = 
         aVal = closedA && a.closed_at ? a.closed_at : (a.filled_at ?? a.opened_at);
         bVal = closedB && b.closed_at ? b.closed_at : (b.filled_at ?? b.opened_at);
       } else if (sortKey === 'pnl') {
-        aVal = a.pnl ?? null;
-        bVal = b.pnl ?? null;
+        aVal = a.ib_pnl ?? a.pnl ?? null;
+        bVal = b.ib_pnl ?? b.pnl ?? null;
       }
 
       if (aVal === null && bVal === null) return 0;
@@ -541,8 +541,9 @@ export function TodayActivityTab({ events, trades, todayTrades, orphanedFills = 
                 || trade.closed_at != null;
               const isActive = !isClosed && ['FILLED', 'PARTIAL'].includes(trade.status);
 
-              // Only show realized P&L for closed trades — active positions haven't locked in gains/losses yet
-              const pnl = isActive ? null : (trade.pnl ?? null);
+              // Only show realized P&L for closed trades — active positions haven't locked in gains/losses yet.
+              // Prefer ib_pnl (IB's FIFO-based authoritative number) over pnl (formula-based).
+              const pnl = isActive ? null : (trade.ib_pnl ?? trade.pnl ?? null);
 
               const isExternalSignal = !!trade.strategy_source
                 || trade.scanner_reason?.includes('External')

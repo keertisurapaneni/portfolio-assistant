@@ -341,6 +341,42 @@ export async function runEndOfDayReconciliation(accountType: AccountType = 'pape
     await recalculatePerformance();
   }
 
+  // 5b. Gap check: compare our sum(COALESCE(ib_pnl, pnl)) against IB's aggregate realized P&L.
+  // A gap > $5 means either orphaned fills or a FIFO mismatch we haven't reconciled yet.
+  if (ibRealizedPnl != null && isFinite(ibRealizedPnl)) {
+    try {
+      const todayStartISO = todayStartUTC.toISOString();
+      const tTable = tradesTable(accountType);
+      const { data: closedToday } = await sb
+        .from(tTable)
+        .select('pnl, ib_pnl')
+        .in('status', ['CLOSED', 'TARGET_HIT', 'STOPPED'])
+        .gte('closed_at', todayStartISO);
+
+      if (closedToday && closedToday.length > 0) {
+        const ourTotal = closedToday.reduce(
+          (sum, t) => sum + ((t as { ib_pnl?: number | null; pnl?: number | null }).ib_pnl ?? (t as { pnl?: number | null }).pnl ?? 0),
+          0,
+        );
+        const gap = Math.abs(ourTotal - ibRealizedPnl);
+        log(`Gap check — our total: $${ourTotal.toFixed(2)}, IB realized: $${ibRealizedPnl.toFixed(2)}, gap: $${gap.toFixed(2)}`);
+
+        if (gap > 5) {
+          await createAutoTradeEvent({
+            ticker: 'SYSTEM',
+            event_type: 'warning',
+            action: 'failed',
+            source: 'system',
+            message: `EOD P&L gap $${gap.toFixed(2)} — our total $${ourTotal.toFixed(2)} vs IB realized $${ibRealizedPnl.toFixed(2)}. May have orphaned fills.`,
+            metadata: { ourTotal: parseFloat(ourTotal.toFixed(2)), ibRealizedPnl, gap: parseFloat(gap.toFixed(2)) },
+          }, accountType);
+        }
+      }
+    } catch (gapErr) {
+      log(`Gap check failed: ${gapErr instanceof Error ? gapErr.message : gapErr}`);
+    }
+  }
+
   // 6. Log summary
   await logReconciliationSummary(matched, corrected, orphaned, flagged, correctionDetails, accountType);
   log(`Done (${accountType}): ${matched} matched, ${corrected} corrected, ${orphaned} orphaned, ${flagged} flagged`);
