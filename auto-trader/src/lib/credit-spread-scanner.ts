@@ -11,6 +11,7 @@
  *
  * Entry timing: trend following with pullback entries.
  * Exit rules: 50% profit take, 100% stop loss, 21 DTE time exit.
+ * Entry gates: trend/pullback, earnings blackout, IV rank ≥ 30 (avoid crushed-IV).
  */
 
 import { findSpreadStrikes, getOptionGreeksForContract, type SpreadStrikeResult } from './options-chain.js';
@@ -31,6 +32,7 @@ const MIN_STOCK_PRICE = 20;
 const MAX_PORTFOLIO_SPREAD_RISK = 0.30; // circuit breaker: max 30% of account in spread risk
 const PULLBACK_THRESHOLD_PCT = 3;      // stock pulled back ≥3% from recent high = entry signal
 const TREND_SMA_DAYS = 50;             // stock must be above/below 50-SMA for trend confirmation
+const MIN_IV_RANK = 30;                // minimum IV rank — don't sell spreads in crushed-IV environments
 
 // ── Types ────────────────────────────────────────────────
 
@@ -121,6 +123,30 @@ async function analyzeTrend(ticker: string, currentPrice: number): Promise<{
   }
 }
 
+/**
+ * Returns the stored IV rank (0–100) for a ticker based on the past year of
+ * options_iv_history readings. Returns null when fewer than 10 data points
+ * exist (new ticker still building history — treated as passing the gate).
+ * Same computation as options-scanner.ts getStoredIvRank().
+ */
+async function getStoredIvRank(ticker: string): Promise<number | null> {
+  const sb = getSupabase();
+  const yearAgo = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const { data } = await sb
+    .from('options_iv_history')
+    .select('iv')
+    .eq('ticker', ticker)
+    .gte('date', yearAgo)
+    .order('date', { ascending: false });
+  if (!data || data.length < 10) return null;
+  const ivs = data.map(r => r.iv as number);
+  const current = ivs[0];
+  const min52w = Math.min(...ivs);
+  const max52w = Math.max(...ivs);
+  if (max52w === min52w) return 50;
+  return Math.round(((current - min52w) / (max52w - min52w)) * 100);
+}
+
 // ── Scanner ──────────────────────────────────────────────
 
 async function scanTickerForSpread(
@@ -163,6 +189,15 @@ async function scanTickerForSpread(
   } else {
     checks.earnings = 'no_data';
   }
+
+  // Gate 4.5: IV rank — only enter spreads in elevated-IV environments.
+  // Selling for 33% of width when IVR=10 gives inadequate premium for the risk.
+  // Null = fewer than 10 history points (new ticker) → allow through to build history.
+  const ivRank = await getStoredIvRank(ticker);
+  if (ivRank !== null && ivRank < MIN_IV_RANK) {
+    return { ticker, skipped: true, reason: `low_iv_rank:${ivRank}` };
+  }
+  checks.ivRank = ivRank !== null ? `${ivRank}` : 'building_history';
 
   // Gate 5: Find credit spread strikes
   const right = trend.direction === 'BULL_PUT' ? 'P' as const : 'C' as const;
@@ -462,12 +497,83 @@ export async function manageCreditSpreadPositions(): Promise<void> {
       const contracts = pos.option_contracts ?? pos.quantity ?? 1;
       const maxGainTotal = maxGainPerShare * 100 * contracts;
 
+      // Compute DTE before the quote fetch so we can handle expiry even if quote fails.
+      const expiryDate = pos.option_expiry ? new Date(pos.option_expiry) : null;
+      const dte = expiryDate ? Math.ceil((expiryDate.getTime() - Date.now()) / 86_400_000) : 999;
+
+      // ── Expiry backstop (dte ≤ 0) ──────────────────────────────────────────────────
+      // The 21 DTE time-exit should have closed this spread weeks ago. If it somehow
+      // slipped through (repeated IB order failures, connectivity gaps), settle it now
+      // based on moneyness. This prevents spreads from sitting open indefinitely after
+      // their expiry date.
+      if (dte <= 0) {
+        // Attempt a live quote to determine moneyness; fall back to max-loss if unavailable.
+        const expiryQuote = await getStockQuote(pos.ticker);
+        const stockPx = expiryQuote?.price ?? null;
+        const spreadWidth = pos.spread_long_strike && pos.spread_short_strike
+          ? Math.abs(pos.spread_long_strike - pos.spread_short_strike)
+          : 0;
+
+        let settledPnl = maxGainTotal; // default: assume expired OTM (keep full credit)
+        let closeReason = 'expired_worthless';
+
+        if (stockPx !== null && spreadWidth > 0) {
+          if (pos.spread_type === 'BULL_PUT') {
+            if (stockPx < (pos.spread_long_strike ?? 0)) {
+              // Stock below both legs → max loss
+              settledPnl = maxGainTotal - spreadWidth * 100 * contracts;
+              closeReason = 'expired_max_loss';
+            } else if (stockPx < (pos.spread_short_strike ?? 0)) {
+              // Between legs → partial loss (short leg assigned, long leg worthless)
+              const intrinsic = (pos.spread_short_strike ?? 0) - stockPx;
+              settledPnl = maxGainTotal - intrinsic * 100 * contracts;
+              closeReason = 'expired_partial_loss';
+            }
+            // else: stock above short strike → both legs expire worthless, keep full credit
+          } else {
+            // BEAR_CALL
+            if (stockPx > (pos.spread_long_strike ?? Infinity)) {
+              settledPnl = maxGainTotal - spreadWidth * 100 * contracts;
+              closeReason = 'expired_max_loss';
+            } else if (stockPx > (pos.spread_short_strike ?? Infinity)) {
+              const intrinsic = stockPx - (pos.spread_short_strike ?? 0);
+              settledPnl = maxGainTotal - intrinsic * 100 * contracts;
+              closeReason = 'expired_partial_loss';
+            }
+          }
+        } else if (stockPx === null) {
+          // Can't get quote — conservatively assume max loss to avoid phantom profits
+          settledPnl = maxGainTotal - (spreadWidth > 0 ? spreadWidth * 100 * contracts : maxGainTotal * 2);
+          closeReason = 'expired_max_loss';
+          console.warn(`[Credit Spread Manager] ${pos.ticker}: expired with no quote — recording max loss conservatively`);
+        }
+
+        await recordTradeClose({
+          tradeId: pos.id,
+          closePrice: 0,
+          closeReason,
+          status: 'CLOSED',
+          accountType: 'paper',
+          overridePnl: settledPnl,
+          overridePnlPct: maxGainTotal > 0 ? (settledPnl / maxGainTotal) * 100 : 0,
+          overridePnlSource: 'estimated',
+        });
+        await createAutoTradeEvent({
+          ticker: pos.ticker,
+          mode: 'CREDIT_SPREAD',
+          event_type: closeReason === 'expired_worthless' ? 'info' : 'warning',
+          action: 'closed',
+          message: `${pos.spread_type} ${pos.spread_short_strike}/${pos.spread_long_strike} expired — ${closeReason} | settled P&L $${settledPnl.toFixed(0)}`,
+          metadata: { closeReason, settledPnl, dte, stockPx },
+        });
+        console.log(`[Credit Spread Manager] EXPIRY BACKSTOP: ${pos.ticker} ${pos.spread_type} → ${closeReason} P&L $${settledPnl.toFixed(0)}`);
+        continue;
+      }
+
       // Get current spread value (what it would cost to buy back)
       const quote = await getStockQuote(pos.ticker);
       if (!quote) continue;
 
-      const expiryDate = pos.option_expiry ? new Date(pos.option_expiry) : null;
-      const dte = expiryDate ? Math.ceil((expiryDate.getTime() - Date.now()) / 86_400_000) : 999;
       const spreadRight = pos.spread_type === 'BULL_PUT' ? 'P' as const : 'C' as const;
       const expiryStr = pos.option_expiry ? pos.option_expiry.replace(/-/g, '') : '';
 
