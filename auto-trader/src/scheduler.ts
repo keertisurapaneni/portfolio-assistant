@@ -438,7 +438,9 @@ export function startScheduler(): void {
   // correct any fill_price / P&L discrepancies, and recalculate global performance.
   cron.schedule('15 16 * * 1-5', async () => {
     try {
-      await runEndOfDayReconciliation();
+      const paperConn = getConnectionForAccount('paper');
+      const ibRealizedPnl = paperConn.isConnected() ? (paperConn.getDailyPnL().realizedPnL ?? undefined) : undefined;
+      await runEndOfDayReconciliation('paper', ibRealizedPnl);
     } catch (err) {
       console.error('[EOD Reconcile] Failed:', err instanceof Error ? err.message : err);
     }
