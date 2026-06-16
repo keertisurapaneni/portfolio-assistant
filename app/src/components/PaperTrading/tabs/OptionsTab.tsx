@@ -1542,8 +1542,8 @@ function FilterStrip({
         {onTypeFilter && (
           <>
             <span className="text-[10px] text-[hsl(var(--muted-foreground))]">·</span>
-            {chip('Call', typeFilter === 'call', () => onTypeFilter('call'))}
-            {chip('Put', typeFilter === 'put', () => onTypeFilter('put'))}
+            {chip('Call', typeFilter === 'call', () => onTypeFilter(typeFilter === 'call' ? 'all' : 'call'))}
+            {chip('Put',  typeFilter === 'put',  () => onTypeFilter(typeFilter === 'put'  ? 'all' : 'put'))}
           </>
         )}
       </div>
@@ -1870,10 +1870,10 @@ export function OptionsTab() {
   const filteredScalps = sortItems(
     allScalps.filter(s => {
       const isClosed = s.closed_at != null || (s.status !== 'FILLED' && s.status !== 'PARTIAL');
-      if (scalpFilter === 'open') return !isClosed;
-      if (scalpFilter === 'closed') return isClosed;
-      if (scalpTypeFilter === 'call') return s.mode?.toLowerCase().includes('call');
-      if (scalpTypeFilter === 'put') return s.mode?.toLowerCase().includes('put');
+      if (scalpFilter === 'open'   && isClosed)  return false;
+      if (scalpFilter === 'closed' && !isClosed) return false;
+      if (scalpTypeFilter === 'call' && !s.mode?.toLowerCase().includes('call')) return false;
+      if (scalpTypeFilter === 'put'  && !s.mode?.toLowerCase().includes('put'))  return false;
       return true;
     }),
     scalpSort,
