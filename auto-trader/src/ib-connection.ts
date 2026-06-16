@@ -1218,15 +1218,24 @@ export class IBConnection {
 
     const { symbol, right, sellStrike, buyStrike, expiry, contracts, account } = params;
 
-    const [sellResult, buyResult] = await Promise.all([
-      this.resolveOptionConId(symbol, right, sellStrike, expiry),
-      this.resolveOptionConId(symbol, right, buyStrike, expiry),
-    ]);
+    // Resolve conIds SEQUENTIALLY (not in Promise.all) to eliminate any possible
+    // race condition between concurrent reqContractDetails listeners sharing the
+    // same EventEmitter. Concurrent resolution has been linked to occasional leg
+    // inversions (Bear Put Debit instead of Bull Put Credit).
+    const sellResult = await this.resolveOptionConId(symbol, right, sellStrike, expiry);
+    const buyResult  = await this.resolveOptionConId(symbol, right, buyStrike, expiry);
     if (!sellResult || !buyResult) {
       throw new Error(`Could not resolve conIds for ${symbol} ${sellStrike}/${buyStrike}${right} ${expiry}`);
     }
     const sellConId = sellResult.conId;
-    const buyConId = buyResult.conId;
+    const buyConId  = buyResult.conId;
+    // Validate both legs resolved to the same expiry — a mismatch creates a calendar
+    // spread instead of a vertical, which IB may display as an unexpected spread type.
+    if (sellResult.resolvedExpiry !== buyResult.resolvedExpiry) {
+      console.warn(`${this.tag} WARNING: leg expiry mismatch for ${symbol} ${sellStrike}/${buyStrike}${right} — sell leg resolved to ${sellResult.resolvedExpiry}, buy leg to ${buyResult.resolvedExpiry}. Aborting order to prevent diagonal spread.`);
+      throw new Error(`Leg expiry mismatch: ${symbol} ${sellStrike} resolved ${sellResult.resolvedExpiry} vs ${buyStrike} resolved ${buyResult.resolvedExpiry}`);
+    }
+    console.log(`${this.tag} Resolved conIds: ${symbol} sell-leg (${sellStrike}${right})=conId${sellConId} buy-leg (${buyStrike}${right})=conId${buyConId} expiry=${sellResult.resolvedExpiry}`);
 
     const tick = params.limitPrice >= 3.0 ? 0.05 : 0.01;
     const limitPrice = Math.round(params.limitPrice / tick) * tick;

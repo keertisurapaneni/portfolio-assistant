@@ -501,6 +501,15 @@ export async function manageCreditSpreadPositions(): Promise<void> {
         continue;
       }
 
+      // Bear Put Debit positions confirmed via IB screenshots — close direction is
+      // INVERTED relative to our BULL_PUT leg convention. Attempting a buy-to-close
+      // would create a new spread instead of closing the existing one.
+      // These must be closed manually or via a corrected close order after investigation.
+      if ((pos.notes as string | null)?.startsWith('BEAR_PUT_DEBIT_HOLD')) {
+        console.warn(`[Credit Spread Manager] ${pos.ticker} ${pos.spread_short_strike}/${pos.spread_long_strike}: BEAR_PUT_DEBIT_HOLD — auto-close blocked. Manage manually in IB.`);
+        continue;
+      }
+
       const netCredit = pos.spread_net_credit ?? pos.entry_price ?? 0;
       const maxGainPerShare = netCredit;
       const contracts = pos.option_contracts ?? pos.quantity ?? 1;
@@ -664,7 +673,9 @@ export async function manageCreditSpreadPositions(): Promise<void> {
 
         // Place IB buy-to-close spread order before marking CLOSED
         let ibCloseOrderId: number | null = null;
-        if (isConnected() && pos.spread_short_strike && pos.spread_long_strike && pos.option_expiry) {
+        const ibConnected = isConnected();
+        console.log(`[Credit Spread Manager] ${pos.ticker} close attempt — IB connected: ${ibConnected}, short_strike: ${pos.spread_short_strike}, long_strike: ${pos.spread_long_strike}, option_expiry: ${pos.option_expiry}`);
+        if (ibConnected && pos.spread_short_strike && pos.spread_long_strike && pos.option_expiry) {
           const spreadRight = pos.spread_type === 'BULL_PUT' ? 'P' as const : 'C' as const;
           const spreadExpiry = pos.option_expiry.replace(/-/g, '');
           const closeLimit = Math.max(0.01, currentSpreadValue * 1.05);
@@ -695,8 +706,8 @@ export async function manageCreditSpreadPositions(): Promise<void> {
 
         if (!ibCloseOrderId) {
           // IB connected but order placement failed — skip this cycle, retry next run
-          if (isConnected()) {
-            console.warn(`[Credit Spread Manager] ${pos.ticker} — close trigger ${closeReason} but IB close order failed, leaving position open for retry`);
+          if (ibConnected) {
+            console.warn(`[Credit Spread Manager] ${pos.ticker} — close trigger ${closeReason} but IB close order failed (connected=true), leaving position open for retry`);
             await createAutoTradeEvent({
               ticker: pos.ticker,
               mode: 'CREDIT_SPREAD',
