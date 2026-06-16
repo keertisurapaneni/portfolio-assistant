@@ -1581,7 +1581,7 @@ export async function reconcileIBShorts(): Promise<{ closed: string[]; errors: s
           .select('id')
           .eq('ticker', pos.symbol)
           .gte('created_at', `${todayStr}T00:00:00Z`)
-          .ilike('message', '%no security definition%orphaned short%')
+          .ilike('message', '%no security definition%')
           .limit(1);
 
         if (!existingAlert?.length) {
