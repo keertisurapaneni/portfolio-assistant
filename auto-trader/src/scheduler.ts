@@ -5005,16 +5005,17 @@ async function executeExternalStrategySignal(
     })) {
       return skipExternalSignal('Duplicate active trade for ticker', 'duplicate_active_trade');
     }
-  }
 
-  // Bracket-oversell guard — runs ALWAYS, even for manual execute / skipConfirmationGates=true.
-  // Never execute a SELL signal when there is an active LONG (BUY) position for the same ticker,
-  // and vice versa. When both sides fire, IB nets the opposing positions (FIFO), producing a
-  // different cost basis than what paper_trades recorded — causing permanent P&L discrepancies.
-  // This was the root cause of the Jun 16 2026 dual-signal issue (PLTR, QQQ, SPY, NVDA all had
-  // two-sided signals; "Execute All" bypassed the old guard which lived inside skipConfirmationGates).
-  // Also mirrors the CSCO/AMAT oversell scenario from May 15 2026.
-  {
+    // Bracket-oversell guard: never execute a SELL external signal when there is an
+    // active LONG (BUY) position for the same ticker, and vice versa.
+    // The existing IB bracket (STP + LMT) fires at the same price level — placing a
+    // second SELL order would oversell and create an accidental short.
+    // This mirrors the CSCO/AMAT scenario from May 15 2026.
+    // NOTE: This only runs when !skipConfirmationGates. The primary protection against
+    // dual-signal execution is the entry trigger check above (which now always runs).
+    // Somesh's two-sided signals have non-overlapping entry levels, so only one direction
+    // can ever be "in range" at a time. The guard here handles the edge case where one
+    // direction already opened and price is still near the bracket SL level.
     const oppositeSignal = signal.signal === 'SELL' ? 'BUY' : 'SELL';
     const hasOpposingPosition = await hasActiveTrade(ticker, {
       ...(signal.mode !== 'LONG_TERM' ? { excludeMode: 'LONG_TERM' as const } : {}),
@@ -5024,7 +5025,7 @@ async function executeExternalStrategySignal(
     });
     if (hasOpposingPosition) {
       return skipExternalSignal(
-        `Active ${oppositeSignal === 'BUY' ? 'LONG' : 'SHORT'} position already open for ${ticker} — ${signal.signal} signal blocked to prevent opposing IB position / P&L discrepancy`,
+        `Active ${oppositeSignal === 'BUY' ? 'LONG' : 'SHORT'} position already open for ${ticker} — ${signal.signal} signal blocked to prevent bracket oversell`,
         'opposing_position_blocks_signal',
       );
     }
@@ -5076,16 +5077,21 @@ async function executeExternalStrategySignal(
   const effectiveTargetPrice = signal.target_price ?? validatedFA?.targetPrice ?? null;
 
   const quote = await getQuotePrice(ticker);
-  if (effectiveEntryPrice != null && quote == null && !skipConfirmationGates) {
+  // Entry trigger — runs ALWAYS (including manual execute / skipConfirmationGates=true).
+  // Price MUST reach Somesh's breakout/breakdown level before the signal fires, regardless
+  // of how execution was triggered. This is the core trading rule, not a convenience gate.
+  // Without this, "Execute All" would fire both sides of a two-sided signal simultaneously
+  // at market price (Jun 16 2026: NVDA BUY+SELL, PLTR BUY+SELL, SPY BUY+SELL, QQQ BUY+SELL
+  // all executed at 10:10 AM despite neither entry trigger being reached for each pair).
+  if (effectiveEntryPrice != null && quote == null) {
     summaryLog(`${ticker}: waiting — no quote`);
-    // Record last-known wait reason so Execute Past Window shows context if signal expires
     await updateExternalStrategySignal(signal.id, {
       failure_reason: 'Waiting: could not fetch live price',
     });
     return 'waiting';
   }
 
-  if (effectiveEntryPrice != null && quote != null && !skipConfirmationGates) {
+  if (effectiveEntryPrice != null && quote != null) {
     // OPTIONS_PUT: entry_price is a breakdown level — trigger when price drops BELOW it
     if (signal.mode === 'OPTIONS_PUT' && quote > effectiveEntryPrice) {
       const reason = `Entry trigger not reached: price $${quote.toFixed(2)} above put breakdown level $${effectiveEntryPrice.toFixed(2)}`;
