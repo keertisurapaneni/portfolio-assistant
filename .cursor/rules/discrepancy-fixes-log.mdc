@@ -27,8 +27,10 @@ If the symptom already appears in the log:
 
 ## After Every Fix
 
-Add a row to `docs/cursor/discrepancy-fixes-log.md` immediately:
+Add a row to `docs/cursor/discrepancy-fixes-log.md` **before committing** — the log entry must be part of the same commit as the code change:
 - Date, symptom, root cause, files changed, PR number, any side effects
+
+Do NOT merge the PR and then update the log. If the log update is missing from the commit, the PR is incomplete.
 
 ## Why
 
