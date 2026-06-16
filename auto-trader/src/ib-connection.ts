@@ -380,6 +380,27 @@ export class IBConnection {
       (ib as unknown as { reqMarketDataType: (type: number) => void }).reqMarketDataType(3);
       console.log(`${this.tag} Market data type set to delayed (type 3)`);
       this.connectionListeners.forEach(fn => fn(true));
+
+      // Replay today's executions 10s after connect to recover any ExecDetails/commissions
+      // that were missed during downtime (e.g. bracket TP/SL fills during the EOD
+      // cancel-then-replace race: EOD sweep cancels TP bracket, but fill arrives before IB
+      // processes the cancel. ExecDetails fires but auto-trader may not receive it if the
+      // order was already removed from its internal map. commissionReport arrives with
+      // realizedPnl but updateIbFillCommission finds no ib_fills row to update → P&L lost.
+      //
+      // reqExecutions replays both execDetails AND commissionReport for today's fills.
+      // The global handlers in this file pick them up: insertIbFill (idempotent INSERT,
+      // duplicates suppressed) and updateIbFillCommission (UPDATE with realized_pnl).
+      // Postgres trigger then fires and updates paper_trades.ib_pnl automatically.
+      setTimeout(() => {
+        try {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          (ib as any).reqExecutions(7999, {});
+          console.log(`${this.tag} reqExecutions(7999): replaying today's fills to hydrate ib_fills`);
+        } catch (replayErr) {
+          console.warn(`${this.tag} reqExecutions replay failed:`, replayErr instanceof Error ? replayErr.message : replayErr);
+        }
+      }, 10_000);
     });
 
     ib.on(EventName.disconnected, () => {
