@@ -1100,7 +1100,7 @@ export async function recalculatePerformanceByCategory(accountView: AccountView 
     },
     {
       key: 'options_wheel',
-      filter: (t) => t.mode === 'OPTIONS_PUT' || t.mode === 'OPTIONS_CALL' || t.mode === 'CREDIT_SPREAD' || t.mode === 'CALENDAR_SPREAD',
+      filter: (t) => t.mode === 'OPTIONS_PUT' || t.mode === 'OPTIONS_CALL' || t.mode === 'CREDIT_SPREAD',
     },
     {
       key: 'dip_buy',

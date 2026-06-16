@@ -143,7 +143,6 @@ export const DEFAULT_CONFIG: AutoTraderConfig = {
     SWING_TRADE: 'paper',
     OPTIONS_PUT: 'paper',
     OPTIONS_CALL: 'paper',
-    CALENDAR_SPREAD: 'paper',
     CREDIT_SPREAD: 'paper',
     DAY_PENNY: 'paper',
     LONG_TERM: 'paper',

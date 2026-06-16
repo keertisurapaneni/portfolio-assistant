@@ -151,7 +151,6 @@ export async function loadConfig(): Promise<AutoTraderConfig> {
         if (routing.OPTIONS_PUT !== 'off') routing.OPTIONS_PUT = 'off';
         if (routing.OPTIONS_CALL !== 'off') routing.OPTIONS_CALL = 'off';
         if (routing.CREDIT_SPREAD !== 'off') routing.CREDIT_SPREAD = 'off';
-        if (routing.CALENDAR_SPREAD !== 'off') routing.CALENDAR_SPREAD = 'off';
       }
       if (data.penny_enabled === false && routing.DAY_PENNY !== 'off') {
         routing.DAY_PENNY = 'off';
