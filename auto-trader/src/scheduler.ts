@@ -3936,7 +3936,7 @@ async function executeScannerTrade(
       log(`${ticker}: inside ORB but near ${signal === 'BUY' ? 'high' : 'low'} boundary (${pct}% of range) — pre-breakout ${signal} setup, proceeding`);
       persistEvent(ticker, 'info', `ORB boundary play: price at ${pct}% of range — pre-${signal === 'BUY' ? 'breakout' : 'breakdown'} entry`, {
         action: 'proceeding', source: 'scanner', mode,
-        orb_high: orb.high, orb_low: orb.low, current_price: orb.currentPrice,
+        metadata: { orb_high: orb.high, orb_low: orb.low, current_price: orb.currentPrice },
       });
     } else if (choppy) {
       const reclaim = await detectVwapReclaim(ticker, signal as 'BUY' | 'SELL');
@@ -3944,7 +3944,7 @@ async function executeScannerTrade(
         log(`${ticker}: inside ORB (choppy) but VWAP ${signal === 'BUY' ? 'reclaimed' : 'broke down'} — proceeding (${reclaim.log})`);
         persistEvent(ticker, 'info', `ORB chop overridden by VWAP reclaim: ${reclaim.log}`, {
           action: 'proceeding', source: 'scanner', mode,
-          vwap: reclaim.vwap, current_price: reclaim.currentPrice,
+          metadata: { vwap: reclaim.vwap, current_price: reclaim.currentPrice },
         });
       } else {
         log(`${ticker}: inside ORB (choppy middle), no VWAP reclaim — skipping ${signal} day trade (${reclaim.log})`);
@@ -5005,12 +5005,16 @@ async function executeExternalStrategySignal(
     })) {
       return skipExternalSignal('Duplicate active trade for ticker', 'duplicate_active_trade');
     }
+  }
 
-    // Bracket-oversell guard: never execute a SELL external signal when there is an
-    // active LONG (BUY) position for the same ticker, and vice versa.
-    // The existing IB bracket (STP + LMT) fires at the same price level — placing a
-    // second SELL order would oversell and create an accidental short.
-    // This mirrors the CSCO/AMAT scenario from May 15 2026.
+  // Bracket-oversell guard — runs ALWAYS, even for manual execute / skipConfirmationGates=true.
+  // Never execute a SELL signal when there is an active LONG (BUY) position for the same ticker,
+  // and vice versa. When both sides fire, IB nets the opposing positions (FIFO), producing a
+  // different cost basis than what paper_trades recorded — causing permanent P&L discrepancies.
+  // This was the root cause of the Jun 16 2026 dual-signal issue (PLTR, QQQ, SPY, NVDA all had
+  // two-sided signals; "Execute All" bypassed the old guard which lived inside skipConfirmationGates).
+  // Also mirrors the CSCO/AMAT oversell scenario from May 15 2026.
+  {
     const oppositeSignal = signal.signal === 'SELL' ? 'BUY' : 'SELL';
     const hasOpposingPosition = await hasActiveTrade(ticker, {
       ...(signal.mode !== 'LONG_TERM' ? { excludeMode: 'LONG_TERM' as const } : {}),
@@ -5020,7 +5024,7 @@ async function executeExternalStrategySignal(
     });
     if (hasOpposingPosition) {
       return skipExternalSignal(
-        `Active ${oppositeSignal === 'BUY' ? 'LONG' : 'SHORT'} position already open for ${ticker} — ${signal.signal} signal blocked to prevent bracket oversell`,
+        `Active ${oppositeSignal === 'BUY' ? 'LONG' : 'SHORT'} position already open for ${ticker} — ${signal.signal} signal blocked to prevent opposing IB position / P&L discrepancy`,
         'opposing_position_blocks_signal',
       );
     }
