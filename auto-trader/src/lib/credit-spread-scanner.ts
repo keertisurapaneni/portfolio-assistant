@@ -66,11 +66,20 @@ export interface CreditSpreadScanResult {
 // ── Helpers ──────────────────────────────────────────────
 
 async function getStockQuote(ticker: string): Promise<{ price: number; change: number; pctChange: number } | null> {
+  // Primary: Finnhub (fast, low latency)
   const data = await finnhubFetch<{ c: number; d: number; dp: number }>(
     `https://finnhub.io/api/v1/quote?symbol=${ticker}&token=${FINNHUB_KEY}`
   );
-  if (!data?.c) return null;
-  return { price: data.c, change: data.d ?? 0, pctChange: data.dp ?? 0 };
+  if (data?.c) {
+    return { price: data.c, change: data.d ?? 0, pctChange: data.dp ?? 0 };
+  }
+  // Fallback: Yahoo Finance — critical for the position manager so stop-loss/profit-take
+  // rules still fire even when Finnhub is rate-limited (55 req/min shared across all callers).
+  const yq = await fetchQuote(ticker);
+  if (yq?.price) {
+    return { price: yq.price, change: 0, pctChange: 0 };
+  }
+  return null;
 }
 
 async function getEarningsDate(ticker: string): Promise<Date | null> {
@@ -572,24 +581,50 @@ export async function manageCreditSpreadPositions(): Promise<void> {
 
       // Get current spread value (what it would cost to buy back)
       const quote = await getStockQuote(pos.ticker);
-      if (!quote) continue;
+      if (!quote) {
+        console.warn(`[Credit Spread Manager] ${pos.ticker}: no stock quote (Finnhub + Yahoo both failed) — skipping this cycle`);
+        continue;
+      }
 
       const spreadRight = pos.spread_type === 'BULL_PUT' ? 'P' as const : 'C' as const;
       const expiryStr = pos.option_expiry ? pos.option_expiry.replace(/-/g, '') : '';
 
       // Price the HELD spread by fetching bid/ask for each specific leg.
       // Buy-to-close cost = short leg ask (to buy back) − long leg bid (to sell back).
-      // Falls back to netCredit (no P&L) if IB can't price either leg.
+      // Fallback: when IB chain data is unavailable, estimate value from intrinsic value
+      // so the stop-loss and profit-take rules can still fire. Without this fallback, a
+      // deeply ITM spread always shows P&L = 0 and the stop loss never triggers.
       let currentSpreadValue = netCredit;
+      let pricingSource: 'greeks' | 'intrinsic' | 'fallback' = 'fallback';
+
       if (expiryStr && pos.spread_short_strike && pos.spread_long_strike) {
         const [shortGreeks, longGreeks] = await Promise.all([
           getOptionGreeksForContract(pos.ticker, pos.spread_short_strike, expiryStr, spreadRight, quote.price).catch(() => null),
           getOptionGreeksForContract(pos.ticker, pos.spread_long_strike, expiryStr, spreadRight, quote.price).catch(() => null),
         ]);
         if (shortGreeks && longGreeks) {
-          // Buy back cost: pay ask on the short leg, receive bid on the long leg
+          // Live greeks available — use actual bid/ask
           const buybackCost = shortGreeks.ask - longGreeks.bid;
           currentSpreadValue = Math.max(0, buybackCost);
+          pricingSource = 'greeks';
+        } else {
+          // Greeks unavailable — estimate from intrinsic value using stock price.
+          // For a BULL_PUT spread, intrinsic value of the spread = max(0, short_strike - stock)
+          // capped at the spread width. Add a small time-value buffer (10% of width).
+          const stockPx = quote.price;
+          const spreadWidth = pos.spread_short_strike - pos.spread_long_strike;
+          let intrinsic: number;
+          if (pos.spread_type === 'BULL_PUT') {
+            intrinsic = Math.min(spreadWidth, Math.max(0, pos.spread_short_strike - stockPx));
+          } else {
+            // BEAR_CALL
+            intrinsic = Math.min(spreadWidth, Math.max(0, stockPx - pos.spread_short_strike));
+          }
+          // Add 10% of width as time-value premium — conservative so we don't over-trigger profit-take
+          const timeValueBuffer = spreadWidth * 0.10;
+          currentSpreadValue = intrinsic + timeValueBuffer;
+          pricingSource = 'intrinsic';
+          console.log(`[Credit Spread Manager] ${pos.ticker}: greeks unavailable, using intrinsic estimate $${currentSpreadValue.toFixed(2)} (stock $${stockPx.toFixed(2)} vs $${pos.spread_short_strike}/$${pos.spread_long_strike})`);
         }
       }
 
@@ -605,8 +640,14 @@ export async function manageCreditSpreadPositions(): Promise<void> {
         closeReason = 'profit_take_50pct';
       }
 
-      // Rule 2: Stop loss at 100% of max gain lost
-      if (pnlTotal <= -maxGainTotal) {
+      // Rule 2: Stop loss.
+      // TastyTrade standard: close when the spread costs 2× credit to buy back.
+      // Safety cap: if 2× credit > 90% of spread width (high-credit spreads, common in
+      // elevated-IV environments), that threshold is unreachable — the spread can only
+      // trade up to its full width. Cap at 90% of width so we always have a reachable stop.
+      const spreadWidth = pos.spread_short_strike - pos.spread_long_strike;
+      const stopSpreadValue = Math.min(2 * netCredit, spreadWidth * 0.90);
+      if (currentSpreadValue >= stopSpreadValue) {
         closeReason = 'stop_loss_100pct';
       }
 
@@ -615,8 +656,11 @@ export async function manageCreditSpreadPositions(): Promise<void> {
         closeReason = 'time_exit_21dte';
       }
 
+      // Diagnostics: log current state every cycle so we can monitor without events
+      console.log(`[Credit Spread Manager] ${pos.ticker} ${pos.spread_type} ${pos.spread_short_strike}/${pos.spread_long_strike}: spreadVal=$${currentSpreadValue.toFixed(2)} credit=$${netCredit.toFixed(2)} stop=$${stopSpreadValue.toFixed(2)} P&L=$${pnlTotal.toFixed(0)} (${pnlPctOfMaxGain.toFixed(0)}%) ${dte}DTE [${pricingSource}]`);
+
       if (closeReason) {
-        console.log(`[Credit Spread Manager] ${pos.ticker} → ${closeReason} (P&L: $${pnlTotal.toFixed(0)}, ${pnlPctOfMaxGain.toFixed(0)}% of max gain, ${dte} DTE)`);
+        console.log(`[Credit Spread Manager] ${pos.ticker} → ${closeReason} (P&L: $${pnlTotal.toFixed(0)}, ${pnlPctOfMaxGain.toFixed(0)}% of max gain, ${dte} DTE, priced via ${pricingSource})`);
 
         // Place IB buy-to-close spread order before marking CLOSED
         let ibCloseOrderId: number | null = null;
@@ -678,8 +722,8 @@ export async function manageCreditSpreadPositions(): Promise<void> {
               mode: 'CREDIT_SPREAD',
               event_type: 'warning',
               action: 'closed',
-              message: `Closed ${pos.spread_type}: ${pos.spread_short_strike}/${pos.spread_long_strike} | ${closeReason} | P&L $${pnlTotal.toFixed(0)} (estimated — IB disconnected)`,
-              metadata: { closeReason, pnl: pnlTotal, dte, pnlPctOfMaxGain },
+              message: `Closed ${pos.spread_type}: ${pos.spread_short_strike}/${pos.spread_long_strike} | ${closeReason} | P&L $${pnlTotal.toFixed(0)} (estimated — IB disconnected, priced via ${pricingSource})`,
+              metadata: { closeReason, pnl: pnlTotal, dte, pnlPctOfMaxGain, pricingSource },
             });
           }
           continue;
@@ -694,8 +738,8 @@ export async function manageCreditSpreadPositions(): Promise<void> {
           mode: 'CREDIT_SPREAD',
           event_type: 'info',
           action: 'proceeding',
-          message: `${pos.spread_type} ${pos.spread_short_strike}/${pos.spread_long_strike}: close order #${ibCloseOrderId} placed (${closeReason}, est P&L $${pnlTotal.toFixed(0)}) — waiting for fill confirmation`,
-          metadata: { closeReason, estimatedPnl: pnlTotal, dte, ibCloseOrderId },
+          message: `${pos.spread_type} ${pos.spread_short_strike}/${pos.spread_long_strike}: close order #${ibCloseOrderId} placed (${closeReason}, est P&L $${pnlTotal.toFixed(0)}, priced via ${pricingSource}) — waiting for fill confirmation`,
+          metadata: { closeReason, estimatedPnl: pnlTotal, dte, ibCloseOrderId, pricingSource },
         });
       }
     } catch (err) {
