@@ -1392,6 +1392,86 @@ function ScalpCard({ scalp, closed }: { scalp: ScalpTrade; closed?: boolean }) {
   );
 }
 
+// ── Options filter/sort types ─────────────────────────────
+type StatusFilter = 'all' | 'open' | 'closed';
+type OptionsSort  = 'placed' | 'expiry' | 'pnl' | 'ticker';
+
+const SORT_OPTIONS_EXPIRY: { value: OptionsSort; label: string }[] = [
+  { value: 'expiry', label: 'Expiry ↑' },
+  { value: 'placed', label: 'Placed ↓' },
+  { value: 'pnl',    label: 'P&L ↓' },
+  { value: 'ticker', label: 'Ticker A–Z' },
+];
+const SORT_OPTIONS_PLACED: { value: OptionsSort; label: string }[] = [
+  { value: 'placed', label: 'Placed ↓' },
+  { value: 'expiry', label: 'Expiry ↑' },
+  { value: 'pnl',    label: 'P&L ↓' },
+  { value: 'ticker', label: 'Ticker A–Z' },
+];
+
+function sortItems<T extends { pnl?: number | null; opened_at?: string; option_expiry?: string | null; ticker?: string }>(
+  items: T[],
+  sortKey: OptionsSort,
+): T[] {
+  return [...items].sort((a, b) => {
+    if (sortKey === 'pnl') return ((b.pnl ?? 0) - (a.pnl ?? 0));
+    if (sortKey === 'placed') return ((b.opened_at ?? '') > (a.opened_at ?? '') ? 1 : -1);
+    if (sortKey === 'expiry') return ((a.option_expiry ?? '9999') < (b.option_expiry ?? '9999') ? -1 : 1);
+    if (sortKey === 'ticker') return (a.ticker ?? '').localeCompare(b.ticker ?? '');
+    return 0;
+  });
+}
+
+function FilterStrip({
+  status, onStatus, sort, onSort, sortOptions, typeFilter, onTypeFilter,
+}: {
+  status: StatusFilter;
+  onStatus: (v: StatusFilter) => void;
+  sort: OptionsSort;
+  onSort: (v: OptionsSort) => void;
+  sortOptions: { value: OptionsSort; label: string }[];
+  typeFilter?: 'all' | 'call' | 'put';
+  onTypeFilter?: (v: 'all' | 'call' | 'put') => void;
+}) {
+  const chip = (label: string, active: boolean, onClick: () => void) => (
+    <button
+      key={label}
+      onClick={onClick}
+      className={cn(
+        'px-2.5 py-1 rounded-full text-[11px] font-semibold transition-colors',
+        active
+          ? 'bg-violet-100 text-violet-700 border border-violet-200'
+          : 'bg-[hsl(var(--muted))] text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))]',
+      )}
+    >{label}</button>
+  );
+  return (
+    <div className="flex items-center justify-between gap-2 flex-wrap">
+      <div className="flex items-center gap-1.5 flex-wrap">
+        {chip('All', status === 'all', () => onStatus('all'))}
+        {chip('Open', status === 'open', () => onStatus('open'))}
+        {chip('Closed', status === 'closed', () => onStatus('closed'))}
+        {onTypeFilter && (
+          <>
+            <span className="text-[10px] text-[hsl(var(--muted-foreground))]">·</span>
+            {chip('Call', typeFilter === 'call', () => onTypeFilter('call'))}
+            {chip('Put', typeFilter === 'put', () => onTypeFilter('put'))}
+          </>
+        )}
+      </div>
+      <select
+        value={sort}
+        onChange={e => onSort(e.target.value as OptionsSort)}
+        className="text-[11px] bg-[hsl(var(--muted))] text-[hsl(var(--muted-foreground))] rounded-lg px-2 py-1 border-none outline-none cursor-pointer"
+      >
+        {sortOptions.map(o => (
+          <option key={o.value} value={o.value}>{o.label}</option>
+        ))}
+      </select>
+    </div>
+  );
+}
+
 // ── Main Tab ─────────────────────────────────────────────
 
 export function OptionsTab() {
@@ -1415,6 +1495,15 @@ export function OptionsTab() {
   const [activeSection, setActiveSection] = useState<'positions' | 'history' | 'watchlist' | 'log' | 'sniper' | 'spreads' | 'scalps' | 'playbook'>('positions');
   const [openScalps, setOpenScalps]   = useState<ScalpTrade[]>([]);
   const [closedScalps, setClosedScalps] = useState<ScalpTrade[]>([]);
+
+  // ── Filter + sort state for each options section ──────────────────────────
+  const [posFilter,     setPosFilter]     = useState<StatusFilter>('all');
+  const [posSort,       setPosSort]       = useState<OptionsSort>('expiry');
+  const [spreadFilter,  setSpreadFilter]  = useState<StatusFilter>('all');
+  const [spreadSort,    setSpreadSort]    = useState<OptionsSort>('expiry');
+  const [scalpFilter,   setScalpFilter]   = useState<StatusFilter>('all');
+  const [scalpSort,     setScalpSort]     = useState<OptionsSort>('placed');
+  const [scalpTypeFilter, setScalpTypeFilter] = useState<'all' | 'call' | 'put'>('all');
   const [tierFilter, setTierFilter]     = useState<'ALL' | 'STABLE' | 'GROWTH' | 'HIGH_VOL'>('ALL');
   const [sectorFilter, setSectorFilter] = useState<string>('ALL');
   const [newOnly, setNewOnly] = useState(false);
@@ -1586,38 +1675,31 @@ export function OptionsTab() {
 
   const atRiskReasons = new Map<string, string>();
 
-  const [needsAttention, healthy] = openPositions.reduce<[OpenOptionsPosition[], OpenOptionsPosition[]]>(
-    ([atRiskList, ok], pos) => {
-      const price = openPrices.get(pos.ticker);
-      const pnlNegative = (pos.pnl ?? 0) < 0;
-      // Flag only when stock is actually below the strike — genuine assignment risk.
-      // P&L negative already catches above-strike positions that are losing money.
-      const belowStrike = price != null && price.price < pos.option_strike;
+  openPositions.forEach(pos => {
+    const price = openPrices.get(pos.ticker);
+    const pnlNegative = (pos.pnl ?? 0) < 0;
+    const belowStrike = price != null && price.price < pos.option_strike;
 
-      if (belowStrike && pnlNegative) {
-        const gap = pos.option_strike - (price?.price ?? 0);
-        atRiskReasons.set(pos.id,
-          `Stock at $${price!.price.toFixed(2)} is $${gap.toFixed(2)} below your $${pos.option_strike} strike — assignment risk. ` +
-          `Current loss: ${fmtUsd(pos.pnl ?? 0, 0, true)}. Consider rolling down-and-out to a lower strike next month to collect fresh premium and buy more time.`
-        );
-      } else if (belowStrike) {
-        const gap = pos.option_strike - (price?.price ?? 0);
-        atRiskReasons.set(pos.id,
-          `Stock at $${price!.price.toFixed(2)} is $${gap.toFixed(2)} below your $${pos.option_strike} strike. ` +
-          `Assignment could happen near expiry. Consider rolling to a lower strike and further expiry to collect more premium.`
-        );
-      } else if (pnlNegative) {
-        atRiskReasons.set(pos.id,
-          `Position is currently at a loss of ${fmtUsd(pos.pnl ?? 0, 0, true)}. ` +
-          `This is often caused by an IV spike (market fear) rather than the stock moving — the premium inflated. ` +
-          `Stock is still above your $${pos.option_strike} strike, so no assignment risk yet. Monitor closely.`
-        );
-      }
-
-      return (belowStrike || pnlNegative) ? [[...atRiskList, pos], ok] : [atRiskList, [...ok, pos]];
-    },
-    [[], []]
-  );
+    if (belowStrike && pnlNegative) {
+      const gap = pos.option_strike - (price?.price ?? 0);
+      atRiskReasons.set(pos.id,
+        `Stock at $${price!.price.toFixed(2)} is $${gap.toFixed(2)} below your $${pos.option_strike} strike — assignment risk. ` +
+        `Current loss: ${fmtUsd(pos.pnl ?? 0, 0, true)}. Consider rolling down-and-out to a lower strike next month to collect fresh premium and buy more time.`
+      );
+    } else if (belowStrike) {
+      const gap = pos.option_strike - (price?.price ?? 0);
+      atRiskReasons.set(pos.id,
+        `Stock at $${price!.price.toFixed(2)} is $${gap.toFixed(2)} below your $${pos.option_strike} strike. ` +
+        `Assignment could happen near expiry. Consider rolling to a lower strike and further expiry to collect more premium.`
+      );
+    } else if (pnlNegative) {
+      atRiskReasons.set(pos.id,
+        `Position is currently at a loss of ${fmtUsd(pos.pnl ?? 0, 0, true)}. ` +
+        `This is often caused by an IV spike (market fear) rather than the stock moving — the premium inflated. ` +
+        `Stock is still above your $${pos.option_strike} strike, so no assignment risk yet. Monitor closely.`
+      );
+    }
+  });
 
   // Strike Sniper state
   const [sniperTicker, setSniperTicker] = useState('');
@@ -1674,6 +1756,42 @@ export function OptionsTab() {
     { id: 'playbook' as const, label: '📖 Playbook', count: 0 },
   ];
 
+  // ── Derived filtered + sorted lists ──────────────────────────────────────
+  const allPositions = [...openPositions, ...closedPositions] as Array<OpenOptionsPosition & { option_expiry: string }>;
+  const filteredPositions = sortItems(
+    allPositions.filter(p => {
+      const isClosed = p.status !== 'FILLED' && p.status !== 'PARTIAL' && p.close_reason !== null;
+      if (posFilter === 'open') return !isClosed;
+      if (posFilter === 'closed') return isClosed;
+      return true;
+    }),
+    posSort,
+  );
+
+  const allSpreads = [...openSpreads, ...closedSpreads];
+  const filteredSpreads = sortItems(
+    allSpreads.filter(sp => {
+      const isClosed = sp.status !== 'FILLED' && sp.closed_at != null;
+      if (spreadFilter === 'open') return !isClosed;
+      if (spreadFilter === 'closed') return isClosed;
+      return true;
+    }),
+    spreadSort,
+  );
+
+  const allScalps = [...openScalps, ...closedScalps];
+  const filteredScalps = sortItems(
+    allScalps.filter(s => {
+      const isClosed = s.closed_at != null || (s.status !== 'FILLED' && s.status !== 'PARTIAL');
+      if (scalpFilter === 'open') return !isClosed;
+      if (scalpFilter === 'closed') return isClosed;
+      if (scalpTypeFilter === 'call') return s.mode?.toLowerCase().includes('call');
+      if (scalpTypeFilter === 'put') return s.mode?.toLowerCase().includes('put');
+      return true;
+    }),
+    scalpSort,
+  );
+
   return (
     <div className="space-y-4">
       {/* Refresh / Trigger Scan */}
@@ -1728,6 +1846,12 @@ export function OptionsTab() {
       {/* Open Positions — split into Needs Attention / Healthy */}
       {activeSection === 'positions' && (
         <div className="space-y-4">
+          {/* Filter + sort strip */}
+          <FilterStrip
+            status={posFilter} onStatus={setPosFilter}
+            sort={posSort} onSort={setPosSort}
+            sortOptions={SORT_OPTIONS_EXPIRY}
+          />
           {/* Wheel history summary strip */}
           {closedPositions.length > 0 && (() => {
             const realizedPnl = closedPositions.reduce((s, p) => s + (p.pnl ?? 0), 0);
@@ -1744,54 +1868,26 @@ export function OptionsTab() {
               </div>
             );
           })()}
-          {openPositions.length === 0 ? (
-            <div className="text-center py-8 text-sm text-[hsl(var(--muted-foreground))]">No open options positions</div>
+          {filteredPositions.length === 0 ? (
+            <div className="text-center py-8 text-sm text-[hsl(var(--muted-foreground))]">No positions match this filter</div>
           ) : (
-            <>
-              {needsAttention.length > 0 && (
-                <div className="space-y-2">
-                  <div className="flex items-center gap-2 px-1">
-                    <span className="text-xs font-bold text-amber-700">⚠️ Needs Attention</span>
-                    <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 font-bold">
-                      {needsAttention.length}
-                    </span>
-                  </div>
-                  {needsAttention.map(pos => (
-                    <PositionCard
-                      key={pos.id}
-                      pos={pos}
-                      currentPrice={openPrices.get(pos.ticker)}
-                      atRisk
-                      atRiskReason={atRiskReasons.get(pos.id)}
-                      onSubmitToIB={handleSubmitToIB}
-                      onDiscard={handleDiscardPaperTrade}
-                    />
-                  ))}
-                </div>
-              )}
-
-              {healthy.length > 0 && (
-                <div className="space-y-2">
-                  {needsAttention.length > 0 && (
-                    <div className="flex items-center gap-2 px-1">
-                      <span className="text-xs font-bold text-emerald-700">✅ Healthy</span>
-                      <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-700 font-bold">
-                        {healthy.length}
-                      </span>
-                    </div>
-                  )}
-                  {healthy.map(pos => (
-                    <PositionCard
-                      key={pos.id}
-                      pos={pos}
-                      currentPrice={openPrices.get(pos.ticker)}
-                      onSubmitToIB={handleSubmitToIB}
-                      onDiscard={handleDiscardPaperTrade}
-                    />
-                  ))}
-                </div>
-              )}
-            </>
+            <div className="space-y-2">
+              {filteredPositions.map(pos => {
+                const isOpen = pos.status === 'FILLED' || pos.status === 'PARTIAL';
+                const isAtRisk = atRiskReasons.has(pos.id);
+                return (
+                  <PositionCard
+                    key={pos.id}
+                    pos={pos}
+                    currentPrice={openPrices.get(pos.ticker)}
+                    atRisk={isOpen && isAtRisk}
+                    atRiskReason={atRiskReasons.get(pos.id)}
+                    onSubmitToIB={handleSubmitToIB}
+                    onDiscard={handleDiscardPaperTrade}
+                  />
+                );
+              })}
+            </div>
           )}
         </div>
       )}
@@ -1799,64 +1895,49 @@ export function OptionsTab() {
       {/* Credit Spreads */}
       {activeSection === 'spreads' && (
         <div className="space-y-4">
-          {/* Open spreads */}
-          {openSpreads.length === 0 && closedSpreads.length === 0 ? (
+          {/* Filter + sort strip */}
+          <FilterStrip
+            status={spreadFilter} onStatus={setSpreadFilter}
+            sort={spreadSort} onSort={setSpreadSort}
+            sortOptions={SORT_OPTIONS_EXPIRY}
+          />
+          {/* Summary strip */}
+          {(openSpreads.length > 0 || closedSpreads.length > 0) && (() => {
+            const realizedPnl = closedSpreads.reduce((s, sp) => s + (sp.pnl ?? 0), 0);
+            const unrealizedPnl = openSpreads.reduce((s, sp) => s + (sp.pnl ?? 0), 0);
+            const wins = closedSpreads.filter(sp => (sp.pnl ?? 0) > 0).length;
+            return (
+              <div className="flex items-center gap-3 rounded-lg bg-teal-50 border border-teal-100 px-3 py-2">
+                <span className="text-[10px] font-semibold text-teal-700">📊 Spread History</span>
+                {closedSpreads.length > 0 && (
+                  <>
+                    <span className={cn('text-[11px] font-bold', realizedPnl >= 0 ? 'text-emerald-700' : 'text-red-600')}>
+                      {fmtUsd(realizedPnl, 0, true)}
+                    </span>
+                    <span className="text-[10px] text-teal-500">
+                      {wins}W / {closedSpreads.length - wins}L
+                    </span>
+                  </>
+                )}
+                {openSpreads.length > 0 && (
+                  <span className={cn('text-[10px]', unrealizedPnl >= 0 ? 'text-emerald-600' : 'text-amber-600')}>
+                    · {openSpreads.length} open {fmtUsd(unrealizedPnl, 0, true)}
+                  </span>
+                )}
+              </div>
+            );
+          })()}
+          {filteredSpreads.length === 0 ? (
             <div className="text-center py-8 text-sm text-[hsl(var(--muted-foreground))]">
-              No credit spread positions yet. Scans run Tue/Thu 10:30 AM ET.
+              {allSpreads.length === 0 ? 'No credit spread positions yet. Scans run Tue/Thu 10:30 AM ET.' : 'No spreads match this filter'}
             </div>
           ) : (
-            <>
-              {/* Summary strip */}
-              {(() => {
-                const realizedPnl = closedSpreads.reduce((s, sp) => s + (sp.pnl ?? 0), 0);
-                const unrealizedPnl = openSpreads.reduce((s, sp) => s + (sp.pnl ?? 0), 0);
-                const wins = closedSpreads.filter(sp => (sp.pnl ?? 0) > 0).length;
-                return (
-                  <div className="flex items-center gap-3 rounded-lg bg-teal-50 border border-teal-100 px-3 py-2">
-                    <span className="text-[10px] font-semibold text-teal-700">📊 Spread History</span>
-                    {closedSpreads.length > 0 && (
-                      <>
-                        <span className={cn('text-[11px] font-bold', realizedPnl >= 0 ? 'text-emerald-700' : 'text-red-600')}>
-                          {fmtUsd(realizedPnl, 0, true)}
-                        </span>
-                        <span className="text-[10px] text-teal-500">
-                          {wins}W / {closedSpreads.length - wins}L
-                        </span>
-                      </>
-                    )}
-                    {openSpreads.length > 0 && (
-                      <span className={cn('text-[10px]', unrealizedPnl >= 0 ? 'text-emerald-600' : 'text-amber-600')}>
-                        · {openSpreads.length} open {fmtUsd(unrealizedPnl, 0, true)}
-                      </span>
-                    )}
-                  </div>
-                );
-              })()}
-
-              {openSpreads.length > 0 && (
-                <div className="space-y-2">
-                  <div className="flex items-center gap-2 px-1">
-                    <span className="text-xs font-bold text-emerald-700">Open Spreads</span>
-                    <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-700 font-bold">
-                      {openSpreads.length}
-                    </span>
-                  </div>
-                  {openSpreads.map(sp => (
-                    <SpreadCard key={sp.id} spread={sp} />
-                  ))}
-                </div>
-              )}
-              {closedSpreads.length > 0 && (
-                <div className="space-y-2">
-                  <div className="flex items-center gap-2 px-1">
-                    <span className="text-xs font-bold text-[hsl(var(--muted-foreground))]">Closed Spreads</span>
-                  </div>
-                  {closedSpreads.map(sp => (
-                    <SpreadCard key={sp.id} spread={sp} closed />
-                  ))}
-                </div>
-              )}
-            </>
+            <div className="space-y-2">
+              {filteredSpreads.map(sp => {
+                const isClosed = sp.closed_at != null;
+                return <SpreadCard key={sp.id} spread={sp} closed={isClosed} />;
+              })}
+            </div>
           )}
         </div>
       )}
@@ -1864,42 +1945,40 @@ export function OptionsTab() {
       {/* Scalps */}
       {activeSection === 'scalps' && (
         <div className="space-y-4">
-          {openScalps.length === 0 && closedScalps.length === 0 ? (
+          {/* Filter + sort strip */}
+          <FilterStrip
+            status={scalpFilter} onStatus={setScalpFilter}
+            sort={scalpSort} onSort={setScalpSort}
+            sortOptions={SORT_OPTIONS_PLACED}
+            typeFilter={scalpTypeFilter} onTypeFilter={setScalpTypeFilter}
+          />
+          {/* Summary strip */}
+          {closedScalps.length > 0 && (() => {
+            const wins = closedScalps.filter(s => (s.pnl ?? 0) > 0);
+            const totalPnl = closedScalps.reduce((sum, s) => sum + (s.pnl ?? 0), 0);
+            return (
+              <div className="flex items-center gap-3 rounded-lg bg-sky-50 border border-sky-100 px-3 py-2">
+                <span className="text-[10px] font-semibold text-sky-700">⚡ Scalp History</span>
+                <span className={cn('text-[11px] font-bold', totalPnl >= 0 ? 'text-emerald-700' : 'text-red-600')}>
+                  {fmtUsd(totalPnl, 0, true)}
+                </span>
+                <span className="text-[10px] text-sky-500">
+                  {wins.length}W / {closedScalps.length - wins.length}L
+                </span>
+              </div>
+            );
+          })()}
+          {filteredScalps.length === 0 ? (
             <div className="text-center py-8 text-sm text-[hsl(var(--muted-foreground))]">
-              No scalp trades yet. Scans run at 10:00 AM and 11:00 AM ET.
+              {allScalps.length === 0 ? 'No scalp trades yet. Scans run at 10:00 AM and 11:00 AM ET.' : 'No scalps match this filter'}
             </div>
           ) : (
-            <>
-              {/* Summary strip */}
-              {closedScalps.length > 0 && (() => {
-                const wins  = closedScalps.filter(s => (s.pnl ?? 0) > 0);
-                const totalPnl = closedScalps.reduce((sum, s) => sum + (s.pnl ?? 0), 0);
-                return (
-                  <div className="flex items-center gap-3 rounded-lg bg-sky-50 border border-sky-100 px-3 py-2">
-                    <span className="text-[10px] font-semibold text-sky-700">⚡ Scalp History</span>
-                    <span className={cn('text-[11px] font-bold', totalPnl >= 0 ? 'text-emerald-700' : 'text-red-600')}>
-                      {fmtUsd(totalPnl, 0, true)}
-                    </span>
-                    <span className="text-[10px] text-sky-500">
-                      {wins.length}W / {closedScalps.length - wins.length}L
-                    </span>
-                  </div>
-                );
-              })()}
-
-              {/* Open scalps */}
-              {openScalps.length > 0 && (
-                <div className="space-y-2">
-                  <div className="flex items-center gap-2 px-1">
-                    <span className="text-xs font-bold text-sky-700">Live Positions</span>
-                    <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-sky-100 text-sky-700 font-bold animate-pulse">
-                      {openScalps.length}
-                    </span>
-                  </div>
-                  {openScalps.map(s => <ScalpCard key={s.id} scalp={s} />)}
-                </div>
-              )}
-            </>
+            <div className="space-y-2">
+              {filteredScalps.map(s => {
+                const isClosed = s.closed_at != null;
+                return <ScalpCard key={s.id} scalp={s} closed={isClosed} />;
+              })}
+            </div>
           )}
         </div>
       )}
