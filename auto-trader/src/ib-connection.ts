@@ -181,7 +181,7 @@ export class IBConnection {
   private _requestQueue: Array<() => void> = [];
 
   private _consecutiveCode200 = 0;
-  private static readonly CODE_200_RECONNECT_THRESHOLD = 3;
+  private static readonly CODE_200_RECONNECT_THRESHOLD = 8;
 
   private get tag(): string { return `[IB:${this.label}]`; }
 
