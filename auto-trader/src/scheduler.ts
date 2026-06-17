@@ -561,14 +561,33 @@ export function startScheduler(): void {
   }, { timezone: 'America/New_York' });
   log('Credit spread scan: Mon-Fri 10:30 AM ET');
 
+  // Bear Put Spread scan — Mon-Fri 10:35 AM ET (5 min after Bull Put scan).
+  // Scans bear_put_eligible high-beta watchlist for overbought stocks showing breakdown.
+  // Entry: RSI>70 recently + extended above 20 SMA + breakdown confirmation (< prior low or < 5 EMA).
+  // Auto-executes Bear Put Debit Spreads (buy ATM put + sell 20-delta OTM put, 45 DTE, max $800 debit).
+  cron.schedule('35 10 * * 1-5', async () => {
+    try {
+      log('[Scheduler] Running Bear Put spread scan...');
+      const { runBearPutScan } = await import('./lib/bear-put-scanner.js');
+      await runBearPutScan(true);
+      log('[Scheduler] Bear Put scan done');
+    } catch (err) {
+      console.error('[Scheduler] Bear Put scan error:', err instanceof Error ? err.message : err);
+    }
+  }, { timezone: 'America/New_York' });
+  log('Bear Put scan: Mon-Fri 10:35 AM ET');
+
   // Credit spread position management — every 30 min during market hours.
   // Checks 50% profit-take, 100% stop-loss, and 21 DTE time exit rules.
   // Also purges stale SUBMITTED orders that were never filled after 48h.
+  // Also manages Bear Put positions (75% profit target, 50% stop loss, 3 DTE backstop).
   cron.schedule('0,30 10-16 * * 1-5', async () => {
     try {
       const { manageCreditSpreadPositions, purgeStaleCreditSpreadOrders } = await import('./lib/credit-spread-scanner.js');
       await manageCreditSpreadPositions();
       await purgeStaleCreditSpreadOrders();
+      const { manageBearPutPositions } = await import('./lib/bear-put-scanner.js');
+      await manageBearPutPositions();
     } catch (err) {
       console.error('[Scheduler] Credit spread manager error:', err instanceof Error ? err.message : err);
     }
