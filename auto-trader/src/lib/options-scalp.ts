@@ -221,13 +221,26 @@ function parseExpiryDate(expiry: string): Date | null {
  * fix) those held overnight and expired worthless. Even with the EOD close working,
  * multi-day options require a larger move to double, reducing win rate.
  */
-function getTodayExpiry(): string {
-  // Use ET date — the option chain date IB expects is the calendar date in ET.
+/**
+ * Return the nearest weekly Friday expiry as YYYYMMDD.
+ * All tickers — ETFs and individual stocks — have listed Friday options,
+ * so this is the only expiry format guaranteed to resolve in IB for any ticker.
+ * On Fridays this is 0DTE; otherwise it is the upcoming Friday (1–4 DTE).
+ */
+function getNearestFridayExpiry(): string {
   const nowET = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }));
-  const y  = nowET.getFullYear();
-  const mo = String(nowET.getMonth() + 1).padStart(2, '0');
-  const d  = String(nowET.getDate()).padStart(2, '0');
+  const dow = nowET.getDay(); // 0=Sun … 5=Fri
+  const daysUntilFriday = dow === 5 ? 0 : (5 - dow + 7) % 7;
+  const friday = new Date(nowET);
+  friday.setDate(nowET.getDate() + daysUntilFriday);
+  const y  = friday.getFullYear();
+  const mo = String(friday.getMonth() + 1).padStart(2, '0');
+  const d  = String(friday.getDate()).padStart(2, '0');
   return `${y}${mo}${d}`;
+}
+
+function getTodayExpiry(): string {
+  return getNearestFridayExpiry();
 }
 
 // ── Scan ─────────────────────────────────────────────────
@@ -459,7 +472,7 @@ export async function runVwapRetestScalpScan(): Promise<void> {
   const slotsLeft = MAX_SCALP_TRADES_PER_DAY - usedToday;
   let placed = 0;
 
-  console.log(`[VWAP Scalp] Scanning ${VWAP_RETEST_UNIVERSE.length} tickers | slots ${slotsLeft}`);
+  console.log(`[VWAP Scalp] Scanning ${VWAP_RETEST_UNIVERSE.length} tickers | expiry ${expiry} | slots ${slotsLeft}`);
 
   for (const ticker of VWAP_RETEST_UNIVERSE) {
     if (placed >= slotsLeft) break;
