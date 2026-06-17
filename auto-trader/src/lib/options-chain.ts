@@ -1079,10 +1079,10 @@ export async function findAtmStrike(
   underlyingPrice: number,
   expiry: string,
 ): Promise<AtmStrikeResult | null> {
-  if (!isConnected()) return null;
-
   // ── Attempt 1: IB chain strikes + live greeks ─────────────────────────────
-  const contractInfo = await getContractInfoCached(symbol);
+  // Only attempt IB-dependent paths when connected; fall through to pure-BS
+  // Attempt 2 regardless so a brief IB disconnect doesn't kill the whole scan.
+  const contractInfo = isConnected() ? await getContractInfoCached(symbol) : null;
   if (contractInfo) {
     // reqSecDefOptParams returns listed strikes without a data subscription.
     // reqMktData (greeks) requires OPRA — falls through to BS below if absent.
