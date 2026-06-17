@@ -6697,6 +6697,16 @@ async function checkSwingHoldExpiry(
 
     for (const { connection: swingConn, accountType: swAcct } of swingConnections) {
       try {
+        // Cancel bracket TP/SL orders to prevent duplicate sells after the new close fires
+        if (trade.ib_tp_order_id) {
+          try { swingConn.cancelOrder(parseInt(trade.ib_tp_order_id, 10)); log(`${trade.ticker}: swing_expiry — cancelled bracket TP #${trade.ib_tp_order_id}`); }
+          catch (e) { log(`${trade.ticker}: swing_expiry — cancel TP #${trade.ib_tp_order_id} failed: ${e instanceof Error ? e.message : 'unknown'}`); }
+        }
+        if (trade.ib_sl_order_id) {
+          try { swingConn.cancelOrder(parseInt(trade.ib_sl_order_id, 10)); log(`${trade.ticker}: swing_expiry — cancelled bracket SL #${trade.ib_sl_order_id}`); }
+          catch (e) { log(`${trade.ticker}: swing_expiry — cancel SL #${trade.ib_sl_order_id} failed: ${e instanceof Error ? e.message : 'unknown'}`); }
+        }
+
         const result = await stampAndPlaceClose(swingConn, trade.id, { symbol: trade.ticker, side, quantity: qty }, swAcct);
         await recordTradeClose({
           tradeId: trade.id,
