@@ -1192,9 +1192,11 @@ function SpreadCard({ spread, closed }: { spread: CreditSpreadPosition; closed?:
             'text-[10px] px-1.5 py-0.5 rounded font-medium',
             spread.spread_type === 'BULL_PUT'
               ? 'bg-emerald-100 text-emerald-700'
+              : spread.spread_type === 'BEAR_PUT'
+              ? 'bg-orange-100 text-orange-700'
               : 'bg-red-100 text-red-700'
           )}>
-            {spread.spread_type === 'BULL_PUT' ? 'Bull Put' : 'Bear Call'}
+            {spread.spread_type === 'BULL_PUT' ? 'Bull Put' : spread.spread_type === 'BEAR_PUT' ? 'Bear Put' : 'Bear Call'}
           </span>
           {closed && spread.close_reason && (
             <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 font-medium">
