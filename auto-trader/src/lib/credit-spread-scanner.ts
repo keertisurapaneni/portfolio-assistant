@@ -510,6 +510,12 @@ export async function manageCreditSpreadPositions(): Promise<void> {
         continue;
       }
 
+      // Bear Put Debit Spread positions are managed by bear-put-scanner.ts (manageBearPutPositions),
+      // not by this credit spread manager. Skip here to avoid double-management.
+      if (pos.spread_type === 'BEAR_PUT') {
+        continue;
+      }
+
       const netCredit = pos.spread_net_credit ?? pos.entry_price ?? 0;
       const maxGainPerShare = netCredit;
       const contracts = pos.option_contracts ?? pos.quantity ?? 1;

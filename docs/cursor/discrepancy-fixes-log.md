@@ -88,6 +88,8 @@ These issues were patched at the DB level but the code path that caused them has
 
 2. **ASTS third IB mobile row** (Jun 10): IB mobile showed 3 ASTS rows, ib_fills shows only 2 orders (39546, 39550). Could be IB UI splitting execDetails + commissionReport, or a real 3rd fill. Not confirmed.
 
+| Jun 17 | Bear Put Debit Spread scanner implemented | New feature — not a bug fix. Added `bear-put-scanner.ts` with RSI overbought detection, breakdown confirmation, delta-based strike selection, and position manager (75% profit, 50% stop, 3 DTE backstop). Added `BEAR_PUT` skip guard to `manageCreditSpreadPositions` so Bear Put positions aren't double-managed. | `auto-trader/src/lib/bear-put-scanner.ts` (new), `auto-trader/src/scheduler.ts`, `auto-trader/src/lib/credit-spread-scanner.ts` | #467 | Bear Put scan runs Mon-Fri 10:35 AM ET. Position manager runs every 30 min alongside credit spread manager. Watchlist hardcoded (22 high-beta names) until DB migration applied. |
+
 ---
 
 ## Architecture Hazards (don't repeat these mistakes)
