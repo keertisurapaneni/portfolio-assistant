@@ -1042,8 +1042,18 @@ async function atmBsPrice(
 ): Promise<{ price: number; delta: number } | null> {
   const iv = await estimateIV(symbol);
   const dte = daysToExpiry(expiry);
-  if (dte <= 0 || iv <= 0) return null;
-  const T = dte / 365;
+  if (dte < 0 || iv <= 0) return null;
+  // For 0DTE use remaining hours to 4 PM ET close as a fraction of a year.
+  // daysToExpiry returns 0 from midnight onward on expiry day — BS still needs
+  // a positive T or it returns intrinsic value (nearly zero for ATM contracts).
+  let T: number;
+  if (dte === 0) {
+    const nowEt = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }));
+    const hoursRemaining = Math.max(0.25, 16 - nowEt.getHours() - nowEt.getMinutes() / 60);
+    T = (hoursRemaining / 24) / 365;
+  } else {
+    T = dte / 365;
+  }
   const r = 0.05;
   if (right === 'P') {
     const bs = bsPut(underlyingPrice, strike, T, r, iv);
