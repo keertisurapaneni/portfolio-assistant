@@ -28,7 +28,6 @@ import { detectVwapReclaim, VWAP_RELIABLE_HOUR_ET } from './vwap.js';
 const MAX_SCALP_TRADES_PER_DAY = 5;
 const MAX_PREMIUM_PER_TRADE = 1_500;     // max $1,500 total premium for the trade (2 contracts × ask × 100). If 2 contracts exceed this, skip — never fall back to 1.
 const MAX_CONTRACTS = 2;                 // 2 contracts enables partial exits (sell 1 at first target, runner to break-even)
-const INTRADAY_MOVE_MIN_PCT = 1.5;       // stock must have moved >1.5% from open
 const PARTIAL_TARGET_MULT = 1.5;         // sell 1st contract when premium up 50%, move stop on runner to break-even
 const PROFIT_TARGET_MULT = 2.0;          // close all remaining when premium doubles
 const STOP_LOSS_MULT = 0.50;             // close all when premium halves (only before first partial)
@@ -37,7 +36,9 @@ const LAST_ENTRY_HOUR_ET = 11;           // no new scalp entries after 11:00 AM 
 const LAST_ENTRY_MIN_ET  = 0;
 const ORB_END_HOUR_ET    = 9;            // ORB forms during 9:30–9:45; no entries before 9:45
 const ORB_END_MIN_ET     = 45;
-const ORB_RETEST_BUFFER  = 0.15;        // price must be within $0.15 of ORB level to count as retest
+const ORB_RETEST_BUFFER_PCT = 0.0015;   // retest buffer = 0.15% of ORB level (relative, not absolute)
+                                        // SPY $752 → $1.13, TSLA $280 → $0.42, AMD $130 → $0.20
+                                        // Was $0.15 fixed — at SPY $750 that's 0.02%, impossibly tight for 5-min bars
 const ORB_SMA200_PERIOD  = 200;          // 200-period SMA on 5-min bars — Kay Capitals direction filter (needs 5d range)
 
 // ── NTZ / ORB helpers ────────────────────────────────────
@@ -119,12 +120,18 @@ function detectOrbSetup(
   bars: IntradayBar[],
   orb: { orbHigh: number; orbLow: number },
   currentPrice: number,
+  ticker?: string,
 ): { direction: 'C' | 'P'; breakoutVol: number; retestVol: number } | null {
   // Only look at bars after ORB formation (after 9:45 AM ET = timestamp > 13:45 UTC)
   const orbEndUtc = new Date();
   orbEndUtc.setUTCHours(13, 45, 0, 0);
   const postOrbBars = bars.filter(b => b.timestamp * 1000 >= orbEndUtc.getTime());
   if (postOrbBars.length < 3) return null;
+
+  // Compute relative retest buffers (0.15% of ORB level)
+  const retestBufHigh = orb.orbHigh * ORB_RETEST_BUFFER_PCT;
+  const retestBufLow  = orb.orbLow  * ORB_RETEST_BUFFER_PCT;
+  const tag = ticker ? `[Options Scalp] ${ticker}` : '[Options Scalp]';
 
   // Scan for 2 independent candles fully closed above orbHigh
   for (let i = 0; i <= postOrbBars.length - 3; i++) {
@@ -134,23 +141,35 @@ function detectOrbSetup(
 
     // ── Bullish: 2 candles fully above orbHigh, then retest from above ──
     if (b1.low > orb.orbHigh && b2.low > orb.orbHigh) {
-      // b3 is the retest: its low touches near orbHigh
-      const isRetest = b3.low <= orb.orbHigh + ORB_RETEST_BUFFER && b3.close > orb.orbHigh - ORB_RETEST_BUFFER;
+      // b3 is the retest: its low touches near orbHigh (within 0.15% of orbHigh)
+      const isRetest = b3.low <= orb.orbHigh + retestBufHigh && b3.close > orb.orbHigh - retestBufHigh;
       if (isRetest) {
         const breakoutVol = Math.max(b1.volume, b2.volume);
-        if (b3.volume < breakoutVol && currentPrice > orb.orbHigh - ORB_RETEST_BUFFER) {
-          return { direction: 'C', breakoutVol, retestVol: b3.volume };
+        if (b3.volume < breakoutVol) {
+          if (currentPrice > orb.orbHigh - retestBufHigh) {
+            return { direction: 'C', breakoutVol, retestVol: b3.volume };
+          } else {
+            console.log(`${tag}: bullish ORB retest found (buf=$${retestBufHigh.toFixed(2)}) but price $${currentPrice.toFixed(2)} moved away from orbHigh $${orb.orbHigh.toFixed(2)} — missed window`);
+          }
+        } else {
+          console.log(`${tag}: bullish ORB retest found but volume too high (retest ${b3.volume} >= breakout ${breakoutVol}) — trap signal`);
         }
       }
     }
 
     // ── Bearish: 2 candles fully below orbLow, then retest from below ──
     if (b1.high < orb.orbLow && b2.high < orb.orbLow) {
-      const isRetest = b3.high >= orb.orbLow - ORB_RETEST_BUFFER && b3.close < orb.orbLow + ORB_RETEST_BUFFER;
+      const isRetest = b3.high >= orb.orbLow - retestBufLow && b3.close < orb.orbLow + retestBufLow;
       if (isRetest) {
         const breakoutVol = Math.max(b1.volume, b2.volume);
-        if (b3.volume < breakoutVol && currentPrice < orb.orbLow + ORB_RETEST_BUFFER) {
-          return { direction: 'P', breakoutVol, retestVol: b3.volume };
+        if (b3.volume < breakoutVol) {
+          if (currentPrice < orb.orbLow + retestBufLow) {
+            return { direction: 'P', breakoutVol, retestVol: b3.volume };
+          } else {
+            console.log(`${tag}: bearish ORB retest found (buf=$${retestBufLow.toFixed(2)}) but price $${currentPrice.toFixed(2)} moved away from orbLow $${orb.orbLow.toFixed(2)} — missed window`);
+          }
+        } else {
+          console.log(`${tag}: bearish ORB retest found but volume too high (retest ${b3.volume} >= breakout ${breakoutVol}) — trap signal`);
         }
       }
     }
@@ -300,7 +319,7 @@ export async function runOptionScalpScan(): Promise<void> {
     // ── 200 SMA direction filter (Kay Capitals) ─────────────────────────────
     const smaDirection = get5mSmaDirection(bars5m, price);
     if (smaDirection === null) {
-      console.log(`[Options Scalp] ${ticker}: price chopping around 200 SMA — no edge, skipping`);
+      console.log(`[Options Scalp] ${ticker}: price $${price.toFixed(2)} chopping around 200 SMA (${bars5m.length} bars) — no edge, skipping`);
       continue;
     }
 
@@ -322,9 +341,9 @@ export async function runOptionScalpScan(): Promise<void> {
     }
 
     // ── Detect ORB breakout + retest ─────────────────────────────────────────
-    const setup = detectOrbSetup(bars5m, orb, price);
+    const setup = detectOrbSetup(bars5m, orb, price, ticker);
     if (!setup) {
-      console.log(`[Options Scalp] ${ticker}: no valid ORB retest setup (ORB $${orb.orbLow.toFixed(2)}–$${orb.orbHigh.toFixed(2)})`);
+      console.log(`[Options Scalp] ${ticker}: no valid ORB retest setup (ORB $${orb.orbLow.toFixed(2)}–$${orb.orbHigh.toFixed(2)}, price $${price.toFixed(2)}, SMA→${smaDirection})`);
       continue;
     }
 
