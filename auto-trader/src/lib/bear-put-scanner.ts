@@ -419,7 +419,10 @@ export async function runBearPutScan(autoExecute = false): Promise<void> {
         spread_type: 'BEAR_PUT',
         spread_short_strike: ticket.shortStrike,
         spread_long_strike: ticket.longStrike,
-        spread_net_credit: ticket.netDebit, // stores the debit in the same field (debit is positive cost)
+        spread_net_credit: ticket.netDebit,  // stores the debit paid (positive cost)
+        spread_credit_pct: ticket.debitPct,  // debit as % of width (for UI display)
+        spread_max_gain: ticket.maxGain,     // (width - debit) × 100 × contracts
+        spread_max_loss: ticket.maxLoss,     // debit × 100 × contracts
         ib_order_id: String(orderId),
         notes: `BEAR_PUT: buy $${ticket.longStrike}/${ticket.shortStrike} exp ${expiryIso} | ${ticket.contracts}x | debit $${(ticket.netDebit * 100 * ticket.contracts).toFixed(0)} | ${ticket.checksDetail.breakdown}`,
         opened_at: new Date().toISOString(),

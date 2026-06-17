@@ -1173,15 +1173,19 @@ function StatsHeader({
 
 function SpreadCard({ spread, closed }: { spread: CreditSpreadPosition; closed?: boolean }) {
   const dte = spread.option_expiry ? daysUntil(spread.option_expiry) : 0;
-  const totalCredit = (spread.spread_net_credit ?? 0) * 100 * (spread.option_contracts ?? 1);
+  const isBearPut = spread.spread_type === 'BEAR_PUT';
+  // For credit spreads: spread_net_credit = credit received. For Bear Put: spread_net_credit = debit paid.
+  const netAmount = (spread.spread_net_credit ?? 0) * 100 * (spread.option_contracts ?? 1);
   const creditPctDisplay = ((spread.spread_credit_pct ?? 0) * 100).toFixed(0);
   const pnl = spread.pnl ?? 0;
-  const maxGain = spread.spread_max_gain ?? totalCredit;
+  const maxGain = spread.spread_max_gain ?? netAmount;
   const pnlPctOfMax = maxGain > 0 ? (pnl / maxGain) * 100 : 0;
+  // DTE urgency threshold: credit spreads exit at 21 DTE, Bear Put backstop is 3 DTE.
+  const dteBorderThreshold = isBearPut ? 3 : 21;
 
   const borderClass = closed
     ? pnl >= 0 ? 'border-emerald-200 bg-emerald-50/40' : 'border-red-200 bg-red-50/40'
-    : dte <= 21 ? 'border-amber-200 bg-amber-50' : 'border-[hsl(var(--border))] bg-[hsl(var(--card))]';
+    : dte <= dteBorderThreshold ? 'border-amber-200 bg-amber-50' : 'border-[hsl(var(--border))] bg-[hsl(var(--card))]';
 
   return (
     <div className={cn('rounded-xl border p-3', borderClass)}>
@@ -1227,16 +1231,16 @@ function SpreadCard({ spread, closed }: { spread: CreditSpreadPosition; closed?:
           <p className="text-[9px] text-[hsl(var(--muted-foreground))] mt-0.5">Strikes</p>
         </div>
         <div>
-          <p className="text-xs font-bold text-emerald-600">
-            +${totalCredit.toFixed(0)}
+          <p className={`text-xs font-bold ${isBearPut ? 'text-orange-600' : 'text-emerald-600'}`}>
+            {isBearPut ? '-' : '+'}${netAmount.toFixed(0)}
           </p>
-          <p className="text-[9px] text-[hsl(var(--muted-foreground))] mt-0.5">Credit</p>
+          <p className="text-[9px] text-[hsl(var(--muted-foreground))] mt-0.5">{isBearPut ? 'Debit' : 'Credit'}</p>
         </div>
         <div>
           <p className="text-xs font-bold text-violet-700">
             {creditPctDisplay}%
           </p>
-          <p className="text-[9px] text-[hsl(var(--muted-foreground))] mt-0.5">Cr/Width</p>
+          <p className="text-[9px] text-[hsl(var(--muted-foreground))] mt-0.5">{isBearPut ? 'Db/Width' : 'Cr/Width'}</p>
         </div>
         <div>
           <p className="text-xs font-bold text-red-600">
@@ -1257,7 +1261,7 @@ function SpreadCard({ spread, closed }: { spread: CreditSpreadPosition; closed?:
         <div className="mt-2">
           <div className="flex items-center justify-between text-[10px] text-[hsl(var(--muted-foreground))] mb-1">
             <span>P&L: {pnlPctOfMax.toFixed(0)}% of max</span>
-            <span>Target: 50%</span>
+            <span>Target: {isBearPut ? '75' : '50'}%</span>
           </div>
           <div className="h-1.5 rounded-full bg-[hsl(var(--muted))]/40 overflow-hidden">
             <div
