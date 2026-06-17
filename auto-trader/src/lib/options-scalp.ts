@@ -274,9 +274,9 @@ export async function runOptionScalpScan(): Promise<void> {
     return;
   }
 
-  // Daily cap check — exclude ib_reconciliation_cover records (cover buys created by
-  // reconcileIBShorts for auto-exercised puts). They are OPTIONS_SCALP mode but are not
-  // real scalp trades and must not consume a daily slot.
+  // Daily cap check — only count trades that actually filled or are still live.
+  // CANCELLED/REJECTED trades (e.g. IB code-200 rejections) must not consume a slot —
+  // a failed order attempt is not a trade. Also exclude ib_reconciliation_cover records.
   const todayStart = new Date();
   todayStart.setHours(0, 0, 0, 0);
   const { data: todayTrades } = await sb
@@ -284,6 +284,7 @@ export async function runOptionScalpScan(): Promise<void> {
     .select('id')
     .eq('mode', 'OPTIONS_SCALP')
     .neq('close_reason', 'ib_reconciliation_cover')
+    .not('status', 'in', '(CANCELLED,REJECTED,EXPIRED)')
     .gte('opened_at', todayStart.toISOString());
   const usedToday = (todayTrades ?? []).length;
   if (usedToday >= MAX_SCALP_TRADES_PER_DAY) {
@@ -454,13 +455,15 @@ export async function runVwapRetestScalpScan(): Promise<void> {
   const todayStart = new Date();
   todayStart.setHours(0, 0, 0, 0);
 
-  // Combined daily cap — VWAP retests count toward the same 2-trade limit.
-  // Exclude ib_reconciliation_cover records — cover buys are not real scalp trades.
+  // Combined daily cap — VWAP retests count toward the same limit.
+  // Only count filled/live trades — CANCELLED/REJECTED (e.g. IB code-200 failures)
+  // must not consume a slot. Also exclude ib_reconciliation_cover records.
   const { data: todayTrades } = await sb
     .from('paper_trades')
     .select('id')
     .eq('mode', 'OPTIONS_SCALP')
     .neq('close_reason', 'ib_reconciliation_cover')
+    .not('status', 'in', '(CANCELLED,REJECTED,EXPIRED)')
     .gte('opened_at', todayStart.toISOString());
   const usedToday = (todayTrades ?? []).length;
   if (usedToday >= MAX_SCALP_TRADES_PER_DAY) {
