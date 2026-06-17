@@ -1299,6 +1299,12 @@ async function promoteDayTradeGainersToWatchlist(): Promise<void> {
 // short blowing up. Longs have bounded risk (max loss = position value) so they
 // only get logged for manual review, never auto-liquidated.
 
+// Tickers that returned code-200 ("No security definition") during this session.
+// We stop retrying them to prevent their failures from eating into the code-200
+// circuit-breaker budget and blocking unrelated scalp/day-trade orders.
+// Reset to empty on every auto-trader restart (intentional — fresh session, fresh attempt).
+const _noSecDefShortTickers = new Set<string>();
+
 export async function reconcileIBShorts(): Promise<{ closed: string[]; errors: string[] }> {
   log('[IBReconcile] Fetching live IB positions…');
 
@@ -1429,6 +1435,13 @@ export async function reconcileIBShorts(): Promise<{ closed: string[]; errors: s
   const sb = getSupabase();
   for (const pos of shorts) {
     const qty = Math.abs(pos.position);
+
+    if (_noSecDefShortTickers.has(pos.symbol)) {
+      log(`[IBReconcile] ${pos.symbol}: skipping cover — no security definition on previous attempt this session (must close manually in IB)`);
+      errors.push(`${pos.symbol}: skipped (no-security-def blacklist)`);
+      continue;
+    }
+
     log(`[IBReconcile] Covering short: ${pos.symbol} × ${qty} @ avg ${pos.avgCost}`);
     try {
       const { orderId: coverOrderId, avgFillPrice } = await placeMarketOrder({ symbol: pos.symbol, side: 'BUY', quantity: qty });
@@ -1575,6 +1588,8 @@ export async function reconcileIBShorts(): Promise<{ closed: string[]; errors: s
       // but don't retry — the position MUST be closed from IB directly.
       const isNoSecDef = msg.includes('code=200') || msg.includes('No security definition');
       if (isNoSecDef) {
+        _noSecDefShortTickers.add(pos.symbol);
+        log(`[IBReconcile] ${pos.symbol}: added to no-security-def blacklist — will not retry this session`);
         const todayStr = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(new Date());
         const { data: existingAlert } = await getSupabase()
           .from('auto_trade_events')
