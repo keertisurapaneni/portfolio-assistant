@@ -240,7 +240,15 @@ function getNearestFridayExpiry(): string {
 }
 
 function getTodayExpiry(): string {
-  return getNearestFridayExpiry();
+  // Always use TODAY's date for true 0DTE. Tickers without a same-day chain
+  // (most individual stocks on Mon–Thu) will get IB code-200 and be skipped.
+  // ETFs (SPY, QQQ, IWM) and mega-caps have daily chains every session.
+  // NEVER fall back to next Friday — that produces multi-day options, not scalps.
+  const nowET = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }));
+  const y  = nowET.getFullYear();
+  const mo = String(nowET.getMonth() + 1).padStart(2, '0');
+  const d  = String(nowET.getDate()).padStart(2, '0');
+  return `${y}${mo}${d}`;
 }
 
 // ── Scan ─────────────────────────────────────────────────
