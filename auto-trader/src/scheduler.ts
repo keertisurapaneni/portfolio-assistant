@@ -5962,7 +5962,7 @@ async function _syncPositionsForAccount(
 
   for (const trade of activeTrades) {
     // Options and spread positions are managed by their own dedicated managers — never touch them here.
-    if (trade.mode === 'OPTIONS_PUT' || trade.mode === 'OPTIONS_CALL' || trade.mode === 'CREDIT_SPREAD') continue;
+    if (trade.mode === 'OPTIONS_PUT' || trade.mode === 'OPTIONS_CALL' || trade.mode === 'CREDIT_SPREAD' || trade.mode === 'OPTIONS_SCALP') continue;
 
     const ibPos = positions.find(
       p => p.symbol.toUpperCase() === trade.ticker.toUpperCase() && p.secType === 'STK'
