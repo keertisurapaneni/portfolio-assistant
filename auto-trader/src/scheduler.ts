@@ -3597,12 +3597,12 @@ function assessDrawdownMultiplier(positions: EnrichedPosition[]): {
   level: string;
   pnlPct: number;
 } {
-  // Only evaluate positions we are actively tracking (have an active paper_trade).
-  // Orphaned IB positions — stale portfolio holdings, failed-close leftovers, OTC
-  // shorts we can't cover — must not skew the drawdown and block new entries.
-  const tracked = _trackedIbTickers.size > 0
-    ? positions.filter(p => _trackedIbTickers.has(p.symbol.toUpperCase()))
-    : positions;
+  // Only evaluate short-term positions (DAY_TRADE, SWING_TRADE) we are actively tracking.
+  // Long-term holds being underwater must not block new intraday/swing entries —
+  // they are a different portfolio bucket with a different time horizon.
+  // When no short-term positions are active, there is no intraday risk to protect against.
+  if (_trackedIbTickers.size === 0) return { multiplier: 1.0, level: 'normal', pnlPct: 0 };
+  const tracked = positions.filter(p => _trackedIbTickers.has(p.symbol.toUpperCase()));
 
   if (tracked.length === 0) return { multiplier: 1.0, level: 'normal', pnlPct: 0 };
 
