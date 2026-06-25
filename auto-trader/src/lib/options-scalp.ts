@@ -439,6 +439,12 @@ const VWAP_RETEST_UNIVERSE = [
   'MSTR', 'SOFI', 'SOXL', 'TQQQ',
 ];
 
+// ETF-only subset for Mon–Thu: these have daily (Mon–Fri) options chains in IB.
+// Individual stocks and even mega-caps only have weekly Friday expirations — they
+// generate ib_error (code-200) on every 0DTE attempt Mon–Thu, flooding the DB
+// with useless CANCELLED records. On Friday all tickers are valid (weekly = 0DTE).
+const VWAP_ETF_ONLY_UNIVERSE = ['QQQ', 'SPY', 'IWM', 'SMH', 'SOXL', 'TQQQ'];
+
 /**
  * VWAP retest scalp scanner — runs every 15 min 10 AM–3 PM ET.
  * Detects VWAP reclaim/breakdown + retest pattern and buys ATM call/put.
@@ -483,9 +489,14 @@ export async function runVwapRetestScalpScan(): Promise<void> {
   const slotsLeft = MAX_SCALP_TRADES_PER_DAY - usedToday;
   let placed = 0;
 
-  console.log(`[VWAP Scalp] Scanning ${VWAP_RETEST_UNIVERSE.length} tickers | expiry ${expiry} | slots ${slotsLeft}`);
+  // Mon–Thu: restrict to ETFs that have daily options chains in IB.
+  // On Fridays, weekly expiry = 0DTE for all tickers, so the full universe runs.
+  const isFriday = nowET.getDay() === 5;
+  const universe = isFriday ? VWAP_RETEST_UNIVERSE : VWAP_ETF_ONLY_UNIVERSE;
 
-  for (const ticker of VWAP_RETEST_UNIVERSE) {
+  console.log(`[VWAP Scalp] Scanning ${universe.length} tickers (${isFriday ? 'full universe' : 'ETF-only — Mon–Thu'}) | expiry ${expiry} | slots ${slotsLeft}`);
+
+  for (const ticker of universe) {
     if (placed >= slotsLeft) break;
 
     // Skip if already in an open scalp for this ticker today
