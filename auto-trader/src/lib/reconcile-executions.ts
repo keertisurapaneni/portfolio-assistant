@@ -351,6 +351,7 @@ export async function runEndOfDayReconciliation(accountType: AccountType = 'pape
         .from(tTable)
         .select('pnl, ib_pnl')
         .in('status', ['CLOSED', 'TARGET_HIT', 'STOPPED'])
+        .neq('close_reason', 'ib_fill_auto_created')  // exclude ghosts — real record already has same P&L
         .gte('closed_at', todayStartISO);
 
       if (closedToday && closedToday.length > 0) {
