@@ -812,12 +812,31 @@ export async function manageScalpPositions(): Promise<void> {
 
     // Get current stock price for Greek lookup
     const q = await fetchQuote(pos.ticker);
-    if (!q?.price) continue;
+    if (!q?.price) {
+      console.log(`[Options Scalp] ${pos.ticker} — quote unavailable, skipping management cycle`);
+      continue;
+    }
 
     const greeks = await getOptionGreeksForContract(
       pos.ticker, pos.option_strike, pos.option_expiry, right, q.price,
     );
-    if (!greeks) continue;
+    if (!greeks) {
+      // On expiry day, IB stops providing Greeks for near-worthless OTM contracts.
+      // Close them now using stock price instead of waiting for the 3:45 PM EOD sweep.
+      const expiryDate = parseExpiryDate(pos.option_expiry ?? '');
+      const todayMidnight = new Date();
+      todayMidnight.setHours(0, 0, 0, 0);
+      if (expiryDate && expiryDate <= todayMidnight) {
+        const isItm = right === 'C' ? q.price > pos.option_strike : q.price < pos.option_strike;
+        console.log(`[Options Scalp] ${pos.ticker} — Greeks null on expiry day (${pos.option_expiry}), stock $${q.price.toFixed(2)} vs strike $${pos.option_strike} → ${isItm ? 'ITM auto_exercised' : 'OTM expired_worthless'}`);
+        await closeScalpPosition(pos.id, pos.ticker, right, pos.option_strike, pos.option_expiry,
+          0, pos.option_premium, isItm ? 'auto_exercised' : 'expired_worthless',
+          { contractsToSell: contractsRemaining, existingMeta: meta });
+        continue;
+      }
+      console.log(`[Options Scalp] ${pos.ticker} — Greeks unavailable (IB disconnected?), skipping cycle`);
+      continue;
+    }
 
     const currentPremium = greeks.mid;
 
