@@ -775,7 +775,24 @@ Action needed: Check the auto-trader service and restart if necessary.`,
     }
   }, 45_000);
 
-  // Run once on startup (delayed 10s to let IB connect)
+  // Hourly bracket fill reconciliation — catches any TP/SL fills missed mid-day while
+  // the auto-trader stayed connected (reqExecutions replay on reconnect doesn't help
+  // in that case). Runs every 60 min during market hours (9:30–4:30 PM ET).
+  // Example: QQQ stop hit at 10:20 AM, fill event dropped → would be caught by 11:20 AM.
+  setInterval(async () => {
+    const etNow = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }));
+    const etHour = etNow.getHours();
+    const etMin  = etNow.getMinutes();
+    const etTotalMin = etHour * 60 + etMin;
+    const marketOpen  = 9 * 60 + 30;   // 9:30 AM ET
+    const marketClose = 16 * 60 + 30;  // 4:30 PM ET
+    if (etTotalMin < marketOpen || etTotalMin > marketClose) return;
+    try {
+      await reconcileMissedBracketFills();
+    } catch (err) {
+      console.error('[Scheduler] Hourly bracket fill reconcile failed:', err instanceof Error ? err.message : err);
+    }
+  }, 60 * 60 * 1_000); // every 60 minutes
   setTimeout(() => {
     runSchedulerCycle().catch(err => {
       console.error('[Scheduler] Initial cycle failed:', err);
