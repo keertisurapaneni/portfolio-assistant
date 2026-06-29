@@ -22,7 +22,7 @@ import { getSupabase, createAutoTradeEvent } from './supabase.js';
 import { isConnected, placeOptionsOrder, cancelOrder, getDefaultAccount } from '../ib-connection.js';
 import { findAtmStrike, getOptionGreeksForContract } from './options-chain.js';
 import { fetchQuote, fetchIntradayBars, fetchDailyBars, type IntradayBar } from './yahoo-finance.js';
-import { detectVwapReclaim, VWAP_RELIABLE_HOUR_ET } from './vwap.js';
+import { detectVwapReclaim, fetchVwap, VWAP_RELIABLE_HOUR_ET } from './vwap.js';
 
 // ── Constants ────────────────────────────────────────────
 const MAX_SCALP_TRADES_PER_DAY = 5;
@@ -182,6 +182,34 @@ function detectOrbSetup(
  * Compute 200-period SMA from 5-min bars — Kay Capitals direction filter.
  * Returns 'C' if price above SMA (calls only), 'P' if below (puts only), null if chopping.
  */
+/**
+ * SPY VWAP market regime gate.
+ *
+ * Historical data (Jun 2–4, 2026 — our only true 0DTE cohort):
+ *   - ALL 3 winning scalps were PUTS during a downtrend week
+ *   - ALL 4 losing scalps were CALLS during the same downtrend week
+ *
+ * Mechanism: in downtrends, VWAP reclaims are traps. Price briefly reclaims
+ * VWAP, triggers the ORB/VWAP call setup, then fails as the market resumes lower.
+ * Kay Capitals runs this filter by eye — we encode it explicitly.
+ *
+ * Rule: only take a CALL when SPY is above its daily VWAP (BULLISH regime),
+ * only take a PUT when SPY is below (BEARISH). NEUTRAL (exactly at VWAP) → skip.
+ *
+ * Falsification threshold (per Mary/roundtable Jun 29):
+ *   If after 30+ trades >40% of filter-approved entries still lose, revisit
+ *   confidence-weighted approach (require magnitude / candle confirmation).
+ */
+export type SpyRegime = 'BULLISH' | 'BEARISH' | 'NEUTRAL';
+
+export async function getSpyRegime(): Promise<SpyRegime> {
+  const result = await fetchVwap('SPY');
+  if (!result) return 'NEUTRAL';
+  if (result.side === 'above') return 'BULLISH';
+  if (result.side === 'below') return 'BEARISH';
+  return 'NEUTRAL';
+}
+
 function get5mSmaDirection(bars: IntradayBar[], currentPrice: number): 'C' | 'P' | null {
   if (bars.length < ORB_SMA200_PERIOD) return null;
   const closes = bars.map(b => b.close);
@@ -391,7 +419,16 @@ export async function runOptionScalpScan(): Promise<void> {
     const right  = setup.direction;
     const signal = right === 'C' ? 'BUY' : 'SELL';
 
-    console.log(`[Options Scalp] ${ticker}: ORB retest setup — ${right === 'C' ? 'CALL' : 'PUT'} | breakout vol ${setup.breakoutVol} vs retest vol ${setup.retestVol} | price $${price.toFixed(2)}`);
+    // ── SPY VWAP regime gate ─────────────────────────────────────────────────
+    // Only take calls in a BULLISH regime (SPY > VWAP), puts in BEARISH.
+    // Prevents buying calls during downtrend VWAP-reclaim traps and vice-versa.
+    const regime = await getSpyRegime();
+    if ((right === 'C' && regime !== 'BULLISH') || (right === 'P' && regime !== 'BEARISH')) {
+      console.log(`[Options Scalp] ${ticker}: ORB ${right === 'C' ? 'CALL' : 'PUT'} blocked by SPY regime (${regime}) — skipping`);
+      continue;
+    }
+
+    console.log(`[Options Scalp] ${ticker}: ORB retest setup — ${right === 'C' ? 'CALL' : 'PUT'} | regime ${regime} ✓ | breakout vol ${setup.breakoutVol} vs retest vol ${setup.retestVol} | price $${price.toFixed(2)}`);
 
     // ── Find ATM strike ──────────────────────────────────────────────────────
     const atm = await findAtmStrike(ticker, right, price, expiry);
@@ -546,6 +583,14 @@ export async function runVwapRetestScalpScan(): Promise<void> {
       continue;
     }
 
+    // ── SPY VWAP regime gate ─────────────────────────────────────────────────
+    const right: 'C' | 'P' = direction === 'BUY' ? 'C' : 'P';
+    const regime = await getSpyRegime();
+    if ((right === 'C' && regime !== 'BULLISH') || (right === 'P' && regime !== 'BEARISH')) {
+      console.log(`[VWAP Scalp] ${ticker}: ${right === 'C' ? 'CALL' : 'PUT'} blocked by SPY regime (${regime}) — skipping`);
+      continue;
+    }
+
     // Get current quote for strike selection
     const q = await fetchQuote(ticker);
     if (!q?.price || q.price <= 0) continue;
@@ -555,8 +600,7 @@ export async function runVwapRetestScalpScan(): Promise<void> {
       ? (await detectVwapReclaim(ticker, 'BUY')).vwap
       : (await detectVwapReclaim(ticker, 'SELL')).vwap;
 
-    const right: 'C' | 'P' = direction === 'BUY' ? 'C' : 'P';
-    console.log(`[VWAP Scalp] ${ticker}: ${reclaimLog} → ${right === 'C' ? 'CALL' : 'PUT'}`);
+    console.log(`[VWAP Scalp] ${ticker}: ${reclaimLog} → ${right === 'C' ? 'CALL' : 'PUT'} | regime ${regime} ✓`);
 
     // Find ATM strike
     const atm = await findAtmStrike(ticker, right, price, expiry);
