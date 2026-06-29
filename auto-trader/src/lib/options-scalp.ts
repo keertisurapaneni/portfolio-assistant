@@ -301,17 +301,30 @@ export async function runOptionScalpScan(): Promise<void> {
   }
 
   // Load HIGH_VOL options watchlist tickers
-  const { data: watchlist } = await sb
+  // On Mon–Thu only ETFs have daily chains → restrict to ETF-only universe to avoid
+  // burning premium on individual stocks that only have Friday weekly expiry.
+  // On Fridays every ticker has a 0DTE chain, so run the full watchlist.
+  const isFriday = nowET.getDay() === 5;
+  const { data: watchlistRaw } = await sb
     .from('options_watchlist')
     .select('ticker')
     .eq('active', true)
     .eq('tier', 'HIGH_VOL');
-  if (!watchlist?.length) return;
+  if (!watchlistRaw?.length) return;
+
+  const watchlist = isFriday
+    ? watchlistRaw
+    : watchlistRaw.filter(({ ticker }) => VWAP_ETF_ONLY_UNIVERSE.includes(ticker));
+
+  if (!watchlist.length) {
+    console.log(`[Options Scalp] ORB scan: no ETF tickers in HIGH_VOL watchlist (Mon–Thu ETF-only mode) — skipping`);
+    return;
+  }
 
   const expiry = getTodayExpiry();
   const slotsLeft = MAX_SCALP_TRADES_PER_DAY - usedToday;
 
-  console.log(`[Options Scalp] Scanning ${watchlist.length} HIGH_VOL tickers | expiry ${expiry} | slots ${slotsLeft}`);
+  console.log(`[Options Scalp] Scanning ${watchlist.length} ${isFriday ? 'HIGH_VOL' : 'ETF-only'} tickers (${isFriday ? 'full watchlist — Fri' : 'Mon–Thu ETF-only'}) | expiry ${expiry} | slots ${slotsLeft}`);
 
   let placed = 0;
   for (const { ticker } of watchlist) {
