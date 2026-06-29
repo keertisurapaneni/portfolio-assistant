@@ -450,13 +450,16 @@ const VWAP_RETEST_UNIVERSE = [
   'AMD', 'PLTR', 'CRDO', 'HOOD', 'COIN', 'RKLB', 'APP', 'ALAB',
   // Momentum names often in play
   'MSTR', 'SOFI', 'SOXL', 'TQQQ',
+  // Leveraged single-asset ETFs — daily chains, high vol
+  'NVDL', 'TSLL',
 ];
 
 // ETF-only subset for Mon–Thu: these have daily (Mon–Fri) options chains in IB.
 // Individual stocks and even mega-caps only have weekly Friday expirations — they
 // generate ib_error (code-200) on every 0DTE attempt Mon–Thu, flooding the DB
 // with useless CANCELLED records. On Friday all tickers are valid (weekly = 0DTE).
-const VWAP_ETF_ONLY_UNIVERSE = ['QQQ', 'SPY', 'IWM', 'SMH', 'SOXL', 'TQQQ'];
+// NVDL/TSLL included: leveraged single-asset ETFs with daily chains like SOXL/TQQQ.
+const VWAP_ETF_ONLY_UNIVERSE = ['QQQ', 'SPY', 'IWM', 'SMH', 'SOXL', 'TQQQ', 'NVDL', 'TSLL'];
 
 /**
  * VWAP retest scalp scanner — runs every 15 min 10 AM–3 PM ET.
