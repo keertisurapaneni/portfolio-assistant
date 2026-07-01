@@ -32,8 +32,8 @@ const PARTIAL_TARGET_MULT = 1.5;         // sell 1st contract when premium up 50
 const PROFIT_TARGET_MULT = 2.0;          // close all remaining when premium doubles
 const STOP_LOSS_MULT = 0.50;             // close all when premium halves (only before first partial)
 const MAX_SPREAD_MARKET_ORDER_PCT = 3;   // use market order only if spread < 3% of mid
-const LAST_ENTRY_HOUR_ET = 11;           // no new scalp entries after 11:00 AM ET (90-minute rule)
-const LAST_ENTRY_MIN_ET  = 0;
+const LAST_ENTRY_HOUR_ET = 13;           // no new scalp entries after 1:30 PM ET
+const LAST_ENTRY_MIN_ET  = 30;
 const ORB_END_HOUR_ET    = 9;            // ORB forms during 9:30–9:45; no entries before 9:45
 const ORB_END_MIN_ET     = 45;
 const ORB_RETEST_BUFFER_PCT = 0.0015;   // retest buffer = 0.15% of ORB level (relative, not absolute)
@@ -298,9 +298,9 @@ export async function runOptionScalpScan(): Promise<void> {
     return;
   }
 
-  // 90-minute rule: no new entries after 11:00 AM ET
+  // 90-minute rule removed — entries allowed 9:45 AM–1:30 PM ET
   if (etHour > LAST_ENTRY_HOUR_ET || (etHour === LAST_ENTRY_HOUR_ET && etMin >= LAST_ENTRY_MIN_ET)) {
-    console.log('[Options Scalp] Past 11:00 AM ET — no new entries (90-min rule)');
+    console.log('[Options Scalp] Past 1:30 PM ET — no new entries');
     return;
   }
 
@@ -506,20 +506,20 @@ const VWAP_ETF_ONLY_UNIVERSE = ['QQQ', 'SPY', 'IWM', 'SMH', 'SOXL', 'TQQQ', 'NVD
 // Do NOT expand this list aggressively. Previous $2k loss (Jun 29) came from running
 // APP, MSFT, GOOGL etc. with multi-day expiry + a broken management cycle.
 // The management cycle is now fixed (#475) but keep this list tight.
-const VWAP_STOCK_WEEKLY_UNIVERSE = ['AMD', 'PLTR'];
+const VWAP_STOCK_WEEKLY_UNIVERSE = ['AMD', 'PLTR', 'NVDA'];
 
 /**
  * VWAP retest scalp scanner — runs every 15 min 10 AM–3 PM ET.
  * Detects VWAP reclaim/breakdown + retest pattern and buys ATM call/put.
  */
 export async function runVwapRetestScalpScan(): Promise<void> {
-  // Only reliable after 10 AM ET; no new entries after 11:30 AM ET (90-minute rule)
+  // Only reliable after 10 AM ET; no new entries after 1:30 PM ET
   const nowET = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }));
   const etHour = nowET.getHours();
   const etMin  = nowET.getMinutes();
   if (etHour < VWAP_RELIABLE_HOUR_ET) return;
   if (etHour > LAST_ENTRY_HOUR_ET || (etHour === LAST_ENTRY_HOUR_ET && etMin >= LAST_ENTRY_MIN_ET)) {
-    console.log('[VWAP Scalp] Past 11:00 AM ET — no new entries (90-min rule)');
+    console.log('[VWAP Scalp] Past 1:30 PM ET — no new entries');
     return;
   }
 

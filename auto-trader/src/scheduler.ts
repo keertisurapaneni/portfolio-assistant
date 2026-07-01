@@ -594,11 +594,11 @@ export function startScheduler(): void {
   }, { timezone: 'America/New_York' });
   log('Credit spread management: every 30 min, Mon-Fri 10-4 PM ET');
 
-  // Options Scalp scan — every 5 min from 9:45 AM to 11:00 AM ET.
+  // Options Scalp scan — every 5 min from 9:45 AM to 1:30 PM ET.
   // Runs frequently to catch ORB retest windows (retests last only 5-10 min).
-  // Internal guards in runOptionScalpScan() enforce the 9:45–11:00 window and
+  // Internal guards in runOptionScalpScan() enforce the 9:45–1:30 PM window and
   // skip the scan when ORB hasn't formed yet or daily cap is reached.
-  cron.schedule('*/5 9-10 * * 1-5', async () => {
+  cron.schedule('*/5 9-13 * * 1-5', async () => {
     try {
       const { runOptionScalpScan } = await import('./lib/options-scalp.js');
       await runOptionScalpScan();
@@ -606,7 +606,7 @@ export function startScheduler(): void {
       console.error('[Scheduler] Options scalp scan error:', err instanceof Error ? err.message : err);
     }
   }, { timezone: 'America/New_York' });
-  log('Options scalp scan: every 5 min, 9:45–11:00 AM ET, Mon-Fri');
+  log('Options scalp scan: every 5 min, 9:45–1:30 PM ET, Mon-Fri');
 
   // Options Scalp position management + VWAP retest scan — every 15 min during market hours.
   // Management: checks profit target (100%) and stop loss (50%).
@@ -3997,20 +3997,6 @@ async function executeScannerTrade(
   // Gate expires after 12 PM ET — the opening range is stale by afternoon.
   // Skip for vwap_confluence — the strategy IS a chop-exit play.
   const etMinutes = getETMinutes();
-
-  // ── Lunch-hour exclusion gate ─────────────────────────────────────────
-  // Block new day-trade entries from 12:00–13:00 ET. This is the "death
-  // zone": institutional desks step away, volume craters, moves are random
-  // and often mean-reverting. Even technically valid setups fail at elevated
-  // rates during this window. Existing positions continue to be managed
-  // normally — this only gates new entries.
-  if (mode === 'DAY_TRADE' && etMinutes >= 12 * 60 && etMinutes < 13 * 60) {
-    log(`${ticker}: skipped — lunch-hour exclusion (12:00–13:00 ET, low-quality entry window)`);
-    persistEvent(ticker, 'skipped', 'Lunch-hour exclusion: no new day-trade entries 12:00–13:00 ET', {
-      action: 'skipped', source: 'scanner', mode, skip_reason: 'lunch_hour',
-    });
-    return 'skipped:lunch_hour';
-  }
 
   const skipOrbGate = idea.tags?.includes('vwap_confluence');
   if (mode === 'DAY_TRADE' && etMinutes < 12 * 60 && !skipOrbGate) {
