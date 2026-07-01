@@ -75,6 +75,20 @@ BEGIN
     WHERE ib_close_order_id = NEW.order_id::text
       AND ticker             = NEW.ticker
       AND status IN ('CLOSED', 'TARGET_HIT', 'STOPPED');
+
+    -- Also close FILLED records when the close fill arrives (handles timed-out BTC/STO orders where
+    -- recordTradeClose() never ran because ibBuyToCloseOption / ibSellToCloseOption timed out).
+    -- Uses IB's realized_pnl directly (ib_pnl); leaves pnl (formula) untouched.
+    UPDATE paper_trades SET
+      status       = 'CLOSED',
+      close_price  = NEW.fill_price,
+      closed_at    = COALESCE(closed_at, NEW.filled_at),
+      ib_pnl       = v_pnl_sum,
+      pnl_source   = 'ib_realized',
+      close_reason = COALESCE(close_reason, 'ib_close_fill')
+    WHERE ib_close_order_id = NEW.order_id::text
+      AND ticker             = NEW.ticker
+      AND status             = 'FILLED';
   END IF;
 
   -- (5) ORPHANED SELL — inherit mode + strategy_source from most recent open position.
