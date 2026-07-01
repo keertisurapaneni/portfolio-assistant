@@ -498,6 +498,16 @@ const VWAP_RETEST_UNIVERSE = [
 // NVDL/TSLL included: leveraged single-asset ETFs with daily chains like SOXL/TQQQ.
 const VWAP_ETF_ONLY_UNIVERSE = ['QQQ', 'SPY', 'IWM', 'SMH', 'SOXL', 'TQQQ', 'NVDL', 'TSLL'];
 
+// Individual stocks added to Mon–Thu VWAP scan using NEXT-FRIDAY weekly expiry.
+// These are Kay Capitals' top VWAP retest performers (AMD 100%, PLTR 67% win rate
+// from historical data). Weekly options are closed SAME DAY by the 3:45 PM EOD sweep
+// (closeAllScalpPositionsEod has no date filter and handles non-expiry positions).
+// NOT 0DTE — individual stocks don't have Mon–Thu daily chains.
+// Do NOT expand this list aggressively. Previous $2k loss (Jun 29) came from running
+// APP, MSFT, GOOGL etc. with multi-day expiry + a broken management cycle.
+// The management cycle is now fixed (#475) but keep this list tight.
+const VWAP_STOCK_WEEKLY_UNIVERSE = ['AMD', 'PLTR'];
+
 /**
  * VWAP retest scalp scanner — runs every 15 min 10 AM–3 PM ET.
  * Detects VWAP reclaim/breakdown + retest pattern and buys ATM call/put.
@@ -538,16 +548,26 @@ export async function runVwapRetestScalpScan(): Promise<void> {
     return;
   }
 
-  const expiry = getTodayExpiry();
   const slotsLeft = MAX_SCALP_TRADES_PER_DAY - usedToday;
   let placed = 0;
 
-  // Mon–Thu: restrict to ETFs that have daily options chains in IB.
-  // On Fridays, weekly expiry = 0DTE for all tickers, so the full universe runs.
+  // Mon–Thu: ETFs use 0DTE (daily chains); individual stocks use next-Friday weekly
+  // (same-day close via 3:45 PM EOD sweep — no overnight hold risk).
+  // On Fridays weekly = 0DTE for all tickers, so run the full universe.
   const isFriday = nowET.getDay() === 5;
-  const universe = isFriday ? VWAP_RETEST_UNIVERSE : VWAP_ETF_ONLY_UNIVERSE;
+  const universe = isFriday
+    ? VWAP_RETEST_UNIVERSE
+    : [...VWAP_ETF_ONLY_UNIVERSE, ...VWAP_STOCK_WEEKLY_UNIVERSE];
 
-  console.log(`[VWAP Scalp] Scanning ${universe.length} tickers (${isFriday ? 'full universe' : 'ETF-only — Mon–Thu'}) | expiry ${expiry} | slots ${slotsLeft}`);
+  // Per-ticker expiry: ETFs get 0DTE; individual stocks (Mon-Thu) get next Friday.
+  // On Fridays everything is 0DTE.
+  const getTickerExpiry = (ticker: string): string =>
+    (isFriday || VWAP_ETF_ONLY_UNIVERSE.includes(ticker))
+      ? getTodayExpiry()
+      : getNearestFridayExpiry();
+
+  const expiryLabel = isFriday ? getTodayExpiry() : `ETFs=${getTodayExpiry()} stocks=${getNearestFridayExpiry()}`;
+  console.log(`[VWAP Scalp] Scanning ${universe.length} tickers (${isFriday ? 'full universe — Fri' : 'ETF 0DTE + AMD/PLTR weekly — Mon–Thu'}) | expiry ${expiryLabel} | slots ${slotsLeft}`);
 
   for (const ticker of universe) {
     if (placed >= slotsLeft) break;
@@ -596,6 +616,7 @@ export async function runVwapRetestScalpScan(): Promise<void> {
     if (!q?.price || q.price <= 0) continue;
 
     const price = q.price;
+    const expiry = getTickerExpiry(ticker);
     const vwapLevel = direction === 'BUY'
       ? (await detectVwapReclaim(ticker, 'BUY')).vwap
       : (await detectVwapReclaim(ticker, 'SELL')).vwap;
