@@ -95,7 +95,7 @@ import { getOptionsChain } from './lib/options-chain.js';
 import { runEarningsScan, closeExpiredEarningsPositions } from './lib/earnings-scanner.js';
 import { runWatchlistScreener } from './lib/watchlist-screener.js';
 import { runOptionsManageCycle } from './lib/options-manager.js';
-import { runEndOfDayReconciliation, reconcileGhostCloses, reconcileMissedBracketFills } from './lib/reconcile-executions.js';
+import { runEndOfDayReconciliation, reconcileGhostCloses, reconcileMissedBracketFills, cancelOrphanedBracketOrders } from './lib/reconcile-executions.js';
 import { runDipWatcher } from './lib/dip-watcher.js';
 import { checkSpxLevelSetups } from './lib/spx-level-scanner.js';
 import { checkVwapConfluenceSetups, type ConfluenceResult } from './lib/vwap-confluence-scanner.js';
@@ -774,6 +774,19 @@ Action needed: Check the auto-trader service and restart if necessary.`,
       console.error('[Scheduler] Startup bracket fill reconcile failed:', err instanceof Error ? err.message : err);
     }
   }, 45_000);
+
+  // Startup bracket cleanup — runs 60s after boot (after reconcileMissedBracketFills).
+  // Cancels any stale TP/SL bracket orders belonging to already-closed trades.
+  // Prevents orphaned GTC stop/TP orders (from DB-patched or duplicate-closed trades)
+  // from firing against a flat account and creating accidental short positions.
+  // Example: FCX Jul 2, 2026 — SL 37573 from a Jun 9 duplicate_close fired 23 days later.
+  setTimeout(async () => {
+    try {
+      await cancelOrphanedBracketOrders();
+    } catch (err) {
+      console.error('[Scheduler] Startup bracket cleanup failed:', err instanceof Error ? err.message : err);
+    }
+  }, 60_000);
 
   // Hourly bracket fill reconciliation — catches any TP/SL fills missed mid-day while
   // the auto-trader stayed connected (reqExecutions replay on reconnect doesn't help
