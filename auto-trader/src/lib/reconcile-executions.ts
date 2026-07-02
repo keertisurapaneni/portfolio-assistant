@@ -719,7 +719,12 @@ export async function reconcileMissedBracketFills(
     let matchType: 'tp' | 'sl' = 'tp';
     if (!trade) { trade = tradeBySlOrderId.get(exec.orderId); matchType = 'sl'; }
     if (!trade) continue;
-    if (trade.ib_close_order_id) continue; // already stamped — idempotent
+    // Idempotent: skip only if THIS execution is already recorded as the close order.
+    // Do NOT skip based solely on ib_close_order_id being non-null — it may have been
+    // stamped by a failed loss-cut order (code-200 rejection) while the actual SL/TP
+    // bracket fill went unrecorded. If we skip here, the missed fill is never healed.
+    // This was the root cause of the ORCL/SPY missed stop fills on Jul 2, 2026.
+    if (trade.ib_close_order_id === exec.orderId.toString()) continue;
 
     const isLong = (trade.signal ?? 'BUY') === 'BUY';
     const fillPrice = trade.fill_price ?? trade.entry_price ?? 0;
