@@ -772,6 +772,71 @@ export async function reconcileMissedBracketFills(
   log(`[StartupBracket] Done — ${stamped} missed bracket fill(s) reconciled`);
 }
 
+/**
+ * On startup, cancel any stale TP/SL bracket orders that belong to
+ * CLOSED, STOPPED, TARGET_HIT, or EXPIRED trades (within last 30 days).
+ *
+ * Motivation: when a trade is closed via DB patch (duplicate_close, manual
+ * close, etc.) without going through the normal close code path, the bracket
+ * orders are never cancelled. They remain live in IB indefinitely and can
+ * fire against a flat account, creating accidental short positions.
+ *
+ * Example: FCX Jul 2, 2026 — Jun 9 trade closed as duplicate_close, SL 37573
+ * fired 23 days later against a flat account → -121 FCX accidental short, -$70.61 loss.
+ *
+ * cancelOrder() on an already-filled/cancelled order is safe — IB returns an
+ * error message which is silently ignored here. This is idempotent.
+ *
+ * Runs at startup 60 s after IB connects (after reconcileIBLongs/Shorts and
+ * reconcileMissedBracketFills complete).
+ */
+export async function cancelOrphanedBracketOrders(
+  accountType: AccountType = 'paper',
+): Promise<void> {
+  const conn = getConnectionForAccount(accountType);
+  if (!conn.isConnected()) {
+    log('[BracketCleanup] Skipped — IB not connected');
+    return;
+  }
+
+  const sb = getSupabase();
+  const tTable = tradesTable(accountType);
+  const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+
+  const { data: closedTrades } = await sb
+    .from(tTable)
+    .select('id, ticker, ib_tp_order_id, ib_sl_order_id, status, close_reason, closed_at')
+    .in('status', ['CLOSED', 'STOPPED', 'TARGET_HIT', 'EXPIRED', 'CANCELLED'])
+    .or('ib_tp_order_id.not.is.null,ib_sl_order_id.not.is.null')
+    .gte('closed_at', cutoff);
+
+  const trades = (closedTrades ?? []) as PaperTrade[];
+  if (trades.length === 0) {
+    log('[BracketCleanup] No closed bracket trades in last 30d — nothing to cancel');
+    return;
+  }
+
+  log(`[BracketCleanup] Checking ${trades.length} closed bracket trade(s) for stale orders`);
+
+  let cancelled = 0;
+  for (const trade of trades) {
+    const tpId = trade.ib_tp_order_id ? parseInt(trade.ib_tp_order_id, 10) : null;
+    const slId = trade.ib_sl_order_id ? parseInt(trade.ib_sl_order_id, 10) : null;
+    for (const [orderId, label] of [[tpId, 'TP'], [slId, 'SL']] as [number | null, string][]) {
+      if (!orderId) continue;
+      try {
+        conn.cancelOrder(orderId);
+        cancelled++;
+        log(`[BracketCleanup] ${trade.ticker} (${trade.id.slice(0, 8)}) — sent cancel for stale ${label} order #${orderId}`);
+      } catch {
+        // cancelOrder on a filled/cancelled order is a no-op in IB — ignore
+      }
+    }
+  }
+
+  log(`[BracketCleanup] Done — ${cancelled} stale bracket order cancel request(s) sent`);
+}
+
 async function logReconciliationSummary(
   matched: number,
   corrected: number,
