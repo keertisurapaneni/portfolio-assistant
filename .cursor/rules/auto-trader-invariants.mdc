@@ -34,6 +34,14 @@ If a change would violate any of these, STOP and ask the user before proceeding.
 - **External/influencer signals must not execute before 9:35 AM ET** either.
   Same rationale: spreads are widest at open, fills are worst. Apply the same gate.
 
+- **0DTE / same-day options orders must use DAY TIF; multi-day options keep GTC.**
+  Implemented in `placeOptionsOrder`. Do not hardcode GTC for same-day expiry.
+
+- **Never treat options TIF as a substitute for scalp universe / expiry eligibility.**
+  DAY vs GTC is execution hygiene. ETF-only Mon–Thu 0DTE vs intentional stock weeklies
+  is strategy eligibility. See `.cursor/rules/options-scalp-strategy.mdc` Gate A vs Gate B.
+  Collapsing them requires explicit user approval + a P&L argument — not a "cleanup."
+
 ## 3. Influencer Signal Attribution
 
 - **Always preserve influencer attribution.** `strategy_source`, `strategy_source_url`,

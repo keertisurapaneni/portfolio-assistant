@@ -41,8 +41,40 @@ Before changing any constant or logic in `options-scalp.ts`:
 - **Entry cutoff: 11:00 AM ET** — no new entries after that (90-minute rule)
 - **EOD close: 3:45 PM ET** — hard close, never hold options overnight
 
+## Two Orthogonal Gates (do not conflate)
+
+These solve different jobs. Changing one never retires the other.
+
+### Gate A — Execution hygiene (TIF)
+
+- **0DTE / same-day expiry orders → DAY**
+- **Multi-day options (weeklies, wheel, LEAPs) → GTC** (unless caller overrides)
+- Job answered: "How long does this resting order stay live?"
+- Implemented in `placeOptionsOrder` (`ib-connection.ts`). PR #486.
+
+**Anti-pattern:** "We use DAY now, so ETF vs stock universe rules can be the same."
+DAY only cancels unfilled orders at session end. It does not create a daily options chain,
+does not make multi-DTE into 0DTE, and does not prevent overnight position risk after a fill.
+
+### Gate B — Strategy eligibility (universe + expiry)
+
+- **Mon–Thu ORB:** ETF-only (`VWAP_ETF_ONLY_UNIVERSE`) + `getTodayExpiry()` (true 0DTE)
+- **Mon–Thu VWAP:** ETFs → 0DTE; intentional stock carve-outs (AMD/PLTR) → `getNearestFridayExpiry()` weeklies
+- **Friday:** full HIGH_VOL watchlist + 0DTE (weekly chains exist for stocks)
+- Job answered: "May we open this scalp on this underlier with this expiry today?"
+
+**Why Gate B exists (evidence, not preference):**
+1. Most individual stocks have **no Mon–Thu daily chain** → IB code-200
+2. Kay Capitals scalp is **0DTE** — next-Friday Mon–Thu = multi-DTE + overnight risk (PR #472: do NOT Friday-for-all)
+3. Jun 29 ORB burned ~$3.5k on APP/MSFT/GOOGL/PLTR/HOOD without the ETF filter
+4. AMD/PLTR weeklies Mon–Thu are an **intentional product exception**, not "same rules for everyone"
+
+**Anti-pattern:** Unifying ETF and non-ETF into one Mon–Thu ruleset "for simplicity."
+That is a strategy change requiring a P&L argument — not a cleanup from a TIF fix.
+
 ## Strategy source docs
 
 - `docs/cursor/2026-06-05-kaycapitals-scalp-exit-strategy.md` — Somesh's full framework + implementation status (Kay Capitals = Somesh's channel)
 - `docs/guides/somesh-strategies.md` — Somesh's other strategies (ORB, VWAP, SPX levels, confluence)
 - `docs/cursor/2026-05-28-options-three-strategies.md` — how scalp fits alongside wheel and LEAPs
+- `docs/cursor/2026-07-08-options-scalp-tif-vs-universe-gates.md` — ADR: Gate A vs Gate B
