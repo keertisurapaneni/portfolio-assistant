@@ -113,6 +113,8 @@ export interface OptionsOrderParams {
   /** When provided, IB routes by conId rather than symbol/strike/expiry — avoids
    *  code=200 rejections when the working expiry offset differs from the stored date. */
   conId?: number;
+  /** Override TIF. Default: DAY for same-day (0DTE) expiry, GTC otherwise. */
+  tif?: 'DAY' | 'GTC';
 }
 
 export interface OptionsOrderResult {
@@ -1065,6 +1067,15 @@ export class IBConnection {
       const tick = params.limitPrice >= 3.0 ? 0.05 : 0.01;
       const limitPrice = Math.round(params.limitPrice / tick) * tick;
 
+      // 0DTE (expiry = today ET) must be DAY — GTC on same-day options leaves
+      // orphaned working orders after the contract expires / is exercised.
+      // Multi-day wheel/LEAP/BTC closes keep GTC so they survive overnight.
+      const todayEt = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' }).replace(/-/g, '');
+      const is0Dte = expiry.replace(/-/g, '') === todayEt;
+      const ibTif = params.tif === 'DAY' ? TimeInForce.DAY
+        : params.tif === 'GTC' ? TimeInForce.GTC
+        : is0Dte ? TimeInForce.DAY : TimeInForce.GTC;
+
       // When a conId is provided (from resolveOptionConId), use it as the sole
       // contract identifier — IB resolves the exact series from its database,
       // bypassing any symbol/strike/expiry mismatch (e.g. settlement date offset).
@@ -1094,7 +1105,7 @@ export class IBConnection {
         orderType: OrderType.LMT,
         totalQuantity: contracts,
         lmtPrice: limitPrice,
-        tif: TimeInForce.GTC,
+        tif: ibTif,
         transmit: true,
         ...(account ? { account } : {}),
       };
