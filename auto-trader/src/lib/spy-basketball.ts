@@ -401,8 +401,8 @@ async function executeBaskeball(p: BasketballParams): Promise<boolean> {
 // ── 0DTE Early Close ─────────────────────────────────────────────────────────
 
 /**
- * Force-close any open basketball (0DTE) positions at 3:30 PM ET.
- * Basketball trades are identified by option_expiry = today.
+ * Force-close any open basketball (0DTE SPY) positions at 3:30 PM ET.
+ * Basketball trades are identified by ticker=SPY + option_expiry=today.
  * Runs 15 min before the regular scalp EOD (3:45 PM) to reduce assignment risk.
  */
 export async function closeBasketballPositionsEod(): Promise<void> {
@@ -413,8 +413,9 @@ export async function closeBasketballPositionsEod(): Promise<void> {
 
   const { data: positions } = await sb
     .from('paper_trades')
-    .select('id, signal, option_strike, option_expiry, option_premium, ib_order_id')
+    .select('id, signal, option_strike, option_expiry, option_premium, option_contracts, ib_order_id')
     .eq('mode', 'OPTIONS_SCALP')
+    .eq('ticker', TICKER)            // only SPY basketball positions — not IWM/QQQ VWAP scalps
     .eq('option_expiry', todayExpiry)
     .in('status', ['FILLED', 'PARTIAL'])
     .gte('opened_at', todayStart.toISOString());
@@ -426,9 +427,10 @@ export async function closeBasketballPositionsEod(): Promise<void> {
   for (const pos of (positions as Array<{
     id: string; signal: string;
     option_strike: number; option_expiry: string;
-    option_premium: number; ib_order_id: number | null;
+    option_premium: number; option_contracts: number | null; ib_order_id: number | null;
   }>)) {
-    const right = pos.signal === 'BUY' ? 'C' : 'P';
+    const right     = pos.signal === 'BUY' ? 'C' : 'P';
+    const contracts = pos.option_contracts ?? 1;
 
     // Get current premium for P&L calculation
     const q = await finnhubFetch<{ c?: number }>(
@@ -439,37 +441,50 @@ export async function closeBasketballPositionsEod(): Promise<void> {
       : null;
     const currentPremium = greeks?.mid ?? 0;
     const premiumPaid    = pos.option_premium ?? 0;
-    const pnl            = (currentPremium - premiumPaid) * 100;
+    const pnl            = (currentPremium - premiumPaid) * 100 * contracts;
 
     console.log(
-      `[Basketball] EOD close SPY ${right === 'C' ? 'CALL' : 'PUT'} $${pos.option_strike} — `
-      + `current $${currentPremium.toFixed(2)}, paid $${premiumPaid.toFixed(2)}, P&L ≈ $${pnl.toFixed(2)}`,
+      `[Basketball] EOD close ${TICKER} ${right === 'C' ? 'CALL' : 'PUT'} $${pos.option_strike} — `
+      + `current $${currentPremium.toFixed(2)}, paid $${premiumPaid.toFixed(2)}, `
+      + `${contracts} contract(s), P&L ≈ $${pnl.toFixed(2)}`,
     );
 
-    // Sell via IB (market order for immediate fill)
+    // Sell via IB
+    let filled = false;
     try {
       const account = getDefaultAccount() ?? undefined;
-      await placeOptionsOrder({
+      const result  = await placeOptionsOrder({
         symbol:     TICKER,
         right,
         strike:     pos.option_strike,
         expiry:     pos.option_expiry,
-        contracts:  1,
+        contracts,
         limitPrice: Math.max(currentPremium, 0.01),
         action:     'SELL',
         ...(account ? { account } : {}),
       });
+      filled = !result.timedOut && (result.avgFillPrice ?? 0) > 0;
     } catch (err) {
-      console.warn('[Basketball] IB sell failed, marking closed anyway:', err instanceof Error ? err.message : err);
+      console.warn('[Basketball] IB sell failed:', err instanceof Error ? err.message : err);
     }
 
-    await (getSupabase())
+    // Only update DB if IB confirmed the fill — OR if premium is already $0 (will expire
+    // worthless regardless; no fill is possible on a worthless 0DTE contract).
+    if (!filled && currentPremium > 0) {
+      console.warn(
+        `[Basketball] No fill confirmed for ${TICKER} ${right} $${pos.option_strike} — `
+        + 'leaving FILLED, regular scalp manager will retry at 3:45 PM',
+      );
+      continue;
+    }
+
+    await sb
       .from('paper_trades')
       .update({
-        status:      'CLOSED',
-        close_reason: 'eod_close',
-        closed_at:   new Date().toISOString(),
-        fill_price:  currentPremium,
+        status:       'CLOSED',
+        close_reason:  filled ? 'eod_close' : 'expired_worthless',
+        closed_at:    new Date().toISOString(),
+        close_price:  currentPremium,
         pnl,
       })
       .eq('id', pos.id);
