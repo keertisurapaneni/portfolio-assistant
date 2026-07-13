@@ -826,6 +826,67 @@ function trailRunnerStop(
   return null;
 }
 
+// ── ITM-at-expiry handling ────────────────────────────────
+
+/**
+ * Handle an ITM scalp option whose live Greeks are unavailable at/near expiry.
+ *
+ * Root cause this fixes (TSLL Jul-10 orphan; same disease as the Jun-5 -$2,559 loss):
+ * when IB drops a dying 0DTE contract from its chain, `getOptionGreeksForContract`
+ * returns null. The old code then passed `closePremium = 0` to `closeScalpPosition`,
+ * which treats $0-on-expiry-day as "worthless → no sell needed" and places NO order.
+ * An ITM option left unsold is auto-exercised by OCC into a stock position (200 shares
+ * per 2 calls). That stock then orphans — `reconcileIBLongs` never auto-closes longs —
+ * and the scalp's pnl stays null forever.
+ *
+ * Fix: if the contract is still tradeable today (expiry === today ET), SELL it at its
+ * intrinsic value with a real IB order. Intrinsic is the arbitrage floor near expiry,
+ * so an aggressive limit reliably fills and we capture cash instead of taking delivery.
+ * Only when the contract is already gone (expiry < today — we missed the intraday close
+ * on a prior day, so OCC has already exercised it) do we fall back to `auto_exercised`.
+ */
+async function closeItmScalpAtExpiry(
+  tradeId: string,
+  ticker: string,
+  right: 'C' | 'P',
+  strike: number,
+  expiry: string,
+  stockPrice: number,
+  premiumPaid: number,
+  contractsToSell: number,
+  meta: Record<string, unknown>,
+): Promise<void> {
+  const intrinsic = right === 'C' ? stockPrice - strike : strike - stockPrice;
+  const sellPx = parseFloat(intrinsic.toFixed(2));
+  const expiryDate = parseExpiryDate(expiry ?? '');
+  const todayEt = new Date();
+  todayEt.setHours(0, 0, 0, 0);
+  const contractGone = !expiryDate || expiryDate < todayEt;
+
+  // Sell only if the contract still trades today AND intrinsic rounds to a real (>= $0.01)
+  // limit. Sub-cent ITM can't be sold above its worth, so it falls through to auto_exercise
+  // (the resulting stock is effectively break-even, negligible harm).
+  if (!contractGone && sellPx >= 0.01) {
+    console.log(`[Options Scalp] ${ticker} — ITM at expiry, Greeks null → selling ${contractsToSell}x at intrinsic $${sellPx.toFixed(2)} (stock $${stockPrice.toFixed(2)} vs $${strike}${right}) to AVOID auto-exercise into stock`);
+    await closeScalpPosition(
+      tradeId, ticker, right, strike, expiry,
+      sellPx, premiumPaid, 'eod_close',
+      { contractsToSell, existingMeta: meta },
+    );
+    return;
+  }
+
+  // Contract already expired on a prior day — untradeable, OCC has already exercised it
+  // into stock. We can no longer avoid the delivery; mark auto_exercised and surface it
+  // loudly for manual reconciliation (the resulting long/short is NOT auto-closed).
+  console.log(`[Options Scalp] ${ticker} — ITM but contract already expired ${expiry} (missed intraday close) → auto_exercised; ${right === 'C' ? 'LONG' : 'SHORT'} stock created in IB needs manual reconciliation`);
+  await closeScalpPosition(
+    tradeId, ticker, right, strike, expiry,
+    0, premiumPaid, 'auto_exercised',
+    { contractsToSell, existingMeta: meta },
+  );
+}
+
 // ── Position Management ───────────────────────────────────
 
 /**
@@ -873,9 +934,14 @@ export async function manageScalpPositions(): Promise<void> {
       const q2 = await fetchQuote(pos.ticker);
       const stockPx2 = q2?.price ?? null;
       const isItm2 = stockPx2 != null && (right2 === 'C' ? stockPx2 > pos.option_strike : stockPx2 < pos.option_strike);
-      await closeScalpPosition(pos.id, pos.ticker, right2, pos.option_strike, pos.option_expiry,
-        0, pos.option_premium, isItm2 ? 'auto_exercised' : 'expired_worthless',
-        { contractsToSell: remaining2, existingMeta: meta2 });
+      if (isItm2 && stockPx2 != null) {
+        await closeItmScalpAtExpiry(pos.id, pos.ticker, right2, pos.option_strike, pos.option_expiry,
+          stockPx2, pos.option_premium, remaining2, meta2);
+      } else {
+        await closeScalpPosition(pos.id, pos.ticker, right2, pos.option_strike, pos.option_expiry,
+          0, pos.option_premium, 'expired_worthless',
+          { contractsToSell: remaining2, existingMeta: meta2 });
+      }
       continue;
     }
 
@@ -909,10 +975,15 @@ export async function manageScalpPositions(): Promise<void> {
       todayMidnight.setHours(0, 0, 0, 0);
       if (expiryDate && expiryDate <= todayMidnight) {
         const isItm = right === 'C' ? q.price > pos.option_strike : q.price < pos.option_strike;
-        console.log(`[Options Scalp] ${pos.ticker} — Greeks null on expiry day (${pos.option_expiry}), stock $${q.price.toFixed(2)} vs strike $${pos.option_strike} → ${isItm ? 'ITM auto_exercised' : 'OTM expired_worthless'}`);
-        await closeScalpPosition(pos.id, pos.ticker, right, pos.option_strike, pos.option_expiry,
-          0, pos.option_premium, isItm ? 'auto_exercised' : 'expired_worthless',
-          { contractsToSell: contractsRemaining, existingMeta: meta });
+        console.log(`[Options Scalp] ${pos.ticker} — Greeks null on expiry day (${pos.option_expiry}), stock $${q.price.toFixed(2)} vs strike $${pos.option_strike} → ${isItm ? 'ITM (sell at intrinsic)' : 'OTM expired_worthless'}`);
+        if (isItm) {
+          await closeItmScalpAtExpiry(pos.id, pos.ticker, right, pos.option_strike, pos.option_expiry,
+            q.price, pos.option_premium, contractsRemaining, meta);
+        } else {
+          await closeScalpPosition(pos.id, pos.ticker, right, pos.option_strike, pos.option_expiry,
+            0, pos.option_premium, 'expired_worthless',
+            { contractsToSell: contractsRemaining, existingMeta: meta });
+        }
         continue;
       }
       console.log(`[Options Scalp] ${pos.ticker} — Greeks unavailable (IB disconnected?), skipping cycle`);
@@ -1089,15 +1160,14 @@ export async function closeAllScalpPositionsEod(): Promise<void> {
           : stockPrice < pos.option_strike;
 
         if (isItm) {
-          // ITM at expiry → OCC auto-exercised. A short stock position (for puts) or long
-          // stock position (for calls) was created in IB. reconcileIBShorts/Longs will
-          // detect and handle the resulting stock position. Mark the option record closed.
-          console.log(`[Options Scalp] ${pos.ticker} — expired ITM on ${pos.option_expiry} (${right === 'C' ? 'CALL' : 'PUT'} $${pos.option_strike}, stock $${stockPrice.toFixed(2)}) — auto-exercised, P&L tracked when stock cover happens`);
-          await closeScalpPosition(
+          // ITM at expiry with null Greeks. Do NOT let it auto-exercise into stock:
+          // sell at intrinsic while the 0DTE contract is still tradeable today. Only if
+          // the contract is already gone (missed on a prior day) does this fall back to
+          // marking auto_exercised. Prevents the TSLL Jul-10 orphaned-long class of bug.
+          await closeItmScalpAtExpiry(
             pos.id, pos.ticker, right,
             pos.option_strike, pos.option_expiry,
-            0, pos.option_premium, 'auto_exercised',
-            { contractsToSell: contractsRemaining, existingMeta: meta },
+            stockPrice, pos.option_premium, contractsRemaining, meta,
           );
         } else {
           // OTM at expiry → expired worthless. Full premium is the loss.
@@ -1240,9 +1310,11 @@ async function closeScalpPosition(
     // Full close (or final contract of a partial)
     const prevRealized = (existingMeta.partial_realized_pnl as number | undefined) ?? 0;
 
-    // auto_exercised: option was ITM at expiry and exercised by OCC, creating a stock
-    // position in IB. The stock P&L is unknown until reconcileIBShorts/Longs covers it.
-    // Store pnl=null here; reconcileIBShorts will update it with the full round-trip P&L.
+    // auto_exercised: reached ONLY when the contract already expired on a prior day and OCC
+    // has exercised it into stock we can no longer sell as an option. For a PUT this is a
+    // SHORT that reconcileIBShorts covers; for a CALL it is a LONG that reconcileIBLongs does
+    // NOT auto-close (it only flags for manual review). So pnl stays null until the stock leg
+    // is reconciled by hand — do not pretend an automatic cover will book it.
     const totalPnl = reason === 'auto_exercised' ? null : prevRealized + contractPnl;
 
     await sb.from('paper_trades').update({
@@ -1253,20 +1325,20 @@ async function closeScalpPosition(
       pnl:          totalPnl,
     }).eq('id', tradeId);
 
-    // totalPnl is null for auto_exercised (P&L tracked by reconcileIBShorts on cover)
     const pnlStr = totalPnl == null
-      ? 'pending exercise cover'
+      ? 'pending stock reconciliation'
       : totalPnl >= 0 ? `+$${totalPnl.toFixed(0)}` : `-$${Math.abs(totalPnl).toFixed(0)}`;
     console.log(`[Options Scalp] ${ticker} closed [${reason}] @ $${closePremium.toFixed(2)} | total P&L ${pnlStr}`);
 
+    const exercisedLeg = right === 'C' ? 'LONG shares (reconcileIBLongs will NOT auto-close — manual review)' : 'SHORT shares (reconcileIBShorts will cover)';
     createAutoTradeEvent({
       ticker,
-      event_type: totalPnl == null ? 'info' : totalPnl >= 0 ? 'success' : 'warning',
+      event_type: totalPnl == null ? 'warning' : totalPnl >= 0 ? 'success' : 'warning',
       action:     'closed',
       source:     'scanner',
       mode:       'OPTIONS_SCALP',
       message:    totalPnl == null
-        ? `📋 Scalp ${right === 'C' ? 'CALL' : 'PUT'} $${strike} auto-exercised ITM [${reason}] — P&L pending stock cover by reconcileIBShorts`
+        ? `⚠️ Scalp ${right === 'C' ? 'CALL' : 'PUT'} $${strike} was auto-exercised ITM (missed intraday close) → ${exercisedLeg}; P&L pending stock reconciliation`
         : `${totalPnl >= 0 ? '✅' : '🛑'} Scalp ${right === 'C' ? 'CALL' : 'PUT'} $${strike} closed [${reason}] @ $${closePremium.toFixed(2)} | P&L ${pnlStr}`,
       metadata:   { reason, totalPnl, closePremium, premiumPaid, contractsToSell },
     }).catch(() => {});
