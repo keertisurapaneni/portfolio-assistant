@@ -15,7 +15,7 @@ import { ACTIVE_STATUSES, CLOSED_STATUSES, OPTIONS_MODES } from '../../../shared
 import { getOptionsAutoTradeConfig, autoTradeOption, type OptionsTradeTicket } from './options-scanner.js';
 import { getOptionsChain } from './options-chain.js';
 import { finnhubFetch, FINNHUB_KEY } from './finnhub.js';
-import { isConnected, placeOptionsOrder, getDefaultAccount } from '../ib-connection.js';
+import { isConnected, placeOptionsOrder, getDefaultAccount, cancelOrder } from '../ib-connection.js';
 
 import type { AutoTradeEventType } from '../../../shared/auto-trade-events.js';
 
@@ -63,6 +63,7 @@ interface PositionRow {
   status: string;
   pnl: number | null;
   ib_order_id: number | null;
+  ib_close_order_id?: string | null;
   roll_count: number;
   rolled_from_id: string | null;
 }
@@ -168,7 +169,7 @@ async function evaluateAndRollPut(
     };
   }
   if (ibCloseOldPut.timedOut) {
-    await stampPendingBtcOrder(pos.id, ibCloseOldPut.orderId, pos.ticker, pos.option_strike, 'P');
+    await stampPendingBtcOrder(pos.id, ibCloseOldPut.orderId, pos.ticker, pos.option_strike, 'P', pos.ib_close_order_id);
     return {
       rolled: false,
       reason: 'btc_gtc_pending',
@@ -354,6 +355,11 @@ async function ibBuyToCloseOption(
  * and auto-close the trade when it eventually executes.
  *
  * Called only when ibBuyToCloseOption returns { timedOut: true }.
+ *
+ * If a prior GTC BTC order ID is already stamped, cancel it in IB first — otherwise
+ * both orders stay live and the orphaned one can fill days later against a flat
+ * (or partially closed) position (GOOGL $335P Jul 8→13: #103274 left live after
+ * #108139 was stamped over it).
  */
 async function stampPendingBtcOrder(
   tradeId: string,
@@ -361,7 +367,19 @@ async function stampPendingBtcOrder(
   ticker: string,
   strike: number,
   right: 'P' | 'C',
+  priorCloseOrderId?: string | null,
 ): Promise<void> {
+  if (priorCloseOrderId && priorCloseOrderId !== orderId.toString()) {
+    const oldId = parseInt(priorCloseOrderId, 10);
+    if (!Number.isNaN(oldId)) {
+      try {
+        cancelOrder(oldId);
+        console.log(`[Options Manager] Cancelled prior GTC BTC #${oldId} for ${ticker} $${strike}${right} before stamping #${orderId}`);
+      } catch (err) {
+        console.warn(`[Options Manager] Failed to cancel prior BTC #${oldId}: ${err instanceof Error ? err.message : err}`);
+      }
+    }
+  }
   const sb = getSupabase();
   await sb
     .from('paper_trades')
@@ -494,7 +512,7 @@ export async function runOptionsManageCycle(): Promise<ManageCycleResult> {
 
   const { data, error } = await sb
     .from('paper_trades')
-    .select('id, ticker, mode, signal, option_strike, option_expiry, option_premium, option_capital_req, option_assigned, fill_price, status, ib_order_id, roll_count, rolled_from_id')
+    .select('id, ticker, mode, signal, option_strike, option_expiry, option_premium, option_capital_req, option_assigned, fill_price, status, ib_order_id, ib_close_order_id, roll_count, rolled_from_id')
     .in('mode', [...OPTIONS_MODES])
     .in('status', ['FILLED', 'PARTIAL']);
 
@@ -502,6 +520,14 @@ export async function runOptionsManageCycle(): Promise<ManageCycleResult> {
 
   for (const pos of data as PositionRow[]) {
     if (!pos.option_strike || !pos.option_expiry) continue;
+
+    // GTC buy-to-close already live in IB — do NOT place another. Overwriting
+    // ib_close_order_id without cancelling the prior order left orphaned GTCs
+    // that filled days later (GOOGL Jul 13). Wait for the trigger to close on fill.
+    if (pos.ib_close_order_id) {
+      console.log(`[Options Manager] ${pos.ticker} $${pos.option_strike}: skipping — GTC BTC #${pos.ib_close_order_id} already pending`);
+      continue;
+    }
 
     const dte = daysUntil(pos.option_expiry);
     const premiumCollected = pos.option_premium ?? 0;
@@ -658,7 +684,7 @@ export async function runOptionsManageCycle(): Promise<ManageCycleResult> {
         continue;
       }
       if (ibClose.timedOut) {
-        await stampPendingBtcOrder(pos.id, ibClose.orderId, pos.ticker, pos.option_strike, 'P');
+        await stampPendingBtcOrder(pos.id, ibClose.orderId, pos.ticker, pos.option_strike, 'P', pos.ib_close_order_id);
         continue;
       }
       const closePremium = ibClose.avgFillPrice;
@@ -704,7 +730,7 @@ export async function runOptionsManageCycle(): Promise<ManageCycleResult> {
         continue;
       }
       if (ibClose.timedOut) {
-        await stampPendingBtcOrder(pos.id, ibClose.orderId, pos.ticker, pos.option_strike, 'P');
+        await stampPendingBtcOrder(pos.id, ibClose.orderId, pos.ticker, pos.option_strike, 'P', pos.ib_close_order_id);
         continue;
       }
       const closePremium = ibClose.avgFillPrice;
@@ -778,7 +804,7 @@ export async function runOptionsManageCycle(): Promise<ManageCycleResult> {
           continue;
         }
         if (ibClose.timedOut) {
-          await stampPendingBtcOrder(pos.id, ibClose.orderId, pos.ticker, pos.option_strike, 'P');
+          await stampPendingBtcOrder(pos.id, ibClose.orderId, pos.ticker, pos.option_strike, 'P', pos.ib_close_order_id);
           continue;
         }
         const closePremium = ibClose.avgFillPrice;
@@ -834,7 +860,7 @@ export async function runOptionsManageCycle(): Promise<ManageCycleResult> {
           continue;
         }
         if (ibCloseDeep.timedOut) {
-          await stampPendingBtcOrder(pos.id, ibCloseDeep.orderId, pos.ticker, pos.option_strike, 'P');
+          await stampPendingBtcOrder(pos.id, ibCloseDeep.orderId, pos.ticker, pos.option_strike, 'P', pos.ib_close_order_id);
           continue;
         }
         const deepClosePremium = ibCloseDeep.avgFillPrice;
@@ -877,7 +903,7 @@ export async function runOptionsManageCycle(): Promise<ManageCycleResult> {
           continue;
         }
         if (ibClose.timedOut) {
-          await stampPendingBtcOrder(pos.id, ibClose.orderId, pos.ticker, pos.option_strike, 'P');
+          await stampPendingBtcOrder(pos.id, ibClose.orderId, pos.ticker, pos.option_strike, 'P', pos.ib_close_order_id);
           continue;
         }
         const closePremium = ibClose.avgFillPrice;
@@ -1085,7 +1111,7 @@ export async function runOptionsManageCycle(): Promise<ManageCycleResult> {
         continue;
       }
       if (ibCloseCall.timedOut) {
-        await stampPendingBtcOrder(pos.id, ibCloseCall.orderId, pos.ticker, pos.option_strike, 'C');
+        await stampPendingBtcOrder(pos.id, ibCloseCall.orderId, pos.ticker, pos.option_strike, 'C', pos.ib_close_order_id);
         continue;
       }
       const callClosePremium = ibCloseCall.avgFillPrice;
@@ -1124,7 +1150,7 @@ export async function runOptionsManageCycle(): Promise<ManageCycleResult> {
         continue;
       }
       if (ibCloseCall21.timedOut) {
-        await stampPendingBtcOrder(pos.id, ibCloseCall21.orderId, pos.ticker, pos.option_strike, 'C');
+        await stampPendingBtcOrder(pos.id, ibCloseCall21.orderId, pos.ticker, pos.option_strike, 'C', pos.ib_close_order_id);
         continue;
       }
       const call21ClosePremium = ibCloseCall21.avgFillPrice;
@@ -1162,7 +1188,7 @@ export async function runOptionsManageCycle(): Promise<ManageCycleResult> {
         continue;
       }
       if (ibCloseCallStop.timedOut) {
-        await stampPendingBtcOrder(pos.id, ibCloseCallStop.orderId, pos.ticker, pos.option_strike, 'C');
+        await stampPendingBtcOrder(pos.id, ibCloseCallStop.orderId, pos.ticker, pos.option_strike, 'C', pos.ib_close_order_id);
         continue;
       }
       const callStopClosePremium = ibCloseCallStop.avgFillPrice;
@@ -1307,7 +1333,7 @@ async function evaluateAndRollCall(
     };
   }
   if (ibCloseOldCall.timedOut) {
-    await stampPendingBtcOrder(pos.id, ibCloseOldCall.orderId, pos.ticker, pos.option_strike, 'C');
+    await stampPendingBtcOrder(pos.id, ibCloseOldCall.orderId, pos.ticker, pos.option_strike, 'C', pos.ib_close_order_id);
     return {
       rolled: false,
       reason: 'btc_gtc_pending',

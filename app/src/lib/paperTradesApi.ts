@@ -346,21 +346,27 @@ export async function getTodaysOrphanedFills(
     // Skip if this order is already covered by a paper_trade
     if (knownOrderIds.has(orderIdStr)) continue;
 
-    // Only surface SELL fills as closed-trade rows (they carry realized P&L)
-    if (first.side !== 'SLD') continue;
+    const realizedPnl = fillGroup.some(f => f.realized_pnl != null)
+      ? fillGroup.reduce((s, f) => s + (Number(f.realized_pnl) || 0), 0)
+      : null;
+
+    // Surface closing fills that carry realized P&L:
+    // - SLD: selling to close a long (stocks / long options)
+    // - BOT with realized_pnl: buying to close a short (short puts/calls)
+    // Opening BOT fills (realized_pnl null) stay hidden — they are not "today's activity" closes.
+    const isClosingFill =
+      first.side === 'SLD' || (first.side === 'BOT' && realizedPnl != null);
+    if (!isClosingFill) continue;
 
     const totalQty = fillGroup.reduce((s, f) => s + Number(f.quantity), 0);
     const totalValue = fillGroup.reduce((s, f) => s + Number(f.quantity) * Number(f.fill_price), 0);
     const avgFillPrice = totalQty > 0 ? totalValue / totalQty : 0;
-    const realizedPnl = fillGroup.some(f => f.realized_pnl != null)
-      ? fillGroup.reduce((s, f) => s + (Number(f.realized_pnl) || 0), 0)
-      : null;
 
     orphans.push({
       _id: `orphan:${first.order_id}:${first.ticker}`,
       ticker: first.ticker,
       order_id: Number(first.order_id),
-      side: 'SLD',
+      side: first.side === 'BOT' ? 'BOT' : 'SLD',
       total_quantity: totalQty,
       avg_fill_price: avgFillPrice,
       realized_pnl: realizedPnl != null ? parseFloat(realizedPnl.toFixed(2)) : null,
