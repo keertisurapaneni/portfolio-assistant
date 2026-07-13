@@ -88,6 +88,7 @@ import {
 import { logLongTermPerformance } from './lib/performanceLog.js';
 import { logClosedTradePerformance } from './lib/tradePerformanceLog.js';
 import { recordTradeClose } from './lib/trade-closer.js';
+import { fetchDailyBars } from './lib/yahoo-finance.js';
 import { generateSuggestedFinds, discoverDipStocks } from './lib/discovery.js';
 import { fetchRecentDailyCandles, detectCandlePatterns } from './lib/candle-patterns.js';
 import { runOptionsScan, autoTradeOption, getOptionsAutoTradeConfig } from './lib/options-scanner.js';
@@ -5957,6 +5958,66 @@ async function processExternalStrategySignals(
 
 // ── Position Management (Sync + Dip Buy + Profit Take + Loss Cut) ──
 
+// A SWING_TRADE/LONG_TERM position that IB reports as gone is either (a) a transient
+// disconnect (mobile-app login kicking the gateway, reqPositions timeout) or (b) a
+// genuine exit whose bracket-fill execDetails was dropped and never recovered (the
+// reqExecutions replay is today-only, so a fill dropped on a prior day is lost forever).
+// We must never close a good position at a stale quote (the ABBV -$276 bug, 2026-05-26),
+// but we also must not loop forever resetting missing_since (MELI stayed FILLED Jul 2→13,
+// AOS accumulated phantom lots). This window separates a transient blip from a real exit:
+// a position continuously missing this long, while IB returns a healthy snapshot, has
+// genuinely left IB and is reconciled at its GROUNDED bracket price (never a live quote).
+const STALE_RECONCILE_MS = 4 * 60 * 60 * 1000; // 4 hours of continuous absence
+
+/**
+ * Determine the grounded exit for a swing/LT position that IB no longer holds, using the
+ * bracket TP/SL levels + daily price history. Bracket orders fill AT their limit/stop
+ * price, so when price action confirms a leg was reached we know both the price and the
+ * approximate date — no live-quote guessing. Returns null when the exit cannot be grounded
+ * (missing bracket levels, no price data, or neither leg reached), in which case the caller
+ * leaves the record for manual review rather than fabricating a P&L.
+ */
+async function resolveStaleBracketExit(trade: {
+  ticker: string;
+  signal: string | null;
+  target_price: number | null;
+  stop_loss: number | null;
+  filled_at: string | null;
+  opened_at: string | null;
+}): Promise<{ closePrice: number; closeReason: 'target_hit' | 'stop_loss'; closedAt: string } | null> {
+  const tp = trade.target_price;
+  const sl = trade.stop_loss;
+  if (tp == null || sl == null) return null;
+
+  const filledAt = trade.filled_at ?? trade.opened_at;
+  if (!filledAt) return null;
+
+  const daysElapsed = Math.ceil((Date.now() - new Date(filledAt).getTime()) / 86_400_000);
+  const range = daysElapsed <= 25 ? '1mo' : daysElapsed <= 80 ? '3mo' : daysElapsed <= 170 ? '6mo' : '1y';
+  const bars = await fetchDailyBars(trade.ticker, range);
+  if (!bars || bars.length === 0) return null;
+
+  const filledDate = new Date(filledAt).toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+  const isLong = trade.signal !== 'SELL'; // BUY / null => long
+
+  // Scan chronologically from the fill date. The first bar to touch a bracket leg wins
+  // (the OCA group cancels the other leg on fill). Use 20:00 UTC (~market close, EDT) as
+  // the close timestamp so the P&L is attributed to the day the leg was actually reached.
+  for (const b of bars) {
+    if (b.date < filledDate) continue;
+    const tpHit = isLong ? b.high >= tp : b.low <= tp;
+    const slHit = isLong ? b.low <= sl : b.high >= sl;
+    if (tpHit && slHit) {
+      // Both legs touched the same day — intraday order is unknowable from a daily bar.
+      // Conservatively record a stop (don't credit a win we cannot confirm).
+      return { closePrice: sl, closeReason: 'stop_loss', closedAt: `${b.date}T20:00:00+00:00` };
+    }
+    if (tpHit) return { closePrice: tp, closeReason: 'target_hit', closedAt: `${b.date}T20:00:00+00:00` };
+    if (slHit) return { closePrice: sl, closeReason: 'stop_loss', closedAt: `${b.date}T20:00:00+00:00` };
+  }
+  return null; // neither leg reached within the window — cannot ground; leave for manual
+}
+
 async function syncPositions(
   config: AutoTraderConfig,
   positions: EnrichedPosition[],
@@ -6143,15 +6204,59 @@ async function _syncPositionsForAccount(
           continue;
         }
 
-        // Swing and long-term trades are multi-day holds. A 30-min IB disconnect
+        // Swing and long-term trades are multi-day holds. A brief IB disconnect
         // (e.g. mobile app login kicking out the gateway session) is a normal transient
         // event and must NOT trigger a fallback-quote close — that would close a good
         // position at the wrong price. Confirmed: caused ABBV to close at $213.14
         // instead of $217.12 (+$276 P&L difference) on 2026-05-26.
-        // Only day trades and penny trades use the fallback-quote close.
+        //
+        // The OLD behavior reset missing_since to null every cycle, so a genuinely-exited
+        // swing/LT whose exit execDetails was dropped stayed FILLED forever (MELI Jul 2→13)
+        // and LT over-counts accumulated (AOS). Now we KEEP missing_since so staleness
+        // accumulates, and once the position has been continuously missing far longer than
+        // any transient disconnect AND IB returns a healthy snapshot (other positions present
+        // → truly connected, not a reqPositions timeout), we reconcile it at its GROUNDED
+        // bracket price (TP/SL level confirmed reached by daily price history) — never a
+        // live quote. If the exit can't be grounded, we surface an event and keep waiting.
         if (trade.mode === 'SWING_TRADE' || trade.mode === 'LONG_TERM') {
-          log(`[WARN] ${trade.ticker}: ${trade.mode} position missing for ${Math.round(missingFor / 60000)} min — NOT closing via fallback quote (IB disconnect suspected). Resetting guard to re-check next cycle.`);
-          await updatePaperTrade(trade.id, { missing_since: null }, syncAcct);
+          const snapshotHealthy = positions.length > 0;
+          if (!snapshotHealthy || missingFor < STALE_RECONCILE_MS) {
+            log(`[WARN] ${trade.ticker}: ${trade.mode} missing ${Math.round(missingFor / 60000)}m (snapshotHealthy=${snapshotHealthy}) — waiting, not force-closing (missing_since retained)`);
+            continue;
+          }
+          const grounded = await resolveStaleBracketExit(trade);
+          if (!grounded) {
+            log(`[WARN] ${trade.ticker}: ${trade.mode} gone from IB ${Math.round(missingFor / 3_600_000)}h but exit not confirmable from price history — leaving for manual reconciliation`);
+            persistEvent(trade.ticker, 'warning',
+              `${trade.ticker} ${trade.mode} gone from IB for ${Math.round(missingFor / 3_600_000)}h but exit price is unconfirmable from bracket levels — needs manual reconciliation`,
+              { action: 'reconcile_needed', source: 'stale_position', mode: trade.mode }, syncAcct).catch(() => {});
+            continue;
+          }
+          const isLongPos = trade.signal !== 'SELL';
+          const fp = trade.fill_price ?? trade.entry_price ?? 0;
+          const q = trade.quantity ?? 1;
+          const stalePnl = parseFloat(((isLongPos ? grounded.closePrice - fp : fp - grounded.closePrice) * q).toFixed(2));
+          const staleStatus: import('../../shared/trade-types.js').TradeStatus =
+            grounded.closeReason === 'target_hit' ? 'TARGET_HIT' : 'STOPPED';
+          const bracketOrderStr = grounded.closeReason === 'target_hit' ? trade.ib_tp_order_id : trade.ib_sl_order_id;
+          const bracketOrderNum = bracketOrderStr ? parseInt(bracketOrderStr, 10) : NaN;
+          await recordTradeClose({
+            tradeId: trade.id,
+            closePrice: grounded.closePrice,
+            closeReason: grounded.closeReason,
+            status: staleStatus,
+            orderId: Number.isNaN(bracketOrderNum) ? undefined : bracketOrderNum,
+            accountType: syncAcct,
+            overridePnl: stalePnl,
+            overridePnlSource: 'estimated',
+            extraUpdates: { closed_at: grounded.closedAt, missing_since: null },
+          } as Parameters<typeof recordTradeClose>[0]);
+          log(`${trade.ticker}: ${trade.mode} stale-reconciled [${syncAcct}] (${grounded.closeReason} @ $${grounded.closePrice}, closed ${grounded.closedAt.slice(0, 10)}) — P&L $${stalePnl} [exit fill was dropped]`);
+          persistEvent(trade.ticker, stalePnl >= 0 ? 'success' : 'warning',
+            `${trade.ticker} ${trade.mode} reconciled to IB-flat — ${grounded.closeReason} @ $${grounded.closePrice} (exit execDetails was dropped, grounded on bracket level)`,
+            { action: 'closed', source: 'stale_reconcile', mode: trade.mode,
+              metadata: { pnl: stalePnl, closePrice: grounded.closePrice, closeReason: grounded.closeReason } },
+            syncAcct).catch(() => {});
           continue;
         }
 
