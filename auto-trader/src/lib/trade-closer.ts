@@ -12,7 +12,7 @@
 import type { AccountType, TradeStatus, CloseReason, PaperTrade } from '../../../shared/trade-types.js';
 import { getSupabase, updatePaperTrade, createAutoTradeEvent, fillsTable } from './supabase.js';
 
-export type PnlSource = 'ib_realized' | 'ib_fill_calculated' | 'quote_fallback' | 'estimated' | 'legacy';
+export type PnlSource = 'ib_realized' | 'ib_fill_calculated' | 'quote_fallback' | 'estimated' | 'legacy' | 'ib_assignment';
 
 export interface CloseTradeParams {
   tradeId: string;
