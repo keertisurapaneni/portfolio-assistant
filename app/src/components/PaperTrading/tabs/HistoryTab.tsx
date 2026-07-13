@@ -1,7 +1,8 @@
-import { useState } from 'react';
-import { Clock } from 'lucide-react';
+import { useMemo, useState } from 'react';
+import { Clock, Search, X } from 'lucide-react';
 import type { PaperTrade, PendingStrategySignal } from '../../../lib/paperTradesApi';
 import type { AccountView } from '../../../contexts/AccountContext';
+import { cn } from '../../../lib/utils';
 import { fmtUsd } from '../utils';
 import { StatusBadge } from '../shared';
 
@@ -17,6 +18,11 @@ function AccountDot({ type }: { type?: 'paper' | 'live' }) {
   );
 }
 
+/** Confirmed P&L only — same rule as the W/L summary (requires pnl_source). */
+function confirmedPnl(t: PaperTrade): number | null {
+  return t.pnl_source != null ? t.pnl : null;
+}
+
 export interface HistoryTabProps {
   trades: PaperTrade[];
   pendingSignals: PendingStrategySignal[];
@@ -26,6 +32,24 @@ export interface HistoryTabProps {
 export function HistoryTab({ trades, pendingSignals, accountView }: HistoryTabProps) {
   const [sortKey, setSortKey] = useState<HistorySortKey>('date');
   const [sortAsc, setSortAsc] = useState(false);
+  const [tickerQuery, setTickerQuery] = useState('');
+  const [hasPnlOnly, setHasPnlOnly] = useState(false);
+
+  const tickerNormalized = tickerQuery.trim().toUpperCase();
+  const filtersActive = tickerNormalized.length > 0 || hasPnlOnly;
+
+  const filteredTrades = useMemo(() => {
+    return trades.filter(t => {
+      if (tickerNormalized && !t.ticker.toUpperCase().includes(tickerNormalized)) return false;
+      if (hasPnlOnly && confirmedPnl(t) == null) return false;
+      return true;
+    });
+  }, [trades, tickerNormalized, hasPnlOnly]);
+
+  const filteredPending = useMemo(() => {
+    if (!tickerNormalized) return pendingSignals;
+    return pendingSignals.filter(s => s.ticker.toUpperCase().includes(tickerNormalized));
+  }, [pendingSignals, tickerNormalized]);
 
   if (trades.length === 0 && pendingSignals.length === 0) {
     return (
@@ -36,14 +60,14 @@ export function HistoryTab({ trades, pendingSignals, accountView }: HistoryTabPr
     );
   }
 
-  const sorted = [...trades].sort((a, b) => {
+  const sorted = [...filteredTrades].sort((a, b) => {
     let cmp = 0;
     switch (sortKey) {
       case 'date': cmp = new Date(a.opened_at).getTime() - new Date(b.opened_at).getTime(); break;
       case 'ticker': cmp = a.ticker.localeCompare(b.ticker); break;
       case 'pnl': {
-        const aPnl = a.pnl ?? -Infinity;
-        const bPnl = b.pnl ?? -Infinity;
+        const aPnl = confirmedPnl(a) ?? -Infinity;
+        const bPnl = confirmedPnl(b) ?? -Infinity;
         cmp = aPnl - bPnl;
         break;
       }
@@ -74,10 +98,9 @@ export function HistoryTab({ trades, pendingSignals, accountView }: HistoryTabPr
     </th>
   );
 
-  const activeTrades = trades.filter(t => ['SUBMITTED', 'FILLED', 'PARTIAL', 'PENDING'].includes(t.status));
-  const totalPendingLike = activeTrades.length + pendingSignals.length;
-  const confirmedPnl = (t: typeof trades[0]) => t.pnl_source != null ? t.pnl : null;
-  const tradesWithPnl = trades.filter(t => confirmedPnl(t) != null);
+  const activeTrades = filteredTrades.filter(t => ['SUBMITTED', 'FILLED', 'PARTIAL', 'PENDING'].includes(t.status));
+  const totalPendingLike = activeTrades.length + filteredPending.length;
+  const tradesWithPnl = filteredTrades.filter(t => confirmedPnl(t) != null);
   const totalPnl = tradesWithPnl.reduce((s, t) => s + confirmedPnl(t)!, 0);
   const wins = tradesWithPnl.filter(t => confirmedPnl(t)! > 0).length;
   const losses = tradesWithPnl.filter(t => confirmedPnl(t)! < 0).length;
@@ -86,11 +109,17 @@ export function HistoryTab({ trades, pendingSignals, accountView }: HistoryTabPr
     <div className="space-y-3">
       <div className="flex items-center justify-between rounded-lg bg-[hsl(var(--secondary))] px-4 py-2.5">
         <div className="flex items-center gap-4 text-xs text-[hsl(var(--muted-foreground))]">
-          <span>{trades.length} trades</span>
+          <span>
+            {filtersActive
+              ? `${filteredTrades.length} of ${trades.length} trades`
+              : `${trades.length} trades`}
+          </span>
           {totalPendingLike > 0 && (
             <span className="text-blue-600">{totalPendingLike} active/pending</span>
           )}
-          {pendingSignals.length > 0 && <span className="text-amber-600">{pendingSignals.length} strategy signals pending</span>}
+          {filteredPending.length > 0 && (
+            <span className="text-amber-600">{filteredPending.length} strategy signals pending</span>
+          )}
           <span className="text-emerald-600">{wins}W</span>
           <span className="text-red-500">{losses}L</span>
         </div>
@@ -99,7 +128,54 @@ export function HistoryTab({ trades, pendingSignals, accountView }: HistoryTabPr
         </span>
       </div>
 
-      {pendingSignals.length > 0 && (
+      {/* Search + filters */}
+      <div className="flex items-center gap-2 flex-wrap">
+        <div className="relative">
+          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-[hsl(var(--muted-foreground))]" />
+          <input
+            type="text"
+            value={tickerQuery}
+            onChange={e => setTickerQuery(e.target.value)}
+            placeholder="Search ticker…"
+            className="h-8 w-36 pl-8 pr-7 text-xs rounded-md border border-[hsl(var(--border))] bg-white text-[hsl(var(--foreground))] placeholder:text-[hsl(var(--muted-foreground))] focus:outline-none focus:ring-1 focus:ring-[hsl(var(--foreground))]/20 uppercase"
+            spellCheck={false}
+            autoComplete="off"
+          />
+          {tickerQuery && (
+            <button
+              type="button"
+              onClick={() => setTickerQuery('')}
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))]"
+              aria-label="Clear ticker search"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          )}
+        </div>
+        <button
+          type="button"
+          onClick={() => setHasPnlOnly(v => !v)}
+          className={cn(
+            'px-2.5 py-1 text-[11px] font-medium rounded-md border transition-colors',
+            hasPnlOnly
+              ? 'bg-[hsl(var(--foreground))] text-[hsl(var(--background))] border-[hsl(var(--foreground))]'
+              : 'bg-white text-[hsl(var(--muted-foreground))] border-[hsl(var(--border))] hover:border-[hsl(var(--foreground))]/40'
+          )}
+        >
+          Has P&L
+        </button>
+        {filtersActive && (
+          <button
+            type="button"
+            onClick={() => { setTickerQuery(''); setHasPnlOnly(false); }}
+            className="text-[10px] text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))] underline-offset-2 hover:underline"
+          >
+            Clear
+          </button>
+        )}
+      </div>
+
+      {filteredPending.length > 0 && (
         <div className="rounded-xl border border-amber-200 bg-amber-50/40 overflow-hidden">
           <div className="px-4 py-2.5 border-b border-amber-200/60 bg-amber-50">
             <h3 className="text-sm font-semibold text-amber-800">Pending Strategy Signals</h3>
@@ -118,7 +194,7 @@ export function HistoryTab({ trades, pendingSignals, accountView }: HistoryTabPr
               </tr>
             </thead>
             <tbody className="divide-y divide-amber-200/60">
-              {pendingSignals.map(signal => (
+              {filteredPending.map(signal => (
                 <tr key={signal.id} className="hover:bg-amber-50/80">
                   <td className="px-4 py-3 font-bold">{signal.ticker}</td>
                   <td className="px-4 py-3">
@@ -164,62 +240,79 @@ export function HistoryTab({ trades, pendingSignals, accountView }: HistoryTabPr
       )}
 
       <div className="rounded-xl border border-[hsl(var(--border))] bg-white overflow-hidden">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="bg-[hsl(var(--secondary))] text-[hsl(var(--muted-foreground))] text-xs">
-              <SortHeader label="Ticker" col="ticker" />
-              <SortHeader label="Signal" col="signal" />
-              <th className="text-right px-4 py-2.5 font-medium">Shares</th>
-              <th className="text-right px-4 py-2.5 font-medium">Entry</th>
-              <th className="text-right px-4 py-2.5 font-medium">Close</th>
-              <SortHeader label="P&L" col="pnl" align="right" />
-              <SortHeader label="Result" col="status" />
-              <th className="text-left px-4 py-2.5 font-medium">Reason</th>
-              <SortHeader label="Date" col="date" />
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-[hsl(var(--border))]">
-            {sorted.map(trade => {
-              const isActive = ['SUBMITTED', 'FILLED', 'PARTIAL', 'PENDING'].includes(trade.status);
-              return (
-                <tr key={trade.id} className={`hover:bg-[hsl(var(--secondary))]/50 ${isActive ? 'bg-blue-50/30' : ''}`}>
-                  <td className="px-4 py-3 font-bold">
-                    <span className="inline-flex items-center gap-1.5">
-                      {accountView === 'live' && <AccountDot type="live" />}
-                      {trade.ticker}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3">
-                    <span className={`inline-flex px-2 py-0.5 rounded text-[10px] font-bold ${trade.signal === 'BUY' ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'}`}>
-                      {trade.signal}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3 text-right tabular-nums text-[hsl(var(--muted-foreground))]">
-                    {trade.quantity != null ? trade.quantity.toLocaleString() : '—'}
-                  </td>
-                  <td className="px-4 py-3 text-right tabular-nums">
-                    ${trade.fill_price?.toFixed(2) ?? trade.entry_price?.toFixed(2)}
-                  </td>
-                  <td className="px-4 py-3 text-right tabular-nums">
-                    {trade.close_price ? `$${trade.close_price.toFixed(2)}` : '—'}
-                  </td>
-                  <td className={`px-4 py-3 text-right tabular-nums font-semibold ${confirmedPnl(trade) != null && confirmedPnl(trade)! > 0 ? 'text-emerald-600' : confirmedPnl(trade) != null && confirmedPnl(trade)! < 0 ? 'text-red-600' : ''}`}>
-                    {confirmedPnl(trade) != null ? fmtUsd(confirmedPnl(trade)!, 2, true) : '—'}
-                  </td>
-                  <td className="px-4 py-3">
-                    <StatusBadge status={trade.status} />
-                  </td>
-                  <td className="px-4 py-3 text-xs text-[hsl(var(--muted-foreground))]">
-                    {trade.close_reason ?? (isActive ? trade.mode?.replace('_', ' ').toLowerCase() : '—')}
-                  </td>
-                  <td className="px-4 py-3 text-xs text-[hsl(var(--muted-foreground))] tabular-nums">
-                    {new Date(trade.opened_at).toLocaleDateString()}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+        {sorted.length === 0 ? (
+          <div className="text-center py-10 px-4">
+            <p className="text-sm text-[hsl(var(--muted-foreground))]">
+              No trades match{tickerNormalized ? ` “${tickerNormalized}”` : ''}
+              {hasPnlOnly ? ' with confirmed P&L' : ''}
+            </p>
+            <button
+              type="button"
+              onClick={() => { setTickerQuery(''); setHasPnlOnly(false); }}
+              className="mt-2 text-xs text-blue-600 hover:text-blue-700"
+            >
+              Clear filters
+            </button>
+          </div>
+        ) : (
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="bg-[hsl(var(--secondary))] text-[hsl(var(--muted-foreground))] text-xs">
+                <SortHeader label="Ticker" col="ticker" />
+                <SortHeader label="Signal" col="signal" />
+                <th className="text-right px-4 py-2.5 font-medium">Shares</th>
+                <th className="text-right px-4 py-2.5 font-medium">Entry</th>
+                <th className="text-right px-4 py-2.5 font-medium">Close</th>
+                <SortHeader label="P&L" col="pnl" align="right" />
+                <SortHeader label="Result" col="status" />
+                <th className="text-left px-4 py-2.5 font-medium">Reason</th>
+                <SortHeader label="Date" col="date" />
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-[hsl(var(--border))]">
+              {sorted.map(trade => {
+                const isActive = ['SUBMITTED', 'FILLED', 'PARTIAL', 'PENDING'].includes(trade.status);
+                const pnl = confirmedPnl(trade);
+                return (
+                  <tr key={trade.id} className={`hover:bg-[hsl(var(--secondary))]/50 ${isActive ? 'bg-blue-50/30' : ''}`}>
+                    <td className="px-4 py-3 font-bold">
+                      <span className="inline-flex items-center gap-1.5">
+                        {accountView === 'live' && <AccountDot type="live" />}
+                        {trade.ticker}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3">
+                      <span className={`inline-flex px-2 py-0.5 rounded text-[10px] font-bold ${trade.signal === 'BUY' ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'}`}>
+                        {trade.signal}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 text-right tabular-nums text-[hsl(var(--muted-foreground))]">
+                      {trade.quantity != null ? trade.quantity.toLocaleString() : '—'}
+                    </td>
+                    <td className="px-4 py-3 text-right tabular-nums">
+                      ${trade.fill_price?.toFixed(2) ?? trade.entry_price?.toFixed(2)}
+                    </td>
+                    <td className="px-4 py-3 text-right tabular-nums">
+                      {trade.close_price ? `$${trade.close_price.toFixed(2)}` : '—'}
+                    </td>
+                    <td className={`px-4 py-3 text-right tabular-nums font-semibold ${pnl != null && pnl > 0 ? 'text-emerald-600' : pnl != null && pnl < 0 ? 'text-red-600' : ''}`}>
+                      {pnl != null ? fmtUsd(pnl, 2, true) : '—'}
+                    </td>
+                    <td className="px-4 py-3">
+                      <StatusBadge status={trade.status} />
+                    </td>
+                    <td className="px-4 py-3 text-xs text-[hsl(var(--muted-foreground))]">
+                      {trade.close_reason ?? (isActive ? trade.mode?.replace('_', ' ').toLowerCase() : '—')}
+                    </td>
+                    <td className="px-4 py-3 text-xs text-[hsl(var(--muted-foreground))] tabular-nums">
+                      {new Date(trade.opened_at).toLocaleDateString()}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
       </div>
     </div>
   );
