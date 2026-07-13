@@ -1428,8 +1428,19 @@ export async function handleAssignment(positionId: string): Promise<void> {
 
   if (!pos) return;
 
-  // Close the put position
-  const assignmentPnl = -(pos.option_strike - pos.option_premium - (pos.fill_price ?? pos.option_strike)) * 100;
+  // Close the put position with ZERO realized P&L.
+  //
+  // On assignment IB does NOT book a realized gain/loss on the option — the premium
+  // collected is folded into the cost basis of the 100 assigned shares (IB avgCost =
+  // strike - premium). The resulting share loss/gain stays UNREALIZED until the shares
+  // are sold, and shows up via the IB position (source of truth), not here.
+  //
+  // The previous formula `-(strike - premium - fill) * 100` treated the strike as a
+  // per-share P&L term and produced phantom five-figure losses (ORCL $177.5P →
+  // -$16,467.97 on Jul 10 2026) that IB never recorded. Booking 0 keeps our realized
+  // P&L consistent with IB's realizedPnl and avoids double-counting the premium (which
+  // is already embedded in the share cost basis).
+  const assignmentPnl = 0;
   await recordTradeClose({
     tradeId: positionId,
     closePrice: pos.option_strike,
@@ -1437,7 +1448,7 @@ export async function handleAssignment(positionId: string): Promise<void> {
     status: 'CLOSED',
     accountType: 'paper',
     overridePnl: assignmentPnl,
-    overridePnlSource: 'ib_fill_calculated',
+    overridePnlSource: 'ib_assignment',
     extraUpdates: { option_assigned: true },
   });
 
