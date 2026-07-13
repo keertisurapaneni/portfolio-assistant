@@ -6328,16 +6328,16 @@ async function _syncPositionsForAccount(
       if (dayOrderExpired) {
         const closedAt = new Date().toISOString();
         await updatePaperTrade(trade.id, {
-          status: 'CLOSED', close_reason: 'manual',
+          status: 'CANCELLED', close_reason: 'never_filled',
           closed_at: closedAt,
           notes: (trade.notes ?? '') + ' | Expired: DAY order not filled by market close',
         }, syncAcct);
         logClosedTradePerformance(
-          { ...trade, status: 'CLOSED', close_reason: 'manual', closed_at: closedAt } as import('./lib/supabase.js').PaperTrade,
+          { ...trade, status: 'CANCELLED', close_reason: 'never_filled', closed_at: closedAt } as import('./lib/supabase.js').PaperTrade,
           { source: 'scheduler', trigger: 'EXPIRED_DAY_ORDER' },
           syncAcct,
         ).catch(() => {});
-        log(`${trade.ticker}: Day trade expired (market closed)`);
+        log(`${trade.ticker}: Day trade expired (market closed, never filled)`);
       }
       // Swing bracket limit: expire after 3 trading days (Mon–Fri, excl. holidays).
       // Previously used 48 calendar hours which silently cancelled orders over weekends
@@ -6360,12 +6360,12 @@ async function _syncPositionsForAccount(
         upsertSwingMetrics({ date: getETDateString(), swing_orders_expired: 1 }).catch(() => {});
         const closedAt = new Date().toISOString();
         await updatePaperTrade(trade.id, {
-          status: 'CLOSED', close_reason: 'manual',
+          status: 'CANCELLED', close_reason: 'never_filled',
           closed_at: closedAt,
           notes: (trade.notes ?? '') + ' | Expired: SWING limit not filled within 3 trading days',
         }, syncAcct);
         logClosedTradePerformance(
-          { ...trade, status: 'CLOSED', close_reason: 'manual', closed_at: closedAt } as import('./lib/supabase.js').PaperTrade,
+          { ...trade, status: 'CANCELLED', close_reason: 'never_filled', closed_at: closedAt } as import('./lib/supabase.js').PaperTrade,
           { source: 'scheduler', trigger: 'EXPIRED_SWING_BRACKET' },
           syncAcct,
         ).catch(() => {});

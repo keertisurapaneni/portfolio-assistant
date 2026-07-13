@@ -690,6 +690,8 @@ export function TodayActivityTab({ events, trades, todayTrades, orphanedFills = 
                 invisible in Today's Activity, regardless of tracking gaps. */}
             {orphanedFills.map((fill) => {
               const pnl = fill.realized_pnl;
+              const fillSignal = fill.side === 'BOT' ? 'BUY' : 'SELL';
+              const fillSignalColor = fill.side === 'BOT' ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700';
               return (
                 <tr key={fill._id} className="bg-amber-50/30 hover:bg-amber-50/60">
                   <td className="px-4 py-3 font-bold">
@@ -698,14 +700,14 @@ export function TodayActivityTab({ events, trades, todayTrades, orphanedFills = 
                     </span>
                   </td>
                   <td className="px-4 py-3">
-                    <span className="inline-flex px-1.5 py-0.5 rounded text-[10px] font-bold bg-slate-100 text-slate-600">—</span>
+                    <span className={cn('inline-flex px-1.5 py-0.5 rounded text-[10px] font-bold', fillSignalColor)}>{fillSignal}</span>
                   </td>
                   <td className="px-4 py-3">
                     <span className="text-[10px] px-1.5 py-0.5 rounded font-medium bg-amber-100 text-amber-700">IB Fill</span>
                   </td>
                   <td className="px-4 py-3 text-xs text-[hsl(var(--muted-foreground))]">
                     <span className="font-medium text-[hsl(var(--foreground))]">System · IB execution</span>
-                    <span> · {fill.total_quantity} shares @ ${fill.avg_fill_price.toFixed(2)}</span>
+                    <span> · {fill.total_quantity} @ ${fill.avg_fill_price.toFixed(2)}</span>
                   </td>
                   <td className={cn(
                     'px-4 py-3 text-right tabular-nums font-semibold',
