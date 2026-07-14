@@ -330,6 +330,9 @@ export async function getOptionGreeksForContract(
   const ib = getIBApi();
   if (!ib || !isConnected()) return null;
 
+  // Normalize to YYYYMMDD — IB rejects dashed dates; callers may pass either.
+  const expiryYmd = expiry.replace(/-/g, '');
+
   await acquireRequestSlot();
   try {
     return await new Promise<OptionGreeks | null>((resolve) => {
@@ -339,6 +342,8 @@ export async function getOptionGreeksForContract(
       let bidPrice = -1, askPrice = -1;
       let impliedVol = 0, delta = 0, theta = 0, gamma = 0, vega = 0;
 
+      // tradingClass intentionally omitted — hardcoding symbol-as-class causes
+      // code-200 for tickers where IB's class differs (same rule as placeOptionsOrder).
       const contract: Contract = {
         symbol: symbol.toUpperCase(),
         secType: SecType.OPT,
@@ -346,9 +351,8 @@ export async function getOptionGreeksForContract(
         currency: 'USD',
         strike,
         right: optionType === 'P' ? OptionType.Put : OptionType.Call,
-        lastTradeDateOrContractMonth: expiry,
+        lastTradeDateOrContractMonth: expiryYmd,
         multiplier: 100,
-        tradingClass: symbol.toUpperCase(),
       };
 
       function finish(result: OptionGreeks | null) {
@@ -366,13 +370,13 @@ export async function getOptionGreeksForContract(
       function buildResult(): OptionGreeks {
         const mid = bidPrice >= 0 && askPrice >= 0 ? (bidPrice + askPrice) / 2 : Math.max(bidPrice, askPrice, 0);
         const realisticMid = Math.max(mid - 0.05, 0.01);
-        const dte = daysToExpiry(expiry);
+        const dte = daysToExpiry(expiryYmd);
         const annualYield = dte > 0 ? (realisticMid / strike) * (365 / dte) * 100 : 0;
         const absDelta = Math.abs(delta);
         const probProfit = (1 - absDelta) * 100;
 
         return {
-          strike, expiry,
+          strike, expiry: expiryYmd,
           optionType,
           bid: bidPrice >= 0 ? bidPrice : 0,
           ask: askPrice >= 0 ? askPrice : 0,
@@ -1018,6 +1022,8 @@ export async function findBestContractForStrike(
 
 // ── ATM Strike Finder (for day trading) ─────────────────
 
+export type AtmPricingSource = 'live' | 'bs_ib_strikes' | 'bs_interval';
+
 export interface AtmStrikeResult {
   strike: number;
   expiry: string;
@@ -1026,6 +1032,8 @@ export interface AtmStrikeResult {
   mid: number;
   delta: number;
   spreadPct: number;   // (ask-bid)/mid * 100
+  /** How the bid/ask were obtained. Scalps must not place on BS-only prices. */
+  pricingSource: AtmPricingSource;
 }
 
 /**
@@ -1102,10 +1110,14 @@ export async function findAtmStrike(
         if (absDelta < 0.35 || absDelta > 0.65) continue;
         if (greeks.bid < 0.05) continue;
         const spreadPct = greeks.mid > 0 ? ((greeks.ask - greeks.bid) / greeks.mid) * 100 : 999;
-        return { strike, expiry, bid: greeks.bid, ask: greeks.ask, mid: greeks.mid, delta: greeks.delta, spreadPct };
+        return {
+          strike, expiry: greeks.expiry, bid: greeks.bid, ask: greeks.ask,
+          mid: greeks.mid, delta: greeks.delta, spreadPct, pricingSource: 'live',
+        };
       }
 
-      // BS fallback using real IB strikes
+      // BS fallback using real IB strikes — marked so callers can refuse to place
+      // without a live quote (BS ask caused repeated code-202 NBBO rejects).
       const atmStrike = candidates.reduce((best, s) =>
         Math.abs(s - underlyingPrice) < Math.abs(best - underlyingPrice) ? s : best,
         candidates[0],
@@ -1116,14 +1128,17 @@ export async function findAtmStrike(
         const bid = Math.max(bs.price - spread / 2, 0.01);
         const ask = bs.price + spread / 2;
         console.log(`[Options Chain] ${symbol} ATM ${right} via BS fallback (IB strikes): strike $${atmStrike}, mid $${bs.price.toFixed(2)}, dte ${daysToExpiry(expiry)}`);
-        return { strike: atmStrike, expiry, bid, ask, mid: bs.price, delta: bs.delta, spreadPct: (spread / bs.price) * 100 };
+        return {
+          strike: atmStrike, expiry, bid, ask, mid: bs.price, delta: bs.delta,
+          spreadPct: (spread / bs.price) * 100, pricingSource: 'bs_ib_strikes',
+        };
       }
     }
   }
 
   // ── Attempt 2: price-interval strike + BS ────────────────────────────────
-  // getOptionChainParams failed (IB busy/timeout) — compute strike from standard
-  // price intervals and price via BS. Same approach as the original atmStrikeViaBs.
+  // getOptionChainParams failed (IB busy/timeout) — invent a strike from price
+  // tiers. Callers MUST resolveOptionConId before placing; often code-200.
   const intervalStrike = atmStrikeForPrice(underlyingPrice);
   const bs2 = await atmBsPrice(symbol, right, intervalStrike, underlyingPrice, expiry);
   if (!bs2 || bs2.price < 0.05) return null;
@@ -1138,5 +1153,8 @@ export async function findAtmStrike(
   const spreadPct = (spread / price) * 100;
 
   console.log(`[Options Chain] ${symbol} ATM ${right} via BS fallback (interval strike): strike $${intervalStrike}, mid $${price.toFixed(2)}, dte ${daysToExpiry(expiry)}`);
-  return { strike: intervalStrike, expiry, bid, ask, mid: price, delta, spreadPct };
+  return {
+    strike: intervalStrike, expiry, bid, ask, mid: price, delta, spreadPct,
+    pricingSource: 'bs_interval',
+  };
 }

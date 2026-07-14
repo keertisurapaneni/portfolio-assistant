@@ -29,8 +29,8 @@
  */
 
 import { getSupabase, createAutoTradeEvent } from './supabase.js';
-import { isConnected, placeOptionsOrder, getDefaultAccount } from '../ib-connection.js';
-import { findAtmStrike, getOptionGreeksForContract } from './options-chain.js';
+import { isConnected, placeOptionsOrder, cancelOrder, getDefaultAccount, resolveOptionConId } from '../ib-connection.js';
+import { findAtmStrike, getOptionGreeksForContract, type AtmPricingSource } from './options-chain.js';
 import { finnhubFetch, FINNHUB_KEY, FINNHUB_BASE } from './finnhub.js';
 import { fetchVwap } from './vwap.js';
 
@@ -290,6 +290,7 @@ export async function runBasketballScan(): Promise<void> {
     spreadPct: atm.spreadPct,
     level: signal.level,
     vwap: vwapResult?.vwap ?? null,
+    pricingSource: atm.pricingSource,
   });
 }
 
@@ -307,6 +308,7 @@ interface BasketballParams {
   spreadPct: number;
   level: number;
   vwap: number | null;
+  pricingSource: AtmPricingSource;
 }
 
 async function executeBaskeball(p: BasketballParams): Promise<boolean> {
@@ -318,29 +320,35 @@ async function executeBaskeball(p: BasketballParams): Promise<boolean> {
     : `Resistance rejection at $${p.level} zone`;
   const targetDesc = p.vwap ? `, target VWAP $${p.vwap.toFixed(2)}` : '';
 
-  const { data: trade, error } = await sb
-    .from('paper_trades')
-    .insert({
-      ticker:           TICKER,
-      mode:             'OPTIONS_SCALP',
-      signal:           p.signal,
-      entry_price:      p.price,
-      quantity:         p.contracts,
-      position_size:    Math.round(p.limitPrice * 100 * p.contracts),
-      status:           'SUBMITTED',
-      option_strike:    p.strike,
-      option_expiry:    p.expiry,
-      option_premium:   0,
-      option_contracts: p.contracts,
-      option_delta:     p.delta,
-      notes:            `[BASKETBALL] Buy ${p.right === 'C' ? 'call' : 'put'}: $${p.strike} 0DTE — ${zoneDesc}${targetDesc}`,
-      scanner_reason:   `Basketball zone $${p.level} — δ ${Math.abs(p.delta).toFixed(2)}, spread ${p.spreadPct.toFixed(1)}%, SPY $${p.price.toFixed(2)}`,
-    })
-    .select('id')
-    .single();
+  const resolved = await resolveOptionConId(TICKER, p.right, p.strike, p.expiry);
+  if (!resolved) {
+    console.log(`[Basketball] No IB security definition for $${p.strike}${p.right} ${p.expiry} — skip`);
+    createAutoTradeEvent({
+      ticker: TICKER, event_type: 'warning', action: 'skipped', source: 'scanner', mode: 'OPTIONS_SCALP',
+      message: `Basketball skipped — no IB contract for $${p.strike}${p.right} ${p.expiry}`,
+      metadata: { strike: p.strike, expiry: p.expiry, pricingSource: p.pricingSource },
+    }).catch(() => {});
+    return false;
+  }
 
-  if (error || !trade) {
-    console.error('[Basketball] DB insert failed:', error?.message);
+  let limitPrice = p.limitPrice;
+  let delta = p.delta;
+  let liveQuote = p.pricingSource === 'live';
+  if (!liveQuote) {
+    const greeks = await getOptionGreeksForContract(TICKER, p.strike, resolved.resolvedExpiry, p.right, p.price);
+    if (greeks && greeks.bid >= 0.10 && greeks.ask > 0) {
+      limitPrice = greeks.ask;
+      delta = greeks.delta;
+      liveQuote = true;
+    }
+  }
+  if (!liveQuote) {
+    console.log(`[Basketball] No live quote (pricing=${p.pricingSource}) — refusing BS-only limit`);
+    createAutoTradeEvent({
+      ticker: TICKER, event_type: 'warning', action: 'skipped', source: 'scanner', mode: 'OPTIONS_SCALP',
+      message: `Basketball skipped — no live option quote (pricing=${p.pricingSource})`,
+      metadata: { strike: p.strike, expiry: resolved.resolvedExpiry, pricingSource: p.pricingSource },
+    }).catch(() => {});
     return false;
   }
 
@@ -350,35 +358,70 @@ async function executeBaskeball(p: BasketballParams): Promise<boolean> {
       symbol:     TICKER,
       right:      p.right,
       strike:     p.strike,
-      expiry:     p.expiry,
+      expiry:     resolved.resolvedExpiry,
       contracts:  p.contracts,
-      limitPrice: p.limitPrice,
+      limitPrice,
       action:     'BUY',
+      conId:      resolved.conId,
       ...(account ? { account } : {}),
     });
   } catch (err) {
-    console.error('[Basketball] IB order failed:', err instanceof Error ? err.message : err);
-    await sb.from('paper_trades').update({
-      status: 'CANCELLED', close_reason: 'ib_error', closed_at: new Date().toISOString(),
-    }).eq('id', trade.id);
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('[Basketball] IB order failed:', msg);
+    createAutoTradeEvent({
+      ticker: TICKER, event_type: 'warning', action: 'skipped', source: 'scanner', mode: 'OPTIONS_SCALP',
+      message: `Basketball skipped — IB reject: ${msg}`,
+      metadata: { strike: p.strike, expiry: resolved.resolvedExpiry, conId: resolved.conId },
+    }).catch(() => {});
     return false;
   }
 
   if (result.timedOut || !result.avgFillPrice || result.avgFillPrice <= 0) {
-    await sb.from('paper_trades').update({
-      status: 'CANCELLED', close_reason: 'no_fill', closed_at: new Date().toISOString(),
-    }).eq('id', trade.id);
+    if (result.orderId && isConnected()) {
+      try { cancelOrder(result.orderId); } catch { /* best-effort */ }
+    }
     console.log('[Basketball] SPY 0DTE — no fill');
+    createAutoTradeEvent({
+      ticker: TICKER, event_type: 'warning', action: 'skipped', source: 'scanner', mode: 'OPTIONS_SCALP',
+      message: 'Basketball skipped — no fill (timed out)',
+      metadata: { strike: p.strike, expiry: resolved.resolvedExpiry, orderId: result.orderId },
+    }).catch(() => {});
     return false;
   }
 
-  await sb.from('paper_trades').update({
-    ib_order_id:    result.orderId,
-    status:         'FILLED',
-    fill_price:     result.avgFillPrice,
-    option_premium: result.avgFillPrice,
-    filled_at:      new Date().toISOString(),
-  }).eq('id', trade.id);
+  const { data: trade, error } = await sb
+    .from('paper_trades')
+    .insert({
+      ticker:           TICKER,
+      mode:             'OPTIONS_SCALP',
+      signal:           p.signal,
+      entry_price:      p.price,
+      quantity:         p.contracts,
+      position_size:    Math.round(result.avgFillPrice * 100 * p.contracts),
+      status:           'FILLED',
+      fill_price:       result.avgFillPrice,
+      filled_at:        new Date().toISOString(),
+      ib_order_id:      result.orderId,
+      option_strike:    p.strike,
+      option_expiry:    resolved.resolvedExpiry,
+      option_premium:   result.avgFillPrice,
+      option_contracts: p.contracts,
+      option_delta:     delta,
+      notes:            `[BASKETBALL] Buy ${p.right === 'C' ? 'call' : 'put'}: $${p.strike} 0DTE — ${zoneDesc}${targetDesc}`,
+      scanner_reason:   `Basketball zone $${p.level} — δ ${Math.abs(delta).toFixed(2)}, spread ${p.spreadPct.toFixed(1)}%, SPY $${p.price.toFixed(2)}`,
+    })
+    .select('id')
+    .single();
+
+  if (error || !trade) {
+    console.error(`[Basketball] DB insert failed AFTER fill IB #${result.orderId}:`, error?.message);
+    createAutoTradeEvent({
+      ticker: TICKER, event_type: 'error', action: 'failed', source: 'scanner', mode: 'OPTIONS_SCALP',
+      message: `CRITICAL: basketball FILLED in IB #${result.orderId} @ $${result.avgFillPrice.toFixed(2)} but paper_trades insert failed`,
+      metadata: { orderId: result.orderId, fillPrice: result.avgFillPrice, strike: p.strike, expiry: resolved.resolvedExpiry },
+    }).catch(() => {});
+    return false;
+  }
 
   console.log(
     `[Basketball] ✅ SPY ${p.right === 'C' ? 'CALL' : 'PUT'} $${p.strike} 0DTE `
@@ -392,7 +435,7 @@ async function executeBaskeball(p: BasketballParams): Promise<boolean> {
     source:     'scanner',
     mode:       'OPTIONS_SCALP',
     message:    `🏀 Basketball 0DTE ${p.right === 'C' ? 'CALL' : 'PUT'} $${p.strike} @ $${result.avgFillPrice.toFixed(2)} — ${zoneDesc}${targetDesc}`,
-    metadata:   { strike: p.strike, expiry: p.expiry, premium: result.avgFillPrice, delta: p.delta, right: p.right, level: p.level },
+    metadata:   { strike: p.strike, expiry: resolved.resolvedExpiry, premium: result.avgFillPrice, delta, right: p.right, level: p.level, conId: resolved.conId },
   }).catch(() => {});
 
   return true;

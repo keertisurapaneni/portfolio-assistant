@@ -19,8 +19,8 @@
  */
 
 import { getSupabase, createAutoTradeEvent } from './supabase.js';
-import { isConnected, placeOptionsOrder, cancelOrder, getDefaultAccount } from '../ib-connection.js';
-import { findAtmStrike, getOptionGreeksForContract } from './options-chain.js';
+import { isConnected, placeOptionsOrder, cancelOrder, getDefaultAccount, resolveOptionConId } from '../ib-connection.js';
+import { findAtmStrike, getOptionGreeksForContract, type AtmPricingSource } from './options-chain.js';
 import { fetchQuote, fetchIntradayBars, fetchDailyBars, type IntradayBar } from './yahoo-finance.js';
 import { detectVwapReclaim, fetchVwap, VWAP_RELIABLE_HOUR_ET } from './vwap.js';
 
@@ -457,6 +457,7 @@ export async function runOptionScalpScan(): Promise<void> {
       limitPrice: atm.ask, contracts: MAX_CONTRACTS,
       price, intradayMovePct, delta: atm.delta,
       spreadPct: atm.spreadPct,
+      pricingSource: atm.pricingSource,
     });
     if (ok) placed++;
   }
@@ -493,8 +494,8 @@ const VWAP_RETEST_UNIVERSE = [
 
 // ETF-only subset for Mon–Thu: these have daily (Mon–Fri) options chains in IB.
 // Individual stocks and even mega-caps only have weekly Friday expirations — they
-// generate ib_error (code-200) on every 0DTE attempt Mon–Thu, flooding the DB
-// with useless CANCELLED records. On Friday all tickers are valid (weekly = 0DTE).
+// get code-200 on 0DTE Mon–Thu. executeScalp now skips (no CANCELLED History row)
+// when resolveOptionConId fails. On Friday all tickers are valid (weekly = 0DTE).
 // NVDL/TSLL included: leveraged single-asset ETFs with daily chains like SOXL/TQQQ.
 const VWAP_ETF_ONLY_UNIVERSE = ['QQQ', 'SPY', 'IWM', 'SMH', 'SOXL', 'TQQQ', 'NVDL', 'TSLL'];
 
@@ -650,6 +651,7 @@ export async function runVwapRetestScalpScan(): Promise<void> {
       delta: atm.delta, spreadPct: atm.spreadPct,
       entryType: 'vwap_retest',
       vwap: vwapLevel,
+      pricingSource: atm.pricingSource,
     });
 
     if (ok) {
@@ -677,92 +679,172 @@ interface ScalpParams {
   intradayMovePct: number;
   delta: number;
   spreadPct: number;
+  /** How findAtmStrike priced the contract — BS-only must not place. */
+  pricingSource: AtmPricingSource;
   /** 'momentum' = classic >1.5% intraday move; 'vwap_retest' = VWAP bounce entry */
   entryType?: 'momentum' | 'vwap_retest';
   /** VWAP level at entry time (only set for vwap_retest entries) */
   vwap?: number;
 }
 
+async function logScalpSkip(ticker: string, reason: string, metadata: Record<string, unknown> = {}): Promise<void> {
+  console.log(`[Options Scalp] ${ticker} — skipped: ${reason}`);
+  createAutoTradeEvent({
+    ticker,
+    event_type: 'warning',
+    action: 'skipped',
+    source: 'scanner',
+    mode: 'OPTIONS_SCALP',
+    message: `Scalp skipped — ${reason}`,
+    metadata,
+  }).catch(() => {});
+}
+
+/**
+ * Place a scalp only when IB can resolve the contract AND we have a live bid/ask.
+ * paper_trades is inserted only after a confirmed fill — failed attempts must not
+ * flood Trade History as CANCELLED/ib_error rows (Jul 2026 cancel storm).
+ */
 async function executeScalp(p: ScalpParams): Promise<boolean> {
   const sb = getSupabase();
   const account = getDefaultAccount() ?? undefined;
 
-  const { data: trade, error } = await sb
-    .from('paper_trades')
-    .insert({
-      ticker:         p.ticker,
-      mode:           'OPTIONS_SCALP',
-      signal:         p.signal,
-      entry_price:    p.price,
-      quantity:       p.contracts,
-      position_size:  Math.round(p.limitPrice * 100 * p.contracts),
-      status:         'SUBMITTED',
-      option_strike:  p.strike,
-      option_expiry:  p.expiry,
-      option_premium: 0,
-      option_contracts: p.contracts,
-      option_delta:   p.delta,
-      notes: p.entryType === 'vwap_retest'
-        ? `[SCALP] Buy ${p.right === 'C' ? 'call' : 'put'}: $${p.strike} exp ${p.expiry} — VWAP retest @ $${(p.vwap ?? 0).toFixed(2)}`
-        : `[SCALP] Buy ${p.right === 'C' ? 'call' : 'put'}: $${p.strike} exp ${p.expiry} — intraday ${p.intradayMovePct > 0 ? '+' : ''}${p.intradayMovePct.toFixed(1)}%`,
-      scanner_reason: p.entryType === 'vwap_retest'
-        ? `VWAP retest scalp — δ ${Math.abs(p.delta).toFixed(2)}, bounce off VWAP $${(p.vwap ?? 0).toFixed(2)}, spread ${p.spreadPct.toFixed(1)}%`
-        : `Options scalp — δ ${Math.abs(p.delta).toFixed(2)}, ${p.intradayMovePct > 0 ? '+' : ''}${p.intradayMovePct.toFixed(1)}% intraday, spread ${p.spreadPct.toFixed(1)}%`,
-    })
-    .select('id')
-    .single();
-
-  if (error || !trade) {
-    console.error(`[Options Scalp] DB insert failed for ${p.ticker}:`, error?.message);
+  // Gate 1: IB must resolve the exact option (kills invented interval-strike contracts).
+  const resolved = await resolveOptionConId(p.ticker, p.right, p.strike, p.expiry);
+  if (!resolved) {
+    await logScalpSkip(p.ticker, `no IB security definition for $${p.strike}${p.right} ${p.expiry}`, {
+      strike: p.strike, expiry: p.expiry, right: p.right, pricingSource: p.pricingSource,
+    });
     return false;
   }
 
-  // Place IB order
+  // Gate 2: require live NBBO — BS-only asks caused code-202 (limit too far from market).
+  let limitPrice = p.limitPrice;
+  let delta = p.delta;
+  let liveQuote = p.pricingSource === 'live';
+
+  if (!liveQuote) {
+    const greeks = await getOptionGreeksForContract(
+      p.ticker, p.strike, resolved.resolvedExpiry, p.right, p.price,
+    );
+    if (greeks && greeks.bid >= 0.10 && greeks.ask > 0) {
+      limitPrice = greeks.ask;
+      delta = greeks.delta;
+      liveQuote = true;
+      console.log(
+        `[Options Scalp] ${p.ticker} — refreshed live quote after resolve: `
+        + `bid $${greeks.bid.toFixed(2)} ask $${greeks.ask.toFixed(2)} (was ${p.pricingSource})`,
+      );
+    }
+  }
+
+  if (!liveQuote) {
+    await logScalpSkip(
+      p.ticker,
+      `no live option quote (pricing=${p.pricingSource}) — refusing BS-only limit`,
+      { strike: p.strike, expiry: resolved.resolvedExpiry, right: p.right, pricingSource: p.pricingSource },
+    );
+    return false;
+  }
+
+  if (limitPrice < 0.10) {
+    await logScalpSkip(p.ticker, `limit too thin ($${limitPrice.toFixed(2)})`, {
+      strike: p.strike, expiry: resolved.resolvedExpiry,
+    });
+    return false;
+  }
+
+  // Place first — only persist paper_trades after a real fill.
   let result;
   try {
     result = await placeOptionsOrder({
       symbol:     p.ticker,
       right:      p.right,
       strike:     p.strike,
-      expiry:     p.expiry,
+      expiry:     resolved.resolvedExpiry,
       contracts:  p.contracts,
-      limitPrice: p.limitPrice,
+      limitPrice,
       action:     'BUY',
+      conId:      resolved.conId,
       ...(account ? { account } : {}),
     });
   } catch (err) {
-    console.error(`[Options Scalp] IB order failed for ${p.ticker}:`, err instanceof Error ? err.message : err);
-    await sb.from('paper_trades').update({
-      status: 'CANCELLED', close_reason: 'ib_error', closed_at: new Date().toISOString(),
-    }).eq('id', trade.id);
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[Options Scalp] IB order failed for ${p.ticker}:`, msg);
+    await logScalpSkip(p.ticker, `IB reject — ${msg}`, {
+      strike: p.strike, expiry: resolved.resolvedExpiry, right: p.right, conId: resolved.conId,
+    });
     return false;
   }
 
   if (result.timedOut || !result.avgFillPrice || result.avgFillPrice <= 0) {
-    // Cancel the live GTC order in IB — without this the order stays open and can
-    // ghost-fill the next morning even though the DB already shows CANCELLED.
+    // Cancel so the DAY/GTC order cannot ghost-fill overnight with no DB row.
     if (result.orderId && isConnected()) {
       try {
         cancelOrder(result.orderId);
         console.log(`[Options Scalp] ${p.ticker} — cancelled IB order #${result.orderId} (no fill)`);
       } catch (cancelErr) {
-        console.warn(`[Options Scalp] ${p.ticker} — cancel IB #${result.orderId} failed:`, cancelErr instanceof Error ? cancelErr.message : cancelErr);
+        console.warn(
+          `[Options Scalp] ${p.ticker} — cancel IB #${result.orderId} failed:`,
+          cancelErr instanceof Error ? cancelErr.message : cancelErr,
+        );
       }
     }
-    await sb.from('paper_trades').update({
-      status: 'CANCELLED', close_reason: 'no_fill', closed_at: new Date().toISOString(),
-    }).eq('id', trade.id);
-    console.log(`[Options Scalp] ${p.ticker} — no fill (timed out)`);
+    await logScalpSkip(p.ticker, 'no fill (timed out)', {
+      strike: p.strike, expiry: resolved.resolvedExpiry, orderId: result.orderId,
+    });
     return false;
   }
 
-  await sb.from('paper_trades').update({
-    ib_order_id:    result.orderId,
-    status:         'FILLED',
-    fill_price:     result.avgFillPrice,
-    option_premium: result.avgFillPrice,
-    filled_at:      new Date().toISOString(),
-  }).eq('id', trade.id);
+  const notes = p.entryType === 'vwap_retest'
+    ? `[SCALP] Buy ${p.right === 'C' ? 'call' : 'put'}: $${p.strike} exp ${resolved.resolvedExpiry} — VWAP retest @ $${(p.vwap ?? 0).toFixed(2)}`
+    : `[SCALP] Buy ${p.right === 'C' ? 'call' : 'put'}: $${p.strike} exp ${resolved.resolvedExpiry} — intraday ${p.intradayMovePct > 0 ? '+' : ''}${p.intradayMovePct.toFixed(1)}%`;
+  const scannerReason = p.entryType === 'vwap_retest'
+    ? `VWAP retest scalp — δ ${Math.abs(delta).toFixed(2)}, bounce off VWAP $${(p.vwap ?? 0).toFixed(2)}, spread ${p.spreadPct.toFixed(1)}%`
+    : `Options scalp — δ ${Math.abs(delta).toFixed(2)}, ${p.intradayMovePct > 0 ? '+' : ''}${p.intradayMovePct.toFixed(1)}% intraday, spread ${p.spreadPct.toFixed(1)}%`;
+
+  const { data: trade, error } = await sb
+    .from('paper_trades')
+    .insert({
+      ticker:           p.ticker,
+      mode:             'OPTIONS_SCALP',
+      signal:           p.signal,
+      entry_price:      p.price,
+      quantity:         p.contracts,
+      position_size:    Math.round(result.avgFillPrice * 100 * p.contracts),
+      status:           'FILLED',
+      fill_price:       result.avgFillPrice,
+      filled_at:        new Date().toISOString(),
+      ib_order_id:      result.orderId,
+      option_strike:    p.strike,
+      option_expiry:    resolved.resolvedExpiry,
+      option_premium:   result.avgFillPrice,
+      option_contracts: p.contracts,
+      option_delta:     delta,
+      notes,
+      scanner_reason:   scannerReason,
+    })
+    .select('id')
+    .single();
+
+  if (error || !trade) {
+    // Fill happened in IB but DB insert failed — CRITICAL so it surfaces for manual link.
+    console.error(`[Options Scalp] DB insert failed AFTER fill for ${p.ticker} IB #${result.orderId}:`, error?.message);
+    createAutoTradeEvent({
+      ticker: p.ticker,
+      event_type: 'error',
+      action: 'failed',
+      source: 'scanner',
+      mode: 'OPTIONS_SCALP',
+      message: `CRITICAL: scalp FILLED in IB #${result.orderId} @ $${result.avgFillPrice.toFixed(2)} but paper_trades insert failed — link manually`,
+      metadata: {
+        orderId: result.orderId, fillPrice: result.avgFillPrice,
+        strike: p.strike, expiry: resolved.resolvedExpiry, right: p.right, conId: resolved.conId,
+        dbError: error?.message ?? 'unknown',
+      },
+    }).catch(() => {});
+    return false;
+  }
 
   console.log(`[Options Scalp] ✅ ${p.ticker} ${p.right === 'C' ? 'CALL' : 'PUT'} $${p.strike} @ $${result.avgFillPrice.toFixed(2)} | IB #${result.orderId}`);
 
@@ -773,9 +855,9 @@ async function executeScalp(p: ScalpParams): Promise<boolean> {
     source:     'scanner',
     mode:       'OPTIONS_SCALP',
     message: p.entryType === 'vwap_retest'
-      ? `📈 Scalp ${p.right === 'C' ? 'CALL' : 'PUT'} $${p.strike} exp ${p.expiry} @ $${result.avgFillPrice.toFixed(2)} — VWAP retest (${p.right === 'C' ? 'bounce' : 'breakdown'}) @ $${(p.vwap ?? 0).toFixed(2)}`
-      : `📈 Scalp ${p.right === 'C' ? 'CALL' : 'PUT'} $${p.strike} exp ${p.expiry} @ $${result.avgFillPrice.toFixed(2)} — intraday ${p.intradayMovePct > 0 ? '+' : ''}${p.intradayMovePct.toFixed(1)}%`,
-    metadata:   { strike: p.strike, expiry: p.expiry, premium: result.avgFillPrice, delta: p.delta, right: p.right },
+      ? `📈 Scalp ${p.right === 'C' ? 'CALL' : 'PUT'} $${p.strike} exp ${resolved.resolvedExpiry} @ $${result.avgFillPrice.toFixed(2)} — VWAP retest (${p.right === 'C' ? 'bounce' : 'breakdown'}) @ $${(p.vwap ?? 0).toFixed(2)}`
+      : `📈 Scalp ${p.right === 'C' ? 'CALL' : 'PUT'} $${p.strike} exp ${resolved.resolvedExpiry} @ $${result.avgFillPrice.toFixed(2)} — intraday ${p.intradayMovePct > 0 ? '+' : ''}${p.intradayMovePct.toFixed(1)}%`,
+    metadata:   { strike: p.strike, expiry: resolved.resolvedExpiry, premium: result.avgFillPrice, delta, right: p.right, conId: resolved.conId },
   }).catch(() => {});
 
   return true;

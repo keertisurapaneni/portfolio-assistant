@@ -1587,6 +1587,18 @@ export function placeOptionsOrder(params: OptionsOrderParams): Promise<OptionsOr
   return paperConn.placeOptionsOrder(params);
 }
 
+/** Resolve an option to IB conId (+ working expiry). Null if IB has no matching contract. */
+export async function resolveOptionConId(
+  symbol: string,
+  right: 'P' | 'C',
+  strike: number,
+  expiry: string,
+  onIbError?: (error: string) => void,
+): Promise<{ conId: number; resolvedExpiry: string } | null> {
+  if (!paperConn) return null;
+  return paperConn.resolveOptionConId(symbol, right, strike, expiry.replace(/-/g, ''), onIbError);
+}
+
 export async function placeVerticalSpreadOrder(
   params: VerticalSpreadOrderParams,
 ): Promise<VerticalSpreadOrderResult> {
