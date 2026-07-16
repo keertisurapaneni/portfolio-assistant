@@ -4359,6 +4359,29 @@ async function executeScannerTrade(
     } catch { /* non-blocking */ }
   }
 
+  // ── Swing BUY hard gate — no falling knives ───────────────────────────────
+  // Mirror SELL Gate C: if the stock is already down >12% over 10 trading days,
+  // skip mean-reversion / dip-buy entries. Evidence (2026-07-16):
+  //   IREN Jul 15: −16% / 10d → stopped next day (−$985)
+  //   ORCL Jun 29: −20% / 10d → stopped (−$1.2k)
+  // Recent TARGET_HIT winners (NU, MELI, JPM, GS, FCX) were NOT extended — gate
+  // would have spared them. Yahoo failure = fail-open (same as SELL Gate C).
+  if (mode === 'SWING_TRADE' && signal === 'BUY') {
+    try {
+      const stockBars = await fetchYahooDailyBars(ticker);
+      if (stockBars && stockBars.closes.length >= 11) {
+        const closes = stockBars.closes;
+        const today = closes[closes.length - 1];
+        const tenDaysAgo = closes[closes.length - 11];
+        const pctDrop = (tenDaysAgo - today) / tenDaysAgo * 100;
+        if (pctDrop > 12) {
+          log(`${ticker}: swing BUY blocked — stock already down ${pctDrop.toFixed(1)}% in 10 days (extended dump, falling-knife risk)`);
+          return 'skipped:swing_long_extended';
+        }
+      }
+    } catch { /* non-blocking — if we can't check bars, allow the trade */ }
+  }
+
   // SPY regime multiplier for swing BUY: reduce size in bearish macro conditions.
   // SELL signals handled above with hard gates. Non-blocking: defaults to 1.0 on failure.
   let spyRegimeMult = 1.0;
