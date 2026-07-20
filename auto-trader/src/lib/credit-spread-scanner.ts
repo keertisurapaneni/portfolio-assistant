@@ -19,7 +19,7 @@ import { getSupabase, createAutoTradeEvent } from './supabase.js';
 import { recordTradeClose } from './trade-closer.js';
 import { ACTIVE_STATUSES } from '../../../shared/trade-status-sets.js';
 import { fetchDailyBars, fetchQuote, sma as calcSma } from './yahoo-finance.js';
-import { isConnected, placeVerticalSpreadOrder, getDefaultAccount } from '../ib-connection.js';
+import { isConnected, placeVerticalSpreadOrder, getDefaultAccount, cancelOrder } from '../ib-connection.js';
 import { finnhubFetch, FINNHUB_KEY } from './finnhub.js';
 
 // ── Constants ────────────────────────────────────────────
@@ -33,6 +33,10 @@ const MAX_PORTFOLIO_SPREAD_RISK = 0.30; // circuit breaker: max 30% of account i
 const PULLBACK_THRESHOLD_PCT = 3;      // stock pulled back ≥3% from recent high = entry signal
 const TREND_SMA_DAYS = 50;             // stock must be above/below 50-SMA for trend confirmation
 const MIN_IV_RANK = 30;                // minimum IV rank — don't sell spreads in crushed-IV environments
+/** Unfilled close orders older than this are cancelled + cleared so management can resume. */
+const STALE_CLOSE_ORDER_MS = 4 * 60 * 60 * 1000; // 4 hours
+/** Within this many DTE, unfilled closes are always treated as stale (no grace wait). */
+const STALE_CLOSE_NEAR_EXPIRY_DTE = 7;
 
 // ── Types ────────────────────────────────────────────────
 
@@ -494,11 +498,67 @@ export async function manageCreditSpreadPositions(): Promise<void> {
 
   for (const pos of positions) {
     try {
-      // Close order already in-flight — skip management until trigger confirms the fill.
-      // Prevents placing a second close order while the first is still working.
+      // Compute DTE early — expiry backstop must NOT be blocked by a stale close stamp.
+      // Jul 20 2026: AMD/ALAB/CRDO sat FILLED with unfilled close IDs for 33 days → assigned
+      // into orphan shorts → reconcileIBShorts covered at ~−$22.6k.
+      const expiryDate = pos.option_expiry ? new Date(pos.option_expiry) : null;
+      const dte = expiryDate ? Math.ceil((expiryDate.getTime() - Date.now()) / 86_400_000) : 999;
+
+      // Close order in-flight: only skip while the order is young AND unfilled AND not near expiry.
+      // Otherwise cancel + clear ib_close_order_id and resume management / expiry settlement.
       if (pos.ib_close_order_id) {
-        console.log(`[Credit Spread Manager] ${pos.ticker}: close order #${pos.ib_close_order_id} in-flight, waiting for fill confirmation`);
-        continue;
+        const closeOrderId = Number(pos.ib_close_order_id);
+        const { data: closeFills } = await sb
+          .from('ib_fills')
+          .select('order_id')
+          .eq('order_id', closeOrderId)
+          .limit(1);
+
+        if (closeFills?.length) {
+          console.log(`[Credit Spread Manager] ${pos.ticker}: close order #${closeOrderId} has fills — waiting for trigger to finalize status`);
+          continue;
+        }
+
+        // Age of the "close placed" event (fallback: treat as infinitely stale).
+        const { data: closeEv } = await sb
+          .from('auto_trade_events')
+          .select('created_at')
+          .eq('ticker', pos.ticker)
+          .ilike('message', `%close order #${closeOrderId}%`)
+          .order('created_at', { ascending: false })
+          .limit(1);
+        const placedAt = closeEv?.[0]?.created_at ? new Date(closeEv[0].created_at as string).getTime() : 0;
+        const ageMs = placedAt > 0 ? Date.now() - placedAt : Number.POSITIVE_INFINITY;
+        const nearExpiry = dte <= STALE_CLOSE_NEAR_EXPIRY_DTE;
+        const expired = dte <= 0;
+        const agedOut = ageMs >= STALE_CLOSE_ORDER_MS;
+
+        if (!expired && !nearExpiry && !agedOut) {
+          console.log(`[Credit Spread Manager] ${pos.ticker}: close order #${closeOrderId} in-flight (${(ageMs / 60_000).toFixed(0)}m old, ${dte}DTE) — waiting for fill`);
+          continue;
+        }
+
+        if (isConnected() && Number.isFinite(closeOrderId)) {
+          try {
+            cancelOrder(closeOrderId);
+            console.log(`[Credit Spread Manager] ${pos.ticker}: cancelled stale unfilled close #${closeOrderId}`);
+          } catch (cancelErr) {
+            console.warn(`[Credit Spread Manager] ${pos.ticker}: cancel stale close #${closeOrderId} failed — ${cancelErr instanceof Error ? cancelErr.message : cancelErr}`);
+          }
+        }
+        await sb.from('paper_trades').update({ ib_close_order_id: null }).eq('id', pos.id);
+        pos.ib_close_order_id = null;
+        const reason = expired ? 'past_expiry' : nearExpiry ? 'near_expiry' : 'aged_out';
+        console.warn(`[Credit Spread Manager] ${pos.ticker}: cleared stale ib_close_order_id #${closeOrderId} (${reason}, age=${(ageMs / 3_600_000).toFixed(1)}h, dte=${dte}) — resuming management`);
+        await createAutoTradeEvent({
+          ticker: pos.ticker,
+          mode: 'CREDIT_SPREAD',
+          event_type: 'warning',
+          action: 'proceeding',
+          message: `Cleared stale unfilled close #${closeOrderId} (${reason}, ${dte}DTE) — expiry/management unblocked`,
+          metadata: { closeOrderId, reason, dte, ageMs, reconcile_type: 'stale_close_cleared' },
+        });
+        // Fall through — do not continue
       }
 
       // Bear Put Debit positions confirmed via IB screenshots — close direction is
@@ -521,10 +581,6 @@ export async function manageCreditSpreadPositions(): Promise<void> {
       const contracts = pos.option_contracts ?? pos.quantity ?? 1;
       const maxGainTotal = maxGainPerShare * 100 * contracts;
 
-      // Compute DTE before the quote fetch so we can handle expiry even if quote fails.
-      const expiryDate = pos.option_expiry ? new Date(pos.option_expiry) : null;
-      const dte = expiryDate ? Math.ceil((expiryDate.getTime() - Date.now()) / 86_400_000) : 999;
-
       // ── Expiry backstop (dte ≤ 0) ──────────────────────────────────────────────────
       // The 21 DTE time-exit should have closed this spread weeks ago. If it somehow
       // slipped through (repeated IB order failures, connectivity gaps), settle it now
@@ -540,8 +596,25 @@ export async function manageCreditSpreadPositions(): Promise<void> {
 
         let settledPnl = maxGainTotal; // default: assume expired OTM (keep full credit)
         let closeReason = 'expired_worthless';
+        let settlementNotes: string | null = null;
 
-        if (stockPx !== null && spreadWidth > 0) {
+        // If reconcileIBShorts already booked the assignment/exercise stock cover, do NOT
+        // invent a second estimated spread P&L (would double-count lifetime losses).
+        const twoWeeksAgo = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString();
+        const { data: coverRows } = await sb
+          .from('paper_trades')
+          .select('id, pnl, ib_pnl, closed_at')
+          .eq('ticker', pos.ticker)
+          .eq('close_reason', 'ib_reconciliation_cover')
+          .gte('closed_at', twoWeeksAgo)
+          .order('closed_at', { ascending: false })
+          .limit(1);
+        const cover = coverRows?.[0] as { id: string; pnl: number | null; ib_pnl: number | null; closed_at: string } | undefined;
+        if (cover) {
+          settledPnl = 0;
+          closeReason = 'expired_assigned_covered';
+          settlementNotes = `Spread expired; stock cover P&L on paper_trade ${cover.id} (pnl=${cover.ib_pnl ?? cover.pnl}). Stale close unblocked ${new Date().toISOString()}.`;
+        } else if (stockPx !== null && spreadWidth > 0) {
           if (pos.spread_type === 'BULL_PUT') {
             if (stockPx < (pos.spread_long_strike ?? 0)) {
               // Stock below both legs → max loss
@@ -572,6 +645,12 @@ export async function manageCreditSpreadPositions(): Promise<void> {
           console.warn(`[Credit Spread Manager] ${pos.ticker}: expired with no quote — recording max loss conservatively`);
         }
 
+        // Stamp closed_at on the expiry date (not "now") so late settlements don't
+        // inflate Today's Activity on the day the zombie was finally cleaned up.
+        const expiryClosedAt = pos.option_expiry
+          ? `${pos.option_expiry}T20:00:00.000Z`
+          : new Date().toISOString();
+
         await recordTradeClose({
           tradeId: pos.id,
           closePrice: 0,
@@ -580,7 +659,11 @@ export async function manageCreditSpreadPositions(): Promise<void> {
           accountType: 'paper',
           overridePnl: settledPnl,
           overridePnlPct: maxGainTotal > 0 ? (settledPnl / maxGainTotal) * 100 : 0,
-          overridePnlSource: 'estimated',
+          overridePnlSource: closeReason === 'expired_assigned_covered' ? 'ib_assignment' : 'estimated',
+          extraUpdates: {
+            closed_at: expiryClosedAt,
+            ...(settlementNotes ? { notes: settlementNotes } : {}),
+          },
         });
         await createAutoTradeEvent({
           ticker: pos.ticker,
@@ -588,7 +671,7 @@ export async function manageCreditSpreadPositions(): Promise<void> {
           event_type: closeReason === 'expired_worthless' ? 'info' : 'warning',
           action: 'closed',
           message: `${pos.spread_type} ${pos.spread_short_strike}/${pos.spread_long_strike} expired — ${closeReason} | settled P&L $${settledPnl.toFixed(0)}`,
-          metadata: { closeReason, settledPnl, dte, stockPx },
+          metadata: { closeReason, settledPnl, dte, stockPx, coverId: cover?.id ?? null },
         });
         console.log(`[Credit Spread Manager] EXPIRY BACKSTOP: ${pos.ticker} ${pos.spread_type} → ${closeReason} P&L $${settledPnl.toFixed(0)}`);
         continue;
