@@ -54,6 +54,9 @@ export type CloseReason =
   | 'stopped'
   | 'expired_worthless'
   | 'expired_itm'
+  | 'expired_max_loss'
+  | 'expired_partial_loss'
+  | 'expired_assigned_covered'
   | 'ib_fill_auto_created'
   | 'ib_reconciliation_cover';
 

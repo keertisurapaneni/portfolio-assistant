@@ -1504,14 +1504,19 @@ export async function reconcileIBShorts(): Promise<{ closed: string[]; errors: s
       // The actual cover fill price will be written by runEndOfDayReconciliation (4:15 PM)
       // once the IB execution is available. We store the cover orderId so the reconciler
       // can match the fill by orderId in ib_fills.
-      // Try to fetch IB's actual realized P&L from ib_fills (may already be present since fill completed)
-      const { data: ibFillRow } = await sb
+      // Sum ALL fills for this cover order — CRDO/ALAB covers split across multiple
+      // 100-share execs; taking maybeSingle() undercounted Jul 20 P&L by ~$6k+.
+      const { data: ibFillRows } = await sb
         .from('ib_fills')
         .select('realized_pnl')
         .eq('order_id', coverOrderId)
-        .not('realized_pnl', 'is', null)
-        .maybeSingle();
-      const ibRealizedPnl: number | null = (ibFillRow as { realized_pnl: number | null } | null)?.realized_pnl ?? null;
+        .not('realized_pnl', 'is', null);
+      const fillPnls = (ibFillRows ?? [])
+        .map((r: { realized_pnl: number | null }) => r.realized_pnl)
+        .filter((v): v is number => v != null && isFinite(v));
+      const ibRealizedPnl: number | null = fillPnls.length > 0
+        ? parseFloat(fillPnls.reduce((a, b) => a + b, 0).toFixed(2))
+        : null;
       const finalPnl = ibRealizedPnl ?? coverPnl;
       const pnlSource = ibRealizedPnl != null ? 'ib_realized' : 'ib_fill_calculated';
 
