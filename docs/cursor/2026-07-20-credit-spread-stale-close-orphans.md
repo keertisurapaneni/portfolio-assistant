@@ -29,8 +29,11 @@ Mon Jul 20 ~9:33 AM ET: `reconcileIBShorts` covered orphan STK shorts:
 
 Also: `reconcileIBShorts` sums all `ib_fills.realized_pnl` for multi-chunk covers.
 
-## Still open (not this PR)
+## Follow-up (same day)
 
-- Jun 16 inverted-leg entry disease (prevention at place time)
-- UI duplicate IB Fill + IBReconcile rows
-- Remaining live zombies (SOXL Jul 24, GFS/NOW Aug 21) cleared by new manager on next cycle
+- **Inverted-leg prevention:** `placeVerticalSpreadOrder` rejects bad put/call geometry, mismatched resolved strikes, and identical conIds. Manager detects entry fills with net debit → stamps `BEAR_PUT_DEBIT_HOLD` + critical event.
+- **UI double-count:** Today’s Activity includes non-zero `ib_reconciliation_cover` rows; hides orphan fills + “Orphaned short covered” system events for those tickers; matches cover `ib_order_id` in orphan-fill lookup.
+
+## Remaining live spreads
+
+SOXL (Jul 24), GFS/NOW (Aug 21) — close stamps cleared; manager re-evaluates next RTH.

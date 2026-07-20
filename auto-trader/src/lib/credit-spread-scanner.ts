@@ -386,6 +386,34 @@ export async function runCreditSpreadScan(
 async function executeCreditSpread(ticket: CreditSpreadTicket): Promise<void> {
   const sb = getSupabase();
 
+  // Defense in depth (also enforced inside placeVerticalSpreadOrder).
+  if (ticket.direction === 'BULL_PUT' && !(ticket.sellStrike > ticket.buyStrike)) {
+    console.error(`[Credit Spread] Rejected ${ticket.ticker}: invalid BULL_PUT geometry ${ticket.sellStrike}/${ticket.buyStrike}`);
+    await createAutoTradeEvent({
+      ticker: ticket.ticker,
+      mode: 'CREDIT_SPREAD',
+      event_type: 'error',
+      action: 'skipped',
+      message: `Rejected BULL_PUT ${ticket.sellStrike}/${ticket.buyStrike} — sell strike must be above buy strike`,
+    });
+    return;
+  }
+  if (ticket.direction === 'BEAR_CALL' && !(ticket.sellStrike < ticket.buyStrike)) {
+    console.error(`[Credit Spread] Rejected ${ticket.ticker}: invalid BEAR_CALL geometry ${ticket.sellStrike}/${ticket.buyStrike}`);
+    await createAutoTradeEvent({
+      ticker: ticket.ticker,
+      mode: 'CREDIT_SPREAD',
+      event_type: 'error',
+      action: 'skipped',
+      message: `Rejected BEAR_CALL ${ticket.sellStrike}/${ticket.buyStrike} — sell strike must be below buy strike`,
+    });
+    return;
+  }
+  if (!(ticket.netCredit > 0) || !(ticket.width > 0) || ticket.creditPct <= 0) {
+    console.error(`[Credit Spread] Rejected ${ticket.ticker}: non-credit ticket credit=${ticket.netCredit} width=${ticket.width}`);
+    return;
+  }
+
   let ibOrderId: number | null = null;
   if (isConnected()) {
     try {
@@ -574,6 +602,45 @@ export async function manageCreditSpreadPositions(): Promise<void> {
       // not by this credit spread manager. Skip here to avoid double-management.
       if (pos.spread_type === 'BEAR_PUT') {
         continue;
+      }
+
+      // Post-fill debit detector: if a "BULL_PUT" credit order filled as a net debit
+      // (bought expensive leg / sold cheap), legs are inverted — freeze auto-close.
+      if (
+        pos.spread_type === 'BULL_PUT' &&
+        pos.ib_order_id &&
+        !(pos.notes as string | null)?.includes('BEAR_PUT_DEBIT_HOLD')
+      ) {
+        const { data: entryFills } = await sb
+          .from('ib_fills')
+          .select('side, quantity, fill_price')
+          .eq('order_id', Number(pos.ib_order_id));
+        if (entryFills && entryFills.length >= 2) {
+          let sold = 0;
+          let bought = 0;
+          for (const f of entryFills) {
+            const notional = Number(f.fill_price) * Number(f.quantity);
+            if (f.side === 'SLD') sold += notional;
+            else if (f.side === 'BOT') bought += notional;
+          }
+          const netCreditPerShare = (sold - bought) / Math.max(1, pos.option_contracts ?? pos.quantity ?? 1);
+          if (netCreditPerShare < -0.05) {
+            const holdNote = `BEAR_PUT_DEBIT_HOLD | entry filled as net debit $${Math.abs(netCreditPerShare).toFixed(2)}/sh (order #${pos.ib_order_id}) — auto-close blocked`;
+            await sb.from('paper_trades').update({
+              notes: holdNote,
+            }).eq('id', pos.id);
+            await createAutoTradeEvent({
+              ticker: pos.ticker,
+              mode: 'CREDIT_SPREAD',
+              event_type: 'error',
+              action: 'failed',
+              message: `[Credit Spread] ⚠️ CRITICAL: ${pos.ticker} ${pos.spread_short_strike}/${pos.spread_long_strike} filled as DEBIT (inverted legs). Auto-close blocked — manage manually in IB.`,
+              metadata: { netCreditPerShare, ibOrderId: pos.ib_order_id, reconcile_type: 'inverted_spread_debit' },
+            });
+            console.error(`[Credit Spread Manager] ${pos.ticker}: inverted debit fill detected (net $${netCreditPerShare.toFixed(2)}) — BEAR_PUT_DEBIT_HOLD`);
+            continue;
+          }
+        }
       }
 
       const netCredit = pos.spread_net_credit ?? pos.entry_price ?? 0;
