@@ -1161,27 +1161,29 @@ export class IBConnection {
   async resolveOptionConId(
     symbol: string, right: 'P' | 'C', strike: number, expiry: string,
     onIbError?: (error: string) => void,
-  ): Promise<{ conId: number; resolvedExpiry: string } | null> {
+  ): Promise<{ conId: number; resolvedExpiry: string; resolvedStrike: number } | null> {
     if (!this.ib || !this._connected) return null;
 
     // Helper that fires one reqContractDetails request and waits up to 8s.
     // We deliberately omit `tradingClass` — setting it causes exact-match failures
     // for tickers where IB's internal trading class differs from the ticker symbol
     // (e.g. ADI, DOCU, RBRK). IB resolves to the correct series without it.
-    const tryResolve = async (expDate: string): Promise<number | null> => {
+    const tryResolve = async (
+      expDate: string,
+    ): Promise<{ conId: number; resolvedStrike: number } | null> => {
       await this.acquireRequestSlot();
       try {
-        return await new Promise<number | null>((resolve) => {
+        return await new Promise<{ conId: number; resolvedStrike: number } | null>((resolve) => {
           const reqId = this.getNextOrderId();
           const emitter = this.ib! as unknown as NodeJS.EventEmitter;
           let resolved = false;
 
-          const finish = (conId: number | null) => {
+          const finish = (result: { conId: number; resolvedStrike: number } | null) => {
             if (resolved) return;
             resolved = true;
             clearTimeout(timeout);
             this.unregisterReqErrorCallback(reqId);
-            resolve(conId);
+            resolve(result);
           };
 
           const timeout = setTimeout(() => finish(null), 8_000);
@@ -1191,7 +1193,13 @@ export class IBConnection {
             // Filter to our reqId to avoid cross-wiring concurrent requests
             if (_rId !== reqId) return;
             emitter.removeListener(EventName.contractDetails, onDetails);
-            finish(details?.contract?.conId ?? null);
+            const conId = details?.contract?.conId;
+            const resolvedStrike = Number(details?.contract?.strike);
+            if (conId == null || !Number.isFinite(resolvedStrike)) {
+              finish(null);
+              return;
+            }
+            finish({ conId, resolvedStrike });
           };
           emitter.on(EventName.contractDetails, onDetails);
 
@@ -1230,11 +1238,12 @@ export class IBConnection {
       const d = new Date(base);
       d.setDate(d.getDate() + offsetDays);
       const candidate = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
-      const conId = await tryResolve(candidate);
-      // Return both the conId AND the expiry date that actually worked —
-      // callers must use resolvedExpiry (not the original) when placing orders
-      // to avoid IB rejecting with code=200 "No security definition found".
-      if (conId) return { conId, resolvedExpiry: candidate };
+      const resolved = await tryResolve(candidate);
+      // Return conId, expiry that worked, and the strike IB actually resolved —
+      // callers must reject if resolvedStrike ≠ requested (leg-swap / wrong series).
+      if (resolved) {
+        return { conId: resolved.conId, resolvedExpiry: candidate, resolvedStrike: resolved.resolvedStrike };
+      }
     }
     return null;
   }
@@ -1249,6 +1258,15 @@ export class IBConnection {
     }
 
     const { symbol, right, sellStrike, buyStrike, expiry, contracts, account } = params;
+
+    // Geometry hard-gate (Jul 20 postmortem): inverted strikes → debit/assignment orphans.
+    // Bull put credit: sell higher put, buy lower put. Bear call credit: sell lower call, buy higher.
+    if (right === 'P' && !(sellStrike > buyStrike)) {
+      throw new Error(`Invalid BULL_PUT geometry: sellStrike ${sellStrike} must be > buyStrike ${buyStrike}`);
+    }
+    if (right === 'C' && !(sellStrike < buyStrike)) {
+      throw new Error(`Invalid BEAR_CALL geometry: sellStrike ${sellStrike} must be < buyStrike ${buyStrike}`);
+    }
 
     // Resolve conIds SEQUENTIALLY (not in Promise.all) to eliminate any possible
     // race condition between concurrent reqContractDetails listeners sharing the
@@ -1266,6 +1284,16 @@ export class IBConnection {
     if (sellResult.resolvedExpiry !== buyResult.resolvedExpiry) {
       console.warn(`${this.tag} WARNING: leg expiry mismatch for ${symbol} ${sellStrike}/${buyStrike}${right} — sell leg resolved to ${sellResult.resolvedExpiry}, buy leg to ${buyResult.resolvedExpiry}. Aborting order to prevent diagonal spread.`);
       throw new Error(`Leg expiry mismatch: ${symbol} ${sellStrike} resolved ${sellResult.resolvedExpiry} vs ${buyStrike} resolved ${buyResult.resolvedExpiry}`);
+    }
+    // Reject if IB returned a different strike than requested (wrong series / cross-wire).
+    if (Math.abs(sellResult.resolvedStrike - sellStrike) > 0.001) {
+      throw new Error(`Sell-leg strike mismatch: requested ${sellStrike}, IB resolved ${sellResult.resolvedStrike} (conId ${sellConId})`);
+    }
+    if (Math.abs(buyResult.resolvedStrike - buyStrike) > 0.001) {
+      throw new Error(`Buy-leg strike mismatch: requested ${buyStrike}, IB resolved ${buyResult.resolvedStrike} (conId ${buyConId})`);
+    }
+    if (sellConId === buyConId) {
+      throw new Error(`Both legs resolved to same conId ${sellConId} for ${symbol} ${sellStrike}/${buyStrike}${right}`);
     }
     console.log(`${this.tag} Resolved conIds: ${symbol} sell-leg (${sellStrike}${right})=conId${sellConId} buy-leg (${buyStrike}${right})=conId${buyConId} expiry=${sellResult.resolvedExpiry}`);
 

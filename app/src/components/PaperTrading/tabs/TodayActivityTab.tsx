@@ -204,8 +204,20 @@ export function TodayActivityTab({ events, trades, todayTrades, orphanedFills = 
     tradesByTicker.set(t.ticker, arr);
   }
 
-  // System-only events (no mode = reconcile / orphan alerts)
-  const systemEvents = events.filter(e => e.source === 'system' && !e.mode);
+  // System-only events (no mode = reconcile / orphan alerts).
+  // Hide "Orphaned short covered" rows when a cover paper_trade already carries the P&L —
+  // otherwise Today's Activity double-counts (Jul 20 ALAB/AMD/CRDO).
+  const coverTickers = new Set(
+    primaryTrades
+      .filter(t => t.close_reason === 'ib_reconciliation_cover')
+      .map(t => t.ticker)
+  );
+  const systemEvents = events.filter(e => {
+    if (e.source !== 'system' || e.mode) return false;
+    const msg = e.message ?? '';
+    if (coverTickers.has(e.ticker) && msg.includes('Orphaned short covered')) return false;
+    return true;
+  });
 
   if (primaryTrades.length === 0) {
     return (
@@ -326,11 +338,13 @@ export function TodayActivityTab({ events, trades, todayTrades, orphanedFills = 
   const computeTradePnl = (tradeList: PaperTrade[]) =>
     tradeList.filter(t => !isTradeActive(t)).reduce((sum, t) => sum + (t.ib_pnl ?? t.pnl ?? 0), 0);
 
-  // P&L from system events (e.g. IBReconcile cover buys) that carry a real pnl in metadata.
-  // These are tracked via auto_trade_events (not paper_trades) so they aren't in computeTradePnl.
-  // Only add to calc when showing "all" — system events are cross-mode (options cover trades).
+  // P&L from system events that carry metadata.pnl AND have no matching cover paper_trade.
+  // Cover trades are now in primaryTrades — do not double-add via events.
   const systemEventsPnl = filterMode === 'all'
-    ? systemEvents.reduce((sum, ev) => sum + ((ev.metadata as { pnl?: number } | null)?.pnl ?? 0), 0)
+    ? systemEvents.reduce((sum, ev) => {
+        if (coverTickers.has(ev.ticker)) return sum;
+        return sum + ((ev.metadata as { pnl?: number } | null)?.pnl ?? 0);
+      }, 0)
     : 0;
 
   const effectiveIbPnl = isTradingDay() ? ibRealizedPnl : null;
@@ -688,7 +702,7 @@ export function TodayActivityTab({ events, trades, todayTrades, orphanedFills = 
             {/* Orphaned IB fills — executions that had no matching paper_trade.
                 These are auto-detected from ib_fills so no execution is ever
                 invisible in Today's Activity, regardless of tracking gaps. */}
-            {orphanedFills.map((fill) => {
+            {orphanedFills.filter(fill => !coverTickers.has(fill.ticker)).map((fill) => {
               const pnl = fill.realized_pnl;
               const fillSignal = fill.side === 'BOT' ? 'BUY' : 'SELL';
               const fillSignalColor = fill.side === 'BOT' ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700';

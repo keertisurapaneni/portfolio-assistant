@@ -246,12 +246,12 @@ export async function getTodayTrades(accountView: AccountView = 'paper'): Promis
         `closed_at.gte.${todayISO},` +
         `and(status.in.(FILLED,PARTIAL),mode.in.(DAY_TRADE,DAY_PENNY),filled_at.gte.${lookbackISO})`
       )
-      // Exclude ib_reconciliation_cover (pnl=0 cover buys — P&L flows via auto_trade_events).
       // Exclude stale_eod_close (historical cleanups of old positions — IB settled them long
       // ago; they don't appear in IB's today realized P&L and cause a calc/IB mismatch).
       // Each filter uses OR IS NULL — plain .neq() drops NULL close_reason rows too
       // because SQL NULL != x evaluates to UNKNOWN, not TRUE.
-      .or('close_reason.neq.ib_reconciliation_cover,close_reason.is.null')
+      // NOTE: ib_reconciliation_cover with real P&L IS included (Jul 20 orphan covers).
+      // Zero-P&L cover rows (options exercise attribution) are filtered client-side below.
       .or('close_reason.neq.stale_eod_close,close_reason.is.null')
       .order('opened_at', { ascending: false });
 
@@ -262,6 +262,12 @@ export async function getTodayTrades(accountView: AccountView = 'paper'): Promis
     const deduped = rows.filter(r => {
       if (seen.has(r.id)) return false;
       seen.add(r.id);
+      return true;
+    }).filter(r => {
+      // Hide pnl=0 attribution covers — those P&Ls live on the options scalp row.
+      if (r.close_reason === 'ib_reconciliation_cover' && (r.pnl == null || Number(r.pnl) === 0)) {
+        return false;
+      }
       return true;
     });
     if (acct) return deduped.map(t => ({ ...t, _accountType: acct }));
@@ -328,13 +334,16 @@ export async function getTodaysOrphanedFills(
 
   if (uncoveredIds.length > 0) {
     const tradesTable = accountView === 'live' ? 'live_trades' : 'paper_trades';
+    // Match close orders AND entry/cover orders (reconcile covers stamp ib_order_id).
     const { data: closeMatches } = await supabase
       .from(tradesTable)
-      .select('ib_close_order_id')
-      .in('ib_close_order_id', uncoveredIds)
-      .not('ib_close_order_id', 'is', null);
+      .select('ib_close_order_id, ib_order_id')
+      .or(
+        `ib_close_order_id.in.(${uncoveredIds.join(',')}),ib_order_id.in.(${uncoveredIds.join(',')})`
+      );
     (closeMatches ?? []).forEach(t => {
-      if (t.ib_close_order_id) knownOrderIds.add(t.ib_close_order_id);
+      if (t.ib_close_order_id) knownOrderIds.add(String(t.ib_close_order_id));
+      if (t.ib_order_id) knownOrderIds.add(String(t.ib_order_id));
     });
   }
 
