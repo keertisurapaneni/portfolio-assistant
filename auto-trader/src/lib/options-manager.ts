@@ -15,7 +15,18 @@ import { ACTIVE_STATUSES, CLOSED_STATUSES, OPTIONS_MODES } from '../../../shared
 import { getOptionsAutoTradeConfig, autoTradeOption, type OptionsTradeTicket } from './options-scanner.js';
 import { getOptionsChain } from './options-chain.js';
 import { finnhubFetch, FINNHUB_KEY } from './finnhub.js';
-import { isConnected, placeOptionsOrder, getDefaultAccount, cancelOrder } from '../ib-connection.js';
+import {
+  isConnected,
+  placeOptionsOrder,
+  getDefaultAccount,
+  cancelOrder,
+  requestPositions,
+} from '../ib-connection.js';
+
+/** scanner_reason for synthetic BUY share lots created on put assignment */
+export const WHEEL_ASSIGNED_SHARES_REASON = 'wheel_assigned_shares';
+/** scanner_reason for covered calls opened after assignment */
+export const WHEEL_ASSIGNMENT_CC_REASON = 'wheel_assignment_covered_call';
 
 import type { AutoTradeEventType } from '../../../shared/auto-trade-events.js';
 
@@ -57,6 +68,7 @@ interface PositionRow {
   option_strike: number;
   option_expiry: string;
   option_premium: number;
+  option_contracts?: number | null;
   option_capital_req: number;
   option_assigned: boolean;
   fill_price: number;
@@ -512,7 +524,7 @@ export async function runOptionsManageCycle(): Promise<ManageCycleResult> {
 
   const { data, error } = await sb
     .from('paper_trades')
-    .select('id, ticker, mode, signal, option_strike, option_expiry, option_premium, option_capital_req, option_assigned, fill_price, status, ib_order_id, ib_close_order_id, roll_count, rolled_from_id')
+    .select('id, ticker, mode, signal, option_strike, option_expiry, option_premium, option_contracts, option_capital_req, option_assigned, fill_price, status, ib_order_id, ib_close_order_id, roll_count, rolled_from_id')
     .in('mode', [...OPTIONS_MODES])
     .in('status', ['FILLED', 'PARTIAL']);
 
@@ -944,71 +956,15 @@ export async function runOptionsManageCycle(): Promise<ManageCycleResult> {
       // Mark the put as assigned so subsequent cycles don't re-trigger
       await sb.from('paper_trades').update({ option_assigned: true }).eq('id', pos.id);
 
-      // Open a covered call targeting 20-delta (~80% probability of expiring OTM).
-      // Following the covered-calls video strategy: 15-25 delta, 30-45 DTE is the sweet spot —
-      // enough premium to be worth collecting, enough OTM room to not cap the recovery.
-      // The 10% OTM floor is kept as an additional guard: whichever gives a HIGHER strike wins,
-      // ensuring we never sell the rebound cheaply on a freshly-assigned position.
-      const ccExpiry = new Date(Date.now() + 45 * 24 * 60 * 60 * 1000); // 45 DTE
-      const ccExpiryISO = ccExpiry.toISOString().slice(0, 10);
-      const minCcStrikeFloor = stockPrice * 1.10; // hard floor: at least 10% OTM
-
-      // Fetch covered call from chain at 20-delta; fall back to floor if chain unavailable
-      let ccPremium = 0;
-      let ccStrikeFromChain: number | null = null;
-      try {
-        const ccChain = await getOptionsChain(pos.ticker, stockPrice, null, 0.20, 45); // 20-delta, ~45 DTE
-        if (ccChain?.bestCall) {
-          ccStrikeFromChain = ccChain.bestCall.strike;
-          ccPremium = ccChain.bestCall.bid; // conservative: use bid price
-        }
-      } catch { /* non-blocking — insert with 0 if chain unavailable */ }
-
-      // Three-guard rule (from SMB Capital covered-calls video — "the deadly mistake"):
-      // NEVER locate the short call below the share acquisition price (the put strike).
-      // If stock drops after assignment and we sell a call below cost basis, any bounce
-      // that triggers assignment locks in a guaranteed realized loss on the shares —
-      // wiping out all premium collected across the entire wheel cycle.
-      //
-      // Guard 1: acquisition price (put strike = cost basis of the assigned shares)
-      // Guard 2: 10% OTM floor above current stock price  (recovery room)
-      // Guard 3: 20-delta strike from chain               (video's probability target)
-      // Final strike = highest of all three — even if premium collected is tiny.
-      const acquisitionPrice = pos.option_strike; // the put strike that was assigned
-      const rawCcStrike = Math.max(acquisitionPrice, minCcStrikeFloor, ccStrikeFromChain ?? minCcStrikeFloor);
-      const ccStrike = Math.round(rawCcStrike * 4) / 4; // round to nearest $0.25
-
-      const inCostBasisProtectionMode = rawCcStrike <= acquisitionPrice * 1.005; // within 0.5% of cost basis
-
-      await sb.from('paper_trades').insert({
+      // Sell a real covered call against the (about-to-be) assigned shares. The
+      // shared helper places an actual IB order, applies the three-guard strike
+      // rule (never below cost basis), and is idempotent + defers on IB/chain gaps.
+      const acquisitionPrice = pos.option_strike - (pos.option_premium ?? 0);
+      await ensureCoveredCallForAssignedShares({
         ticker: pos.ticker,
-        mode: 'OPTIONS_CALL',
-        signal: 'SELL',
-        entry_price: stockPrice,
-        fill_price: stockPrice,
-        quantity: 1,
-        position_size: stockPrice * 100,
-        status: 'FILLED',
-        filled_at: new Date().toISOString(),
-        opened_at: new Date().toISOString(),
-        option_strike: ccStrike,
-        option_expiry: ccExpiryISO,
-        option_premium: ccPremium,
-        option_contracts: 1,
-        option_capital_req: stockPrice * 100,
-        option_assigned: false,
-        scanner_reason: 'wheel_assignment_covered_call',
-        notes: `Covered call after assignment on ${pos.ticker} put at $${pos.option_strike} — collected $${(ccPremium * 100).toFixed(0)} premium`,
+        acquisitionPrice,
+        contracts: pos.option_contracts ?? 1,
       });
-
-      const modeTag = inCostBasisProtectionMode
-        ? ' [COST BASIS PROTECTION — premium may be minimal]'
-        : '';
-      console.log(`[Options Manager] Assignment detected — covered call queued: ${pos.ticker} $${ccStrike}C exp ${ccExpiryISO}${modeTag}`);
-      persistEvent(pos.ticker, 'warning',
-        `📌 ${pos.ticker} assignment → covered call queued: $${ccStrike}C exp ${ccExpiryISO}, premium $${(ccPremium * 100).toFixed(0)}${modeTag}`,
-        { action: 'flagged', source: 'options', metadata: { reason: 'assignment_detected_covered_call_queued', stockPrice, acquisitionPrice, strike: pos.option_strike, ccStrike, ccExpiry: ccExpiryISO, ccPremium, inCostBasisProtectionMode } }
-      );
     }
   }
 
@@ -1452,11 +1408,232 @@ export async function handleAssignment(positionId: string): Promise<void> {
     extraUpdates: { option_assigned: true },
   });
 
+  const costBasis = pos.option_net_price ?? pos.option_strike;
+  const contracts = pos.option_contracts ?? 1;
+
   // Log assignment event
   persistEvent(pos.ticker, 'warning',
-    `📌 ${pos.ticker} put assigned — now own 100 shares at $${pos.option_net_price?.toFixed(2) ?? pos.option_strike} effective cost. Assignment detected — covered call queued.`,
+    `📌 ${pos.ticker} put assigned — now own ${contracts * 100} shares at $${costBasis?.toFixed(2) ?? pos.option_strike} effective cost. Selling covered call…`,
     { action: 'flagged', source: 'options', metadata: { reason: 'assigned', strike: pos.option_strike, netPrice: pos.option_net_price } }
   );
+
+  // Sell a real covered call against the assigned shares (the wheel).
+  // This is what represents / manages the shares — an open OPTIONS_CALL is how
+  // reconcileIBLongs knows the long isn't an orphan. Idempotent + defers if IB
+  // is down or no chain is available (retried by reconcileAssignedWheelShares).
+  await ensureCoveredCallForAssignedShares({
+    ticker: pos.ticker,
+    acquisitionPrice: costBasis,
+    contracts,
+  });
+}
+
+/**
+ * Sell a covered call against shares acquired via put assignment.
+ *
+ * This is the single source of truth for post-assignment covered-call creation,
+ * used by both the expiry assignment path (`handleAssignment`) and the early
+ * assignment-detection path (Check 5), plus the self-healing reconcile.
+ *
+ * Idempotent: if an open OPTIONS_CALL already exists for the ticker, does nothing.
+ * Places a REAL IB order (so the record carries an ib_order_id and survives the
+ * EOD paper-only auto-discard sweep). If IB is disconnected or no chain premium
+ * is available, it DEFERS (no paper-only row) so a later cycle can retry.
+ *
+ * Strike uses the three-guard rule (SMB Capital "deadly mistake"): never sell a
+ * call below the share cost basis — max(costBasis, 10% OTM floor, 20-delta strike).
+ */
+export async function ensureCoveredCallForAssignedShares(params: {
+  ticker: string;
+  acquisitionPrice: number; // share cost basis (put strike − premium)
+  contracts: number;        // shares / 100
+}): Promise<{ placed: boolean; reason: string }> {
+  const { ticker, acquisitionPrice, contracts } = params;
+  const sb = getSupabase();
+
+  if (!isConnected()) return { placed: false, reason: 'ib_disconnected' };
+
+  // Idempotency — one covered call per ticker at a time.
+  const { data: openCalls } = await sb
+    .from('paper_trades')
+    .select('id')
+    .eq('ticker', ticker)
+    .eq('mode', 'OPTIONS_CALL')
+    .in('status', ['FILLED', 'PARTIAL', 'SUBMITTED'])
+    .limit(1);
+  if (openCalls && openCalls.length > 0) {
+    return { placed: false, reason: 'already_covered' };
+  }
+
+  // Live stock price.
+  let stockPrice: number | null = null;
+  try {
+    const q = await finnhubFetch<{ c?: number }>(
+      `https://finnhub.io/api/v1/quote?symbol=${ticker}&token=${FINNHUB_KEY}`,
+    );
+    stockPrice = q?.c ?? null;
+  } catch { /* defer below */ }
+  if (!stockPrice || stockPrice <= 0) {
+    return { placed: false, reason: 'no_stock_price' };
+  }
+
+  // 20-delta, ~45 DTE call from the chain (conservative bid premium).
+  const ccExpiry = new Date(Date.now() + 45 * 24 * 60 * 60 * 1000);
+  const ccExpiryISO = ccExpiry.toISOString().slice(0, 10);
+  let ccPremium = 0;
+  let ccStrikeFromChain: number | null = null;
+  try {
+    const ccChain = await getOptionsChain(ticker, stockPrice, null, 0.20, 45);
+    if (ccChain?.bestCall) {
+      ccStrikeFromChain = ccChain.bestCall.strike;
+      ccPremium = ccChain.bestCall.bid;
+    }
+  } catch { /* defer below */ }
+
+  // No tradeable premium → defer; do NOT insert a paper-only row (it would be
+  // auto-discarded at EOD and never actually protect the shares).
+  if (!ccPremium || ccPremium <= 0) {
+    return { placed: false, reason: 'no_chain_premium' };
+  }
+
+  // Three-guard strike: never below cost basis; at least 10% OTM; honor 20-delta.
+  const minCcStrikeFloor = stockPrice * 1.10;
+  const rawCcStrike = Math.max(acquisitionPrice, minCcStrikeFloor, ccStrikeFromChain ?? minCcStrikeFloor);
+  const ccStrike = Math.round(rawCcStrike * 4) / 4;
+  const inCostBasisProtectionMode = rawCcStrike <= acquisitionPrice * 1.005;
+
+  // Place the real IB order (SELL to open). Multi-day expiry → rests as GTC LMT.
+  let ibOrderId: number | null = null;
+  let timedOut = false;
+  try {
+    const r = await placeOptionsOrder({
+      symbol: ticker,
+      right: 'C',
+      strike: ccStrike,
+      expiry: ccExpiryISO.replace(/-/g, ''),
+      contracts,
+      limitPrice: ccPremium,
+      action: 'SELL',
+      account: getDefaultAccount() ?? undefined,
+    });
+    ibOrderId = r.orderId;
+    timedOut = r.timedOut ?? false;
+  } catch (err) {
+    console.warn(`[Options Manager] Covered-call IB order failed for ${ticker} $${ccStrike}C: ${err instanceof Error ? err.message : err}`);
+    return { placed: false, reason: 'ib_order_failed' };
+  }
+
+  await sb.from('paper_trades').insert({
+    ticker,
+    mode: 'OPTIONS_CALL',
+    signal: 'SELL',
+    entry_price: stockPrice,
+    // fill_price stores the SHARE cost basis — used by called-away P&L math.
+    fill_price: acquisitionPrice,
+    quantity: contracts,
+    position_size: acquisitionPrice * 100 * contracts,
+    status: timedOut ? 'SUBMITTED' : 'FILLED',
+    filled_at: timedOut ? null : new Date().toISOString(),
+    opened_at: new Date().toISOString(),
+    option_strike: ccStrike,
+    option_expiry: ccExpiryISO,
+    option_premium: ccPremium,
+    option_contracts: contracts,
+    option_capital_req: acquisitionPrice * 100 * contracts,
+    option_assigned: false,
+    ib_order_id: ibOrderId ? String(ibOrderId) : null,
+    scanner_reason: WHEEL_ASSIGNMENT_CC_REASON,
+    notes: `Covered call after assignment on ${ticker} (cost basis $${acquisitionPrice.toFixed(2)}) — ${contracts}x $${ccStrike}C exp ${ccExpiryISO}, premium $${(ccPremium * 100 * contracts).toFixed(0)}`,
+  });
+
+  const modeTag = inCostBasisProtectionMode ? ' [COST BASIS PROTECTION — premium minimal]' : '';
+  console.log(`[Options Manager] Covered call placed: ${ticker} ${contracts}x $${ccStrike}C exp ${ccExpiryISO} IB#${ibOrderId}${modeTag}`);
+  persistEvent(ticker, 'success',
+    `📞 ${ticker} covered call sold: ${contracts}x $${ccStrike}C exp ${ccExpiryISO}, premium $${(ccPremium * 100 * contracts).toFixed(0)}${modeTag}`,
+    { action: 'executed', source: 'options', mode: 'OPTIONS_CALL', metadata: { reason: 'wheel_covered_call', acquisitionPrice, ccStrike, ccExpiry: ccExpiryISO, ccPremium, contracts, ibOrderId, inCostBasisProtectionMode } }
+  );
+  return { placed: true, reason: 'placed' };
+}
+
+/**
+ * Self-heal: find IB stock longs that came from a put assignment but have no
+ * open covered call, and sell one. Fixes shares stranded by an assignment that
+ * happened before covered-call automation existed (e.g. ORCL 100 from Jul 10),
+ * or any cycle where the covered call was deferred (IB down / no chain).
+ */
+export async function reconcileAssignedWheelShares(): Promise<{ covered: string[] }> {
+  const covered: string[] = [];
+  if (!isConnected()) return { covered };
+
+  const sb = getSupabase();
+
+  let ibPositions: Awaited<ReturnType<typeof requestPositions>>;
+  try {
+    ibPositions = await requestPositions();
+  } catch {
+    return { covered };
+  }
+  const stockLongs = ibPositions.filter(p => p.position > 0 && p.secType === 'STK');
+  if (stockLongs.length === 0) return { covered };
+
+  // Tickers that already have an open covered call — skip.
+  const { data: openCalls } = await sb
+    .from('paper_trades')
+    .select('ticker')
+    .eq('mode', 'OPTIONS_CALL')
+    .in('status', ['FILLED', 'PARTIAL', 'SUBMITTED']);
+  const coveredTickers = new Set((openCalls ?? []).map((t: { ticker: string }) => t.ticker.toUpperCase()));
+
+  // Tickers with an active BUY equity position tracked as a normal long — skip
+  // (those are managed by the LONG_TERM/swing logic, not the wheel).
+  const { data: activeLongs } = await sb
+    .from('paper_trades')
+    .select('ticker, signal, mode')
+    .in('status', ['FILLED', 'SUBMITTED', 'PARTIAL'])
+    .in('mode', ['LONG_TERM', 'SWING_TRADE', 'DAY_TRADE', 'DAY_PENNY']);
+  const trackedLongTickers = new Set(
+    (activeLongs ?? [])
+      .filter((t: { signal: string }) => t.signal === 'BUY')
+      .map((t: { ticker: string }) => t.ticker.toUpperCase())
+  );
+
+  const cutoff = new Date(Date.now() - 180 * 24 * 60 * 60 * 1000).toISOString();
+
+  for (const pos of stockLongs) {
+    const sym = pos.symbol.toUpperCase();
+    if (coveredTickers.has(sym) || trackedLongTickers.has(sym)) continue;
+
+    // Only treat as wheel shares if there's a recent assigned put for this ticker.
+    const { data: assignedPuts } = await sb
+      .from('paper_trades')
+      .select('option_strike, option_net_price, option_premium, option_contracts')
+      .eq('ticker', pos.symbol)
+      .eq('mode', 'OPTIONS_PUT')
+      .eq('close_reason', 'assigned')
+      .gte('closed_at', cutoff)
+      .order('closed_at', { ascending: false })
+      .limit(1);
+    if (!assignedPuts || assignedPuts.length === 0) continue;
+
+    const put = assignedPuts[0] as {
+      option_strike: number; option_net_price: number | null;
+      option_premium: number | null; option_contracts: number | null;
+    };
+    const costBasis = put.option_net_price
+      ?? (put.option_strike - (put.option_premium ?? 0));
+    // Cover exactly what IB holds (in round lots).
+    const contracts = Math.max(1, Math.floor(pos.position / 100));
+
+    const res = await ensureCoveredCallForAssignedShares({
+      ticker: pos.symbol,
+      acquisitionPrice: costBasis,
+      contracts,
+    });
+    if (res.placed) covered.push(pos.symbol);
+    else console.log(`[WheelReconcile] ${pos.symbol}: covered call deferred — ${res.reason}`);
+  }
+
+  return { covered };
 }
 
 /**

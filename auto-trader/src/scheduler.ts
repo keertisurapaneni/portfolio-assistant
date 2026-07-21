@@ -95,7 +95,7 @@ import { runOptionsScan, autoTradeOption, getOptionsAutoTradeConfig } from './li
 import { getOptionsChain } from './lib/options-chain.js';
 import { runEarningsScan, closeExpiredEarningsPositions } from './lib/earnings-scanner.js';
 import { runWatchlistScreener } from './lib/watchlist-screener.js';
-import { runOptionsManageCycle } from './lib/options-manager.js';
+import { runOptionsManageCycle, reconcileAssignedWheelShares } from './lib/options-manager.js';
 import { runEndOfDayReconciliation, reconcileGhostCloses, reconcileMissedBracketFills, cancelOrphanedBracketOrders } from './lib/reconcile-executions.js';
 import { runDipWatcher } from './lib/dip-watcher.js';
 import { checkSpxLevelSetups } from './lib/spx-level-scanner.js';
@@ -1727,6 +1727,29 @@ export async function reconcileIBLongs(): Promise<{ closed: string[]; errors: st
       .map((t: { ticker: string }) => t.ticker.toUpperCase())
   );
 
+  // Wheel-managed longs: shares acquired via put assignment are represented by
+  // their open covered call (an OPTIONS_CALL wheel position), OR by a recently
+  // assigned put still awaiting its covered call. Either way the long is NOT an
+  // orphan — reconcileAssignedWheelShares() manages it. (ORCL 100 from Jul 10.)
+  const wheelManagedTickers = new Set<string>();
+  {
+    const { data: openCalls } = await sb
+      .from('paper_trades')
+      .select('ticker')
+      .eq('mode', 'OPTIONS_CALL')
+      .in('status', ['FILLED', 'PARTIAL', 'SUBMITTED']);
+    (openCalls ?? []).forEach((t: { ticker: string }) => wheelManagedTickers.add(t.ticker.toUpperCase()));
+
+    const assignedCutoff = new Date(Date.now() - 180 * 24 * 60 * 60 * 1000).toISOString();
+    const { data: assignedPuts } = await sb
+      .from('paper_trades')
+      .select('ticker')
+      .eq('mode', 'OPTIONS_PUT')
+      .eq('close_reason', 'assigned')
+      .gte('closed_at', assignedCutoff);
+    (assignedPuts ?? []).forEach((t: { ticker: string }) => wheelManagedTickers.add(t.ticker.toUpperCase()));
+  }
+
   // Find which untracked longs have a ghost paper_trade from TODAY with null fill_price.
   // These are positions where EOD swept a never-filled BUY order but IB still holds
   // a residual long (possible only if the entry was partially filled or if two orders
@@ -1745,7 +1768,10 @@ export async function reconcileIBLongs(): Promise<{ closed: string[]; errors: st
     (todayGhostTrades ?? []).map((t: { ticker: string }) => t.ticker.toUpperCase())
   );
 
-  const untracked = longs.filter(p => !activeLongTickers.has(p.symbol.toUpperCase()));
+  const untracked = longs.filter(p =>
+    !activeLongTickers.has(p.symbol.toUpperCase()) &&
+    !wheelManagedTickers.has(p.symbol.toUpperCase())
+  );
 
   // Split into: confirmed EOD ghosts (auto-closeable) vs unrecognised portfolio positions (warn only)
   const confirmedGhosts = untracked.filter(p => todayGhostTickers.has(p.symbol.toUpperCase()));
@@ -8696,6 +8722,16 @@ async function runSchedulerCycle(): Promise<void> {
       log('Options Wheel module disabled — skipping management + scan');
     } else {
     try {
+      // Self-heal: sell covered calls on any assigned wheel shares that don't
+      // have one yet (e.g. shares assigned before CC automation existed, or a
+      // prior cycle where IB/chain was unavailable). Fixes the ORCL-100 orphan.
+      try {
+        const healed = await reconcileAssignedWheelShares();
+        if (healed.covered.length > 0) log(`Options: covered calls placed on assigned shares — ${healed.covered.join(', ')}`);
+      } catch (err) {
+        console.error('[WheelReconcile] Failed:', err instanceof Error ? err.message : err);
+      }
+
       const optsMgr = await runOptionsManageCycle();
       if (optsMgr.closed50Pct.length > 0) log(`Options: closed at ${optsMgr.profitClosePct}% profit — ${optsMgr.closed50Pct.join(', ')}`);
       if (optsMgr.rollAlerts.length > 0) log(`Options: roll/close alerts — ${optsMgr.rollAlerts.join(', ')}`);
@@ -8721,7 +8757,7 @@ Check the Options Wheel → History tab for details.`,
             `📌 Options Assignment Detected: ${ticker}`,
             `A put option assignment was detected for ${ticker}.
 
-Stock price dropped below the put strike. A covered call has been automatically queued.
+Stock price dropped below the put strike. A covered call is being sold automatically against the assigned shares.
 
 Check the Options Wheel → Open tab to review the covered call position.`,
             ticker,
