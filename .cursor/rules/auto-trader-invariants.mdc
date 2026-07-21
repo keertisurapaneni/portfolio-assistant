@@ -22,6 +22,18 @@ If a change would violate any of these, STOP and ask the user before proceeding.
   If `strategy_source`, `strategy_video_id`, `mode`, or `signal` was set when the trade was created,
   no downstream code path may null it out. These are immutable attribution fields.
 
+- **Exit / position-management must NEVER be gated by mode routing (`off`).**
+  `off` means "do not open NEW positions" — it must NOT stop management of positions
+  we already hold. ENTRY code (scanner buys, dip buys, new options/spreads) uses
+  `getConnectionForMode()` (which throws on `off`, so the caller skips). EXIT and
+  position-management code (stop-loss, hard-stop, trailing-stop, profit-take,
+  max-hold, covered-call, reconcile) MUST use `getConnectionForManagement()`, which
+  falls back to paper on `off` and never returns empty. Do NOT wrap
+  `getConnectionForMode()` in `try { } catch { return; }` inside a management
+  function — that silently disables protection when entries are paused (the Jul 21
+  2026 bug: pausing Suggested Finds routed LONG_TERM `off` and stripped stop-loss/
+  hard-stop/trailing/max-hold off existing longs while profit-take kept running).
+
 ## 2. Market Hours
 
 - **Never place MKT/DAY orders outside regular trading hours (9:30 AM – 4:00 PM ET).**

@@ -32,7 +32,7 @@ import {
   type PositionData,
   type IBConnection,
 } from './ib-connection.js';
-import { getConnectionForMode, getAccountForMode, getPositionSizeConfig, assertLiveLossLimitNotBreached, isModeEnabled, type RoutedConnection } from './lib/mode-router.js';
+import { getConnectionForMode, getConnectionForManagement, getAccountForMode, getPositionSizeConfig, assertLiveLossLimitNotBreached, isModeEnabled, type RoutedConnection } from './lib/mode-router.js';
 import type { AccountType } from '../../shared/trade-types.js';
 import {
   isConfigured,
@@ -6877,14 +6877,8 @@ async function checkSwingHoldExpiry(
   const maxDays = config.swingMaxHoldDays ?? 5;
   if (maxDays <= 0 || !config.accountId) return;
 
-  // Manage existing swings even when SWING_TRADE is routed 'off' — 'off' blocks
-  // new entries, not exit management. Falls back to paper (same as LONG_TERM).
-  let swingConnections: RoutedConnection[];
-  try {
-    swingConnections = getConnectionForMode('SWING_TRADE', config).connections;
-  } catch {
-    swingConnections = [{ connection: getConnectionForAccount('paper'), accountType: 'paper' }];
-  }
+  // Exit management — never gated by 'off' (see getConnectionForManagement).
+  const swingConnections = getConnectionForManagement('SWING_TRADE', config).connections;
   const swingAcct = swingConnections[0].accountType;
 
   const activeTrades = await getActiveTrades(swingAcct);
@@ -7015,17 +7009,10 @@ async function checkLongTermAutoSell(
 
   if (!config.accountId) return;
 
-  // Exit management must run even when LONG_TERM mode is 'off'. 'off' means "no
-  // new entries", NOT "ignore existing positions". Pausing Suggested Finds routes
-  // LONG_TERM off — if we returned here, existing longs (AOS/FAST/etc.) would lose
-  // ALL downside protection (stop-loss, hard-stop, trailing, max-hold) while
-  // profit-taking kept running (it already has this fallback). Mirror that.
-  let ltConnections: RoutedConnection[];
-  try {
-    ltConnections = getConnectionForMode('LONG_TERM', config).connections;
-  } catch {
-    ltConnections = [{ connection: getConnectionForAccount('paper'), accountType: 'paper' }];
-  }
+  // Exit management (stop-loss, hard-stop, trailing, max-hold) — never gated by
+  // 'off'. 'off' means "no new entries", NOT "ignore existing positions". See
+  // getConnectionForManagement. (Pausing Suggested Finds routes LONG_TERM off.)
+  const ltConnections = getConnectionForManagement('LONG_TERM', config).connections;
   const ltAcct = ltConnections[0].accountType;
 
   const activeTrades = await getActiveTrades(ltAcct);
@@ -7281,15 +7268,9 @@ async function checkProfitTakeOpportunities(
   const trimmedTickers = new Set<string>();
   if (!config.profitTakeEnabled || !config.accountId) return trimmedTickers;
 
-  // Profit-taking must run even when LONG_TERM mode is 'off' (off = no new entries,
-  // NOT "ignore existing positions"). Fall back to paper connection when mode is off.
-  let ptConnections: RoutedConnection[];
-  try {
-    ptConnections = getConnectionForMode('LONG_TERM', config).connections;
-  } catch {
-    // Mode is off — still manage existing filled LT positions via paper connection
-    ptConnections = [{ connection: getConnectionForAccount('paper'), accountType: 'paper' }];
-  }
+  // Profit-taking manages existing positions — never gated by 'off' (off = no new
+  // entries, NOT "ignore existing positions"). See getConnectionForManagement.
+  const ptConnections = getConnectionForManagement('LONG_TERM', config).connections;
   const ptAcct = ptConnections[0].accountType;
 
   const activeTrades = await getActiveTrades(ptAcct);
