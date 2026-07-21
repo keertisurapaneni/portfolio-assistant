@@ -102,6 +102,34 @@ export function getConnectionForMode(
 }
 
 /**
+ * Get the IB connection(s) for MANAGING AN EXISTING position (exits: stop-loss,
+ * hard-stop, trailing-stop, profit-take, max-hold, covered-call, reconcile).
+ *
+ * CRITICAL DIFFERENCE from `getConnectionForMode`: this NEVER throws for `off`.
+ * `off` means "do not open NEW positions" — it must NOT stop us from managing
+ * positions we already hold. A prior bug (Jul 21 2026) had exit functions call
+ * `getConnectionForMode` inside `try { } catch { return; }`, so pausing entries
+ * (routing a mode `off`) silently disabled stop-loss/hard-stop/trailing/max-hold
+ * on existing longs while profit-take kept running. Existing positions bled with
+ * no protection.
+ *
+ * Rule: ENTRY code uses `getConnectionForMode` (respects `off`). EXIT / position-
+ * management code uses THIS (`off` → paper fallback, never returns empty).
+ *
+ * For `live`/`both`/`paper` it delegates to `getConnectionForMode` (unchanged
+ * kill-switch / connectivity semantics). Only `off` is special-cased to paper.
+ */
+export function getConnectionForManagement(
+  mode: TradeMode,
+  config: AutoTraderConfig,
+): { connections: RoutedConnection[] } {
+  if (getRouteTarget(mode, config) === 'off') {
+    return { connections: [{ connection: getConnectionForAccount('paper'), accountType: 'paper' }] };
+  }
+  return getConnectionForMode(mode, config);
+}
+
+/**
  * Get position sizing configuration for an account type.
  * Live uses conservative overrides; paper uses the standard config values.
  */
