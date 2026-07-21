@@ -6877,10 +6877,14 @@ async function checkSwingHoldExpiry(
   const maxDays = config.swingMaxHoldDays ?? 5;
   if (maxDays <= 0 || !config.accountId) return;
 
+  // Manage existing swings even when SWING_TRADE is routed 'off' — 'off' blocks
+  // new entries, not exit management. Falls back to paper (same as LONG_TERM).
   let swingConnections: RoutedConnection[];
   try {
     swingConnections = getConnectionForMode('SWING_TRADE', config).connections;
-  } catch { return; }
+  } catch {
+    swingConnections = [{ connection: getConnectionForAccount('paper'), accountType: 'paper' }];
+  }
   const swingAcct = swingConnections[0].accountType;
 
   const activeTrades = await getActiveTrades(swingAcct);
@@ -7011,10 +7015,17 @@ async function checkLongTermAutoSell(
 
   if (!config.accountId) return;
 
+  // Exit management must run even when LONG_TERM mode is 'off'. 'off' means "no
+  // new entries", NOT "ignore existing positions". Pausing Suggested Finds routes
+  // LONG_TERM off — if we returned here, existing longs (AOS/FAST/etc.) would lose
+  // ALL downside protection (stop-loss, hard-stop, trailing, max-hold) while
+  // profit-taking kept running (it already has this fallback). Mirror that.
   let ltConnections: RoutedConnection[];
   try {
     ltConnections = getConnectionForMode('LONG_TERM', config).connections;
-  } catch { return; }
+  } catch {
+    ltConnections = [{ connection: getConnectionForAccount('paper'), accountType: 'paper' }];
+  }
   const ltAcct = ltConnections[0].accountType;
 
   const activeTrades = await getActiveTrades(ltAcct);
