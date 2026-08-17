@@ -79,6 +79,11 @@ Deno.serve(async (req) => {
           messages: [{ role: 'user', content: prompt }],
           temperature,
           max_tokens: maxOutputTokens,
+          // gpt-oss / qwen are reasoning models: without this, hidden reasoning tokens
+          // consume the entire max_tokens budget (e.g. 827/871 at max_tokens=1000) and
+          // return EMPTY content → 502. 'low' cuts reasoning to ~15 tokens, so content
+          // always fits and responses are ~8x faster. (Ignored by non-reasoning models.)
+          reasoning_effort: 'low',
         }),
       });
 
