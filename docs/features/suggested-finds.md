@@ -3,6 +3,14 @@
 Flow: **HuggingFace (candidates)** → **Finnhub (metrics)** → **HuggingFace (analysis)**.  
 Data source: Compounders = Finnhub only. Gold Mines = Finnhub news + metrics.
 
+> **Display vs. auto-buy are decoupled (Aug 17 2026).** Generating and displaying
+> Suggested Finds is **discovery**, not a position action — it always runs (the `/finds`
+> page on load, and the backend `preGenerateSuggestedFinds()` once daily during market
+> hours). Setting the Suggested Finds route (`LONG_TERM`) to `off` disables **auto-buy
+> only** ("show results, don't buy"); it does NOT stop generation. Trade execution is
+> gated by `config.enabled && accountId && isModeEnabled('LONG_TERM')`. Do not re-couple
+> generation to routing / `suggestedFindsEnabled` — see `.cursor/rules/auto-trader-invariants.mdc`.
+
 ---
 
 ## Investment Intent — READ THIS FIRST

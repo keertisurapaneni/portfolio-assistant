@@ -7824,7 +7824,14 @@ async function preGenerateSuggestedFinds(
 
     log(`Found ${stocks.length} Suggested Finds candidates`);
 
-    if (config.enabled && config.accountId) {
+    // Trade execution is separate from generation above. Only auto-buy when auto-trading
+    // is enabled AND Suggested Finds is routed for entries (LONG_TERM !== 'off'). When
+    // routed off, results are still generated + cached for the /finds page — we just don't
+    // place orders ("show results, don't buy").
+    const suggestedFindsTradingEnabled =
+      config.enabled && !!config.accountId && isModeEnabled(config, 'LONG_TERM');
+
+    if (suggestedFindsTradingEnabled) {
       // Filter by conviction + valuation
       const minConv = config.minSuggestedFindsConviction;
       const topTickers = new Set<string>();
@@ -7869,6 +7876,13 @@ async function preGenerateSuggestedFinds(
       return;
     }
 
+    // Generation-only path: results cached for the /finds page; no orders placed.
+    const skipReason = !config.enabled
+      ? 'auto-trading paused'
+      : !isModeEnabled(config, 'LONG_TERM')
+        ? 'LONG_TERM routed off'
+        : 'no account configured';
+    log(`Suggested Finds: ${stocks.length} results generated for display — auto-buy skipped (${skipReason})`);
     _lastSuggestedFindsDate = today;
   } catch (err) {
     log(`Suggested Finds failed: ${err instanceof Error ? err.message : 'unknown'}`);
@@ -8159,21 +8173,19 @@ async function runSchedulerCycle(): Promise<void> {
     const skipTickers = new Set([...trimmedTickers, ...lossCutTickers]);
     await checkLongTermAutoSell(config, positions, skipTickers);
 
+    // 6. Pre-generate Suggested Finds (daily, market hours only).
+    // Generation/display is DECOUPLED from trading: the /finds page must stay populated
+    // even when auto-buy is off ("show results, don't buy"). This runs BEFORE the
+    // new-entries gate on purpose — discovery is not a "new position", so it must not be
+    // gated by config.enabled or LONG_TERM routing. Trade EXECUTION inside is separately
+    // gated by config.enabled + accountId + isModeEnabled('LONG_TERM'), so nothing is
+    // bought when auto-trading is paused or Suggested Finds is routed off.
+    await preGenerateSuggestedFinds(config, positions);
+
     // ── New entries below — only run when auto-trading is enabled ─────────────
     if (!newEntriesEnabled) {
       _lastRunResult = 'ok: position management only (new entries disabled)';
       return;
-    }
-
-    // 6. Pre-generate Suggested Finds (daily, after market open only)
-    // Moved AFTER the market hours gate — belt-and-suspenders to prevent pre-market order placement.
-    // Runs after sync+reset so SF trades are tracked in _pendingDeployedDollar for this cycle.
-    // Belt-and-suspenders: check BOTH mode_routing AND suggestedFindsEnabled.
-    // These can get out of sync if the frontend saves one but not the other.
-    if (isModeEnabled(config, 'LONG_TERM') && config.suggestedFindsEnabled !== false) {
-      await preGenerateSuggestedFinds(config, positions);
-    } else {
-      log('Suggested Finds module disabled — skipping');
     }
 
     // Load scanner ideas FIRST — this calls the trade-scanner edge function (Gemini AI,
