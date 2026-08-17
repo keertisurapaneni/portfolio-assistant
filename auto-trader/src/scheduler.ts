@@ -7656,7 +7656,9 @@ async function savePortfolioSnapshotQuiet(
     const totalPnl = positions.reduce((sum, p) => sum + p.unrealizedPnl, 0);
 
     await savePortfolioSnapshot({
+      snapshot_date: today, // NOT NULL column — must be set or the insert is rejected
       account_id: config.accountId,
+      account_type: 'paper', // auto-trader is the paper account; part of the unique key
       total_value: totalValue,
       total_pnl: totalPnl,
       positions: positions.map(p => ({

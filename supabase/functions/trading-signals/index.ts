@@ -46,8 +46,9 @@ const corsHeaders = {
 
 // Gemini: model cascade + key rotation (Trading Signals only)
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
-// Order: highest free-tier RPM first → 2.0-flash-lite (30), 2.0-flash (15), 2.5-flash (10)
-const GEMINI_MODELS = ['gemini-2.0-flash-lite', 'gemini-2.0-flash', 'gemini-2.5-flash'];
+// Aug 2026: gemini-2.0-flash was deprecated by Google (404). 2.5-flash is the current GA
+// flagship; 2.0-flash-lite (separate quota, higher RPM) is the fallback.
+const GEMINI_MODELS = ['gemini-2.5-flash', 'gemini-2.0-flash-lite'];
 
 const REQUEST_TIMEOUT_MS = 90_000; // 90s total for the whole pipeline
 

@@ -891,7 +891,12 @@ export async function savePortfolioSnapshot(
   snapshot: Record<string, unknown>
 ): Promise<void> {
   const sb = getSupabase();
-  const { error } = await sb.from('portfolio_snapshots').insert(snapshot);
+  // Upsert on the actual unique constraint (snapshot_date, account_id, account_type) — see
+  // migration 20260517000001 which replaced the old 2-col key. One row per account per day.
+  // Avoids duplicate-key errors when the backend + frontend both write the same day.
+  const { error } = await sb
+    .from('portfolio_snapshots')
+    .upsert(snapshot, { onConflict: 'snapshot_date,account_id,account_type' });
   if (error) {
     console.error(`[Supabase] savePortfolioSnapshot failed: ${error.message}`);
   }

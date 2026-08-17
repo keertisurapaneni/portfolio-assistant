@@ -3,7 +3,7 @@
  * Ported from app/src/lib/aiFeedback.ts for server-side rehydration.
  * Feeds buildFeedbackContext in edge functions so AI learns from history.
  *
- * LOSS analysis uses Groq (llama-4-scout) for real post-mortem text.
+ * LOSS analysis uses Groq (gpt-oss-120b) for real post-mortem text.
  * Template fallback activates if the API key is missing or the call fails.
  */
 
@@ -11,7 +11,8 @@ import { getSupabase } from './supabase.js';
 import { CLOSED_STATUSES } from '../../../shared/trade-status-sets.js';
 
 const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions';
-const GROQ_MODEL = 'meta-llama/llama-4-scout-17b-16e-instruct';
+// Aug 2026: llama-4-scout was decommissioned by Groq (404). gpt-oss-120b is the current GA model.
+const GROQ_MODEL = 'openai/gpt-oss-120b';
 
 interface PaperTradeLike {
   id: string;

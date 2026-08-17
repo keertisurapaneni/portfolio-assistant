@@ -21,12 +21,13 @@ const corsHeaders = {
 };
 
 const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions';
-// llama-4-scout: 30K TPM on free tier (vs 6K for llama-3.x) — necessary since brief prompts are ~7-8K tokens.
-const GROQ_MODEL = 'meta-llama/llama-4-scout-17b-16e-instruct';
-// Gemini Flash fallback — free tier.
-// Try gemini-2.0-flash first; if all keys exhausted, fall back to gemini-1.5-flash (separate quota pool).
-const GEMINI_URL_2 = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent';
-const GEMINI_URL_15 = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent';
+// Aug 2026: llama-4-scout was decommissioned by Groq (404). gpt-oss-120b is the current GA
+// model with a large context window that handles the ~7-8K token brief prompts.
+const GROQ_MODEL = 'openai/gpt-oss-120b';
+// Gemini Flash fallback — free tier. gemini-2.0-flash / 1.5-flash were deprecated by Google
+// (404). Use 2.5-flash primary, 2.0-flash-lite as a separate-quota fallback.
+const GEMINI_URL_2 = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent';
+const GEMINI_URL_15 = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-lite:generateContent';
 
 const BRIEF_SYSTEM = `You are a professional pre-market trading analyst. You synthesize raw market data into a concise, actionable daily briefing for a retail options and equity trader.
 
@@ -243,8 +244,8 @@ Pay particular attention to any upcoming high-profile IPOs — they drive sector
 
     if (groqFailed || !raw) {
       // Rotate through all available Gemini keys until one succeeds (quota rotation pattern).
-      // Try gemini-2.0-flash first (keys 1-13). If all are quota-exceeded, retry with gemini-1.5-flash
-      // which has a separate daily quota pool.
+      // Try gemini-2.5-flash first (keys 1-13). If all are quota-exceeded, retry with
+      // gemini-2.0-flash-lite which has a separate daily quota pool.
       const geminiKeyNames = [
         'GEMINI_API_KEY', 'GEMINI_API_KEY_2', 'GEMINI_API_KEY_3', 'GEMINI_API_KEY_4',
         'GEMINI_API_KEY_5', 'GEMINI_API_KEY_6', 'GEMINI_API_KEY_7', 'GEMINI_API_KEY_8',
@@ -258,7 +259,7 @@ Pay particular attention to any upcoming high-profile IPOs — they drive sector
 
       let geminiSucceeded = false;
 
-      // Pass 1: gemini-2.0-flash (sample first 3 keys — if all quota-exceeded, rest will be too)
+      // Pass 1: gemini-2.5-flash (sample first 3 keys — if all quota-exceeded, rest will be too)
       for (const keyName of geminiKeyNames.slice(0, 3)) {
         const geminiKey = Deno.env.get(keyName) ?? '';
         if (!geminiKey) { debugErrors.push(`${keyName}: not set`); continue; }
@@ -271,15 +272,15 @@ Pay particular attention to any upcoming high-profile IPOs — they drive sector
           const d = await geminiRes.json() as { candidates: [{ content: { parts: [{ text: string }] } }] };
           raw = d.candidates[0].content.parts[0].text.trim();
           geminiSucceeded = true;
-          console.log(`[morning-brief] Used gemini-2.0-flash (${keyName})`);
+          console.log(`[morning-brief] Used gemini-2.5-flash (${keyName})`);
           break;
         } else {
           const errText = await geminiRes.text();
-          debugErrors.push(`${keyName}/2.0(${geminiRes.status}): ${errText.slice(0, 120)}`);
+          debugErrors.push(`${keyName}/2.5(${geminiRes.status}): ${errText.slice(0, 120)}`);
         }
       }
 
-      // Pass 2: gemini-1.5-flash — separate daily quota, try all 13 keys
+      // Pass 2: gemini-2.0-flash-lite — separate daily quota, try all 13 keys
       if (!geminiSucceeded) {
         for (const keyName of geminiKeyNames) {
           const geminiKey = Deno.env.get(keyName) ?? '';
@@ -293,15 +294,15 @@ Pay particular attention to any upcoming high-profile IPOs — they drive sector
             const d = await geminiRes.json() as { candidates: [{ content: { parts: [{ text: string }] } }] };
             raw = d.candidates[0].content.parts[0].text.trim();
             geminiSucceeded = true;
-            console.log(`[morning-brief] Used gemini-1.5-flash (${keyName})`);
+            console.log(`[morning-brief] Used gemini-2.0-flash-lite (${keyName})`);
             break;
           } else {
             const errText = await geminiRes.text();
-            const geminiErr = `${keyName}/1.5(${geminiRes.status}): ${errText.slice(0, 120)}`;
+            const geminiErr = `${keyName}/2.0lite(${geminiRes.status}): ${errText.slice(0, 120)}`;
             console.warn(`[morning-brief] ${geminiErr}`);
             debugErrors.push(geminiErr);
             // Stop early if the pattern is quota-exceeded — rest will be the same
-            if (geminiRes.status === 429 && debugErrors.filter(e => e.includes('/1.5(429)')).length >= 3) break;
+            if (geminiRes.status === 429 && debugErrors.filter(e => e.includes('/2.0lite(429)')).length >= 3) break;
           }
         }
       }

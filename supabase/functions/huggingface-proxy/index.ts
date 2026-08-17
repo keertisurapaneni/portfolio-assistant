@@ -11,11 +11,14 @@ const corsHeaders = {
 };
 
 const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions';
-// Model fallback: try best quality first, fall back on rate limits
+// Model fallback: try best quality first, fall back on rate limits.
+// Aug 2026: Groq decommissioned all llama-3.x + llama-4-scout models (404/400). These are
+// the current GA chat models available on the account. gpt-oss models return clean JSON;
+// qwen3.6 is a reasoning model whose <think>…</think> is stripped below.
 const GROQ_MODELS = [
-  'llama-3.3-70b-versatile',   // Best reasoning for stock discovery
-  'llama-3.1-8b-instant',      // Fast non-thinking fallback (avoids Qwen3 reasoning token drain)
-  'llama3-8b-8192',            // Last resort
+  'openai/gpt-oss-120b',   // Best reasoning for stock discovery
+  'openai/gpt-oss-20b',    // Fast fallback
+  'qwen/qwen3.6-27b',      // Last resort (reasoning; <think> stripped)
 ];
 
 interface RequestPayload {
