@@ -1788,12 +1788,13 @@ export async function savePortfolioSnapshot(snapshot: {
     .upsert({
       snapshot_date: today,
       account_id: snapshot.accountId ?? 'default',
+      account_type: 'paper',
       total_value: snapshot.totalValue,
       cash_balance: snapshot.cashBalance ?? null,
       total_pnl: snapshot.totalPnl,
       positions: snapshot.positions,
       open_trade_count: snapshot.openTradeCount,
-    }, { onConflict: 'snapshot_date,account_id' });
+    }, { onConflict: 'snapshot_date,account_id,account_type' });
 
   if (error) console.error('[savePortfolioSnapshot] Failed:', error.message);
 }

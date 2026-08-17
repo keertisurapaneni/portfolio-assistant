@@ -678,9 +678,9 @@ function formatQuoteForAI(q: YahooQuote, idx: number): string {
 // ── Gemini AI ───────────────────────────────────────────
 
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
-// gemini-1.5-flash has a separate daily quota from 2.0-flash variants — serves as last-resort fallback
-// when all 13 keys are exhausted for the 2.0 models.
-const GEMINI_MODELS = ['gemini-2.0-flash-lite', 'gemini-2.0-flash', 'gemini-1.5-flash'];
+// Aug 2026: gemini-2.0-flash / 1.5-flash were deprecated by Google (404). 2.5-flash is the
+// current GA flagship; 2.0-flash-lite (separate quota pool) is the last-resort fallback.
+const GEMINI_MODELS = ['gemini-2.5-flash', 'gemini-2.0-flash-lite'];
 
 let _geminiKeyIdx = 0;
 let _geminiModelIdx = 0;
@@ -688,10 +688,10 @@ const _rateLimitedUntil: Map<string, number> = new Map();
 
 // ── Groq fallback ────────────────────────────────────────
 // Used when all Gemini keys are rate-limited (429). Free tier, fast.
-// llama-4-scout: 30K TPM on free tier — handles large swing scan prompts (6-10K tokens each).
-// llama-3.3-70b-versatile only has 6K TPM and fails on any prompt > 6K tokens.
+// Aug 2026: llama-4-scout was decommissioned (404). gpt-oss-120b is the current GA model
+// with a large context window that handles the 6-10K token swing scan prompts.
 const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions';
-const GROQ_MODEL = 'meta-llama/llama-4-scout-17b-16e-instruct';
+const GROQ_MODEL = 'openai/gpt-oss-120b';
 
 async function callGroq(
   apiKey: string,
