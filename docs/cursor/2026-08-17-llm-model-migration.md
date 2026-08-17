@@ -32,6 +32,17 @@ Verified working Groq chat models on this account: `openai/gpt-oss-120b` (674ms)
 | `supabase/functions/trading-signals/index.ts` | `GEMINI_MODELS` → `['gemini-2.5-flash','gemini-2.0-flash-lite']` |
 | `auto-trader/src/lib/feedback.ts` | `GROQ_MODEL` → `openai/gpt-oss-120b` |
 
+## Reasoning models need `reasoning_effort: 'low'`
+
+After the model swap, discovery returned `502 Empty response from LLM`. Cause: gpt-oss /
+qwen are **reasoning models** — hidden reasoning tokens count against `max_tokens`. Step 1
+(`discovery.ts`) passes `maxOutputTokens=1000`; reasoning consumed 827/871 tokens, leaving
+empty/near-empty content. Fix: `huggingface-proxy` now sends `reasoning_effort: 'low'`
+(reasoning → ~15 tokens, content always fits, ~8x faster). Verified against gpt-oss-120b.
+
+Any future edge function that adopts a Groq reasoning model must set `reasoning_effort: 'low'`
+(or a large enough `max_tokens`) or it will intermittently return empty content.
+
 ## Deploy
 
 Edge functions must be redeployed (code lives server-side):
