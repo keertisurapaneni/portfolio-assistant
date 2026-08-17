@@ -34,6 +34,16 @@ If a change would violate any of these, STOP and ask the user before proceeding.
   2026 bug: pausing Suggested Finds routed LONG_TERM `off` and stripped stop-loss/
   hard-stop/trailing/max-hold off existing longs while profit-take kept running).
 
+- **Discovery / generation / display must NEVER be gated by trade routing (`off`).**
+  Generating Suggested Finds (and populating the `/finds` page cache) is discovery, not
+  a position action. `off` (or `suggestedFindsEnabled=false`, which is derived from
+  `LONG_TERM` routing) disables AUTO-BUY only — it must NOT stop the daily generation.
+  `preGenerateSuggestedFinds()` always runs (once daily, market hours); the trade-
+  execution block inside is separately gated by
+  `config.enabled && accountId && isModeEnabled('LONG_TERM')`. The user requirement is
+  "show results, don't buy" (Aug 17 2026): pausing Suggested Finds must still refresh
+  the list. Do NOT re-couple generation to `suggestedFindsEnabled` / `LONG_TERM` routing.
+
 ## 2. Market Hours
 
 - **Never place MKT/DAY orders outside regular trading hours (9:30 AM – 4:00 PM ET).**
