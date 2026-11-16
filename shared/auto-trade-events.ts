@@ -29,6 +29,7 @@ export type AutoTradeSource =
   | 'loss_cut'
   | 'lt_auto_sell'
   | 'swing_expiry'
+  | 'stop_backstop'
   | 'capital_pressure'
   | 'external_signal'
   | 'spx_level_scanner'

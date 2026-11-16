@@ -244,7 +244,14 @@ export async function loadAutoTraderConfig(): Promise<AutoTraderConfig> {
 
 /** Save config to both Supabase (persistent) and localStorage (fast cache). */
 export async function saveAutoTraderConfig(config: Partial<AutoTraderConfig>): Promise<AutoTraderConfig> {
-  const current = getAutoTraderConfig();
+  // Merge onto the FRESH Supabase row, not the localStorage cache.
+  // This function upserts the WHOLE row, so a stale cache silently overwrites fields
+  // the daily auto-tuner (auto-tune-strategy-config) changed server-side — e.g. every
+  // portfolioValue refresh from useAutoTradeScheduler reverted min_scanner_confidence,
+  // base_allocation_pct, long_term_bucket_pct, max_positions to their old values, so the
+  // tuner's adjustments never stuck (Nov 13 2026). loadAutoTraderConfig() falls back to
+  // the cache if Supabase is unreachable, so offline behaviour is unchanged.
+  const current = await loadAutoTraderConfig();
   const updated = { ...current, ...config };
 
   // Cache locally for immediate use
