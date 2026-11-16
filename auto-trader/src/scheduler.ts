@@ -88,6 +88,7 @@ import {
 import { logLongTermPerformance } from './lib/performanceLog.js';
 import { logClosedTradePerformance } from './lib/tradePerformanceLog.js';
 import { recordTradeClose } from './lib/trade-closer.js';
+import { BreachTracker, isStopBreached, planBackstopClose } from './lib/stop-backstop.js';
 import { fetchDailyBars } from './lib/yahoo-finance.js';
 import { generateSuggestedFinds, discoverDipStocks } from './lib/discovery.js';
 import { fetchRecentDailyCandles, detectCandlePatterns } from './lib/candle-patterns.js';
@@ -341,6 +342,15 @@ export function startScheduler(): void {
     });
   }, { timezone: 'America/New_York' });
   log('Dip watcher: every 5 min 10:00–15:55 ET (detects ≥5% pullbacks in uptrends)');
+
+  // Swing stop backstop: every 5 min, 9:40–15:58 ET (guard inside runStopBackstop).
+  // Catches IB stop orders that fail to fire (Nov 5 2026: UNH/AMZN/ADBE held below stop overnight).
+  cron.schedule('*/5 9-15 * * 1-5', () => {
+    runStopBackstop().catch(err => {
+      console.error('[StopBackstop] Failed:', err);
+    });
+  }, { timezone: 'America/New_York' });
+  log('Swing stop backstop: every 5 min 9:40–15:58 ET (closes swings whose IB stop failed to fire)');
 
   // 3:55 PM EOD day-trade close — safety net to prevent day trades from becoming
   // unintended overnight holds. Bracket TP/SL orders handle the natural close during
@@ -4331,7 +4341,16 @@ async function executeScannerTrade(
   const baseCap = mode === 'SWING_TRADE'
     ? (config.swingPositionSize > 0 ? config.swingPositionSize : 5000)
     : (config.positionSize > 0 ? config.positionSize : 5000);
-  const confMultiplier = (signal === 'BUY' && scannerConf >= 9) ? 2.0
+  // Confidence upsizing applies to NON-swing modes only.
+  // Nov 13 2026 audit (paper_trades, filled BUYs, ex-reconciliation covers):
+  //   SWING  60d: conf7 n=22 WR50% +$1,451 | conf8 n=17 WR24% -$1,058 | conf9+ n=6 WR17% -$1,669
+  //   SWING 120d: conf7 +$1,508 | conf8 -$1,852 | conf9+ -$784
+  //   DAY    60d: conf8 n=22 -$725 | conf9+ n=11 WR73% +$924  (upsizing still justified)
+  // For swings, higher scanner confidence is INVERSELY related to outcome and the 1.5x/2.0x
+  // multiplier was inflating the losing tiers (avg notional $12.8k vs $10.0k at conf 7).
+  // Do not re-enable for swings without fresh data showing conf 8+ swings are net positive.
+  const confMultiplier = mode === 'SWING_TRADE' ? 1.0
+    : (signal === 'BUY' && scannerConf >= 9) ? 2.0
     : (signal === 'BUY' && scannerConf >= 8) ? 1.5
     : 1.0;
   const scannerPositionCap = baseCap * confMultiplier;
@@ -7454,6 +7473,174 @@ async function checkDayTradeTrailingStops(
       }
     }
   }
+}
+
+// ── Swing Stop Backstop ───────────────────────────────────────────────────────
+//
+// The IB bracket's GTC STP child is the ONLY thing protecting a swing position.
+// Nov 5 2026 (SPY −4%): UNH/AMZN/ADBE traded below their stops for hours with the
+// auto-trader healthy and logging, and IB did not fire the stops until all four
+// released together at 9:45:07 AM next day → UNH −$396/leg (~13R) instead of ~−1R.
+// 7 late stops in 60 days cost ~$932 of excess loss. Nothing in software noticed.
+//
+// Every 5 min in regular hours: if a FILLED swing BUY's live price is >0.3% beyond its
+// stop for ≥4 consecutive minutes (a healthy IB stop fills in seconds), cancel that leg's
+// bracket children and market-sell exactly the shares IB reports held.
+//
+// Safety (ib-paper-account.mdc rule 5 — never oversell):
+//   • persistence window → never races a stop that is filling right now
+//   • quantity allocated leg-by-leg from a FRESH IB position, re-read after the cancels
+//   • split T1/T2 legs share one IB position — never sells the full position per leg
+//   • trade is only marked closed after the IB market order resolves (stampAndPlaceClose
+//     throws otherwise → status untouched → next run retries)
+// Long (BUY) swings only: swing shorts are gated off by default and SELL-signal swing rows
+// are also used for partial-close child records, so they are deliberately excluded.
+
+const _stopBreachTracker = new BreachTracker();
+let _stopBackstopRunning = false;
+
+export async function runStopBackstop(): Promise<void> {
+  if (_stopBackstopRunning) return;
+  const mins = getETMinutes();
+  if (!isMarketHoursET() || mins < 9 * 60 + 40 || mins > 15 * 60 + 58) return;
+  _stopBackstopRunning = true;
+  try {
+    const config = await loadConfig();
+    // Exit management — never gated by 'off' (see getConnectionForManagement).
+    const { connections } = getConnectionForManagement('SWING_TRADE', config);
+    for (const { connection: conn, accountType } of connections) {
+      if (!conn.isConnected()) continue;
+      await runStopBackstopForAccount(conn, accountType);
+    }
+  } catch (err) {
+    log(`[StopBackstop] run failed — ${err instanceof Error ? err.message : 'unknown'}`);
+  } finally {
+    _stopBackstopRunning = false;
+  }
+}
+
+async function runStopBackstopForAccount(conn: IBConnection, acct: AccountType): Promise<void> {
+  const trades = await getActiveTrades(acct);
+  const legs = trades.filter(t =>
+    t.mode === 'SWING_TRADE' &&
+    t.status === 'FILLED' &&
+    t.signal === 'BUY' &&
+    (t.stop_loss ?? 0) > 0 &&
+    (t.quantity ?? 0) > 0,
+  );
+  if (legs.length === 0) return;
+
+  const byTicker = new Map<string, PaperTrade[]>();
+  for (const l of legs) {
+    const k = l.ticker.toUpperCase();
+    byTicker.set(k, [...(byTicker.get(k) ?? []), l]);
+  }
+
+  for (const [ticker, tickerLegs] of byTicker) {
+    const price = await getQuotePrice(ticker).catch(() => null);
+    const breached = tickerLegs.filter(l => isStopBreached('BUY', price, l.stop_loss));
+    const key = `${acct}:${ticker}`;
+    const decision = _stopBreachTracker.observe(key, breached.length > 0, Date.now());
+    if (decision === 'clear') continue;
+    if (decision === 'watching') {
+      log(`${ticker}: [StopBackstop:${acct}] price $${price} is below stop $${breached[0].stop_loss} — watching (IB stop should fill; will intervene if it persists)`);
+      continue;
+    }
+    await executeStopBackstopClose(conn, acct, ticker, breached, price as number, key);
+  }
+}
+
+async function executeStopBackstopClose(
+  conn: IBConnection,
+  acct: AccountType,
+  ticker: string,
+  breachedLegs: PaperTrade[],
+  price: number,
+  key: string,
+): Promise<void> {
+  const symbolMatch = (p: PositionData) => p.symbol.toUpperCase() === ticker && p.secType === 'STK';
+  const toPlanLegs = (ls: PaperTrade[]) => ls.map(l => ({ id: l.id, quantity: l.quantity ?? 0 }));
+
+  // 1. Pre-check against IB (source of truth). If IB doesn't hold it (stop already filled,
+  //    or the DB is out of sync), do nothing — reconciliation owns that case.
+  const pos1 = (await conn.requestPositions()).find(symbolMatch);
+  const plan1 = planBackstopClose('BUY', toPlanLegs(breachedLegs), pos1?.position ?? 0);
+  if (plan1.length === 0) {
+    log(`${ticker}: [StopBackstop:${acct}] breach persisted but IB holds ${pos1?.position ?? 0} — no order (stop likely filled / state mismatch)`);
+    _stopBreachTracker.reset(key);
+    return;
+  }
+
+  const stopLevel = breachedLegs[0].stop_loss as number;
+  log(`${ticker}: [StopBackstop:${acct}] ACTING — price $${price.toFixed(2)} vs stop $${stopLevel.toFixed(2)} persisted; IB did not fill the stop. Closing ${plan1.reduce((s, a) => s + a.quantity, 0)} shares`);
+
+  // 2. Cancel bracket children of the legs we are about to close, so a late TP/SL fill
+  //    cannot sell the same shares twice.
+  const planned = new Set(plan1.map(a => a.legId));
+  for (const leg of breachedLegs.filter(l => planned.has(l.id))) {
+    for (const [label, oid] of [['TP', leg.ib_tp_order_id], ['SL', leg.ib_sl_order_id]] as const) {
+      if (!oid) continue;
+      try { conn.cancelOrder(parseInt(oid, 10)); log(`${ticker}: stop backstop — cancelled bracket ${label} #${oid}`); }
+      catch (e) { log(`${ticker}: stop backstop — cancel ${label} #${oid} failed: ${e instanceof Error ? e.message : 'unknown'}`); }
+    }
+  }
+  await new Promise(r => setTimeout(r, 1500)); // let IB process the cancels / any in-flight fill
+
+  // 3. Re-read IB + DB AFTER the cancels. A stop may have filled in the meantime.
+  const pos2 = (await conn.requestPositions()).find(symbolMatch);
+  const stillOpen = new Set(
+    (await getActiveTrades(acct)).filter(t => t.status === 'FILLED').map(t => t.id),
+  );
+  const plan2 = planBackstopClose(
+    'BUY',
+    toPlanLegs(breachedLegs.filter(l => planned.has(l.id) && stillOpen.has(l.id))),
+    pos2?.position ?? 0,
+  );
+  if (plan2.length === 0) {
+    log(`${ticker}: [StopBackstop:${acct}] nothing left to close after cancels (IB holds ${pos2?.position ?? 0}) — stop filled in the meantime`);
+    _stopBreachTracker.reset(key);
+    return;
+  }
+
+  // 4. Close each leg with its own quantity + its own pre-stamped order id.
+  let closedAny = false;
+  for (const alloc of plan2) {
+    const leg = breachedLegs.find(l => l.id === alloc.legId)!;
+    try {
+      const result = await stampAndPlaceClose(conn, leg.id, { symbol: ticker, side: 'SELL', quantity: alloc.quantity }, acct);
+      await recordTradeClose({
+        tradeId: leg.id,
+        closePrice: result.avgFillPrice,
+        closeReason: 'stop_loss',
+        status: 'STOPPED',
+        orderId: result.orderId,
+        accountType: acct,
+      });
+      closedAny = true;
+      const slip = result.avgFillPrice > 0 && stopLevel > 0 ? ((stopLevel - result.avgFillPrice) / stopLevel) * 100 : null;
+      log(`${ticker}: STOP BACKSTOP closed [${acct}] — sold ${alloc.quantity} @ $${result.avgFillPrice.toFixed(2)} (stop $${stopLevel.toFixed(2)}${slip != null ? `, ${slip.toFixed(2)}% through` : ''})`);
+      persistEvent(ticker, 'warning',
+        `${ticker}: IB stop at $${stopLevel.toFixed(2)} did not fill (price $${price.toFixed(2)}) — software backstop sold ${alloc.quantity} @ $${result.avgFillPrice.toFixed(2)}`,
+        {
+          action: 'closed', source: 'stop_backstop', mode: 'SWING_TRADE',
+          metadata: { tradeId: leg.id, stopLevel, quotePrice: price, qty: alloc.quantity, fillPrice: result.avgFillPrice, orderId: result.orderId },
+        },
+        acct,
+      );
+    } catch (err) {
+      // Status untouched (invariant: never mark CLOSED unless IB accepted the order).
+      // Bracket children are already cancelled, so the breach tracker is NOT reset —
+      // the next run retries immediately.
+      const msg = err instanceof Error ? err.message : 'unknown';
+      log(`${ticker}: [StopBackstop:${acct}] close FAILED — ${msg} (position unprotected, will retry)`);
+      persistEvent(ticker, 'error',
+        `${ticker}: stop backstop close failed (${msg}) — bracket cancelled, position UNPROTECTED, retrying next run`,
+        { action: 'failed', source: 'stop_backstop', mode: 'SWING_TRADE', metadata: { tradeId: leg.id, stopLevel, quotePrice: price } },
+        acct,
+      );
+    }
+  }
+  if (closedAny) _stopBreachTracker.reset(key);
 }
 
 async function checkLossCutOpportunities(
