@@ -15,6 +15,7 @@ import { ACTIVE_STATUSES, CLOSED_STATUSES, OPTIONS_MODES } from '../../../shared
 import { getOptionsAutoTradeConfig, autoTradeOption, type OptionsTradeTicket } from './options-scanner.js';
 import { getOptionsChain } from './options-chain.js';
 import { finnhubFetch, FINNHUB_KEY } from './finnhub.js';
+import { fetchExpiryDayClose } from './option-settlement.js';
 import {
   isConnected,
   placeOptionsOrder,
@@ -536,9 +537,31 @@ export async function runOptionsManageCycle(): Promise<ManageCycleResult> {
     // GTC buy-to-close already live in IB — do NOT place another. Overwriting
     // ib_close_order_id without cancelling the prior order left orphaned GTCs
     // that filled days later (GOOGL Jul 13). Wait for the trigger to close on fill.
+    // EXCEPTION: once the option is past expiry, a lingering unfilled BTC stamp must not
+    // block settlement (NOW $126P / VRTX sat FILLED for weeks after expiry, Nov 2026). If the
+    // order actually has fills, wait for the trigger; otherwise cancel (best-effort), clear
+    // the stamp and fall through to the expiry check below.
     if (pos.ib_close_order_id) {
-      console.log(`[Options Manager] ${pos.ticker} $${pos.option_strike}: skipping — GTC BTC #${pos.ib_close_order_id} already pending`);
-      continue;
+      if (daysUntil(pos.option_expiry) > 0) {
+        console.log(`[Options Manager] ${pos.ticker} $${pos.option_strike}: skipping — GTC BTC #${pos.ib_close_order_id} already pending`);
+        continue;
+      }
+      const staleId = Number(pos.ib_close_order_id);
+      const { data: staleFills } = await sb.from('ib_fills').select('order_id').eq('order_id', staleId).limit(1);
+      if (staleFills?.length) {
+        console.log(`[Options Manager] ${pos.ticker} $${pos.option_strike}: expired but BTC #${staleId} has fills — waiting for trigger to finalize`);
+        continue;
+      }
+      if (isConnected() && Number.isFinite(staleId)) {
+        try { cancelOrder(staleId); } catch { /* order may already be gone */ }
+      }
+      await sb.from('paper_trades').update({ ib_close_order_id: null }).eq('id', pos.id);
+      pos.ib_close_order_id = null;
+      console.warn(`[Options Manager] ${pos.ticker} $${pos.option_strike}: cleared stale unfilled BTC #${staleId} on expired option — proceeding to expiry settlement`);
+      persistEvent(pos.ticker, 'warning',
+        `Cleared stale unfilled buy-to-close #${staleId} on expired $${pos.option_strike} option — settling at expiry`,
+        { action: 'proceeding', source: 'options', metadata: { reconcile_type: 'stale_close_cleared', closeOrderId: staleId } }
+      );
     }
 
     const dte = daysUntil(pos.option_expiry);
@@ -588,13 +611,21 @@ export async function runOptionsManageCycle(): Promise<ManageCycleResult> {
       } else if (pos.mode === 'OPTIONS_PUT' && pos.signal === 'SELL') {
         // Short put: must distinguish OTM (expired worthless, keep premium) from
         // ITM (assigned — stock put to us at strike price, P&L ≠ full premium).
+        // Prefer the expiry-day CLOSE (what settlement actually used). A live quote is wrong for
+        // late settlements (days after expiry). Falls back to the live quote only when the
+        // expiry-day bar isn't final yet (the evening before / the day of expiry).
         let priceAtExpiry: number | null = null;
         try {
-          const eq = await finnhubFetch<{ c?: number }>(
-            `https://finnhub.io/api/v1/quote?symbol=${pos.ticker}&token=${FINNHUB_KEY}`,
-          );
-          priceAtExpiry = eq?.c ?? null;
-        } catch { /* non-fatal — fallback uses option_assigned flag */ }
+          priceAtExpiry = await fetchExpiryDayClose(pos.ticker, String(pos.option_expiry).slice(0, 10));
+        } catch { /* fall through to live quote */ }
+        if (priceAtExpiry === null) {
+          try {
+            const eq = await finnhubFetch<{ c?: number }>(
+              `https://finnhub.io/api/v1/quote?symbol=${pos.ticker}&token=${FINNHUB_KEY}`,
+            );
+            priceAtExpiry = eq?.c ?? null;
+          } catch { /* non-fatal — fallback uses option_assigned flag */ }
+        }
 
         // ITM = stock below put strike. Fallback: if we already flagged assignment at DTE≤5
         // and can't get a live quote, assume it stayed ITM.
