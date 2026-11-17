@@ -21,6 +21,12 @@ import { ACTIVE_STATUSES } from '../../../shared/trade-status-sets.js';
 import { fetchDailyBars, fetchQuote, sma as calcSma } from './yahoo-finance.js';
 import { isConnected, placeVerticalSpreadOrder, getDefaultAccount, cancelOrder } from '../ib-connection.js';
 import { finnhubFetch, FINNHUB_KEY } from './finnhub.js';
+import {
+  fetchExpiryDayClose,
+  invertedSpreadSettledPnl,
+  parseDebitFromHoldNote,
+  type OptionRight,
+} from './option-settlement.js';
 
 // ── Constants ────────────────────────────────────────────
 const MIN_CREDIT_PCT = 0.33;           // collect at least 33% of width
@@ -32,6 +38,8 @@ const MIN_STOCK_PRICE = 20;
 const MAX_PORTFOLIO_SPREAD_RISK = 0.30; // circuit breaker: max 30% of account in spread risk
 const PULLBACK_THRESHOLD_PCT = 3;      // stock pulled back ≥3% from recent high = entry signal
 const TREND_SMA_DAYS = 50;             // stock must be above/below 50-SMA for trend confirmation
+/** Auto-executed spread entries are OFF unless explicitly enabled (see runCreditSpreadScan). */
+const CREDIT_SPREAD_AUTO_ENTRY_ENABLED = process.env.CREDIT_SPREAD_AUTO_ENTRY === 'on';
 const MIN_IV_RANK = 30;                // minimum IV rank — don't sell spreads in crushed-IV environments
 /** Unfilled close orders older than this are cancelled + cleared so management can resume. */
 const STALE_CLOSE_ORDER_MS = 4 * 60 * 60 * 1000; // 4 hours
@@ -262,6 +270,17 @@ export async function runCreditSpreadScan(
 ): Promise<CreditSpreadScanResult> {
   const sb = getSupabase();
   const scanDate = new Date().toISOString().slice(0, 10);
+
+  // Explicit pause on AUTO-EXECUTED entries (Nov 17 2026). Every BULL_PUT entry since Jun 10
+  // (8/8) filled as a net debit (inverted legs) and the Jul 20 strike-geometry gate did not
+  // stop it — the defect is at the IB combo action/leg level and is unverified. Until a human
+  // verifies IB's leg semantics, do not place new spreads. Previously the scanner was only
+  // "off" by accident (stale rows filled the 8-position cap). Re-enable with
+  // CREDIT_SPREAD_AUTO_ENTRY=on once verified. Manual/non-executing scans still run.
+  if (autoExecute && !CREDIT_SPREAD_AUTO_ENTRY_ENABLED) {
+    console.log('[Credit Spread Scanner] Auto-entry PAUSED (inverted-leg defect unverified) — set CREDIT_SPREAD_AUTO_ENTRY=on to re-enable');
+    return { opportunities: [], skipped: [], scanDate };
+  }
 
   // Load active watchlist
   const { data: watchlist } = await sb
@@ -511,6 +530,75 @@ async function executeCreditSpread(ticket: CreditSpreadTicket): Promise<void> {
  *   2. Stop loss at 100% of max gain (lost as much as you could have made)
  *   3. Time exit at 21 DTE
  */
+/**
+ * Settle an EXPIRED spread whose entry filled as a net debit (BEAR_PUT_DEBIT_HOLD).
+ * Returns true if the row was closed. Never guesses: if the expiry-day close or the debit
+ * is unavailable, leaves the row untouched (and logs) so a human can resolve it.
+ *
+ * Double-count guard: if reconcileIBShorts already booked a stock cover for this ticker
+ * within 14 days, its P&L is subtracted — the payoff formula already includes the stock
+ * leg of an exercise/assignment.
+ */
+async function settleExpiredInvertedSpread(pos: Record<string, unknown>): Promise<boolean> {
+  const sb = getSupabase();
+  const ticker = String(pos.ticker);
+  const expiry = pos.option_expiry ? String(pos.option_expiry).slice(0, 10) : null;
+  const debit = parseDebitFromHoldNote(pos.notes as string | null);
+  const shortK = Number(pos.spread_short_strike);
+  const longK = Number(pos.spread_long_strike);
+  const contracts = Number(pos.option_contracts ?? pos.quantity ?? 0);
+  const right: OptionRight = pos.spread_type === 'BEAR_CALL' ? 'C' : 'P';
+
+  if (!expiry || debit === null || !(shortK > 0) || !(longK > 0) || !(contracts > 0)) {
+    console.warn(`[Credit Spread Manager] ${ticker}: cannot settle inverted spread — missing expiry/debit/strikes/contracts`);
+    return false;
+  }
+  const spot = await fetchExpiryDayClose(ticker, expiry);
+  if (spot === null) {
+    console.warn(`[Credit Spread Manager] ${ticker}: expiry-day close for ${expiry} unavailable/not final — inverted spread left open (will retry)`);
+    return false;
+  }
+
+  const gross = invertedSpreadSettledPnl({ right, intendedShortStrike: shortK, intendedLongStrike: longK, debitPerShare: debit, contracts, spot });
+
+  const twoWeeksAfterExpiry = new Date(Date.parse(`${expiry}T00:00:00Z`) + 14 * 86_400_000).toISOString();
+  const { data: coverRows } = await sb
+    .from('paper_trades')
+    .select('id, pnl, ib_pnl')
+    .eq('ticker', ticker)
+    .eq('close_reason', 'ib_reconciliation_cover')
+    .gte('closed_at', `${expiry}T00:00:00Z`)
+    .lte('closed_at', twoWeeksAfterExpiry);
+  const coverPnl = (coverRows ?? []).reduce((s, r) => s + Number((r as { ib_pnl: number | null; pnl: number | null }).ib_pnl ?? (r as { pnl: number | null }).pnl ?? 0), 0);
+  const settledPnl = gross - coverPnl;
+
+  const maxDebitTotal = debit * 100 * contracts;
+  await recordTradeClose({
+    tradeId: String(pos.id),
+    closePrice: 0,
+    closeReason: 'expired_inverted_spread',
+    status: 'CLOSED',
+    accountType: 'paper',
+    overridePnl: settledPnl,
+    overridePnlPct: maxDebitTotal > 0 ? (settledPnl / maxDebitTotal) * 100 : 0,
+    overridePnlSource: 'estimated',
+    extraUpdates: {
+      closed_at: `${expiry}T20:00:00.000Z`,
+      notes: `Inverted (net-debit) spread settled at expiry-day close $${spot.toFixed(2)}: payoff-debit = $${gross.toFixed(0)}${coverPnl ? `, less stock cover $${coverPnl.toFixed(0)}` : ''}. Formula excludes commissions.`,
+    },
+  });
+  await createAutoTradeEvent({
+    ticker,
+    mode: 'CREDIT_SPREAD',
+    event_type: settledPnl >= 0 ? 'info' : 'warning',
+    action: 'closed',
+    message: `Inverted spread ${shortK}/${longK} ${right} expired — settled at $${spot.toFixed(2)} | P&L $${settledPnl.toFixed(0)}`,
+    metadata: { reconcile_type: 'expired_inverted_spread', spot, debit, gross, coverPnl, settledPnl },
+  });
+  console.log(`[Credit Spread Manager] INVERTED SPREAD SETTLED: ${ticker} ${shortK}/${longK}${right} @ ${spot} → P&L $${settledPnl.toFixed(0)}`);
+  return true;
+}
+
 export async function manageCreditSpreadPositions(): Promise<void> {
   const sb = getSupabase();
 
@@ -594,6 +682,12 @@ export async function manageCreditSpreadPositions(): Promise<void> {
       // would create a new spread instead of closing the existing one.
       // These must be closed manually or via a corrected close order after investigation.
       if ((pos.notes as string | null)?.startsWith('BEAR_PUT_DEBIT_HOLD')) {
+        // Bookkeeping only (no orders): once expired, settle with the correct debit-spread
+        // payoff so the row stops sitting open forever (and blocking the position cap).
+        if (dte <= 0) {
+          const settled = await settleExpiredInvertedSpread(pos);
+          if (settled) continue;
+        }
         console.warn(`[Credit Spread Manager] ${pos.ticker} ${pos.spread_short_strike}/${pos.spread_long_strike}: BEAR_PUT_DEBIT_HOLD — auto-close blocked. Manage manually in IB.`);
         continue;
       }
