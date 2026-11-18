@@ -661,6 +661,14 @@ export async function runOptionsManageCycle(): Promise<ManageCycleResult> {
           : `✅ ${pos.ticker} $${pos.option_strike} put expired worthless — kept $${(premiumCollected * 100).toFixed(0)} premium`;
       }
 
+      // All expiry branches above compute P&L PER CONTRACT ((premium − …) × 100). Scale by the
+      // contract count (VRTX 2× booked $707 instead of $1,410, Nov 17). And date the close at
+      // the expiry (never in the future) so late settlements don't inflate today's activity.
+      const expiryContracts = Math.max(1, pos.option_contracts ?? 1);
+      expiredPnl *= expiryContracts;
+      const expiryStampMs = Date.parse(`${String(pos.option_expiry).slice(0, 10)}T20:00:00Z`);
+      const expiryClosedAt = new Date(Number.isFinite(expiryStampMs) ? Math.min(expiryStampMs, Date.now()) : Date.now()).toISOString();
+
       await recordTradeClose({
         tradeId: pos.id,
         closePrice: 0,
@@ -670,13 +678,13 @@ export async function runOptionsManageCycle(): Promise<ManageCycleResult> {
         overridePnl: expiredPnl,
         overridePnlPct: expiredPct,
         overridePnlSource: 'ib_fill_calculated',
-        extraUpdates: { option_close_pct: 100 },
+        extraUpdates: { option_close_pct: 100, closed_at: expiryClosedAt },
       });
 
       result.expiredPositions.push(pos.ticker);
       persistEvent(pos.ticker, expiredPnl >= 0 ? 'success' : 'error',
         logMessage,
-        { action: 'closed', source: 'options', metadata: { reason: closeReason, pnl: expiredPnl } }
+        { action: 'closed', source: 'options', metadata: { reason: closeReason, pnl: expiredPnl, contracts: expiryContracts } }
       );
       continue;
     }
